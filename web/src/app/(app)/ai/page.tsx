@@ -19,8 +19,6 @@ You can help with:
 When asked about part prices, labor times, or repair procedures, use webSearch to find current info.
 Always be professional, accurate, and helpful. You work FOR Alpha Auto Center.
 
-Available tools: webSearch(query), navigate(view), createCustomer(data), createJob(data), createDocument(type,data)
-
 Respond in JSON when using tools:
 {"tool":"webSearch","query":"2014 Chevrolet Malibu front brake pads price"}
 {"tool":"proposeDocument","type":"Estimate","customer":"...","parts":[...],"labors":[...],"notes":"..."}
@@ -36,10 +34,11 @@ export default function AIPage() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [status, setStatus] = useState('')
+  const [listening, setListening] = useState(false)
+  const recognitionRef = useRef<SpeechRecognition | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const [shopContext, setShopContext] = useState('')
 
-  // Load recent shop context
   useEffect(() => {
     const loadContext = async () => {
       const [{ data: jobs }, { data: customers }, { data: msgs }] = await Promise.all([
@@ -61,60 +60,45 @@ export default function AIPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, status])
 
-  const send = async () => {
+  const send = useCallback(async () => {
     const text = input.trim()
     if (!text || loading) return
     setInput('')
     setLoading(true)
-
     const userMsg: ChatMessage = { role: 'user', content: text }
     setMessages(prev => [...prev, userMsg])
-
     const history = [...messages, userMsg]
     await agentLoop(history)
     setLoading(false)
     setStatus('')
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input, loading, messages, shopContext])
 
   const agentLoop = async (history: ChatMessage[]) => {
     const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
     const apiKey = settings?.ai_api_key
     if (!apiKey) {
-      setMessages(prev => [...prev, { role: 'assistant', content: 'No AI API key configured. Go to Settings → AI to add your OpenRouter key.' }])
+      setMessages(prev => [...prev, { role: 'assistant', content: 'No AI API key configured. Go to Settings > AI to add your OpenRouter key.' }])
       return
     }
-
     const accumulated: string[] = []
-
     for (let step = 0; step < 5; step++) {
       const systemWithContext = SYSTEM_PROMPT + (shopContext ? `\n\nCurrent shop context:\n${shopContext}` : '') + (accumulated.length ? `\n\nResearch gathered:\n${accumulated.join('\n')}` : '')
-
       const res = await fetch(`${settings?.ai_base_url || 'https://openrouter.ai/api/v1'}/chat/completions`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: settings?.ai_model || 'meta-llama/llama-3.3-70b-instruct:free',
-          messages: [
-            { role: 'system', content: systemWithContext },
-            ...history.map(m => ({ role: m.role, content: m.content }))
-          ],
-          max_tokens: 1500,
-          temperature: 0.7
+          messages: [{ role: 'system', content: systemWithContext }, ...history.map(m => ({ role: m.role, content: m.content }))],
+          max_tokens: 1500, temperature: 0.7
         })
       })
-
       const data = await res.json()
       const raw = data.choices?.[0]?.message?.content?.trim() || ''
-
-      // Try to parse tool call
       let parsed: Record<string, unknown> | null = null
-      try {
-        const json = raw.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim()
-        parsed = JSON.parse(json)
-      } catch { /* plain text */ }
-
+      try { const json = raw.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim(); parsed = JSON.parse(json) } catch { /* plain */ }
       if (parsed?.tool === 'webSearch') {
-        setStatus(`🔍 Searching: "${parsed.query}"`)
+        setStatus(`Searching: "${parsed.query}"`)
         try {
           const r = await fetch(`/api/ai-search?q=${encodeURIComponent(parsed.query as string)}`)
           const d = await r.json()
@@ -122,28 +106,18 @@ export default function AIPage() {
         } catch { accumulated.push(`Search "${parsed.query}": No results`) }
         continue
       }
-
       if (parsed?.tool === 'proposeDocument') {
-        const html = renderProposal(parsed)
-        setMessages(prev => [...prev, { role: 'assistant', content: raw, html }])
+        setMessages(prev => [...prev, { role: 'assistant', content: raw, html: renderProposal(parsed) }])
         return
       }
-
-      if (parsed?.tool === 'navigate') {
-        window.location.href = `/${parsed.view}`
-        return
-      }
-
+      if (parsed?.tool === 'navigate') { window.location.href = `/${parsed.view}`; return }
       if (parsed?.tool === 'message') {
-        setMessages(prev => [...prev, { role: 'assistant', content: `I'll draft that message. Go to Messages to send it, or I can send it now — just confirm!` }])
+        setMessages(prev => [...prev, { role: 'assistant', content: "I'll draft that message. Go to Messages to send it, or I can send it now — just confirm!" }])
         return
       }
-
-      // Plain text response
       setMessages(prev => [...prev, { role: 'assistant', content: raw }])
       return
     }
-
     setMessages(prev => [...prev, { role: 'assistant', content: `I finished researching. Here's what I found:\n\n${accumulated.join('\n\n')}` }])
   }
 
@@ -155,9 +129,8 @@ export default function AIPage() {
     const tax = partsTotal * 0.0825
     const total = partsTotal + laborTotal + tax
     const fmt = (n: number) => '$' + n.toFixed(2)
-
     return `<div class="proposal-card">
-      <div class="font-bold text-base mb-2">📋 Proposed ${parsed.type || 'Estimate'} — ${parsed.customer || ''}</div>
+      <div class="font-bold text-base mb-2">Proposed ${parsed.type || 'Estimate'} — ${parsed.customer || ''}</div>
       ${parts.length ? `<table class="w-full text-xs mb-3"><thead><tr class="text-text-muted"><th class="text-left pb-1">Part</th><th class="text-right pb-1">Qty</th><th class="text-right pb-1">Price</th><th class="text-right pb-1">Total</th></tr></thead><tbody>${parts.map(p=>`<tr><td>${p.name}</td><td class="text-right">${p.qty||1}</td><td class="text-right">${fmt(Number(p.unitPrice)||0)}</td><td class="text-right">${fmt((Number(p.qty)||1)*(Number(p.unitPrice)||0))}</td></tr>`).join('')}</tbody></table>` : ''}
       ${labors.length ? `<table class="w-full text-xs mb-3"><thead><tr class="text-text-muted"><th class="text-left pb-1">Labor</th><th class="text-right pb-1">Hrs</th><th class="text-right pb-1">Total</th></tr></thead><tbody>${labors.map(l=>`<tr><td>${l.operation}</td><td class="text-right">${l.hours}</td><td class="text-right">${fmt((Number(l.hours)||0)*120)}</td></tr>`).join('')}</tbody></table>` : ''}
       <div class="border-t border-border pt-2 space-y-1 text-xs">
@@ -167,10 +140,36 @@ export default function AIPage() {
         <div class="flex justify-between font-bold text-base mt-1 pt-1 border-t border-border"><span>Total</span><span class="text-green">${fmt(total)}</span></div>
       </div>
       <div class="flex gap-2 mt-3">
-        <button onclick="window.location.href='/estimates'" class="btn btn-success btn-sm">✅ Create Estimate</button>
-        <button class="btn btn-secondary btn-sm">✕ Dismiss</button>
+        <button onclick="window.location.href='/estimates'" class="btn btn-success btn-sm">Create Estimate</button>
       </div>
     </div>`
+  }
+
+  const toggleVoice = async () => {
+    if (listening) {
+      recognitionRef.current?.stop()
+      setListening(false)
+      return
+    }
+    try {
+      await navigator.mediaDevices.getUserMedia({ audio: true })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+      if (!SR) { alert('Voice input not supported. Please use Chrome or Edge.'); return }
+      const recognition = new SR()
+      recognitionRef.current = recognition
+      recognition.continuous = false
+      recognition.interimResults = false
+      recognition.lang = 'en-US'
+      recognition.onstart = () => setListening(true)
+      recognition.onend = () => { setListening(false); recognitionRef.current = null }
+      recognition.onerror = () => { setListening(false); recognitionRef.current = null }
+      recognition.onresult = (e: SpeechRecognitionEvent) => {
+        const t = e.results[0][0].transcript
+        setInput(prev => prev ? prev + ' ' + t : t)
+      }
+      recognition.start()
+    } catch { alert('Microphone access denied. Please allow microphone access and try again.') }
   }
 
   const suggested = [
@@ -183,61 +182,75 @@ export default function AIPage() {
 
   return (
     <div className="flex flex-col h-screen">
-      {/* Header */}
       <div className="p-6 border-b border-border">
-        <h1 className="text-xl font-bold">🤖 Alpha AI</h1>
+        <h1 className="text-xl font-bold">Alpha AI</h1>
         <p className="text-sm text-text-muted mt-0.5">AI assistant with web search · Knows your shop data in real time</p>
       </div>
-
-      {/* Messages */}
       <div className="flex-1 overflow-y-auto p-6 space-y-4">
         {messages.length === 1 && (
           <div className="grid grid-cols-1 gap-2 max-w-xl">
             <p className="text-xs text-text-muted font-semibold uppercase tracking-wider mb-1">Try asking:</p>
             {suggested.map(s => (
-              <button key={s} onClick={() => { setInput(s) }}
+              <button key={s} onClick={() => setInput(s)}
                 className="text-left text-sm bg-bg-card border border-border rounded-lg px-4 py-2.5 hover:border-blue/50 hover:bg-bg-hover transition-all">
                 {s}
               </button>
             ))}
           </div>
         )}
-
         {messages.map((m, i) => (
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[80%] rounded-xl px-4 py-3 text-sm ${m.role === 'user' ? 'bg-blue text-white' : 'bg-bg-card border border-border'}`}>
-              {m.html ? (
-                <div dangerouslySetInnerHTML={{ __html: m.html }} />
-              ) : (
-                <p className="whitespace-pre-wrap">{m.content}</p>
-              )}
+              {m.html ? <div dangerouslySetInnerHTML={{ __html: m.html }} /> : <p className="whitespace-pre-wrap">{m.content}</p>}
             </div>
           </div>
         ))}
-
         {(loading || status) && (
           <div className="flex justify-start">
             <div className="bg-bg-card border border-border rounded-xl px-4 py-3 text-sm text-text-muted">
-              {status || <span className="animate-pulse-slow">Alpha AI is thinking…</span>}
+              {status || <span className="animate-pulse">Alpha AI is thinking...</span>}
             </div>
           </div>
         )}
         <div ref={bottomRef} />
       </div>
-
-      {/* Input */}
-      <div className="p-4 border-t border-border flex gap-3">
-        <textarea
-          className="form-input flex-1 resize-none text-sm"
-          rows={2}
-          placeholder="Ask anything about your shop, customers, vehicles, parts prices…"
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
-        />
-        <button className="btn btn-primary px-6" onClick={send} disabled={loading || !input.trim()}>
-          {loading ? <span className="spinner w-4 h-4 border-2 border-white/30 border-t-white rounded-full" /> : '↑'}
-        </button>
+      <div className="p-4 border-t border-border">
+        <div className="flex gap-2 items-end">
+          <textarea
+            className="form-input flex-1 resize-none text-sm"
+            rows={2}
+            placeholder="Ask anything about your shop, customers, vehicles, parts prices..."
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
+          />
+          <button
+            onClick={toggleVoice}
+            title={listening ? 'Stop listening' : 'Voice input'}
+            className={`flex items-center justify-center w-10 h-10 rounded-xl border transition-all flex-shrink-0 ${listening ? 'border-red-400 text-red-400 animate-pulse' : 'bg-bg-card border-border text-text-muted hover:border-blue/50 hover:text-blue'}`}
+          >
+            {listening ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+              </svg>
+            )}
+          </button>
+          <button
+            className="btn btn-primary flex items-center justify-center w-10 h-10 rounded-xl flex-shrink-0"
+            onClick={send}
+            disabled={loading || !input.trim()}
+          >
+            {loading
+              ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+            }
+          </button>
+        </div>
+        {listening && <p className="text-xs mt-2 text-red-400 animate-pulse">🎤 Listening... speak now</p>}
       </div>
     </div>
   )
