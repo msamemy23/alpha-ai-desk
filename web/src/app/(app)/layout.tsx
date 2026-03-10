@@ -14,7 +14,7 @@ const NAV = [
   { href: '/invoices', icon: '🧾', label: 'Invoices' },
   { href: '/receipts', icon: '🧾', label: 'Receipts' },
   { href: '/insurance', icon: '🛡️', label: 'Insurance' },
-  { href: '/messages', icon: '💬', label: 'Messages' },
+  { href: '/messages', icon: '💬', label: 'Calls & Messages' },
   { href: '/ai', icon: '🤖', label: 'Alpha AI' },
   { href: '/settings', icon: '⚙️', label: 'Settings' },
 ]
