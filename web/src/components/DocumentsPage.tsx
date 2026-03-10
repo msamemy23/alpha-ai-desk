@@ -215,7 +215,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               <tbody>
                 {filtered.length === 0 && <tr><td colSpan={6} className="text-center text-text-muted py-8">No {type.toLowerCase()}s yet</td></tr>}
                 {filtered.map(d => {
-                  const t = calcTotals(d as Record<string,unknown>)
+                  const t = calcTotals(d as unknown as Record<string,unknown>)
                   return (
                     <tr key={d.id} className="cursor-pointer" onClick={() => { setForm(d as Partial<Doc>); setEditing(d.id) }}>
                       <td className="font-mono text-sm text-blue">{d.doc_number}</td>
