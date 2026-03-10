@@ -1,0 +1,21 @@
+# credentials — NEVER commit these
+.env
+.env.local
+.env.*.local
+.env.production
+
+# Next.js
+.next/
+out/
+build/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Vercel
+.vercel
