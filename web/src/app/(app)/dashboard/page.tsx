@@ -15,6 +15,11 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(true)
 
+  // Auto-seed settings with env var keys on first load
+  useEffect(() => {
+    fetch('/api/seed-settings', { method: 'POST' }).catch(() => {})
+  }, [])
+
   const load = useCallback(async () => {
     const [{ data: jobs }, { data: docs }, { data: customers }, { data: messages }] = await Promise.all([
       supabase.from('jobs').select('*').order('created_at', { ascending: false }),
