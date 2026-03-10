@@ -49,7 +49,7 @@ export default function JobsPage() {
   }
 
   const openNew = () => { setForm({ status: 'New', priority: 'Normal' }); setEditing('new') }
-  const openEdit = (j: Job) => { setForm(j as Record<string, unknown>); setEditing(j.id) }
+  const openEdit = (j: Job) => { setForm(j as unknown as Record<string, unknown>); setEditing(j.id) }
   const selectCustomer = (id: string) => {
     const c = customers.find(c => c.id === id)
     if (c) setForm(f => ({ ...f, customer_id: c.id, customer_name: c.name, vehicle_year: c.vehicle_year, vehicle_make: c.vehicle_make, vehicle_model: c.vehicle_model }))
