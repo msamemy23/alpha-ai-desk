@@ -14,7 +14,6 @@
     "react-dom": "^18",
     "@supabase/supabase-js": "^2.43.5",
     "resend": "^3.3.0",
-    "telnyx": "^2.4.0",
     "openai": "^4.52.0"
   },
   "devDependencies": {
