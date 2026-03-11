@@ -4,30 +4,41 @@ import { sendSMS } from '@/lib/telnyx'
 
 const SHOP_PHONE = process.env.TELNYX_PHONE_NUMBER || '+17136636979'
 
+// All Telnyx numbers on this account - never auto-reply to these (prevents intra-account echo loops)
+const INTERNAL_NUMBERS = ['+17136636979', '+12819368645']
+
+// In-memory rate limit: track last auto-reply time per number (resets on cold start)
+const lastAutoReply: Record<string, number> = {}
+const AUTO_REPLY_COOLDOWN_MS = 10 * 60 * 1000 // 10 minutes
+
 export async function POST(req: NextRequest) {
   // Respond to Telnyx IMMEDIATELY to prevent retries/duplicate webhooks
   const body = await req.json()
-  
-  // Fire-and-forget: process in background, already responded 200
-  processWebhook(body).catch(e => console.error('SMS webhook processing error:', e))
-  
+  processWebhook(body).catch(e => console.error('SMS webhook error:', e))
   return NextResponse.json({ ok: true })
 }
 
 async function processWebhook(body: Record<string, unknown>) {
-  const event = (body?.data) as Record<string, unknown> | undefined
+  const event = body?.data as Record<string, unknown> | undefined
   if (!event) return
-  
+
   // Only handle inbound SMS
   if (event.event_type !== 'message.received') return
 
   const msg = event.payload as Record<string, unknown>
-  const fromNumber: string = (msg.from as Record<string, unknown>)?.phone_number as string || msg.from as string || ''
-  const msgBody: string = msg.text as string || ''
-  const messageId: string = msg.id as string || ''
+  const fromNumber: string = ((msg.from as Record<string, unknown>)?.phone_number as string) || (msg.from as string) || ''
+  const msgBody: string = (msg.text as string) || ''
+  const messageId: string = (msg.id as string) || ''
 
-  // Never auto-reply to messages from the shop itself (prevents infinite loops)
-  if (fromNumber === SHOP_PHONE || fromNumber.replace(/\D/g,'').endsWith(SHOP_PHONE.replace(/\D/g,''))) return
+  // Normalize from number for comparison
+  const fromDigits = fromNumber.replace(/\D/g, '')
+  
+  // Never auto-reply to our own Telnyx numbers (prevents intra-account echo loops)
+  const isInternalNumber = INTERNAL_NUMBERS.some(n => n.replace(/\D/g,'') === fromDigits)
+  if (isInternalNumber) {
+    console.log('Ignoring intra-account echo from', fromNumber)
+    return
+  }
 
   const db = getServiceClient()
 
@@ -45,7 +56,7 @@ async function processWebhook(body: Record<string, unknown>) {
   }
 
   // Look up customer by phone
-  const digits = (fromNumber || '').replace(/\D/g, '').slice(-10)
+  const digits = fromDigits.slice(-10)
   const { data: customers } = await db
     .from('customers')
     .select('id,name,phone,email')
@@ -53,7 +64,7 @@ async function processWebhook(body: Record<string, unknown>) {
     .limit(1)
   const customer = customers?.[0]
 
-  // Store inbound message FIRST (dedup guard — unique telnyx_message_id)
+  // Store inbound message
   const { error: insertErr } = await db.from('messages').insert({
     direction: 'inbound',
     channel: 'sms',
@@ -67,17 +78,25 @@ async function processWebhook(body: Record<string, unknown>) {
     ai_handled: false,
   })
 
-  // If insert failed (duplicate key), skip — already handled
   if (insertErr) {
-    console.log('Message insert conflict for', messageId, '- skipping reply')
+    console.log('Insert conflict for', messageId, '- skipping reply')
     return
   }
 
-  // Generate and send ONE AI auto-reply
+  // RATE LIMIT: max one auto-reply per number per 10 minutes
+  const now = Date.now()
+  const lastReply = lastAutoReply[fromDigits] || 0
+  if (now - lastReply < AUTO_REPLY_COOLDOWN_MS) {
+    console.log('Rate limiting auto-reply for', fromNumber, '- last reply was', Math.round((now - lastReply)/1000), 'seconds ago')
+    return
+  }
+
+  // Generate and send ONE auto-reply
   const reply = await generateAIReply(msgBody, customer, db)
   if (reply) {
     try {
       await sendSMS(fromNumber, reply)
+      lastAutoReply[fromDigits] = Date.now()
       await db.from('messages').insert({
         direction: 'outbound',
         channel: 'sms',
@@ -120,7 +139,7 @@ async function generateAIReply(
 Phone: ${settings.shop_phone || '(713) 663-6979'}
 Hours: Mon-Fri 8am-6pm, Sat 9am-3pm
 ${customer ? `Customer: ${customer.name}${jobContext}` : 'Unknown customer.'}
-Reply SHORT (1-2 sentences, under 160 chars). Be warm and professional.`
+Reply SHORT (1-2 sentences, under 160 chars). Be warm and professional. This is SMS.`
 
     const res = await fetch(`${settings.ai_base_url || 'https://openrouter.ai/api/v1'}/chat/completions`, {
       method: 'POST',
@@ -147,7 +166,7 @@ function getDefaultReply(message: string, customer: { name?: string } | undefine
   if (lc.includes('status') || lc.includes('ready') || lc.includes('car') || lc.includes('vehicle'))
     return `Hi${name}! We'll check on your vehicle and call you right back. ${phone}`
   if (lc.includes('schedule') || lc.includes('appointment'))
-    return `Hi${name}! Call us at ${phone} or reply with a good time to schedule. - ${shopName}`
+    return `Hi${name}! Call us at ${phone} or reply with a good time to schedule.`
   if (lc.includes('price') || lc.includes('cost') || lc.includes('how much'))
     return `Hi${name}! Our tech will call you with a quote shortly. ${phone}`
   return `Hi${name}! Thanks for contacting ${shopName}. We'll be in touch shortly. Call ${phone} if urgent.`
