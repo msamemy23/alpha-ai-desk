@@ -1,64 +1,96 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { sendSMS, formatPhone } from '@/lib/telnyx'
+import { sendSMS } from '@/lib/telnyx'
+
+const SHOP_PHONE = process.env.TELNYX_PHONE_NUMBER || '+17136636979'
 
 export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json()
-    const event = body?.data
+  // Respond to Telnyx IMMEDIATELY to prevent retries/duplicate webhooks
+  const body = await req.json()
+  
+  // Fire-and-forget: process in background, already responded 200
+  processWebhook(body).catch(e => console.error('SMS webhook processing error:', e))
+  
+  return NextResponse.json({ ok: true })
+}
 
-    // Handle inbound SMS
-    if (event?.event_type === 'message.received') {
-      const msg = event.payload
-      const fromNumber = msg.from?.phone_number || msg.from
-      const msgBody = msg.text || ''
+async function processWebhook(body: Record<string, unknown>) {
+  const event = (body?.data) as Record<string, unknown> | undefined
+  if (!event) return
+  
+  // Only handle inbound SMS
+  if (event.event_type !== 'message.received') return
 
-      const db = getServiceClient()
+  const msg = event.payload as Record<string, unknown>
+  const fromNumber: string = (msg.from as Record<string, unknown>)?.phone_number as string || msg.from as string || ''
+  const msgBody: string = msg.text as string || ''
+  const messageId: string = msg.id as string || ''
 
-      // Look up customer by phone
-      const digits = (fromNumber || '').replace(/\D/g, '').slice(-10)
-      const { data: customers } = await db
-        .from('customers')
-        .select('id,name,phone,email')
-        .ilike('phone', `%${digits}%`)
-        .limit(1)
-      const customer = customers?.[0]
+  // Never auto-reply to messages from the shop itself (prevents infinite loops)
+  if (fromNumber === SHOP_PHONE || fromNumber.replace(/\D/g,'').endsWith(SHOP_PHONE.replace(/\D/g,''))) return
 
-      // Store inbound message
-      await db.from('messages').insert({
-        direction: 'inbound',
-        channel: 'sms',
-        from_address: fromNumber,
-        to_address: msg.to?.[0]?.phone_number || process.env.TELNYX_PHONE_NUMBER,
-        body: msgBody,
-        status: 'received',
-        customer_id: customer?.id || null,
-        read: false,
-        telnyx_message_id: msg.id,
-        ai_handled: false,
-      })
+  const db = getServiceClient()
 
-      // AI auto-reply
-      const reply = await generateAIReply(msgBody, customer, db)
-      if (reply) {
-        await sendSMS(fromNumber, reply)
-        await db.from('messages').insert({
-          direction: 'outbound',
-          channel: 'sms',
-          from_address: process.env.TELNYX_PHONE_NUMBER,
-          to_address: fromNumber,
-          body: reply,
-          status: 'sent',
-          customer_id: customer?.id || null,
-          ai_handled: true,
-        })
-      }
+  // DEDUPLICATION: check if we already processed this message ID
+  if (messageId) {
+    const { data: existing } = await db
+      .from('messages')
+      .select('id')
+      .eq('telnyx_message_id', messageId)
+      .limit(1)
+    if (existing && existing.length > 0) {
+      console.log('Duplicate webhook for message', messageId, '- skipping')
+      return
     }
+  }
 
-    return NextResponse.json({ ok: true })
-  } catch (e: unknown) {
-    console.error('SMS webhook error:', e)
-    return NextResponse.json({ error: (e as Error).message }, { status: 500 })
+  // Look up customer by phone
+  const digits = (fromNumber || '').replace(/\D/g, '').slice(-10)
+  const { data: customers } = await db
+    .from('customers')
+    .select('id,name,phone,email')
+    .ilike('phone', `%${digits}%`)
+    .limit(1)
+  const customer = customers?.[0]
+
+  // Store inbound message FIRST (dedup guard — unique telnyx_message_id)
+  const { error: insertErr } = await db.from('messages').insert({
+    direction: 'inbound',
+    channel: 'sms',
+    from_address: fromNumber,
+    to_address: (msg.to as Record<string, unknown>[])?.[0]?.phone_number as string || SHOP_PHONE,
+    body: msgBody,
+    status: 'received',
+    customer_id: customer?.id || null,
+    read: false,
+    telnyx_message_id: messageId,
+    ai_handled: false,
+  })
+
+  // If insert failed (duplicate key), skip — already handled
+  if (insertErr) {
+    console.log('Message insert conflict for', messageId, '- skipping reply')
+    return
+  }
+
+  // Generate and send ONE AI auto-reply
+  const reply = await generateAIReply(msgBody, customer, db)
+  if (reply) {
+    try {
+      await sendSMS(fromNumber, reply)
+      await db.from('messages').insert({
+        direction: 'outbound',
+        channel: 'sms',
+        from_address: SHOP_PHONE,
+        to_address: fromNumber,
+        body: reply,
+        status: 'sent',
+        customer_id: customer?.id || null,
+        ai_handled: true,
+      })
+    } catch (e) {
+      console.error('Auto-reply send failed:', e)
+    }
   }
 }
 
@@ -68,11 +100,9 @@ async function generateAIReply(
   db: ReturnType<typeof getServiceClient>
 ): Promise<string | null> {
   try {
-    // Get shop settings
     const { data: settings } = await db.from('settings').select('*').limit(1).single()
     if (!settings?.ai_api_key) return getDefaultReply(message, customer, settings)
 
-    // Get customer's open jobs if known
     let jobContext = ''
     if (customer?.id) {
       const { data: jobs } = await db
@@ -82,46 +112,30 @@ async function generateAIReply(
         .not('status', 'in', '("Paid","Closed")')
         .limit(3)
       if (jobs?.length) {
-        jobContext = `\nCustomer's open jobs: ${jobs.map(j => `${j.status}: ${j.concern} (${[j.vehicle_year, j.vehicle_make, j.vehicle_model].filter(Boolean).join(' ')})`).join('; ')}`
+        jobContext = `\nCustomer open jobs: ${jobs.map(j => `${j.status}: ${j.concern} (${[j.vehicle_year, j.vehicle_make, j.vehicle_model].filter(Boolean).join(' ')})`).join('; ')}`
       }
     }
 
-    const systemPrompt = `You are the AI receptionist for ${settings.shop_name}, an auto repair shop.
-Address: ${settings.shop_address}
-Phone: ${settings.shop_phone}
-Hours: Monday-Friday 8am-6pm, Saturday 9am-3pm
-Labor rate: $${settings.labor_rate}/hr
-
-${customer ? `Texting with known customer: ${customer.name}${jobContext}` : 'This is an unknown customer.'}
-
-Reply to their text message professionally but warmly. Keep it SHORT (1-3 sentences max — this is SMS).
-If they ask about their car status, give the job status if you have it.
-If they want to schedule, say you'll have someone call them shortly.
-If they have a complex question, say you'll have a technician follow up.
-Never make up prices or promises you can't keep.
-NEVER exceed 160 characters if possible.`
+    const systemPrompt = `You are the AI receptionist for ${settings.shop_name || 'Alpha International Auto Center'}, an auto repair shop.
+Phone: ${settings.shop_phone || '(713) 663-6979'}
+Hours: Mon-Fri 8am-6pm, Sat 9am-3pm
+${customer ? `Customer: ${customer.name}${jobContext}` : 'Unknown customer.'}
+Reply SHORT (1-2 sentences, under 160 chars). Be warm and professional.`
 
     const res = await fetch(`${settings.ai_base_url || 'https://openrouter.ai/api/v1'}/chat/completions`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${settings.ai_api_key}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Authorization': `Bearer ${settings.ai_api_key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: settings.ai_model || 'meta-llama/llama-3.3-70b-instruct:free',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: message }
-        ],
-        max_tokens: 200,
-        temperature: 0.5
+        messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: message }],
+        max_tokens: 100,
+        temperature: 0.4
       })
     })
-
     const data = await res.json()
     return data.choices?.[0]?.message?.content?.trim() || getDefaultReply(message, customer, settings)
   } catch {
-    return null
+    return getDefaultReply(message, customer, null)
   }
 }
 
@@ -130,13 +144,11 @@ function getDefaultReply(message: string, customer: { name?: string } | undefine
   const shopName = (settings?.shop_name as string) || 'Alpha International Auto Center'
   const phone = (settings?.shop_phone as string) || '(713) 663-6979'
   const lc = message.toLowerCase()
-
   if (lc.includes('status') || lc.includes('ready') || lc.includes('car') || lc.includes('vehicle'))
-    return `Hi${name}! We'll check on your vehicle status and call you right back. ${phone} — ${shopName}`
-  if (lc.includes('schedule') || lc.includes('appointment') || lc.includes('bring'))
-    return `Hi${name}! We'd love to schedule you. Call us at ${phone} or reply with a good time. — ${shopName}`
+    return `Hi${name}! We'll check on your vehicle and call you right back. ${phone}`
+  if (lc.includes('schedule') || lc.includes('appointment'))
+    return `Hi${name}! Call us at ${phone} or reply with a good time to schedule. - ${shopName}`
   if (lc.includes('price') || lc.includes('cost') || lc.includes('how much'))
-    return `Hi${name}! Our tech will call you with a quote shortly. ${phone} — ${shopName}`
-
-  return `Hi${name}! Thanks for reaching out to ${shopName}. We'll get back to you shortly. Call us at ${phone} if urgent.`
+    return `Hi${name}! Our tech will call you with a quote shortly. ${phone}`
+  return `Hi${name}! Thanks for contacting ${shopName}. We'll be in touch shortly. Call ${phone} if urgent.`
 }
