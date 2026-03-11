@@ -13,12 +13,23 @@ export async function POST(req: NextRequest) {
     const res = await fetch('https://api.telnyx.com/v2/calls', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer '+apiKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ connection_id: '2789559726713603103', to: e164, from: shopPhone, answering_machine_detection: 'disabled' })
+      body: JSON.stringify({
+        connection_id: '2912878759822493204',
+        to: e164,
+        from: shopPhone,
+        answering_machine_detection: 'disabled'
+      })
     })
     const data = await res.json()
-    if (!res.ok) throw new Error(data.errors?.[0]?.detail || 'Call failed')
+    if (!res.ok) throw new Error(data.errors?.[0]?.detail || JSON.stringify(data.errors) || 'Call failed')
     const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
-    await supabase.from('activities').insert({ type: 'call', direction: 'outbound', phone: e164, customer_name: name || e164, notes: 'Outbound call from web dashboard' })
+    await supabase.from('activities').insert({
+      type: 'call',
+      direction: 'outbound',
+      phone: e164,
+      customer_name: name || e164,
+      notes: 'Outbound call from web dashboard'
+    })
     return NextResponse.json({ ok: true, callId: data.data?.call_control_id })
   } catch (e: unknown) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 })
