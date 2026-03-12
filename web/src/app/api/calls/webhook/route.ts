@@ -113,15 +113,13 @@ export async function POST(req: NextRequest) {
   if (eventType === 'call.answered') {
     const from = (payload?.from as string) || 'unknown'
 
-    // Create record in Supabase
+    // Create record in Supabase (only columns that exist in the table)
     await dbUpsert(callId, {
       task:       `Inbound call from ${from}. Act as AI receptionist for Alpha International Auto Center.`,
       status:     'active',
       started_at: Date.now(),
       greeted:    false,
       processing: true,
-      direction:  'inbound',
-      from_number: from,
     })
 
     // Start transcription
