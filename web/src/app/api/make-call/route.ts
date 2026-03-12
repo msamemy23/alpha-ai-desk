@@ -1,36 +1,70 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+
+const WEBHOOK_URL = 'https://alpha-ai-desk.vercel.app/api/telnyx-voice-webhook'
 
 export async function POST(req: NextRequest) {
   try {
-    const { to, name } = await req.json()
+    const { to, name, task } = await req.json()
     if (!to) return NextResponse.json({ error: 'Missing to' }, { status: 400 })
+
     const apiKey = process.env.TELNYX_API_KEY!
-    const shopPhone = process.env.TELNYX_PHONE_NUMBER || '+17136636979'
+    const shopPhone = '+17136636979'
     if (!apiKey) return NextResponse.json({ error: 'TELNYX_API_KEY not configured' }, { status: 500 })
+
     const digits = to.replace(/\D/g, '')
-    const e164 = digits.startsWith('1') ? '+'+digits : digits.length===10 ? '+1'+digits : '+'+digits
+    const e164 = digits.startsWith('1') ? '+' + digits : digits.length === 10 ? '+1' + digits : '+' + digits
+
+    // Build task — use passed task or default Alpha script
+    const callTask = task || 'Alpha Auto Center oil change call'
+
+    // Encode task in client_state so webhook knows what to do
+    const clientState = Buffer.from(JSON.stringify({ task: callTask, name: name || e164 })).toString('base64')
+
     const res = await fetch('https://api.telnyx.com/v2/calls', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer '+apiKey, 'Content-Type': 'application/json' },
+      headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         connection_id: '2912878759822493204',
         to: e164,
         from: shopPhone,
-        answering_machine_detection: 'disabled'
-      })
+        client_state: clientState,
+        webhook_url: WEBHOOK_URL,
+        webhook_url_method: 'POST',
+        answering_machine_detection: 'disabled',
+      }),
     })
+
     const data = await res.json()
     if (!res.ok) throw new Error(data.errors?.[0]?.detail || JSON.stringify(data.errors) || 'Call failed')
-    const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
-    await supabase.from('activities').insert({
-      type: 'call',
-      direction: 'outbound',
-      phone: e164,
-      customer_name: name || e164,
-      notes: 'Outbound call from web dashboard'
-    })
-    return NextResponse.json({ ok: true, callId: data.data?.call_control_id })
+
+    const callId = data.data?.call_control_id
+
+    // Pre-create the row so it shows up in the UI immediately
+    await fetch(
+      `${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/ai_calls`,
+      {
+        method: 'POST',
+        headers: {
+          apikey: process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
+          Authorization: `Bearer ${process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''}`,
+          'Content-Type': 'application/json',
+          Prefer: 'resolution=merge-duplicates',
+        },
+        body: JSON.stringify({
+          id: callId,
+          task: callTask,
+          status: 'calling',
+          greeted: false,
+          processing: false,
+          is_speaking: false,
+          script_stage: 0,
+          objection_count: 0,
+          started_at: new Date().toISOString(),
+        }),
+      }
+    )
+
+    return NextResponse.json({ ok: true, callId })
   } catch (e: unknown) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 })
   }

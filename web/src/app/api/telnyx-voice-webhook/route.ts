@@ -183,18 +183,22 @@ export async function POST(req: NextRequest) {
   const payload   = body?.data?.payload    as Record<string, unknown>
   const callId    = payload?.call_control_id as string
 
+  // Log every event for debugging
+  console.log(`[webhook] event=${eventType} callId=${callId?.slice(0,30)}`)
+
   // ── call.answered ─────────────────────────────────────────────────────────
   if (eventType === 'call.answered') {
-    let task = 'Have a helpful conversation'
+    let task = 'Alpha Auto Center oil change call'
     const cs = payload?.client_state as string
     if (cs) {
       try { task = JSON.parse(Buffer.from(cs, 'base64').toString()).task || task } catch { /* ok */ }
     }
+    console.log(`[call.answered] callId=${callId?.slice(0,30)} task=${task.slice(0,40)}`)
 
     const stages = parseScript(task)
     const isAlpha = /alpha|oil.?change|auto.?center/i.test(task)
 
-    // INSERT the row — PATCH silently does nothing if row doesn't exist
+    // UPSERT the row — works whether make-call pre-created it or not
     await dbInsert(callId, {
       status: 'active', task,
       greeted: false, processing: false,
@@ -202,6 +206,7 @@ export async function POST(req: NextRequest) {
       objection_count: 0,
       started_at: new Date().toISOString(),
     })
+    console.log(`[call.answered] row upserted for ${callId?.slice(0,30)}`)
 
     // Engine B — accurate, final-only. No interim flooding.
     await telnyxPost(`/calls/${callId}/actions/transcription_start`, {
@@ -410,6 +415,6 @@ RULES:
   }
 
   // version check
-  if (eventType === 'version') return NextResponse.json({ v: 'v4.1-insert-fix' })
+  if (eventType === 'version') return NextResponse.json({ v: 'v4.2-upsert-debug' })
   return NextResponse.json('OK')
 }
