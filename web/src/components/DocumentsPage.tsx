@@ -3,7 +3,23 @@ import { useEffect, useState, useCallback } from 'react'
 import { supabase, calcTotals, formatCurrency } from '@/lib/supabase'
 
 interface Customer { id: string; name: string; phone: string; email: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin: string; vehicle_plate: string; vehicle_mileage: string }
-interface Doc { id: string; type: string; doc_number: string; status: string; doc_date: string; customer_name: string; customer_id: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
+interface Doc { id: string; type: string; doc_number: string; status: string; doc_date: string; customer_name: string; customer_id: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; warranty_months: number | null; warranty_mileage: number | null; warranty_start: string | null; warranty_exclusions: string | null; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
+
+const WARRANTY_PRESETS = [
+  { label: 'No Warranty', months: 0, mileage: 0, exclusions: '' },
+  { label: 'Oil Change — 3 months / 3,000 miles', months: 3, mileage: 3000, exclusions: 'Does not cover pre-existing leaks or engine wear. Warranty void if non-recommended oil or filter is used.' },
+  { label: 'Brakes — 12 months / 12,000 miles', months: 12, mileage: 12000, exclusions: 'Covers brake pads and rotors replaced by Alpha International Auto Center only. Does not cover normal wear, damage from accidents, or modifications.' },
+  { label: 'Engine Repair — 12 months / 12,000 miles', months: 12, mileage: 12000, exclusions: 'Covers parts and labor for the specific repair performed. Does not cover unrelated failures, overheating damage, lack of maintenance, or pre-existing conditions.' },
+  { label: 'Engine Rebuild — 24 months / 24,000 miles', months: 24, mileage: 24000, exclusions: 'Covers internal engine components replaced during rebuild. Does not cover damage from overheating, lack of oil changes, modifications, or pre-existing conditions. Customer must follow recommended maintenance schedule.' },
+  { label: 'Transmission Repair — 12 months / 12,000 miles', months: 12, mileage: 12000, exclusions: 'Covers parts and labor for the specific transmission repair. Does not cover damage from towing abuse, fluid neglect, or pre-existing conditions.' },
+  { label: 'Transmission Rebuild — 24 months / 24,000 miles', months: 24, mileage: 24000, exclusions: 'Covers internal transmission components replaced during rebuild. Customer must follow recommended fluid change intervals.' },
+  { label: 'Electrical / Diagnostics — 6 months / 6,000 miles', months: 6, mileage: 6000, exclusions: 'Covers the specific electrical component or sensor replaced. Does not cover wiring harness damage, water intrusion, or aftermarket accessories.' },
+  { label: 'Suspension — 12 months / 12,000 miles', months: 12, mileage: 12000, exclusions: 'Covers suspension components replaced. Does not cover alignment, tire wear, or damage from road hazards or accidents.' },
+  { label: 'AC / Heating — 6 months / 6,000 miles', months: 6, mileage: 6000, exclusions: 'Covers the specific AC/heating component repaired or replaced. Does not cover refrigerant leaks from unrelated components or compressor failure from pre-existing conditions.' },
+  { label: 'Body & Paint — 6 months (cosmetic)', months: 6, mileage: 0, exclusions: 'Covers paint peeling, fading, or defects from workmanship. Does not cover rock chips, scratches, weather damage, or improper wash/care.' },
+  { label: 'State Inspection — No Warranty', months: 0, mileage: 0, exclusions: '' },
+  { label: 'Custom Warranty', months: 0, mileage: 0, exclusions: '' },
+]
 
 function getStatuses(type: string) {
   if (type === 'Receipt') return ['Draft','Paid']
@@ -212,6 +228,39 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               <div className="col-span-2"><label className="form-label">Notes</label><textarea className="form-textarea" rows={3} value={form.notes||''} onChange={sf('notes')} /></div>
             </div>
 
+            {/* Warranty Section */}
+            <div className="card">
+              <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Warranty</div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2">
+                  <label className="form-label">Warranty Type</label>
+                  <select className="form-select" value={form.warranty_type || 'No Warranty'} onChange={e => {
+                    const preset = WARRANTY_PRESETS.find(p => p.label === e.target.value)
+                    if (preset) {
+                      setForm(f => ({
+                        ...f,
+                        warranty_type: preset.label,
+                        warranty_months: preset.months || null,
+                        warranty_mileage: preset.mileage || null,
+                        warranty_exclusions: preset.exclusions || null,
+                        warranty_start: f.doc_date || new Date().toISOString().split('T')[0],
+                      }))
+                    }
+                  }}>
+                    {WARRANTY_PRESETS.map(p => <option key={p.label} value={p.label}>{p.label}</option>)}
+                  </select>
+                </div>
+                {form.warranty_type && form.warranty_type !== 'No Warranty' && form.warranty_type !== 'State Inspection — No Warranty' && (
+                  <>
+                    <div><label className="form-label">Months</label><input className="form-input" type="number" value={form.warranty_months || ''} onChange={sf('warranty_months')} /></div>
+                    <div><label className="form-label">Mileage</label><input className="form-input" type="number" value={form.warranty_mileage || ''} onChange={sf('warranty_mileage')} /></div>
+                    <div><label className="form-label">Start Date</label><input className="form-input" type="date" value={form.warranty_start || form.doc_date || ''} onChange={sf('warranty_start')} /></div>
+                    <div className="col-span-2"><label className="form-label">Exclusions</label><textarea className="form-textarea" rows={2} value={form.warranty_exclusions || ''} onChange={sf('warranty_exclusions')} /></div>
+                  </>
+                )}
+              </div>
+            </div>
+
             {/* Payment plan display */}
             {form.payment_plan?.enabled && (
               <div className="card border-blue/30">
@@ -249,24 +298,162 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
 
           {/* Preview */}
           <div className="col-span-2">
-            <div className="sticky top-4 bg-white text-gray-900 rounded-xl p-8 shadow-2xl text-sm" style={{fontFamily:'Arial,sans-serif'}}>
-              <h2 className="text-lg font-bold text-center">Alpha International Auto Center</h2>
-              <p className="text-xs text-gray-500 text-center">10710 S Main St, Houston TX 77025 · (713) 663-6979</p>
-              <div className="mt-4 text-center">
-                <span className="inline-block bg-blue-600 text-white text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider">{type}</span>
-                <div className="text-xs text-gray-500 mt-1">#{form.doc_number} · {form.doc_date}</div>
-                <div className="font-semibold mt-1">{form.customer_name || 'No customer'}</div>
-                <div className="text-xs text-gray-500">{[form.vehicle_year,form.vehicle_make,form.vehicle_model].filter(Boolean).join(' ')}</div>
+            <div className="sticky top-4 bg-white text-gray-900 rounded-xl shadow-2xl overflow-hidden" style={{fontFamily:'Arial,Helvetica,sans-serif'}}>
+              {/* Header */}
+              <div style={{background:'#1a1a2e',padding:'24px 28px',textAlign:'center'}}>
+                <h2 style={{margin:0,fontSize:'18px',fontWeight:700,color:'#fff',letterSpacing:'0.5px'}}>Alpha International Auto Center</h2>
+                <p style={{margin:'4px 0 0',fontSize:'11px',color:'#9ca3af'}}>10710 S Main St, Houston TX 77025 &nbsp;·&nbsp; (713) 663-6979</p>
               </div>
-              {totals && (
-                <div className="mt-6 border-t pt-4 space-y-1">
-                  <div className="flex justify-between text-xs"><span>Parts:</span><span>{formatCurrency(totals.partsTotal)}</span></div>
-                  <div className="flex justify-between text-xs"><span>Labor:</span><span>{formatCurrency(totals.laborTotal)}</span></div>
-                  <div className="flex justify-between text-xs"><span>Tax:</span><span>{formatCurrency(totals.taxAmount)}</span></div>
-                  <div className="flex justify-between font-bold text-base border-t mt-2 pt-2"><span>Total:</span><span>{formatCurrency(totals.total)}</span></div>
-                  <div className="flex justify-between font-bold text-red-600"><span>Balance Due:</span><span>{formatCurrency(totals.balanceDue)}</span></div>
+
+              {/* Doc type badge + info */}
+              <div style={{textAlign:'center',padding:'16px 28px 12px'}}>
+                <span style={{display:'inline-block',background:'#e67e22',color:'#fff',padding:'4px 18px',borderRadius:'999px',fontWeight:700,fontSize:'11px',textTransform:'uppercase',letterSpacing:'0.08em'}}>{type}</span>
+                <div style={{fontSize:'12px',color:'#666',marginTop:'6px'}}>#{form.doc_number} &nbsp;·&nbsp; {fmt(form.doc_date || '')}</div>
+              </div>
+
+              {/* Customer / Vehicle info */}
+              <div style={{padding:'0 28px 16px',display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px',fontSize:'12px',borderBottom:'1px solid #eee'}}>
+                <div>
+                  <div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'#999',marginBottom:'2px'}}>Customer</div>
+                  <div style={{fontWeight:600,color:'#111'}}>{form.customer_name || '—'}</div>
+                </div>
+                <div style={{textAlign:'right'}}>
+                  <div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'#999',marginBottom:'2px'}}>Vehicle</div>
+                  <div style={{fontWeight:600,color:'#111'}}>{[form.vehicle_year,form.vehicle_make,form.vehicle_model].filter(Boolean).join(' ') || '—'}</div>
+                  {form.vehicle_mileage && <div style={{color:'#666',fontSize:'11px'}}>{Number(form.vehicle_mileage).toLocaleString()} miles</div>}
+                </div>
+              </div>
+
+              {/* Parts table */}
+              {((form.parts||[]) as Record<string,unknown>[]).length > 0 && (
+                <div style={{padding:'16px 28px 8px'}}>
+                  <div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'#999',marginBottom:'8px'}}>Parts</div>
+                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px'}}>
+                    <thead>
+                      <tr style={{background:'#f8f8f8'}}>
+                        <th style={{padding:'6px 8px',textAlign:'left',fontWeight:600,fontSize:'10px',textTransform:'uppercase',color:'#666'}}>Description</th>
+                        <th style={{padding:'6px 8px',textAlign:'center',fontWeight:600,fontSize:'10px',textTransform:'uppercase',color:'#666',width:'40px'}}>Qty</th>
+                        <th style={{padding:'6px 8px',textAlign:'right',fontWeight:600,fontSize:'10px',textTransform:'uppercase',color:'#666',width:'80px'}}>Unit Price</th>
+                        <th style={{padding:'6px 8px',textAlign:'right',fontWeight:600,fontSize:'10px',textTransform:'uppercase',color:'#666',width:'80px'}}>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {((form.parts||[]) as Record<string,unknown>[]).map((p,i) => (
+                        <tr key={i} style={{background:i%2===1?'#fafafa':'transparent'}}>
+                          <td style={{padding:'6px 8px',color:'#111'}}>{(p.name as string) || '—'}{p.brand ? <span style={{color:'#999',fontSize:'10px',marginLeft:'4px'}}>({p.brand as string})</span> : ''}</td>
+                          <td style={{padding:'6px 8px',textAlign:'center',color:'#666'}}>{(p.qty as number)||1}</td>
+                          <td style={{padding:'6px 8px',textAlign:'right',color:'#666'}}>{formatCurrency(Number(p.unitPrice)||0)}</td>
+                          <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600,color:'#111'}}>{formatCurrency((Number(p.qty)||1)*(Number(p.unitPrice)||0))}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
+
+              {/* Labor table */}
+              {((form.labors||[]) as Record<string,unknown>[]).length > 0 && (
+                <div style={{padding:'12px 28px 8px'}}>
+                  <div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'#999',marginBottom:'8px'}}>Labor</div>
+                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px'}}>
+                    <thead>
+                      <tr style={{background:'#f8f8f8'}}>
+                        <th style={{padding:'6px 8px',textAlign:'left',fontWeight:600,fontSize:'10px',textTransform:'uppercase',color:'#666'}}>Operation</th>
+                        <th style={{padding:'6px 8px',textAlign:'center',fontWeight:600,fontSize:'10px',textTransform:'uppercase',color:'#666',width:'50px'}}>Hours</th>
+                        <th style={{padding:'6px 8px',textAlign:'right',fontWeight:600,fontSize:'10px',textTransform:'uppercase',color:'#666',width:'80px'}}>Rate</th>
+                        <th style={{padding:'6px 8px',textAlign:'right',fontWeight:600,fontSize:'10px',textTransform:'uppercase',color:'#666',width:'80px'}}>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {((form.labors||[]) as Record<string,unknown>[]).map((l,i) => (
+                        <tr key={i} style={{background:i%2===1?'#fafafa':'transparent'}}>
+                          <td style={{padding:'6px 8px',color:'#111'}}>{(l.operation as string) || '—'}</td>
+                          <td style={{padding:'6px 8px',textAlign:'center',color:'#666'}}>{(l.hours as number)||0}</td>
+                          <td style={{padding:'6px 8px',textAlign:'right',color:'#666'}}>{formatCurrency(Number(l.rate)||0)}/hr</td>
+                          <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600,color:'#111'}}>{formatCurrency((Number(l.hours)||0)*(Number(l.rate)||0))}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Totals */}
+              {totals && (
+                <div style={{padding:'16px 28px',background:'#f9f9f9',borderTop:'1px solid #eee'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
+                    <span>Parts Subtotal</span><span>{formatCurrency(totals.partsTotal)}</span>
+                  </div>
+                  <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
+                    <span>Labor Subtotal</span><span>{formatCurrency(totals.laborTotal)}</span>
+                  </div>
+                  {Number(form.shop_supplies) > 0 && (
+                    <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
+                      <span>Shop Supplies</span><span>{formatCurrency(Number(form.shop_supplies))}</span>
+                    </div>
+                  )}
+                  <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
+                    <span>Tax ({form.tax_rate || 8.25}%)</span><span>{formatCurrency(totals.taxAmount)}</span>
+                  </div>
+                  <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0 4px',fontSize:'16px',fontWeight:700,color:'#111',borderTop:'2px solid #111',marginTop:'6px'}}>
+                    <span>TOTAL</span><span>{formatCurrency(totals.total)}</span>
+                  </div>
+                  {Number(form.deposit) > 0 && (
+                    <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
+                      <span>Deposit</span><span>-{formatCurrency(Number(form.deposit))}</span>
+                    </div>
+                  )}
+                  {form.status === 'Paid' ? (
+                    <div style={{textAlign:'center',marginTop:'12px'}}>
+                      <span style={{display:'inline-block',border:'3px solid #16a34a',color:'#16a34a',padding:'4px 24px',borderRadius:'4px',fontWeight:800,fontSize:'18px',letterSpacing:'0.1em',transform:'rotate(-3deg)',opacity:0.85}}>PAID</span>
+                    </div>
+                  ) : (
+                    <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0 0',fontSize:'14px',fontWeight:700,color:'#dc2626'}}>
+                      <span>Balance Due</span><span>{formatCurrency(totals.balanceDue)}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Notes */}
+              {form.notes && (
+                <div style={{padding:'12px 28px',borderTop:'1px solid #eee'}}>
+                  <div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'#999',marginBottom:'4px'}}>Notes</div>
+                  <p style={{fontSize:'11px',color:'#555',margin:0,whiteSpace:'pre-wrap'}}>{form.notes}</p>
+                </div>
+              )}
+
+              {/* Warranty box */}
+              {form.warranty_type && form.warranty_type !== 'No Warranty' && form.warranty_type !== 'State Inspection — No Warranty' && (
+                <div style={{margin:'0 28px 16px',padding:'14px 16px',border:'1.5px solid #3b82f6',borderRadius:'8px',background:'#eff6ff'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:'6px',marginBottom:'8px'}}>
+                    <span style={{fontSize:'16px'}}>🛡️</span>
+                    <span style={{fontSize:'12px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em',color:'#1e40af'}}>Warranty Coverage</span>
+                  </div>
+                  <div style={{fontSize:'12px',fontWeight:600,color:'#111',marginBottom:'4px'}}>{form.warranty_type}</div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'4px',fontSize:'11px',color:'#555'}}>
+                    {Number(form.warranty_months) > 0 && <div>Duration: <strong>{form.warranty_months} months</strong></div>}
+                    {Number(form.warranty_mileage) > 0 && <div>Mileage: <strong>{Number(form.warranty_mileage).toLocaleString()} miles</strong></div>}
+                    {form.warranty_start && <div>Start: <strong>{fmt(form.warranty_start)}</strong></div>}
+                    {form.warranty_start && Number(form.warranty_months) > 0 && (() => {
+                      const start = new Date(form.warranty_start + 'T00:00:00')
+                      start.setMonth(start.getMonth() + Number(form.warranty_months))
+                      return <div>Expires: <strong>{start.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}</strong></div>
+                    })()}
+                  </div>
+                  {form.warranty_exclusions && (
+                    <div style={{marginTop:'8px',fontSize:'10px',color:'#666',lineHeight:'1.4',borderTop:'1px solid #bfdbfe',paddingTop:'8px'}}>
+                      <strong>Exclusions:</strong> {form.warranty_exclusions}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Footer */}
+              <div style={{padding:'12px 28px',textAlign:'center',fontSize:'10px',color:'#999',borderTop:'1px solid #eee',background:'#fafafa'}}>
+                <div>Payment Terms: Due on receipt &nbsp;|&nbsp; Accepted: Cash, Card, Zelle, Cash App</div>
+                <div style={{marginTop:'4px'}}>(713) 663-6979 &nbsp;·&nbsp; alphainternationalauto.com</div>
+              </div>
             </div>
           </div>
         </div>
