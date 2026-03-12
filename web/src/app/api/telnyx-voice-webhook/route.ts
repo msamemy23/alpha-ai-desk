@@ -110,6 +110,10 @@ async function aiChat(messages: Array<{role: string; content: string}>, maxToken
     text = text.replace(/\[[^\]]*\]/g, '').trim()
     // Strip markdown-style headers, bullets, dashes at line start
     text = text.replace(/^[-•*#]+\s*/gm, '').trim()
+    // Strip bare stage directions without brackets: "laughs", "chuckles", "pauses", "warmly", etc.
+    text = text.replace(/\b(laughs|chuckles|pauses|sighs|smiles|warmly|cheerfully|gently|softly|nodding|hangs up|ends call)\b/gi, '').trim()
+    // Collapse multiple spaces left by removals
+    text = text.replace(/  +/g, ' ').trim()
     // If the AI produced a multi-line response with newlines, collapse to first clean line only
     // (prevents the AI from outputting scripts/instructions as speech)
     const lines = text.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0)
@@ -160,16 +164,18 @@ export async function POST(req: NextRequest) {
     // Generate greeting — task is the ONLY thing that matters
     const greeting = await aiChat([{
       role:    'system',
-      content: `You are making a phone call. Your ONLY job is to say the opening line that accomplishes this task: "${task}"
+      content: `You are CALLING someone (outbound call). Say your opening line out loud to accomplish this task: "${task}"
 
-Rules:
-- Plain spoken words only. No markdown, no asterisks, no quotes, no stage directions.
-- 1-2 sentences max.
-- Jump straight into the task — don't give a generic business greeting.
-- If the task is personal (calling a friend, telling someone something), speak like a real person, not a receptionist.
-- If the task involves the shop (business call), mention Alpha International Auto Center.
-- Speak exactly what you would say out loud on the phone.`,
-    }], 80) || `Hey, I'm calling from Alpha International Auto Center — ${task}`
+CRITICAL RULES:
+- YOU are calling THEM. Do NOT say "Thanks for calling" — that is for inbound calls.
+- Do NOT say "How can I help you" — you are the one calling with a purpose.
+- Do NOT introduce yourself as a receptionist.
+- Do NOT use [brackets], (parentheses), stage directions, or markdown.
+- 1-2 short sentences ONLY — exactly what you would say when someone picks up.
+- If personal task: speak naturally like a real person calling a friend.
+- If shop task: mention Alpha International Auto Center naturally.
+- Output ONLY the spoken words. Nothing else.`,
+    }], 80) || `Hey, calling from Alpha International Auto Center — ${task}`
 
     // Save transcript
     await dbUpdate(callId, {
