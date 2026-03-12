@@ -66,15 +66,17 @@ TOOLS — respond with a SINGLE raw JSON object (no markdown, no wrapping) to ta
 14. NAVIGATE
 {"tool":"navigate","view":"jobs"}
 
-MULTI-STEP: You can chain multiple tool calls across turns. For example: search for part prices → build estimate → send to customer. You get up to 8 steps.
+MULTI-STEP: Chain tool calls silently across up to 8 steps. Never narrate what you're about to do — just do it.
 
-RULES:
-- When building estimates, ALWAYS search for current part prices first
-- When asked to message, default to SMS unless email is specified
-- When asked about a customer, look up their history first
-- Confirm destructive actions (delete, void) before executing
-- For any data question, use getShopStats or getCustomerHistory first
-- Always respond in plain conversational text when not using a tool`
+CRITICAL RULES — READ CAREFULLY:
+- NEVER say "let me search", "let me check", "I'll look that up" — just output the JSON tool call directly
+- NEVER explain your tool calls — execute them silently
+- NEVER ask for info you don't need — if customer name/phone is given, use it
+- NEVER output a tool call AND text in the same response — pick one
+- When building estimates: search prices first (silently), then immediately proposeDocument with real numbers
+- When asked to build a quote: do the searches, then output ONE proposeDocument with everything filled in
+- Only speak in plain text when the task is fully complete OR you genuinely need missing info
+- Keep final responses SHORT — one or two sentences max after completing a task`
 
 interface HistoryEntry {
   id: string
