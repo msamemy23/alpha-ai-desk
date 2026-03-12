@@ -258,12 +258,20 @@ export default function AIPage() {
       const data = await res.json()
       const raw = data.choices?.[0]?.message?.content?.trim() || ''
 
-      // Try to parse JSON tool call
+      // Try to parse JSON tool call — handles code blocks, inline JSON, any wrapping
       let parsed: Record<string, unknown> | null = null
       try {
-        const json = raw.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim()
-        parsed = JSON.parse(json)
-      } catch { /* plain text */ }
+        // Strip markdown code blocks first
+        let json = raw.replace(/```json\s*/gi,'').replace(/```\s*/g,'').trim()
+        // Try direct parse
+        try { parsed = JSON.parse(json) } catch {
+          // Try extracting first { ... } block from response
+          const match = json.match(/\{[\s\S]*\}/)
+          if (match) parsed = JSON.parse(match[0])
+        }
+        // Only treat as tool call if it has a "tool" key
+        if (parsed && !parsed.tool) parsed = null
+      } catch { parsed = null }
 
       // ── Web Search ────────────────────────────────────────
       if (parsed?.tool === 'webSearch') {
