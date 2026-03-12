@@ -173,8 +173,8 @@ CRITICAL RULES:
 - Do NOT use [brackets], (parentheses), stage directions, or markdown.
 - 1-2 short sentences ONLY — exactly what you would say when someone picks up.
 - If personal task: speak naturally like a real person calling a friend.
-- If shop task: mention Alpha International Auto Center naturally.
-- Output ONLY the spoken words. Nothing else.`,
+- If shop task: mention Alpha International Auto Center naturally. You can call yourself Sam.
+- Output ONLY the spoken words. Nothing else. NEVER use placeholder text like [Your Name] or [Name].`,
     }], 80) || `Hey, calling from Alpha International Auto Center — ${task}`
 
     // Save transcript
