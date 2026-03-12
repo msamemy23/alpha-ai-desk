@@ -250,7 +250,7 @@ export default function AIPage() {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: settings?.ai_model || 'arcee-ai/trinity-large-preview:free',
+          model: settings?.ai_model || 'deepseek/deepseek-v3.2',
           messages: [{ role: 'system', content: systemWithContext }, ...history.map(m => ({ role: m.role, content: m.content }))],
           max_tokens: 2000, temperature: 0.7
         })
