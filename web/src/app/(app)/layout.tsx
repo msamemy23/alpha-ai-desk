@@ -78,7 +78,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <div className="flex items-center gap-3 px-4 py-5 border-b border-border">
           <div className="w-9 h-9 rounded-lg bg-blue/20 flex items-center justify-center text-lg">🔧</div>
           <div>
-            <div className="text-sm font-bold text-text-primary leading-tight">Alpha AI Desk</div>
+            <div className="text-sm font-bold text-text-primary leading-tight">Alpha Desktop AI</div>
             <div className="text-xs text-text-muted">Auto Center</div>
           </div>
         </div>
