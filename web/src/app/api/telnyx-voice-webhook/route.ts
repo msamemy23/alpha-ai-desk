@@ -46,6 +46,22 @@ async function dbUpdate(callId: string, patch: Record<string, unknown>) {
   )
 }
 
+async function dbInsert(callId: string, data: Record<string, unknown>) {
+  await fetch(
+    `${SUPABASE_URL}/rest/v1/ai_calls`,
+    {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=merge-duplicates',
+      },
+      body: JSON.stringify({ id: callId, ...data }),
+    }
+  )
+}
+
 // ── Telnyx ────────────────────────────────────────────────────────────────────
 async function telnyxPost(path: string, body: Record<string, unknown>) {
   const r = await fetch(`${TELNYX_BASE}${path}`, {
@@ -178,11 +194,13 @@ export async function POST(req: NextRequest) {
     const stages = parseScript(task)
     const isAlpha = /alpha|oil.?change|auto.?center/i.test(task)
 
-    await dbUpdate(callId, {
+    // INSERT the row — PATCH silently does nothing if row doesn't exist
+    await dbInsert(callId, {
       status: 'active', task,
       greeted: false, processing: false,
       is_speaking: false, script_stage: 0,
       objection_count: 0,
+      started_at: new Date().toISOString(),
     })
 
     // Engine B — accurate, final-only. No interim flooding.
