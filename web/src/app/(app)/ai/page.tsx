@@ -10,6 +10,7 @@ interface VoiceCallState {
   summary?: string
   transcript?: Array<{speaker: string; text: string}>
   duration?: number
+  recording_url?: string
 }
 
 interface ChatMessage { role: 'user'|'assistant'; content: string; html?: string; imageUrl?: string }
@@ -115,6 +116,9 @@ export default function AIPage() {
   const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:string;subject?:string}|null>(null)
   const [voiceCall, setVoiceCall] = useState<VoiceCallState | null>(null)
   const voicePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [jumpingIn, setJumpingIn] = useState(false)
+  const [jumpInPhone, setJumpInPhone] = useState('')
+  const [showJumpIn, setShowJumpIn] = useState(false)
   const [sendingSms, setSendingSms] = useState(false)
   const [toast, setToast] = useState('')
   const recognitionRef = useRef<SpeechRecognition | null>(null)
@@ -249,22 +253,21 @@ export default function AIPage() {
         if (d.ok) {
           setVoiceCall(prev => prev ? {
             ...prev,
-            status: d.status,
-            summary: d.summary,
-            transcript: d.transcript,
-            duration: d.duration,
+            status:        d.status,
+            summary:       d.summary,
+            transcript:    d.transcript,
+            duration:      d.duration,
+            recording_url: d.recording_url || prev.recording_url,
           } : null)
           if (d.status === 'ended') {
             if (voicePollRef.current) clearInterval(voicePollRef.current)
             // Add summary to chat
-            if (d.summary) {
-              const summaryMsg: ChatMessage = {
-                role: 'assistant',
-                content: '',
-                html: renderVoiceSummary(d)
-              }
-              setMessages(prev => [...prev, summaryMsg])
+            const summaryMsg: ChatMessage = {
+              role: 'assistant',
+              content: '',
+              html: renderVoiceSummary(d)
             }
+            setMessages(prev => [...prev, summaryMsg])
           }
         }
       } catch { /* ignore poll errors */ }
@@ -556,17 +559,28 @@ export default function AIPage() {
     </div>`
   }
 
-  // Voice call summary card
-  const renderVoiceSummary = (d: {summary?: string; transcript?: Array<{speaker:string;text:string}>; duration?: number; to?: string}): string => {
+  // Voice call summary card (shown after call ends)
+  const renderVoiceSummary = (d: {summary?: string; transcript?: Array<{speaker:string;text:string}>; duration?: number; to?: string; recording_url?: string}): string => {
     const lines = (d.transcript || []).map(t =>
       `<div style="margin:3px 0;font-size:0.8rem"><span style="color:${t.speaker==='ai'?'#60a5fa':'#a3e635'};font-weight:600">${t.speaker==='ai'?'AI':'Person'}:</span> ${t.text}</div>`
     ).join('')
     const dur = d.duration ? `${Math.floor(d.duration/60)}m ${d.duration%60}s` : ''
+    const recordingBlock = d.recording_url
+      ? `<div style="margin-bottom:12px">
+          <div style="font-size:0.75rem;color:#9ca3af;margin-bottom:4px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em">Call Recording</div>
+          <audio controls style="width:100%;border-radius:8px">
+            <source src="${d.recording_url}" type="audio/mpeg">
+            Your browser does not support audio playback.
+          </audio>
+          <a href="${d.recording_url}" download style="display:inline-block;margin-top:4px;font-size:0.75rem;color:#60a5fa">Download MP3</a>
+        </div>`
+      : ''
     return `<div style="border:1px solid #374151;border-radius:12px;padding:16px;background:var(--bg-card,#1a1a2e)">
-      <div style="font-weight:700;margin-bottom:8px;display:flex;justify-content:space-between">
+      <div style="font-weight:700;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
         <span>📞 AI Call Summary</span>
         <span style="font-size:0.75rem;color:#9ca3af">${dur}</span>
       </div>
+      ${recordingBlock}
       ${d.summary ? `<div style="background:#0f172a;border-radius:8px;padding:10px;margin-bottom:10px;font-size:0.85rem;white-space:pre-wrap">${d.summary}</div>` : ''}
       ${lines ? `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:0.8rem;color:#6b7280">Full Transcript</summary><div style="margin-top:8px;padding:8px;background:#111827;border-radius:8px">${lines}</div></details>` : ''}
     </div>`
@@ -789,6 +803,82 @@ export default function AIPage() {
             </div>
           </div>
         ))}
+
+        {/* Live AI Voice Call Panel */}
+        {voiceCall && voiceCall.status !== 'ended' && (
+          <div className="flex justify-start">
+            <div className="max-w-[90%] w-full bg-bg-card border border-green/40 rounded-xl px-4 py-3">
+              <div className="flex items-center gap-2 mb-3">
+                <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${voiceCall.status === 'active' ? 'bg-green animate-pulse' : 'bg-yellow-400 animate-pulse'}`} />
+                <span className="font-bold text-sm">AI Voice Call</span>
+                <span className="ml-auto text-xs text-text-muted">{voiceCall.status === 'active' ? 'Live' : 'Dialing...'}</span>
+              </div>
+              <div className="text-xs text-text-muted mb-1">Calling: {voiceCall.to}</div>
+              <div className="text-sm mb-3">{voiceCall.task}</div>
+
+              {/* Live Transcript */}
+              {voiceCall.transcript && voiceCall.transcript.length > 0 && (
+                <div className="bg-bg-hover rounded-lg p-3 mb-3 max-h-40 overflow-y-auto">
+                  <p className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">Live Transcript</p>
+                  {voiceCall.transcript.map((t, i) => (
+                    <div key={i} className="text-xs mb-1">
+                      <span className={`font-bold ${t.speaker === 'ai' ? 'text-blue-400' : 'text-green-400'}`}>
+                        {t.speaker === 'ai' ? 'AI: ' : 'Person: '}
+                      </span>
+                      {t.text}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Jump In */}
+              {voiceCall.status === 'active' && (
+                <div>
+                  {!showJumpIn ? (
+                    <button
+                      onClick={() => setShowJumpIn(true)}
+                      className="btn btn-secondary btn-sm text-xs"
+                    >
+                      📲 Jump Into Call
+                    </button>
+                  ) : (
+                    <div className="flex gap-2 items-center">
+                      <input
+                        type="tel"
+                        placeholder="Your phone number"
+                        value={jumpInPhone}
+                        onChange={e => setJumpInPhone(e.target.value)}
+                        className="form-input text-sm flex-1"
+                      />
+                      <button
+                        onClick={async () => {
+                          if (!jumpInPhone) return
+                          setJumpingIn(true)
+                          try {
+                            const r = await fetch(`/api/voice-join/${voiceCall.callId}`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ ownerPhone: jumpInPhone }),
+                            })
+                            const d = await r.json()
+                            showToast(d.ok ? `Dialing ${jumpInPhone} to join call...` : `Failed: ${d.error}`)
+                            if (d.ok) setShowJumpIn(false)
+                          } catch { showToast('Jump-in failed') }
+                          setJumpingIn(false)
+                        }}
+                        disabled={jumpingIn}
+                        className="btn btn-primary btn-sm text-xs flex-shrink-0"
+                      >
+                        {jumpingIn ? 'Dialing...' : 'Call Me'}
+                      </button>
+                      <button onClick={() => setShowJumpIn(false)} className="btn btn-secondary btn-sm text-xs">✕</button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* SMS/Email confirmation card */}
         {pendingSms && (
