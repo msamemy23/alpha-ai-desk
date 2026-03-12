@@ -2,6 +2,16 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 
+interface VoiceCallState {
+  callId: string
+  to: string
+  task: string
+  status: 'dialing' | 'active' | 'ended' | 'error'
+  summary?: string
+  transcript?: Array<{speaker: string; text: string}>
+  duration?: number
+}
+
 interface ChatMessage { role: 'user'|'assistant'; content: string; html?: string; imageUrl?: string }
 
 const SYSTEM_PROMPT = `You are Alpha AI — the fully autonomous command center for Alpha International Auto Center.
@@ -61,6 +71,10 @@ PLACE PHONE CALL — use this when user says "call", "dial", "phone", "ring" any
 {"tool":"call","to":"+15551234567","name":"Customer Name"}
 IMPORTANT: "call 2819008141" means PLACE A CALL, not send a text. NEVER use the message tool for a call request.
 
+AI VOICE CALL — use this when user wants AI to CALL someone and TALK to them (handle a conversation, order parts, ask about availability, etc.):
+{"tool":"aiVoiceCall","to":"+15551234567","task":"Call AutoZone and ask about availability and price of lower control arms for a 2007 Honda Civic","callerName":"Alpha International Auto Center"}
+Use aiVoiceCall when: user says 'call [business] and order/ask/find out', 'have AI call', 'AI call', or asks AI to handle a conversation on their behalf.
+
 NAVIGATE:
 {"tool":"navigate","view":"jobs"}
 
@@ -93,6 +107,8 @@ export default function AIPage() {
   const [showHistory, setShowHistory] = useState(false)
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:string;subject?:string}|null>(null)
+  const [voiceCall, setVoiceCall] = useState<VoiceCallState | null>(null)
+  const voicePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [sendingSms, setSendingSms] = useState(false)
   const [toast, setToast] = useState('')
   const recognitionRef = useRef<SpeechRecognition | null>(null)
@@ -178,6 +194,14 @@ export default function AIPage() {
     const userMsg: ChatMessage = { role: 'user', content: text }
     setMessages(prev => [...prev, userMsg])
 
+    // AI voice call detection — "AI call", "call [business] and order/ask", "have AI call"
+    const aiCallMatch = text.match(/(?:ai\s+call|have\s+(?:the\s+)?ai\s+call|call\s+\w+\s+(?:and|to)\s+(?:order|ask|find|check|get|buy|order|inquire))/i)
+    if (aiCallMatch || /\bcall\b.*\b(?:autozone|napa|oreilly|o'reilly|advance|pepboys|store|shop|dealership|dealer|supplier)\b/i.test(text)) {
+      // Let the AI handle it — it will use aiVoiceCall tool
+    } else {
+      // Direct call detection — bypass AI for plain "call XXXXXXXXXX"
+    }
+
     // Direct call detection — bypass AI for explicit call commands
     const callMatch = text.match(/^(?:call|dial|phone|ring)\s+([\d\s\-\(\)\+]+)/i)
     if (callMatch) {
@@ -202,12 +226,44 @@ export default function AIPage() {
       return
     }
 
-    const history = [...messages, userMsg]
-    await agentLoop(history)
+    const history2 = [...messages, userMsg]
+    await agentLoop(history2)
     setLoading(false)
     setStatus('')
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [input, loading, messages, shopContext])
+
+  // Poll for voice call status/summary
+  const startVoicePoll = useCallback((callId: string) => {
+    if (voicePollRef.current) clearInterval(voicePollRef.current)
+    voicePollRef.current = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/call-summary/${callId}`)
+        const d = await r.json()
+        if (d.ok) {
+          setVoiceCall(prev => prev ? {
+            ...prev,
+            status: d.status,
+            summary: d.summary,
+            transcript: d.transcript,
+            duration: d.duration,
+          } : null)
+          if (d.status === 'ended') {
+            if (voicePollRef.current) clearInterval(voicePollRef.current)
+            // Add summary to chat
+            if (d.summary) {
+              const summaryMsg: ChatMessage = {
+                role: 'assistant',
+                content: '',
+                html: renderVoiceSummary(d)
+              }
+              setMessages(prev => [...prev, summaryMsg])
+            }
+          }
+        }
+      } catch { /* ignore poll errors */ }
+    }, 3000)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep sendRef current
   useEffect(() => { sendRef.current = send }, [send])
@@ -363,6 +419,46 @@ export default function AIPage() {
         return
       }
 
+      // AI Voice Call — dials with bidirectional streaming, AI handles conversation
+      if (parsed.tool === 'aiVoiceCall') {
+        setStatus('Initiating AI voice call...')
+        try {
+          const r = await fetch('/api/ai-voice-call', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              to: parsed.to,
+              task: parsed.task || 'Have a helpful conversation',
+              callerName: parsed.callerName || 'Alpha International Auto Center'
+            })
+          })
+          const d = await r.json()
+          if (d.ok) {
+            const callState: VoiceCallState = {
+              callId: d.callId,
+              to: d.to,
+              task: parsed.task as string || '',
+              status: 'dialing',
+            }
+            setVoiceCall(callState)
+            startVoicePoll(d.callId)
+            const assistantMsg: ChatMessage = {
+              role: 'assistant',
+              content: '',
+              html: renderVoiceCallCard(callState)
+            }
+            setMessages(prev => [...prev, assistantMsg])
+          } else {
+            const assistantMsg: ChatMessage = { role: 'assistant', content: `AI voice call failed: ${d.error}` }
+            setMessages(prev => [...prev, assistantMsg])
+          }
+        } catch (err) {
+          const assistantMsg: ChatMessage = { role: 'assistant', content: `Voice call error: ${err instanceof Error ? err.message : 'Unknown'}` }
+          setMessages(prev => [...prev, assistantMsg])
+        }
+        return
+      }
+
       // Place Phone Call — dials immediately via Telnyx
       if (parsed.tool === 'call') {
         setStatus('Calling...')
@@ -430,6 +526,44 @@ export default function AIPage() {
     setMessages(prev => [...prev, finalMsg])
     speak(finalMsg.content)
     saveToHistory([...history, finalMsg])
+  }
+
+  // Voice call status card
+  const renderVoiceCallCard = (state: VoiceCallState): string => {
+    const statusColors: Record<string, string> = {
+      dialing: '#f59e0b',
+      active: '#10b981',
+      ended: '#6b7280',
+      error: '#ef4444',
+    }
+    const color = statusColors[state.status] || '#6b7280'
+    const statusLabel = state.status.charAt(0).toUpperCase() + state.status.slice(1)
+    return `<div class="voice-call-card" style="border:1px solid ${color};border-radius:12px;padding:12px;background:var(--bg-card,#1a1a2e)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="width:10px;height:10px;border-radius:50%;background:${color};display:inline-block${state.status==='active'?' animation:pulse 1s infinite':''};"></span>
+        <strong>AI Voice Call</strong>
+        <span style="color:${color};font-size:0.75rem;margin-left:auto">${statusLabel}</span>
+      </div>
+      <div style="font-size:0.8rem;color:#9ca3af">Calling: ${state.to}</div>
+      <div style="font-size:0.8rem;margin-top:4px">${state.task}</div>
+      <div style="font-size:0.75rem;color:#6b7280;margin-top:6px">AI is handling the conversation. Summary will appear when the call ends.</div>
+    </div>`
+  }
+
+  // Voice call summary card
+  const renderVoiceSummary = (d: {summary?: string; transcript?: Array<{speaker:string;text:string}>; duration?: number; to?: string}): string => {
+    const lines = (d.transcript || []).map(t =>
+      `<div style="margin:3px 0;font-size:0.8rem"><span style="color:${t.speaker==='ai'?'#60a5fa':'#a3e635'};font-weight:600">${t.speaker==='ai'?'AI':'Person'}:</span> ${t.text}</div>`
+    ).join('')
+    const dur = d.duration ? `${Math.floor(d.duration/60)}m ${d.duration%60}s` : ''
+    return `<div style="border:1px solid #374151;border-radius:12px;padding:16px;background:var(--bg-card,#1a1a2e)">
+      <div style="font-weight:700;margin-bottom:8px;display:flex;justify-content:space-between">
+        <span>📞 AI Call Summary</span>
+        <span style="font-size:0.75rem;color:#9ca3af">${dur}</span>
+      </div>
+      ${d.summary ? `<div style="background:#0f172a;border-radius:8px;padding:10px;margin-bottom:10px;font-size:0.85rem;white-space:pre-wrap">${d.summary}</div>` : ''}
+      ${lines ? `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:0.8rem;color:#6b7280">Full Transcript</summary><div style="margin-top:8px;padding:8px;background:#111827;border-radius:8px">${lines}</div></details>` : ''}
+    </div>`
   }
 
   // Send SMS/Email
