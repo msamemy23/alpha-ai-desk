@@ -5,11 +5,14 @@ import { supabase, markMessageRead } from '@/lib/supabase'
 interface Message { id: string; direction: string; channel: string; from_address: string; to_address: string; body: string; status: string; read: boolean; created_at: string; customer?: { name: string; phone: string; email: string }; subject?: string }
 interface Thread { contact: string; messages: Message[]; unread: number; lastMsg: Message }
 interface Activity { id: string; type: string; customer_name?: string; notes?: string; phone?: string; created_at: string }
+interface AiCall { id: string; task: string; status: string; transcript: Array<{speaker: string; text: string}>; summary: string; recording_url: string; started_at: number }
 interface Customer { id: string; name: string; phone: string; email: string }
 
 export default function MessagesPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [activities, setActivities] = useState<Activity[]>([])
+  const [aiCalls, setAiCalls] = useState<AiCall[]>([])
+  const [expandedCall, setExpandedCall] = useState<string | null>(null)
   const [customers, setCustomers] = useState<Customer[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [compose, setCompose] = useState(false)
@@ -25,14 +28,16 @@ export default function MessagesPage() {
   const [summarizing, setSummarizing] = useState<string | null>(null)
 
   const load = useCallback(async () => {
-    const [{ data: msgs }, { data: acts }, { data: custs }] = await Promise.all([
+    const [{ data: msgs }, { data: acts }, { data: custs }, { data: aiCallData }] = await Promise.all([
       supabase.from('messages').select('*, customer:customers(name,phone,email)').order('created_at', { ascending: false }).limit(200),
       supabase.from('activities').select('*').eq('type','call').order('created_at', { ascending: false }).limit(50),
-      supabase.from('customers').select('id,name,phone,email').not('phone','is',null).limit(50)
+      supabase.from('customers').select('id,name,phone,email').not('phone','is',null).limit(50),
+      supabase.from('ai_calls').select('*').order('started_at', { ascending: false }).limit(50)
     ])
     setMessages((msgs || []) as Message[])
     setActivities((acts || []) as Activity[])
     setCustomers((custs || []) as Customer[])
+    setAiCalls((aiCallData || []) as AiCall[])
   }, [])
 
   useEffect(() => {
@@ -230,7 +235,86 @@ export default function MessagesPage() {
               <h2 style={{fontSize:'1rem',fontWeight:700,marginBottom:'12px'}}>Call Log</h2>
               {activities.length === 0 ? <p style={{color:'var(--text-muted)',fontSize:'0.875rem'}}>No call history yet. Make your first call above!</p> : (
                 <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
-                  {activities.map(a => (<div key={a.id} style={{display:'flex',alignItems:'center',gap:'12px',padding:'12px 16px',background:'var(--bg-card)',border:'1px solid var(--border)',borderRadius:'8px'}}><span>Call</span><div style={{flex:1}}><div style={{fontWeight:500,fontSize:'0.875rem'}}>{a.customer_name || a.notes || 'Call'}</div><div style={{fontSize:'0.75rem',color:'var(--text-muted)'}}>{fmt(a.created_at)}</div></div>{a.phone && <button className="btn btn-secondary btn-sm" style={{fontSize:'0.75rem'}} onClick={() => makeCall(a.phone!, a.customer_name)} disabled={calling}>Call Back</button>}</div>))}
+                  {activities.map(a => (<div key={a.id} style={{display:'flex',alignItems:'center',gap:'12px',padding:'12px 16px',background:'var(--bg-card)',border:'1px solid var(--border)',borderRadius:'8px'}}><span>📞</span><div style={{flex:1}}><div style={{fontWeight:500,fontSize:'0.875rem'}}>{a.customer_name || a.notes || 'Call'}</div><div style={{fontSize:'0.75rem',color:'var(--text-muted)'}}>{fmt(a.created_at)}</div></div>{a.phone && <button className="btn btn-secondary btn-sm" style={{fontSize:'0.75rem'}} onClick={() => makeCall(a.phone!, a.customer_name)} disabled={calling}>Call Back</button>}</div>))}
+                </div>
+              )}
+            </div>
+
+            {/* AI Calls Section */}
+            <div>
+              <h2 style={{fontSize:'1rem',fontWeight:700,marginBottom:'12px'}}>🤖 AI Call Recordings</h2>
+              {aiCalls.length === 0 ? (
+                <p style={{color:'var(--text-muted)',fontSize:'0.875rem'}}>No AI calls yet. Use the AI page to make an AI-powered call.</p>
+              ) : (
+                <div style={{display:'flex',flexDirection:'column',gap:'12px'}}>
+                  {aiCalls.map(call => (
+                    <div key={call.id} style={{background:'var(--bg-card)',border:'1px solid var(--border)',borderRadius:'12px',padding:'16px'}}>
+                      {/* Header row */}
+                      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'12px'}}>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontWeight:600,fontSize:'0.875rem',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{call.task || 'AI Call'}</div>
+                          <div style={{fontSize:'0.75rem',color:'var(--text-muted)',marginTop:'2px'}}>
+                            {call.started_at ? new Date(call.started_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : 'Unknown time'}
+                            {' · '}
+                            <span style={{color: call.status==='ended'?'#10b981': call.status==='active'?'#3b82f6':'#f59e0b', fontWeight:600}}>
+                              {call.status}
+                            </span>
+                          </div>
+                        </div>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          style={{fontSize:'0.75rem',flexShrink:0}}
+                          onClick={() => setExpandedCall(expandedCall === call.id ? null : call.id)}
+                        >
+                          {expandedCall === call.id ? 'Hide' : 'Details'}
+                        </button>
+                      </div>
+
+                      {/* Recording player */}
+                      {call.recording_url && (
+                        <div style={{marginTop:'12px'}}>
+                          <div style={{fontSize:'0.75rem',color:'var(--text-muted)',marginBottom:'4px',fontWeight:600}}>Recording</div>
+                          <audio
+                            controls
+                            style={{width:'100%',height:'36px'}}
+                            src={`/api/recording-proxy?url=${encodeURIComponent(call.recording_url)}`}
+                          />
+                        </div>
+                      )}
+
+                      {/* Expanded details */}
+                      {expandedCall === call.id && (
+                        <div style={{marginTop:'12px',display:'flex',flexDirection:'column',gap:'12px'}}>
+                          {/* Summary */}
+                          {call.summary && (
+                            <div style={{background:'var(--bg-hover)',borderRadius:'8px',padding:'12px'}}>
+                              <div style={{fontSize:'0.75rem',fontWeight:700,color:'var(--text-muted)',marginBottom:'6px'}}>SUMMARY</div>
+                              <div style={{fontSize:'0.875rem',lineHeight:'1.6'}}>{call.summary}</div>
+                            </div>
+                          )}
+                          {/* Transcript */}
+                          {call.transcript && call.transcript.length > 0 && (
+                            <div>
+                              <div style={{fontSize:'0.75rem',fontWeight:700,color:'var(--text-muted)',marginBottom:'8px'}}>TRANSCRIPT</div>
+                              <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+                                {call.transcript.map((t, i) => (
+                                  <div key={i} style={{display:'flex',gap:'8px',alignItems:'flex-start'}}>
+                                    <span style={{fontSize:'0.7rem',fontWeight:700,padding:'2px 6px',borderRadius:'4px',flexShrink:0,marginTop:'1px',
+                                      background: t.speaker==='ai'?'#2563eb22':'#10b98122',
+                                      color: t.speaker==='ai'?'#3b82f6':'#10b981'
+                                    }}>
+                                      {t.speaker==='ai'?'AI':'Them'}
+                                    </span>
+                                    <span style={{fontSize:'0.875rem',lineHeight:'1.5'}}>{t.text}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

@@ -119,7 +119,8 @@ export async function POST(req: NextRequest) {
       try { task = JSON.parse(Buffer.from(cs, 'base64').toString()).task || task } catch { /* ok */ }
     }
 
-    await dbUpdate(callId, { status: 'active', task, greeted: false, processing: true })
+    // Start as NOT processing — greeting will unlock itself after speaking
+    await dbUpdate(callId, { status: 'active', task, greeted: false, processing: false })
 
     // Start transcription
     await telnyxPost(`/calls/${callId}/actions/transcription_start`, {
@@ -127,6 +128,9 @@ export async function POST(req: NextRequest) {
       transcription_engine: 'B',
       transcription_tracks: 'inbound',
     })
+
+    // Lock for greeting generation
+    await dbUpdate(callId, { processing: true })
 
     // Generate greeting with AI
     const greeting = await aiChat([{
@@ -140,16 +144,16 @@ Write a SHORT natural greeting (1-2 sentences max). Warm, friendly, sounds like 
     await dbUpdate(callId, {
       status:       'active',
       greeted:      true,
-      processing:   true,
       transcript:   [{ speaker: 'ai', text: greeting }],
       conversation: [{ role: 'assistant', content: greeting }],
     })
 
-    // Speak — if it fails, unlock processing so the call isn't stuck
-    const spokOk = await speak(callId, greeting)
-    if (!spokOk) {
-      await dbUpdate(callId, { processing: false })
-    }
+    // Speak greeting
+    await speak(callId, greeting)
+
+    // CRITICAL: Always unlock after greeting speak — do NOT rely on call.speak.ended
+    // (call.speak.ended is unreliable in Telnyx serverless — often never fires)
+    await dbUpdate(callId, { processing: false })
 
     return NextResponse.json('OK')
   }
@@ -198,11 +202,9 @@ RULES:
       conversation.push({ role: 'assistant', content: reply })
       await dbUpdate(callId, { transcript, conversation })
 
-      const spokOk = await speak(callId, reply)
-      if (!spokOk) {
-        // Speak failed — unlock immediately so next transcription can still go through
-        await dbUpdate(callId, { processing: false })
-      }
+      await speak(callId, reply)
+      // CRITICAL: Always unlock after reply speak — do NOT rely on call.speak.ended
+      await dbUpdate(callId, { processing: false })
     } else {
       await dbUpdate(callId, { processing: false })
     }
@@ -210,8 +212,10 @@ RULES:
     return NextResponse.json('OK')
   }
 
-  // ── call.speak.ended — unlock for next utterance ────────────────────────────
+  // ── call.speak.ended — belt-and-suspenders unlock (already unlocked inline above)
   if (eventType === 'call.speak.ended') {
+    // We already unlock processing inline after every speak() call.
+    // This handler is a safety net in case something went wrong.
     await dbUpdate(callId, { processing: false })
     return NextResponse.json('OK')
   }
