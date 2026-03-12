@@ -171,16 +171,44 @@ Write a SHORT natural greeting (1-2 sentences max). Warm, friendly, sounds like 
     // Lock immediately so concurrent transcription events don't double-fire
     await dbUpdate(callId, { processing: true })
 
-    // Fire background AI processing — do NOT await (returns immediately to Vercel/Telnyx)
-    // This bypasses Vercel's 10s function timeout for the webhook response.
-    // The background route runs independently for up to 60s (Vercel Pro) or as long as needed.
-    fetch(`https://alpha-ai-desk.vercel.app/api/ai-process-turn`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ callId, text, state }),
-    }).catch(err => console.error('[bg fetch error]', err))
+    // Build arrays
+    const transcript: Array<{speaker: string; text: string}> =
+      Array.isArray(state.transcript) ? [...state.transcript]
+      : typeof state.transcript === 'string' ? JSON.parse(state.transcript || '[]')
+      : []
+    const conversation: Array<{role: string; content: string}> =
+      Array.isArray(state.conversation) ? [...state.conversation]
+      : typeof state.conversation === 'string' ? JSON.parse(state.conversation || '[]')
+      : []
 
-    // Return 200 to Telnyx immediately
+    transcript.push({ speaker: 'customer', text })
+    await dbUpdate(callId, { transcript })
+
+    const system = `You are a phone AI agent calling on behalf of Alpha International Auto Center (auto repair shop, Houston TX, 10710 S Main St, (713) 663-6979).
+
+TASK: ${state.task}
+
+RULES:
+- Live phone call. 1-3 sentences MAX. Natural, warm, human.
+- When the task is complete, say: "Thank you so much, have a great day!"
+- Never reveal you are an AI unless directly asked.`
+
+    const messages = [
+      { role: 'system', content: system },
+      ...conversation.slice(-8),
+      { role: 'user',   content: text },
+    ]
+
+    const reply = await aiChat(messages, 100)
+    if (reply) {
+      transcript.push({ speaker: 'ai', text: reply })
+      conversation.push({ role: 'assistant', content: reply })
+      await dbUpdate(callId, { transcript, conversation })
+      await speak(callId, reply)
+    }
+
+    // Always unlock
+    await dbUpdate(callId, { processing: false })
     return NextResponse.json('OK')
   }
 

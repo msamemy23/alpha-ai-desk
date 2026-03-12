@@ -167,13 +167,42 @@ A customer is calling. Write a SHORT, warm, professional greeting (1-2 sentences
     // Lock immediately
     await dbUpdate(callId, { processing: true })
 
-    // Fire background processing — return 200 to Telnyx right away
-    fetch(`https://alpha-ai-desk.vercel.app/api/ai-process-inbound`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ callId, text, state }),
-    }).catch(() => {/* ignore */})
+    // Build arrays
+    const transcript: Array<{speaker: string; text: string}> =
+      Array.isArray(state.transcript) ? [...state.transcript]
+      : typeof state.transcript === 'string' ? JSON.parse(state.transcript || '[]')
+      : []
+    const conversation: Array<{role: string; content: string}> =
+      Array.isArray(state.conversation) ? [...state.conversation]
+      : typeof state.conversation === 'string' ? JSON.parse(state.conversation || '[]')
+      : []
 
+    transcript.push({ speaker: 'customer', text })
+    await dbUpdate(callId, { transcript })
+
+    const system = `You are the AI phone receptionist for Alpha International Auto Center, an auto repair shop at 10710 S Main St, Houston TX 77025. Phone: (713) 663-6979. Hours: Mon-Fri 8am-6pm, Sat 9am-3pm.
+
+RULES:
+- Live phone call. Keep replies SHORT — 1-3 sentences max. Natural and friendly.
+- Help with: appointments, vehicle questions, pricing, directions, hours.
+- If caller wants to leave a message, acknowledge you will pass it along.
+- Speak like a real, warm human receptionist. Never say you are AI unless directly asked.`
+
+    const messages = [
+      { role: 'system', content: system },
+      ...conversation.slice(-8),
+      { role: 'user',   content: text },
+    ]
+
+    const reply = await aiChat(messages, 100)
+    if (reply) {
+      transcript.push({ speaker: 'ai', text: reply })
+      conversation.push({ role: 'assistant', content: reply })
+      await dbUpdate(callId, { transcript, conversation })
+      await speak(callId, reply)
+    }
+
+    await dbUpdate(callId, { processing: false })
     return NextResponse.json('OK')
   }
 
