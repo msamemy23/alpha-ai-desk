@@ -4,79 +4,71 @@ import { supabase } from '@/lib/supabase'
 
 interface ChatMessage { role: 'user'|'assistant'; content: string; html?: string; imageUrl?: string }
 
-const SYSTEM_PROMPT = `You are Alpha AI, the all-powerful AI assistant that CONTROLS every aspect of Alpha International Auto Center's operations.
+const SYSTEM_PROMPT = `You are Alpha AI — the fully autonomous command center for Alpha International Auto Center.
 
 SHOP INFO:
-- Name: Alpha International Auto Center
-- Address: 10710 S Main St, Houston TX 77025
-- Phone: (713) 663-6979
-- Labor Rate: $120/hr · Tax Rate: 8.25%
+- Name: Alpha International Auto Center | 10710 S Main St, Houston TX 77025
+- Phone: (713) 663-6979 | Labor Rate: $120/hr | Tax Rate: 8.25%
 - Payment: Cash, Card, Zelle, Cash App
 - Technicians: Paul (senior), Devin, Luis, Louie
-- Specialties: Domestic & foreign, collision, mechanical, paint & body, insurance claims
 
-YOUR PERSONALITY:
-- You're the shop's right hand — confident, knowledgeable, direct
-- Short clear sentences. No corporate-speak. You know cars inside and out
-- Protective of the shop's money and reputation
-- Proactively flag things that could cost money or lose customers
+PERSONALITY: Confident, direct, knowledgeable. Short sentences. You know cars inside and out.
 
-TOOLS — respond with a SINGLE raw JSON object (no markdown, no wrapping) to take action:
+HOW YOU WORK:
+You receive a task. You think through ALL steps internally. You execute them one at a time using JSON tool calls. When everything is done, you give ONE final plain-text response confirming what was completed.
 
-1. WEB SEARCH
-{"tool":"webSearch","query":"2014 Chevrolet Malibu front brake pads price"}
+You NEVER show your thinking to the user. You NEVER narrate steps. You work silently and report when done.
 
-2. CREATE CUSTOMER
-{"tool":"action","action":"createCustomer","payload":{"name":"John Doe","phone":"555-1234","email":"john@example.com"}}
+TOOL CALLS — respond with ONLY a raw JSON object, no markdown, no code blocks, no extra text:
 
-3. CREATE JOB
+WEB SEARCH:
+{"tool":"webSearch","query":"2007 Honda Civic lower control arm price"}
+
+CREATE CUSTOMER:
+{"tool":"action","action":"createCustomer","payload":{"name":"John Doe","phone":"555-1234","email":""}}
+
+CREATE JOB:
 {"tool":"action","action":"createJob","payload":{"customer_name":"John Doe","vehicle_year":"2019","vehicle_make":"Toyota","vehicle_model":"Camry","status":"Pending","notes":"Front brakes squeaking"}}
 
-4. CREATE INVOICE/ESTIMATE
-{"tool":"action","action":"createInvoice","payload":{"type":"Estimate","customer_name":"John Doe","vehicle_year":"2019","vehicle_make":"Toyota","vehicle_model":"Camry","parts":[{"name":"Brake Pads","qty":1,"unitPrice":45.99,"taxable":true}],"labors":[{"operation":"Front brake replacement","hours":1.5,"rate":120}],"notes":"Front brake job"}}
+CREATE ESTIMATE (visual card):
+{"tool":"proposeDocument","type":"Estimate","customer":"John Doe","vehicle":"2019 Toyota Camry","parts":[{"name":"Brake Pads Front","qty":1,"unitPrice":45.99},{"name":"Rotors Front Pair","qty":1,"unitPrice":89.99}],"labors":[{"operation":"Front brake replacement","hours":1.5,"rate":120}],"notes":"Standard brake job"}
 
-5. UPDATE JOB STATUS
-{"tool":"action","action":"updateJobStatus","payload":{"id":"uuid","status":"In Progress"}}
+CREATE INVOICE:
+{"tool":"action","action":"createInvoice","payload":{"type":"Invoice","customer_name":"John Doe","vehicle_year":"2019","vehicle_make":"Toyota","vehicle_model":"Camry","parts":[{"name":"Brake Pads","qty":1,"unitPrice":45.99,"taxable":true}],"labors":[{"operation":"Brake replacement","hours":1.5,"rate":120}],"notes":""}}
 
-6. UPDATE CUSTOMER
-{"tool":"action","action":"updateCustomer","payload":{"id":"uuid","phone":"555-9999"}}
+UPDATE JOB STATUS:
+{"tool":"action","action":"updateJobStatus","payload":{"customer_name":"John Doe","status":"Ready for Pickup"}}
 
-7. VOID A DOCUMENT
-{"tool":"action","action":"voidDocument","payload":{"id":"uuid"}}
+UPDATE CUSTOMER:
+{"tool":"action","action":"updateCustomer","payload":{"name":"John Doe","phone":"555-9999"}}
 
-8. DELETE A RECORD
-{"tool":"action","action":"deleteRecord","payload":{"table":"jobs","id":"uuid"}}
+VOID DOCUMENT:
+{"tool":"action","action":"voidDocument","payload":{"doc_number":"EST-2025-0001"}}
 
-9. SCHEDULE FOLLOW-UP (sms, email, or call reminder)
-{"tool":"action","action":"scheduleFollowUp","payload":{"customer_name":"John Doe","channel":"sms","scheduled_for":"2025-01-15T10:00:00Z","message_body":"Hi John, just checking in on your Camry..."}}
+SCHEDULE FOLLOW-UP:
+{"tool":"action","action":"scheduleFollowUp","payload":{"customer_name":"John Doe","channel":"sms","scheduled_for":"2025-01-15T10:00:00Z","message_body":"Hi John, just checking in..."}}
 
-10. GET CUSTOMER HISTORY (jobs, invoices, messages)
+GET CUSTOMER HISTORY:
 {"tool":"action","action":"getCustomerHistory","payload":{"customer_name":"John Doe"}}
 
-11. GET SHOP STATS
+GET SHOP STATS:
 {"tool":"action","action":"getShopStats","payload":{}}
 
-12. PROPOSE ESTIMATE (visual card with save button)
-{"tool":"proposeDocument","type":"Estimate","customer":"John Doe","vehicle":"2019 Toyota Camry","parts":[{"name":"Brake Pads","qty":1,"unitPrice":45.99}],"labors":[{"operation":"Brake replacement","hours":1.5,"rate":120}],"notes":"Front brake job"}
+SEND MESSAGE (shows confirmation card):
+{"tool":"message","to":"+15551234567","channel":"sms","body":"Hi, your vehicle is ready!"}
 
-13. SEND MESSAGE (with confirmation)
-{"tool":"message","to":"+15551234567","channel":"sms","body":"Hi, your vehicle is ready for pickup!"}
-{"tool":"message","to":"john@example.com","channel":"email","subject":"Vehicle Ready","body":"Your vehicle is ready for pickup."}
-
-14. NAVIGATE
+NAVIGATE:
 {"tool":"navigate","view":"jobs"}
 
-MULTI-STEP: Chain tool calls silently across up to 8 steps. Never narrate what you're about to do — just do it.
-
-CRITICAL RULES — READ CAREFULLY:
-- NEVER say "let me search", "let me check", "I'll look that up" — just output the JSON tool call directly
-- NEVER explain your tool calls — execute them silently
-- NEVER ask for info you don't need — if customer name/phone is given, use it
-- NEVER output a tool call AND text in the same response — pick one
-- When building estimates: search prices first (silently), then immediately proposeDocument with real numbers
-- When asked to build a quote: do the searches, then output ONE proposeDocument with everything filled in
-- Only speak in plain text when the task is fully complete OR you genuinely need missing info
-- Keep final responses SHORT — one or two sentences max after completing a task`
+RULES:
+1. Think through the full plan before starting
+2. Execute each step silently — ONE tool call per turn, no explanation text
+3. NEVER output text AND a tool call together — pick one
+4. For quotes: search part prices first (silently), then proposeDocument with real numbers
+5. For new customers: createCustomer first, then continue
+6. When ALL steps done: respond in plain text — 1-3 sentences max confirming what was completed
+7. NEVER ask for info already in the conversation
+8. Confirm destructive actions (void, delete) before executing`
 
 interface HistoryEntry {
   id: string
@@ -245,51 +237,77 @@ export default function AIPage() {
       setMessages(prev => [...prev, { role: 'assistant', content: 'No AI API key configured. Go to Settings > AI to add your OpenRouter key.' }])
       return
     }
+
     const accumulated: string[] = []
-    for (let step = 0; step < 8; step++) {
-      const systemWithContext = SYSTEM_PROMPT + (shopContext ? `\n\nCurrent shop context:\n${shopContext}` : '') + (accumulated.length ? `\n\nResearch & action results so far:\n${accumulated.join('\n')}` : '')
+    const agentMessages: {role: string; content: string}[] = history.map(m => ({ role: m.role, content: m.content }))
+
+    for (let step = 0; step < 10; step++) {
+      const systemWithContext = SYSTEM_PROMPT +
+        (shopContext ? `\n\nLive shop context:\n${shopContext}` : '') +
+        (accumulated.length ? `\n\nCompleted steps so far:\n${accumulated.join('\n')}` : '')
+
+      setStatus(step === 0 ? 'Thinking...' : 'Working...')
+
       const res = await fetch(`${settings?.ai_base_url || 'https://openrouter.ai/api/v1'}/chat/completions`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: settings?.ai_model || 'deepseek/deepseek-v3.2',
-          messages: [{ role: 'system', content: systemWithContext }, ...history.map(m => ({ role: m.role, content: m.content }))],
-          max_tokens: 2000, temperature: 0.7
+          messages: [{ role: 'system', content: systemWithContext }, ...agentMessages],
+          max_tokens: 2000,
+          temperature: 0.3,
         })
       })
+
       const data = await res.json()
+      if (data.error) {
+        const errMsg: ChatMessage = { role: 'assistant', content: `Error: ${data.error.message || JSON.stringify(data.error)}` }
+        setMessages(prev => [...prev, errMsg])
+        return
+      }
+
       const raw = data.choices?.[0]?.message?.content?.trim() || ''
 
-      // Try to parse JSON tool call — handles code blocks, inline JSON, any wrapping
+      // Parse JSON tool call — strip code blocks, extract JSON
       let parsed: Record<string, unknown> | null = null
       try {
-        // Strip markdown code blocks first
-        let json = raw.replace(/```json\s*/gi,'').replace(/```\s*/g,'').trim()
-        // Try direct parse
-        try { parsed = JSON.parse(json) } catch {
-          // Try extracting first { ... } block from response
-          const match = json.match(/\{[\s\S]*\}/)
-          if (match) parsed = JSON.parse(match[0])
+        const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
+        try { parsed = JSON.parse(cleaned) } catch {
+          const match = cleaned.match(/\{[\s\S]*"tool"[\s\S]*\}/)
+          if (match) { try { parsed = JSON.parse(match[0]) } catch { parsed = null } }
         }
-        // Only treat as tool call if it has a "tool" key
         if (parsed && !parsed.tool) parsed = null
       } catch { parsed = null }
 
-      // ── Web Search ────────────────────────────────────────
-      if (parsed?.tool === 'webSearch') {
-        setStatus(`Searching: "${parsed.query}"`)
+      // No tool call = final answer — show to user
+      if (!parsed) {
+        const assistantMsg: ChatMessage = { role: 'assistant', content: raw }
+        setMessages(prev => [...prev, assistantMsg])
+        speak(raw)
+        saveToHistory([...history, assistantMsg])
+        return
+      }
+
+      // Web Search — execute silently, feed result back to AI
+      if (parsed.tool === 'webSearch') {
+        setStatus('Searching...')
+        let searchResult = 'No results'
         try {
           const r = await fetch(`/api/ai-search?q=${encodeURIComponent(parsed.query as string)}`)
           const d = await r.json()
-          accumulated.push(`Search "${parsed.query}":\n${d.results?.map((r: Record<string,string>) => `- ${r.title}: ${r.snippet}`).join('\n') || 'No results'}`)
-        } catch { accumulated.push(`Search "${parsed.query}": No results`) }
+          searchResult = d.results?.slice(0, 6).map((r: Record<string,string>) => `- ${r.title}: ${r.snippet}`).join('\n') || 'No results'
+        } catch { searchResult = 'Search failed' }
+        accumulated.push(`[Search: "${parsed.query}"]\n${searchResult}`)
+        agentMessages.push({ role: 'assistant', content: raw })
+        agentMessages.push({ role: 'user', content: `Search results for "${parsed.query}":\n${searchResult}\n\nContinue to the next step silently.` })
         continue
       }
 
-      // ── AI Action (create, update, delete, stats, history) ─
-      if (parsed?.tool === 'action') {
+      // DB Action — execute silently, feed result back to AI
+      if (parsed.tool === 'action') {
         const actionName = parsed.action as string
-        setStatus(`Executing: ${actionName}...`)
+        setStatus('Processing...')
+        let actionResult = ''
         try {
           const r = await fetch('/api/ai-action', {
             method: 'POST',
@@ -297,34 +315,33 @@ export default function AIPage() {
             body: JSON.stringify({ action: actionName, payload: parsed.payload || {} })
           })
           const d = await r.json()
-          if (d.ok) {
-            accumulated.push(`Action ${actionName} succeeded: ${JSON.stringify(d.data).slice(0, 500)}`)
-          } else {
-            accumulated.push(`Action ${actionName} failed: ${d.error}`)
-          }
+          actionResult = d.ok ? `Success: ${JSON.stringify(d.data).slice(0, 300)}` : `Failed: ${d.error}`
         } catch (err) {
-          accumulated.push(`Action ${actionName} error: ${err instanceof Error ? err.message : 'Unknown'}`)
+          actionResult = `Error: ${err instanceof Error ? err.message : 'Unknown'}`
         }
+        accumulated.push(`[${actionName}]: ${actionResult}`)
+        agentMessages.push({ role: 'assistant', content: raw })
+        agentMessages.push({ role: 'user', content: `Action "${actionName}" result: ${actionResult}\n\nContinue to the next step silently.` })
         continue
       }
 
-      // ── Propose Document (visual card) ────────────────────
-      if (parsed?.tool === 'proposeDocument') {
+      // Propose Document — show visual estimate card
+      if (parsed.tool === 'proposeDocument') {
         const proposalHtml = renderProposal(parsed)
-        const assistantMsg: ChatMessage = { role: 'assistant', content: raw, html: proposalHtml }
+        const assistantMsg: ChatMessage = { role: 'assistant', content: '', html: proposalHtml }
         setMessages(prev => [...prev, assistantMsg])
         saveToHistory([...history, assistantMsg])
         return
       }
 
-      // ── Navigate ──────────────────────────────────────────
-      if (parsed?.tool === 'navigate') {
-        window.location.href = `/${parsed.view}`
+      // Navigate
+      if (parsed.tool === 'navigate') {
+        window.location.href = `/${parsed.view as string}`
         return
       }
 
-      // ── Message (SMS/Email with confirmation) ─────────────
-      if (parsed?.tool === 'message') {
+      // Message — show draft confirmation card
+      if (parsed.tool === 'message') {
         setPendingSms({
           to: parsed.to as string,
           body: parsed.body as string,
@@ -332,21 +349,30 @@ export default function AIPage() {
           subject: parsed.subject as string | undefined,
         })
         const channel = (parsed.channel as string) || 'sms'
-        const assistantMsg: ChatMessage = { role: 'assistant', content: `I've drafted a ${channel === 'email' ? 'email' : 'text message'}. Review it below and hit Send to deliver it.` }
+        const assistantMsg: ChatMessage = {
+          role: 'assistant',
+          content: `Draft ${channel === 'email' ? 'email' : 'text'} ready — review below and hit Send.`
+        }
         setMessages(prev => [...prev, assistantMsg])
         saveToHistory([...history, assistantMsg])
         return
       }
 
-      // ── Plain text response (final) ───────────────────────
+      // Unknown — treat as final response
       const assistantMsg: ChatMessage = { role: 'assistant', content: raw }
       setMessages(prev => [...prev, assistantMsg])
       speak(raw)
       saveToHistory([...history, assistantMsg])
       return
     }
-    // Exhausted all steps — summarize accumulated results
-    const finalMsg: ChatMessage = { role: 'assistant', content: accumulated.length ? `Here's what I found and did:\n\n${accumulated.join('\n\n')}` : 'I completed my research but had trouble forming a response. Please try again.' }
+
+    // Max steps reached
+    const finalMsg: ChatMessage = {
+      role: 'assistant',
+      content: accumulated.length
+        ? `Done. Completed ${accumulated.length} steps.`
+        : 'Had trouble completing that. Please try again.'
+    }
     setMessages(prev => [...prev, finalMsg])
     speak(finalMsg.content)
     saveToHistory([...history, finalMsg])
