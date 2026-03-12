@@ -36,10 +36,10 @@ export default function ShopBoardPage() {
   })
 
   return (
-    <div className="p-6 flex flex-col" style={{ height: 'calc(100vh - 0px)' }}>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-text-primary">Shop Board</h1>
-        <div className="flex gap-2">
+    <div className="p-4 sm:p-6 lg:p-8 flex flex-col" style={{ height: 'calc(100vh - 0px)' }}>
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-6">
+        <h1 className="text-xl sm:text-2xl font-bold text-text-primary">Shop Board</h1>
+        <div className="flex gap-2 flex-wrap">
           {(['active', 'all', 'today'] as const).map(f => (
             <button key={f} onClick={() => setFilter(f)}
               className={`px-3 py-1.5 rounded-lg text-sm font-medium capitalize transition-colors ${filter === f ? 'bg-blue text-white' : 'bg-bg-card text-text-muted hover:text-text-primary border border-border'}`}>
@@ -52,7 +52,7 @@ export default function ShopBoardPage() {
         {TECHS.map(tech => {
           const techJobs = filtered.filter(j => tech === 'Unassigned' ? !j.tech : j.tech === tech)
           return (
-            <div key={tech} className="flex-shrink-0 w-64 flex flex-col">
+            <div key={tech} className="flex-shrink-0 w-[240px] sm:w-64 flex flex-col">
               <div className="flex items-center justify-between px-3 py-2 bg-bg-card border border-border rounded-t-lg">
                 <span className="font-semibold text-sm">{tech}</span>
                 <span className="bg-bg-base text-text-muted text-xs font-bold px-2 py-0.5 rounded-full">{techJobs.length}</span>

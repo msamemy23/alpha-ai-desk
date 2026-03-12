@@ -179,16 +179,16 @@ export default function DashboardPage() {
   const isSlowDay = stats!.openJobs < 3
 
   return (
-    <div className="p-8 space-y-8 animate-fade-in">
+    <div className="p-4 sm:p-6 lg:p-8 space-y-6 lg:space-y-8 animate-fade-in">
       <div>
-        <h1 className="text-2xl font-bold">Dashboard</h1>
+        <h1 className="text-xl sm:text-2xl font-bold">Dashboard</h1>
         <p className="text-text-muted text-sm mt-1">Alpha International Auto Center</p>
       </div>
 
       {/* Feature 2: Morning Briefing */}
       {!briefingDismissed && (
         <div className="card border-blue/30 bg-blue/5">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-3">
             <div className="flex items-center gap-2">
               <span className="text-xl">☀️</span>
               <h2 className="text-sm font-bold uppercase tracking-wider text-blue">Good Morning — Daily Briefing</h2>
@@ -237,7 +237,7 @@ export default function DashboardPage() {
         ].map(s => (
           <div key={s.label} className="card">
             <div className="text-2xl mb-2">{s.icon}</div>
-            <div className={`text-2xl font-bold ${s.color}`}>{s.value}</div>
+            <div className={`text-lg sm:text-2xl font-bold ${s.color}`}>{s.value}</div>
             <div className="text-xs text-text-muted mt-1">{s.label}</div>
           </div>
         ))}
@@ -272,7 +272,7 @@ export default function DashboardPage() {
       {/* Feature 11: AI Insights + Feature 19: Slow Day Outreach */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="card">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-2">
             <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary">🧠 AI Business Insights</h2>
             <button className="btn btn-primary btn-sm" onClick={generateInsight} disabled={insightLoading}>
               {insightLoading ? 'Analyzing…' : 'Generate Insight'}

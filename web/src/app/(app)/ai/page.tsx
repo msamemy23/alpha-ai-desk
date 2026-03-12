@@ -733,12 +733,12 @@ export default function AIPage() {
 
   return (
     <div className="flex flex-col h-screen">
-      <div className="p-6 border-b border-border flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold">Alpha AI</h1>
-          <p className="text-sm text-text-muted mt-0.5">Full shop control · Create, update, search, message — all from here</p>
+      <div className="p-3 sm:p-6 border-b border-border flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <h1 className="text-lg sm:text-xl font-bold">Alpha AI</h1>
+          <p className="text-xs sm:text-sm text-text-muted mt-0.5 truncate">Full shop control · Create, update, search, message — all from here</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 shrink-0">
           {/* Feature 5: History button */}
           <button onClick={() => setShowHistory(!showHistory)} className="btn btn-secondary btn-sm" title="Conversation History">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -781,7 +781,7 @@ export default function AIPage() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-6 space-y-4">
+      <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-4">
         {messages.length === 1 && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-2xl">
             <p className="text-xs text-text-muted font-semibold uppercase tracking-wider mb-1 col-span-full">Try asking:</p>
@@ -795,7 +795,7 @@ export default function AIPage() {
         )}
         {messages.map((m, i) => (
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-[80%] rounded-xl px-4 py-3 text-sm ${m.role === 'user' ? 'bg-blue text-white' : 'bg-bg-card border border-border'}`}>
+            <div className={`max-w-[90%] sm:max-w-[80%] rounded-xl px-4 py-3 text-sm ${m.role === 'user' ? 'bg-blue text-white' : 'bg-bg-card border border-border'}`}>
               {/* Feature 12: Image preview */}
               {m.imageUrl && (
                 <div className="mb-2">

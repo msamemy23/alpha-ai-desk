@@ -262,14 +262,14 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   }
 
   return (
-    <div className="p-8 animate-fade-in">
+    <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
       {editing !== null ? (
         /* Doc Form */
-        <div className="grid grid-cols-5 gap-6">
-          <div className="col-span-3 space-y-4">
-            <div className="flex items-center justify-between">
-              <h1 className="text-2xl font-bold">{editing === 'new' ? `New ${type}` : `Edit ${type}`}</h1>
-              <div className="flex gap-2">
+        <div className="flex flex-col lg:grid lg:grid-cols-5 gap-6">
+          <div className="lg:col-span-3 space-y-4">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <h1 className="text-xl sm:text-2xl font-bold">{editing === 'new' ? `New ${type}` : `Edit ${type}`}</h1>
+              <div className="flex flex-wrap gap-2">
                 <button className="btn btn-secondary" onClick={()=>{setEditing(null);setForm({})}}>← Back</button>
                 <button className="btn btn-primary" onClick={save}>Save {type}</button>
                 {editing !== 'new' && <button className="btn btn-danger" onClick={del}>Delete</button>}
@@ -279,7 +279,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
             </div>
 
             {/* Header fields */}
-            <div className="card grid grid-cols-3 gap-4">
+            <div className="card grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div><label className="form-label">Doc #</label><input className="form-input opacity-60" readOnly value={form.doc_number||''} /></div>
               <div><label className="form-label">Status</label>
                 <select className="form-select" value={form.status||'Draft'} onChange={sf('status')}>
@@ -287,7 +287,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                 </select>
               </div>
               <div><label className="form-label">Date</label><input className="form-input" type="date" value={form.doc_date||''} onChange={sf('doc_date')} /></div>
-              <div className="col-span-2"><label className="form-label">Customer</label>
+              <div className="sm:col-span-2"><label className="form-label">Customer</label>
                 <select className="form-select" value={(form as Record<string,string>).customer_id||''} onChange={e => selectCustomer(e.target.value)}>
                   <option value="">Select customer...</option>
                   {customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
@@ -297,17 +297,17 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
             </div>
 
             {/* Vehicle */}
-            <div className="card grid grid-cols-3 gap-4">
-              <div className="col-span-3 text-xs font-bold uppercase tracking-wider text-text-secondary">Vehicle</div>
+            <div className="card grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="sm:col-span-3 text-xs font-bold uppercase tracking-wider text-text-secondary">Vehicle</div>
               {['vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage'].map(k => (
                 <div key={k}><label className="form-label">{k.split('_').pop()!.charAt(0).toUpperCase()+k.split('_').pop()!.slice(1)}</label><input className="form-input" value={(form as Record<string,string>)[k]||''} onChange={sf(k)} /></div>
               ))}
             </div>
 
             {/* Parts */}
-            <div className="card">
+            <div className="card overflow-x-auto">
               <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Parts</div>
-              <div className="space-y-2">
+              <div className="space-y-2 min-w-[600px]">
                 {((form.parts||[]) as Record<string,unknown>[]).map((p,i) => (
                   <div key={i} className="grid grid-cols-12 gap-2 items-center">
                     <input className="form-input col-span-4" placeholder="Part name" value={p.name as string||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],name:e.target.value}; setForm(f=>({...f,parts:p2})) }} />
@@ -324,9 +324,9 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
             </div>
 
             {/* Labor */}
-            <div className="card">
+            <div className="card overflow-x-auto">
               <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Labor</div>
-              <div className="space-y-2">
+              <div className="space-y-2 min-w-[600px]">
                 {((form.labors||[]) as Record<string,unknown>[]).map((l,i) => (
                   <div key={i} className="grid grid-cols-12 gap-2 items-center">
                     <input className="form-input col-span-5" placeholder="Operation" value={l.operation as string||''} onChange={e => { const l2=[...((form.labors||[]) as Record<string,unknown>[])]; l2[i]={...l2[i],operation:e.target.value}; setForm(f=>({...f,labors:l2})) }} />
@@ -343,17 +343,17 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               </div>
             </div>
 
-            <div className="card grid grid-cols-2 gap-4">
+            <div className="card grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div><label className="form-label">Shop Supplies $</label><input className="form-input" type="number" step="0.01" value={form.shop_supplies||0} onChange={sf('shop_supplies')} /></div>
               <div><label className="form-label">Deposit $</label><input className="form-input" type="number" step="0.01" value={form.deposit||0} onChange={sf('deposit')} /></div>
-              <div className="col-span-2"><label className="form-label">Notes</label><textarea className="form-textarea" rows={3} value={form.notes||''} onChange={sf('notes')} /></div>
+              <div className="sm:col-span-2"><label className="form-label">Notes</label><textarea className="form-textarea" rows={3} value={form.notes||''} onChange={sf('notes')} /></div>
             </div>
 
             {/* Warranty Section */}
             <div className="card">
               <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Warranty</div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="col-span-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="sm:col-span-2">
                   <label className="form-label">Warranty Type</label>
                   <select className="form-select" value={form.warranty_type || 'No Warranty'} onChange={e => {
                     const preset = WARRANTY_PRESETS.find(p => p.label === e.target.value)
@@ -376,7 +376,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                     <div><label className="form-label">Months</label><input className="form-input" type="number" value={form.warranty_months || ''} onChange={sf('warranty_months')} /></div>
                     <div><label className="form-label">Mileage</label><input className="form-input" type="number" value={form.warranty_mileage || ''} onChange={sf('warranty_mileage')} /></div>
                     <div><label className="form-label">Start Date</label><input className="form-input" type="date" value={form.warranty_start || form.doc_date || ''} onChange={sf('warranty_start')} /></div>
-                    <div className="col-span-2"><label className="form-label">Exclusions</label><textarea className="form-textarea" rows={2} value={form.warranty_exclusions || ''} onChange={sf('warranty_exclusions')} /></div>
+                    <div className="sm:col-span-2"><label className="form-label">Exclusions</label><textarea className="form-textarea" rows={2} value={form.warranty_exclusions || ''} onChange={sf('warranty_exclusions')} /></div>
                   </>
                 )}
               </div>
@@ -418,7 +418,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
           </div>
 
           {/* Preview */}
-          <div className="col-span-2">
+          <div className="lg:col-span-2">
             <div className="sticky top-4 bg-white text-gray-900 rounded-xl shadow-2xl overflow-hidden" style={{fontFamily:'Arial,Helvetica,sans-serif'}}>
               {/* Header */}
               <div style={{background:'#1a1a2e',padding:'24px 28px',textAlign:'center'}}>
@@ -584,15 +584,15 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
       ) : (
         /* Doc List */
         <div>
-          <div className="flex items-center justify-between mb-6">
-            <h1 className="text-2xl font-bold">{type}s</h1>
-            <div className="flex gap-3">
-              <input className="form-input w-56" placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
-              <button className="btn btn-primary" onClick={openNew}>+ New {type}</button>
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-6">
+            <h1 className="text-xl sm:text-2xl font-bold">{type}s</h1>
+            <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+              <input className="form-input w-full sm:w-56" placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
+              <button className="btn btn-primary whitespace-nowrap" onClick={openNew}>+ New {type}</button>
             </div>
           </div>
-          <div className="card p-0 overflow-hidden">
-            <table className="data-table w-full">
+          <div className="card p-0 overflow-x-auto">
+            <table className="data-table w-full min-w-[640px]">
               <thead><tr><th>Doc #</th><th>Customer</th><th>Date</th><th>Status</th><th>Total</th><th>Actions</th></tr></thead>
               <tbody>
                 {filtered.length === 0 && <tr><td colSpan={6} className="text-center text-text-muted py-8">No {type.toLowerCase()}s yet</td></tr>}

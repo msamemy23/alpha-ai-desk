@@ -36,13 +36,13 @@ export default function VehiclesPage() {
   })
 
   return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-4 sm:p-6 lg:p-8">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-text-primary">Vehicles Registry</h1>
+          <h1 className="text-xl sm:text-2xl font-bold text-text-primary">Vehicles Registry</h1>
           <p className="text-text-muted text-sm mt-0.5">{all.length} vehicle{all.length !== 1 ? 's' : ''} on file</p>
         </div>
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search vehicles..." className="input w-64" />
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search vehicles..." className="form-input w-full sm:w-64" />
       </div>
       <div className="card overflow-x-auto">
         {all.length === 0 ? (
@@ -52,7 +52,7 @@ export default function VehiclesPage() {
             <p className="text-sm">{search ? 'Try a different search' : 'Vehicles appear here when you add customers or jobs with vehicle info'}</p>
           </div>
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full text-sm min-w-[640px]">
             <thead>
               <tr className="border-b border-border">
                 {['Year','Make','Model','VIN','Plate','Mileage','Owner'].map(h => (

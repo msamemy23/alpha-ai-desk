@@ -88,16 +88,16 @@ export default function SettingsPage() {
   ] as const
 
   return (
-    <div className="p-8 animate-fade-in max-w-3xl">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">Settings</h1>
+    <div className="p-4 sm:p-6 lg:p-8 animate-fade-in max-w-3xl">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-6">
+        <h1 className="text-xl sm:text-2xl font-bold">Settings</h1>
         <button className="btn btn-primary" onClick={save} disabled={saving}>
           {saving ? 'Saving…' : saved ? '✓ Saved!' : 'Save Changes'}
         </button>
       </div>
 
       {/* Tab bar */}
-      <div className="flex gap-1 mb-6 bg-bg-card border border-border rounded-lg p-1 w-fit">
+      <div className="flex gap-1 mb-6 bg-bg-card border border-border rounded-lg p-1 w-full sm:w-fit overflow-x-auto">
         {TABS.map(t => (
           <button key={t.id} onClick={() => setTab(t.id)}
             className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary border-0'}`}>
@@ -117,7 +117,7 @@ export default function SettingsPage() {
           ].map(({ k, label }) => (
             <div key={k}><label className="form-label">{label}</label><input className="form-input" value={settings[k] as string||''} onChange={sf(k)} /></div>
           ))}
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div><label className="form-label">Labor Rate ($/hr)</label><input className="form-input" type="number" value={settings.labor_rate as number||120} onChange={sf('labor_rate')} /></div>
             <div><label className="form-label">Tax Rate (%)</label><input className="form-input" type="number" step="0.01" value={settings.tax_rate as number||8.25} onChange={sf('tax_rate')} /></div>
             <div><label className="form-label">Warranty (months)</label><input className="form-input" type="number" value={settings.warranty_months as number||12} onChange={sf('warranty_months')} /></div>
@@ -174,7 +174,7 @@ export default function SettingsPage() {
           <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">📣 AI Customer Outreach</div>
           <p className="text-sm text-text-muted">Automatically contact customers who haven&apos;t been in recently. AI personalizes each message.</p>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="form-label">Target customers inactive for</label>
               <select className="form-select" value={outreachFilter.days} onChange={e => setOutreachFilter(f => ({ ...f, days: Number(e.target.value) }))}>

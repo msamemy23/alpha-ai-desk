@@ -150,36 +150,45 @@ export default function MessagesPage() {
   }
 
   return (
-    <div style={{display:'flex',height:'100vh',overflow:'hidden',flexDirection:'column'}}>
-      <div style={{padding:'16px 24px',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
-        <h1 style={{fontSize:'1.25rem',fontWeight:700,margin:0}}>Calls &amp; Messages</h1>
-        <div style={{display:'flex',gap:'8px'}}>
+    <div className="flex flex-col h-[calc(100vh-48px)] overflow-hidden">
+      {/* Header */}
+      <div className="px-4 sm:px-6 py-3 border-b border-border flex items-center justify-between shrink-0">
+        <h1 className="text-lg sm:text-xl font-bold">Calls &amp; Messages</h1>
+        <div className="flex gap-2">
           <button className="btn btn-secondary btn-sm" onClick={() => setTab('calls')}>Calls</button>
           <button className="btn btn-primary btn-sm" onClick={() => { setTab('sms'); setCompose(true) }}>+ New SMS</button>
         </div>
       </div>
-      <div style={{display:'flex',borderBottom:'1px solid var(--border)',flexShrink:0}}>
-        <button onClick={() => setTab('sms')} style={{flex:1,padding:'12px',fontSize:'0.875rem',fontWeight:600,border:'none',borderBottom:tab==='sms'?'2px solid #3b82f6':'2px solid transparent',color:tab==='sms'?'#3b82f6':'var(--text-muted)',background:'transparent',cursor:'pointer'}}>SMS</button>
-        <button onClick={() => setTab('calls')} style={{flex:1,padding:'12px',fontSize:'0.875rem',fontWeight:600,border:'none',borderBottom:tab==='calls'?'2px solid #3b82f6':'2px solid transparent',color:tab==='calls'?'#3b82f6':'var(--text-muted)',background:'transparent',cursor:'pointer'}}>Calls</button>
-        <button onClick={() => setTab('summaries')} style={{flex:1,padding:'12px',fontSize:'0.875rem',fontWeight:600,border:'none',borderBottom:tab==='summaries'?'2px solid #3b82f6':'2px solid transparent',color:tab==='summaries'?'#3b82f6':'var(--text-muted)',background:'transparent',cursor:'pointer'}}>AI Summaries</button>
+
+      {/* Tab bar */}
+      <div className="flex border-b border-border shrink-0">
+        {(['sms', 'calls', 'summaries'] as const).map(t => (
+          <button key={t} onClick={() => setTab(t)}
+            className={`flex-1 py-3 text-sm font-semibold border-b-2 bg-transparent cursor-pointer transition-colors ${
+              tab === t ? 'border-blue text-blue' : 'border-transparent text-text-muted hover:text-text-primary'
+            }`}
+          >
+            {t === 'sms' ? 'SMS' : t === 'calls' ? 'Calls' : 'AI Summaries'}
+          </button>
+        ))}
       </div>
 
       {/* Feature 7: AI Summaries Tab */}
       {tab === 'summaries' && (
-        <div style={{flex:1,overflowY:'auto',padding:'24px'}}>
-          <div style={{maxWidth:'720px',margin:'0 auto'}}>
-            <p style={{fontSize:'0.875rem',color:'var(--text-muted)',marginBottom:'20px'}}>Select a conversation to generate an AI summary of the discussion.</p>
-            <div style={{display:'flex',flexDirection:'column',gap:'12px'}}>
-              {threads.length === 0 && <p style={{color:'var(--text-muted)',textAlign:'center',padding:'32px'}}>No conversations to summarize.</p>}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+          <div className="max-w-[720px] mx-auto">
+            <p className="text-sm text-text-muted mb-5">Select a conversation to generate an AI summary of the discussion.</p>
+            <div className="flex flex-col gap-3">
+              {threads.length === 0 && <p className="text-text-muted text-center py-8">No conversations to summarize.</p>}
               {threads.map(t => (
-                <div key={t.contact} style={{background:'var(--bg-card)',border:'1px solid var(--border)',borderRadius:'12px',padding:'16px'}}>
-                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'8px'}}>
-                    <div>
-                      <div style={{fontWeight:600,fontSize:'0.875rem'}}>{getContactName(t.contact)}</div>
-                      <div style={{fontSize:'0.75rem',color:'var(--text-muted)'}}>{t.contact} · {t.messages.length} messages</div>
+                <div key={t.contact} className="bg-bg-card border border-border rounded-xl p-4">
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-sm truncate">{getContactName(t.contact)}</div>
+                      <div className="text-xs text-text-muted">{t.contact} · {t.messages.length} messages</div>
                     </div>
                     <button
-                      className="btn btn-primary btn-sm"
+                      className="btn btn-primary btn-sm shrink-0"
                       onClick={() => summarizeThread(t.contact)}
                       disabled={summarizing === t.contact}
                     >
@@ -187,7 +196,7 @@ export default function MessagesPage() {
                     </button>
                   </div>
                   {summaries[t.contact] && (
-                    <div style={{background:'var(--bg-hover)',borderRadius:'8px',padding:'12px',fontSize:'0.875rem',lineHeight:'1.5',marginTop:'8px'}}>
+                    <div className="bg-bg-hover rounded-lg p-3 text-sm leading-relaxed mt-2">
                       {summaries[t.contact]}
                     </div>
                   )}
@@ -199,100 +208,158 @@ export default function MessagesPage() {
       )}
 
       {tab === 'sms' && (
-        <div style={{display:'flex',flex:1,overflow:'hidden'}}>
-          <div style={{width:'280px',borderRight:'1px solid var(--border)',display:'flex',flexDirection:'column',flexShrink:0}}>
-            <div style={{padding:'12px 16px',borderBottom:'1px solid var(--border)'}}><button className="btn btn-primary btn-sm" style={{width:'100%'}} onClick={() => setCompose(true)}>+ New Message</button></div>
-            <div style={{flex:1,overflowY:'auto'}}>
-              {threads.length === 0 && <p style={{padding:'24px',textAlign:'center',color:'var(--text-muted)',fontSize:'0.875rem'}}>No messages yet. Texts from (713) 663-6979 appear here.</p>}
+        <div className="flex flex-1 overflow-hidden">
+          {/* Thread sidebar - full width on mobile when no thread selected, hidden when thread open */}
+          <div className={`${selected ? 'hidden lg:flex' : 'flex'} w-full lg:w-[280px] border-r border-border flex-col shrink-0`}>
+            <div className="p-3 border-b border-border">
+              <button className="btn btn-primary btn-sm w-full" onClick={() => setCompose(true)}>+ New Message</button>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {threads.length === 0 && <p className="p-6 text-center text-text-muted text-sm">No messages yet. Texts from (713) 663-6979 appear here.</p>}
               {threads.map(t => (
-                <button key={t.contact} onClick={() => openThread(t.contact)} style={{width:'100%',textAlign:'left',padding:'12px 16px',borderBottom:'1px solid var(--border)',background:selected===t.contact?'var(--bg-hover)':'transparent',cursor:'pointer',border:'none',display:'block'}}>
-                  <div style={{display:'flex',alignItems:'center',gap:'8px'}}><span>{t.lastMsg.channel==='sms'?'SMS':'Email'}</span><span style={{fontWeight:600,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:'0.875rem'}}>{getContactName(t.contact)}</span>{t.unread > 0 && <span style={{background:'#ef4444',color:'white',fontSize:'0.7rem',borderRadius:'999px',padding:'1px 6px',fontWeight:700}}>{t.unread}</span>}</div>
-                  <p style={{fontSize:'0.75rem',color:'var(--text-muted)',marginTop:'4px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.lastMsg.body}</p>
-                  <p style={{fontSize:'0.7rem',color:'var(--text-muted)',marginTop:'2px'}}>{fmt(t.lastMsg.created_at)}</p>
+                <button key={t.contact} onClick={() => openThread(t.contact)}
+                  className={`w-full text-left px-4 py-3 border-b border-border cursor-pointer block transition-colors ${selected === t.contact ? 'bg-bg-hover' : 'bg-transparent hover:bg-bg-hover'}`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs">{t.lastMsg.channel === 'sms' ? 'SMS' : 'Email'}</span>
+                    <span className="font-semibold flex-1 truncate text-sm">{getContactName(t.contact)}</span>
+                    {t.unread > 0 && <span className="bg-red text-white text-[10px] rounded-full px-1.5 py-0.5 font-bold">{t.unread}</span>}
+                  </div>
+                  <p className="text-xs text-text-muted mt-1 truncate">{t.lastMsg.body}</p>
+                  <p className="text-[11px] text-text-muted mt-0.5">{fmt(t.lastMsg.created_at)}</p>
                 </button>
               ))}
             </div>
           </div>
-          <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
-            {!selected ? (<div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',color:'var(--text-muted)'}}><div style={{textAlign:'center'}}><div style={{fontSize:'3rem',marginBottom:'16px'}}>💬</div><p style={{fontWeight:600}}>Select a conversation</p><p style={{fontSize:'0.875rem',marginTop:'8px'}}>or click + New Message to start one</p></div></div>) : (<>
-                <div style={{padding:'12px 16px',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
-                  <div><div style={{fontWeight:600}}>{getContactName(selected)}</div><div style={{fontSize:'0.75rem',color:'var(--text-muted)'}}>{selected}</div></div>
-                  <div style={{display:'flex',gap:'8px'}}>
-                    <button className="btn btn-secondary btn-sm" onClick={() => summarizeThread(selected)} disabled={summarizing === selected}>{summarizing === selected ? '…' : 'AI Summary'}</button>
+
+          {/* Chat area - full width on mobile when thread selected, hidden when no thread */}
+          <div className={`${selected ? 'flex' : 'hidden lg:flex'} flex-1 flex-col overflow-hidden`}>
+            {!selected ? (
+              <div className="flex-1 flex items-center justify-center text-text-muted">
+                <div className="text-center">
+                  <div className="text-5xl mb-4">💬</div>
+                  <p className="font-semibold">Select a conversation</p>
+                  <p className="text-sm mt-2">or click + New Message to start one</p>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="px-4 py-3 border-b border-border flex items-center justify-between shrink-0 gap-2">
+                  <div className="min-w-0">
+                    <div className="font-semibold truncate">{getContactName(selected)}</div>
+                    <div className="text-xs text-text-muted truncate">{selected}</div>
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    <button className="btn btn-secondary btn-sm lg:hidden" onClick={() => setSelected(null)}>←</button>
+                    <button className="btn btn-secondary btn-sm hidden sm:inline-flex" onClick={() => summarizeThread(selected)} disabled={summarizing === selected}>{summarizing === selected ? '…' : 'AI Summary'}</button>
                     <button className="btn btn-secondary btn-sm" onClick={() => makeCall(selected, getContactName(selected))} disabled={calling}>Call</button>
-                    <button className="btn btn-secondary btn-sm" onClick={() => setSelected(null)}>X</button>
+                    <button className="btn btn-secondary btn-sm hidden lg:inline-flex" onClick={() => setSelected(null)}>X</button>
                   </div>
                 </div>
                 {summaries[selected] && (
-                  <div style={{padding:'8px 16px',background:'var(--bg-hover)',borderBottom:'1px solid var(--border)',fontSize:'0.8rem',color:'var(--text-muted)'}}>
+                  <div className="px-4 py-2 bg-bg-hover border-b border-border text-xs text-text-muted">
                     <strong>AI Summary:</strong> {summaries[selected]}
                   </div>
                 )}
-                <div style={{flex:1,overflowY:'auto',padding:'16px',display:'flex',flexDirection:'column',gap:'12px'}}>
-                  {[...(activeThread?.messages||[]).slice().reverse()].map(m => (<div key={m.id} style={{display:'flex',justifyContent:m.direction==='outbound'?'flex-end':'flex-start'}}><div style={{maxWidth:'70%',borderRadius:'12px',padding:'10px 14px',fontSize:'0.875rem',background:m.direction==='outbound'?'#2563eb':'var(--bg-card)',color:m.direction==='outbound'?'white':'var(--text)',border:m.direction==='outbound'?'none':'1px solid var(--border)'}}><p style={{margin:0}}>{m.body}</p><p style={{fontSize:'0.7rem',marginTop:'4px',opacity:0.7}}>{fmt(m.created_at)}</p></div></div>))}
+                <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+                  {[...(activeThread?.messages||[]).slice().reverse()].map(m => (
+                    <div key={m.id} className={`flex ${m.direction === 'outbound' ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[85%] sm:max-w-[70%] rounded-xl px-3.5 py-2.5 text-sm ${
+                        m.direction === 'outbound'
+                          ? 'bg-blue text-white'
+                          : 'bg-bg-card text-text-primary border border-border'
+                      }`}>
+                        <p className="m-0">{m.body}</p>
+                        <p className="text-[11px] mt-1 opacity-70">{fmt(m.created_at)}</p>
+                      </div>
+                    </div>
+                  ))}
                   <div ref={bottomRef} />
                 </div>
-                <div style={{padding:'12px 16px',borderTop:'1px solid var(--border)',display:'flex',gap:'8px',flexShrink:0}}>
-                  <textarea className="form-input" style={{flex:1,resize:'none',fontSize:'0.875rem'}} rows={2} placeholder="Type a message..." value={sendBody} onChange={e => setSendBody(e.target.value)} onKeyDown={e => { if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendReply()}}} />
-                  <button className="btn btn-primary" onClick={sendReply} disabled={sending||!sendBody}>{sending?'...':'Send'}</button>
+                <div className="px-3 sm:px-4 py-3 border-t border-border flex gap-2 shrink-0">
+                  <textarea className="form-input flex-1 resize-none text-sm" rows={2} placeholder="Type a message..." value={sendBody} onChange={e => setSendBody(e.target.value)} onKeyDown={e => { if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendReply()}}} />
+                  <button className="btn btn-primary self-end" onClick={sendReply} disabled={sending||!sendBody}>{sending?'...':'Send'}</button>
                 </div>
-              </>)}
+              </>
+            )}
           </div>
         </div>
       )}
+
       {tab === 'calls' && (
-        <div style={{flex:1,overflowY:'auto',padding:'24px'}}>
-          <div style={{maxWidth:'640px',margin:'0 auto',display:'flex',flexDirection:'column',gap:'32px'}}>
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+          <div className="max-w-[640px] mx-auto flex flex-col gap-8">
+            {/* Make a Call */}
             <div>
-              <h2 style={{fontSize:'1rem',fontWeight:700,marginBottom:'12px'}}>Make a Call</h2>
-              <div style={{display:'flex',gap:'10px'}}>
-                <input className="form-input" style={{flex:1}} placeholder="Enter phone number..." value={dialerNum} onChange={e => setDialerNum(e.target.value)} onKeyDown={e => { if(e.key==='Enter'&&dialerNum) makeCall(dialerNum) }} />
+              <h2 className="text-base font-bold mb-3">Make a Call</h2>
+              <div className="flex gap-2.5">
+                <input className="form-input flex-1" placeholder="Enter phone number..." value={dialerNum} onChange={e => setDialerNum(e.target.value)} onKeyDown={e => { if(e.key==='Enter'&&dialerNum) makeCall(dialerNum) }} />
                 <button className="btn btn-primary" onClick={() => makeCall(dialerNum)} disabled={calling||!dialerNum}>{calling?'Calling...':'Call'}</button>
               </div>
-              <p style={{fontSize:'0.75rem',color:'var(--text-muted)',marginTop:'6px'}}>Calls go out from your shop number (713) 663-6979.</p>
+              <p className="text-xs text-text-muted mt-1.5">Calls go out from your shop number (713) 663-6979.</p>
             </div>
-            {customers.filter(c => c.phone).length > 0 && (<div><h2 style={{fontSize:'1rem',fontWeight:700,marginBottom:'12px'}}>Customer Quick Dial</h2><div style={{display:'flex',flexWrap:'wrap',gap:'8px'}}>{customers.filter(c => c.phone).slice(0,20).map(c => (<button key={c.id} className="btn btn-secondary btn-sm" style={{fontSize:'0.8rem'}} onClick={() => makeCall(c.phone, c.name)} disabled={calling}>{c.name}</button>))}</div></div>)}
+
+            {/* Quick Dial */}
+            {customers.filter(c => c.phone).length > 0 && (
+              <div>
+                <h2 className="text-base font-bold mb-3">Customer Quick Dial</h2>
+                <div className="flex flex-wrap gap-2">
+                  {customers.filter(c => c.phone).slice(0,20).map(c => (
+                    <button key={c.id} className="btn btn-secondary btn-sm text-xs" onClick={() => makeCall(c.phone, c.name)} disabled={calling}>{c.name}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Call Log */}
             <div>
-              <h2 style={{fontSize:'1rem',fontWeight:700,marginBottom:'12px'}}>Call Log</h2>
-              {activities.length === 0 ? <p style={{color:'var(--text-muted)',fontSize:'0.875rem'}}>No call history yet. Make your first call above!</p> : (
-                <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
-                  {activities.map(a => (<div key={a.id} style={{display:'flex',alignItems:'center',gap:'12px',padding:'12px 16px',background:'var(--bg-card)',border:'1px solid var(--border)',borderRadius:'8px'}}><span>📞</span><div style={{flex:1}}><div style={{fontWeight:500,fontSize:'0.875rem'}}>{a.customer_name || a.notes || 'Call'}</div><div style={{fontSize:'0.75rem',color:'var(--text-muted)'}}>{fmt(a.created_at)}</div></div>{a.phone && <button className="btn btn-secondary btn-sm" style={{fontSize:'0.75rem'}} onClick={() => makeCall(a.phone!, a.customer_name)} disabled={calling}>Call Back</button>}</div>))}
+              <h2 className="text-base font-bold mb-3">Call Log</h2>
+              {activities.length === 0 ? <p className="text-text-muted text-sm">No call history yet. Make your first call above!</p> : (
+                <div className="flex flex-col gap-2">
+                  {activities.map(a => (
+                    <div key={a.id} className="flex items-center gap-3 p-3 sm:p-4 bg-bg-card border border-border rounded-lg">
+                      <span>📞</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-sm truncate">{a.customer_name || a.notes || 'Call'}</div>
+                        <div className="text-xs text-text-muted">{fmt(a.created_at)}</div>
+                      </div>
+                      {a.phone && <button className="btn btn-secondary btn-sm text-xs shrink-0" onClick={() => makeCall(a.phone!, a.customer_name)} disabled={calling}>Call Back</button>}
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
 
             {/* AI Calls Section */}
             <div>
-              <h2 style={{fontSize:'1rem',fontWeight:700,marginBottom:'12px'}}>🤖 AI Call Recordings</h2>
+              <h2 className="text-base font-bold mb-3">🤖 AI Call Recordings</h2>
               {aiCalls.length === 0 ? (
-                <p style={{color:'var(--text-muted)',fontSize:'0.875rem'}}>No AI calls yet. Use the AI page to make an AI-powered call.</p>
+                <p className="text-text-muted text-sm">No AI calls yet. Use the AI page to make an AI-powered call.</p>
               ) : (
-                <div style={{display:'flex',flexDirection:'column',gap:'12px'}}>
+                <div className="flex flex-col gap-3">
                   {aiCalls.map(call => (
-                    <div key={call.id} style={{background:'var(--bg-card)',border:'1px solid var(--border)',borderRadius:'12px',padding:'16px'}}>
+                    <div key={call.id} className="bg-bg-card border border-border rounded-xl p-4">
                       {/* Header row */}
-                      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'12px'}}>
-                        <div style={{flex:1,minWidth:0}}>
-                          <div style={{fontWeight:600,fontSize:'0.875rem',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{call.task || 'AI Call'}</div>
-                          <div style={{fontSize:'0.75rem',color:'var(--text-muted)',marginTop:'2px'}}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-semibold text-sm truncate">{call.task || 'AI Call'}</div>
+                          <div className="text-xs text-text-muted mt-0.5">
                             {call.started_at ? new Date(call.started_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : 'Unknown time'}
                             {' · '}
-                            <span style={{color: call.status==='ended'?'#10b981': call.status==='active'?'#3b82f6':'#f59e0b', fontWeight:600}}>
+                            <span className={`font-semibold ${call.status==='ended'?'text-green': call.status==='active'?'text-blue':'text-amber'}`}>
                               {call.status}
                             </span>
                           </div>
                         </div>
-                        <div style={{display:'flex',gap:'6px',flexShrink:0}}>
+                        <div className="flex gap-1.5 shrink-0">
                           <button
-                            className="btn btn-secondary btn-sm"
-                            style={{fontSize:'0.75rem'}}
+                            className="btn btn-secondary btn-sm text-xs"
                             onClick={() => setExpandedCall(expandedCall === call.id ? null : call.id)}
                           >
                             {expandedCall === call.id ? 'Hide' : 'Details'}
                           </button>
                           <button
-                            className="btn btn-sm"
-                            style={{fontSize:'0.75rem',background:'#ef444422',color:'#ef4444',border:'1px solid #ef444444',borderRadius:'6px',padding:'4px 10px',cursor:'pointer'}}
+                            className="btn btn-sm text-xs bg-red/10 text-red border border-red/25 rounded-md px-2.5 py-1 cursor-pointer"
                             onClick={() => deleteAiCall(call.id)}
                             disabled={deletingCall === call.id}
                             title="Delete this call"
@@ -304,11 +371,11 @@ export default function MessagesPage() {
 
                       {/* Recording player */}
                       {call.recording_url && (
-                        <div style={{marginTop:'12px'}}>
-                          <div style={{fontSize:'0.75rem',color:'var(--text-muted)',marginBottom:'4px',fontWeight:600}}>Recording</div>
+                        <div className="mt-3">
+                          <div className="text-xs text-text-muted mb-1 font-semibold">Recording</div>
                           <audio
                             controls
-                            style={{width:'100%',height:'36px'}}
+                            className="w-full h-9"
                             src={`/api/recording-proxy?url=${encodeURIComponent(call.recording_url)}`}
                           />
                         </div>
@@ -316,28 +383,25 @@ export default function MessagesPage() {
 
                       {/* Expanded details */}
                       {expandedCall === call.id && (
-                        <div style={{marginTop:'12px',display:'flex',flexDirection:'column',gap:'12px'}}>
-                          {/* Summary */}
+                        <div className="mt-3 flex flex-col gap-3">
                           {call.summary && (
-                            <div style={{background:'var(--bg-hover)',borderRadius:'8px',padding:'12px'}}>
-                              <div style={{fontSize:'0.75rem',fontWeight:700,color:'var(--text-muted)',marginBottom:'6px'}}>SUMMARY</div>
-                              <div style={{fontSize:'0.875rem',lineHeight:'1.6'}}>{call.summary}</div>
+                            <div className="bg-bg-hover rounded-lg p-3">
+                              <div className="text-xs font-bold text-text-muted mb-1.5">SUMMARY</div>
+                              <div className="text-sm leading-relaxed">{call.summary}</div>
                             </div>
                           )}
-                          {/* Transcript */}
                           {call.transcript && call.transcript.length > 0 && (
                             <div>
-                              <div style={{fontSize:'0.75rem',fontWeight:700,color:'var(--text-muted)',marginBottom:'8px'}}>TRANSCRIPT</div>
-                              <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+                              <div className="text-xs font-bold text-text-muted mb-2">TRANSCRIPT</div>
+                              <div className="flex flex-col gap-1.5">
                                 {call.transcript.map((t, i) => (
-                                  <div key={i} style={{display:'flex',gap:'8px',alignItems:'flex-start'}}>
-                                    <span style={{fontSize:'0.7rem',fontWeight:700,padding:'2px 6px',borderRadius:'4px',flexShrink:0,marginTop:'1px',
-                                      background: t.speaker==='ai'?'#2563eb22':'#10b98122',
-                                      color: t.speaker==='ai'?'#3b82f6':'#10b981'
-                                    }}>
-                                      {t.speaker==='ai'?'AI':'Them'}
+                                  <div key={i} className="flex gap-2 items-start">
+                                    <span className={`text-[11px] font-bold px-1.5 py-0.5 rounded shrink-0 mt-0.5 ${
+                                      t.speaker === 'ai' ? 'bg-blue/10 text-blue' : 'bg-green/10 text-green'
+                                    }`}>
+                                      {t.speaker === 'ai' ? 'AI' : 'Them'}
                                     </span>
-                                    <span style={{fontSize:'0.875rem',lineHeight:'1.5'}}>{t.text}</span>
+                                    <span className="text-sm leading-relaxed">{t.text}</span>
                                   </div>
                                 ))}
                               </div>
@@ -353,20 +417,56 @@ export default function MessagesPage() {
           </div>
         </div>
       )}
+
+      {/* Compose modal */}
       {compose && (
-        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',zIndex:50,display:'flex',alignItems:'center',justifyContent:'center',padding:'16px'}}>
-          <div style={{background:'var(--bg-card)',border:'1px solid var(--border)',borderRadius:'12px',width:'100%',maxWidth:'500px',padding:'24px'}}>
-            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'20px'}}><h2 style={{fontSize:'1.125rem',fontWeight:700,margin:0}}>New Message</h2><button className="btn btn-secondary btn-sm" onClick={() => setCompose(false)}>X</button></div>
-            <div style={{display:'flex',flexDirection:'column',gap:'16px'}}>
-              <div style={{display:'flex',gap:'8px'}}>
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-bg-card border border-border rounded-xl w-full max-w-[500px] p-4 sm:p-6">
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-bold">New Message</h2>
+              <button className="btn btn-secondary btn-sm" onClick={() => setCompose(false)}>X</button>
+            </div>
+            <div className="flex flex-col gap-4">
+              <div className="flex gap-2">
                 <button onClick={() => setSendChannel('sms')} className={sendChannel==='sms'?'btn btn-primary btn-sm':'btn btn-secondary btn-sm'}>SMS</button>
                 <button onClick={() => setSendChannel('email')} className={sendChannel==='email'?'btn btn-primary btn-sm':'btn btn-secondary btn-sm'}>Email</button>
               </div>
-              {sendChannel==='sms' && customers.filter(c=>c.phone).length>0 && (<div><label className="form-label">Quick Pick</label><div style={{display:'flex',flexWrap:'wrap',gap:'6px',maxHeight:'80px',overflowY:'auto'}}>{customers.filter(c=>c.phone).slice(0,15).map(c => (<button key={c.id} type="button" style={{fontSize:'0.75rem',padding:'3px 10px',borderRadius:'999px',border:'1px solid var(--border)',cursor:'pointer',background:sendTo===c.phone?'#2563eb':'transparent',color:sendTo===c.phone?'white':'var(--text)'}} onClick={()=>setSendTo(c.phone)}>{c.name}</button>))}</div></div>)}
-              {sendChannel==='email' && customers.filter(c=>c.email).length>0 && (<div><label className="form-label">Quick Pick</label><div style={{display:'flex',flexWrap:'wrap',gap:'6px',maxHeight:'80px',overflowY:'auto'}}>{customers.filter(c=>c.email).slice(0,15).map(c => (<button key={c.id} type="button" style={{fontSize:'0.75rem',padding:'3px 10px',borderRadius:'999px',border:'1px solid var(--border)',cursor:'pointer',background:sendTo===c.email?'#2563eb':'transparent',color:sendTo===c.email?'white':'var(--text)'}} onClick={()=>setSendTo(c.email)}>{c.name}</button>))}</div></div>)}
-              <div><label className="form-label">To ({sendChannel==='sms'?'Phone':'Email'})</label><input className="form-input" value={sendTo} onChange={e=>setSendTo(e.target.value)} placeholder={sendChannel==='sms'?'+1 (713) 555-0000':'customer@email.com'} /></div>
-              <div><label className="form-label">Message</label><textarea className="form-textarea" rows={4} value={sendBody} onChange={e=>setSendBody(e.target.value)} placeholder="Type your message..." /></div>
-              <div style={{display:'flex',gap:'12px'}}><button className="btn btn-primary" onClick={sendMessage} disabled={sending||!sendTo||!sendBody}>{sending?'Sending...':'Send Message'}</button><button className="btn btn-secondary" onClick={() => setCompose(false)}>Cancel</button></div>
+              {sendChannel==='sms' && customers.filter(c=>c.phone).length>0 && (
+                <div>
+                  <label className="form-label">Quick Pick</label>
+                  <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto">
+                    {customers.filter(c=>c.phone).slice(0,15).map(c => (
+                      <button key={c.id} type="button"
+                        className={`text-xs px-2.5 py-1 rounded-full border border-border cursor-pointer transition-colors ${sendTo===c.phone ? 'bg-blue text-white border-blue' : 'bg-transparent text-text-primary hover:bg-bg-hover'}`}
+                        onClick={()=>setSendTo(c.phone)}>{c.name}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {sendChannel==='email' && customers.filter(c=>c.email).length>0 && (
+                <div>
+                  <label className="form-label">Quick Pick</label>
+                  <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto">
+                    {customers.filter(c=>c.email).slice(0,15).map(c => (
+                      <button key={c.id} type="button"
+                        className={`text-xs px-2.5 py-1 rounded-full border border-border cursor-pointer transition-colors ${sendTo===c.email ? 'bg-blue text-white border-blue' : 'bg-transparent text-text-primary hover:bg-bg-hover'}`}
+                        onClick={()=>setSendTo(c.email)}>{c.name}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div>
+                <label className="form-label">To ({sendChannel==='sms'?'Phone':'Email'})</label>
+                <input className="form-input" value={sendTo} onChange={e=>setSendTo(e.target.value)} placeholder={sendChannel==='sms'?'+1 (713) 555-0000':'customer@email.com'} />
+              </div>
+              <div>
+                <label className="form-label">Message</label>
+                <textarea className="form-textarea" rows={4} value={sendBody} onChange={e=>setSendBody(e.target.value)} placeholder="Type your message..." />
+              </div>
+              <div className="flex gap-3">
+                <button className="btn btn-primary flex-1" onClick={sendMessage} disabled={sending||!sendTo||!sendBody}>{sending?'Sending...':'Send Message'}</button>
+                <button className="btn btn-secondary" onClick={() => setCompose(false)}>Cancel</button>
+              </div>
             </div>
           </div>
         </div>

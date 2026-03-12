@@ -93,7 +93,7 @@ export default function CustomersPage() {
   const fmtDate = (d: string) => d ? new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : ''
 
   return (
-    <div className="p-8 animate-fade-in">
+    <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
       {editing !== null ? (
         <div>
           <div className="flex items-center justify-between mb-6">
@@ -107,7 +107,7 @@ export default function CustomersPage() {
           <div className="max-w-2xl space-y-6">
             <div className="card space-y-4">
               <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Contact Info</div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div><label className="form-label">Name *</label><input className="form-input" value={form.name||''} onChange={f('name')} /></div>
                 <div><label className="form-label">Phone</label><input className="form-input" value={form.phone||''} onChange={f('phone')} /></div>
                 <div><label className="form-label">Email</label><input className="form-input" type="email" value={form.email||''} onChange={f('email')} /></div>
@@ -127,7 +127,7 @@ export default function CustomersPage() {
             </div>
             <div className="card space-y-4">
               <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Vehicle Info</div>
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 {(['vehicle_year','vehicle_make','vehicle_model'] as const).map(k => (
                   <div key={k}><label className="form-label">{k.split('_').pop()!.charAt(0).toUpperCase()+k.split('_').pop()!.slice(1)}</label><input className="form-input" value={form[k]||''} onChange={f(k)} /></div>
                 ))}
@@ -144,16 +144,16 @@ export default function CustomersPage() {
         </div>
       ) : (
         <div>
-          <div className="flex items-center justify-between mb-6">
-            <h1 className="text-2xl font-bold">Customers <span className="text-text-muted text-lg font-normal ml-2">{customers.length}</span></h1>
-            <div className="flex gap-3">
-              <input className="form-input w-56" placeholder="Search name, phone, email..." value={search} onChange={e => setSearch(e.target.value)} />
-              <button className="btn btn-primary" onClick={() => { setForm({ preferred_contact: 'Call', sentiment: 'neutral' }); setEditing('new') }}>+ New Customer</button>
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-6">
+            <h1 className="text-xl sm:text-2xl font-bold">Customers <span className="text-text-muted text-lg font-normal ml-2">{customers.length}</span></h1>
+            <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+              <input className="form-input w-full sm:w-56" placeholder="Search name, phone, email..." value={search} onChange={e => setSearch(e.target.value)} />
+              <button className="btn btn-primary whitespace-nowrap" onClick={() => { setForm({ preferred_contact: 'Call', sentiment: 'neutral' }); setEditing('new') }}>+ New Customer</button>
             </div>
           </div>
 
           {/* Sentiment filter */}
-          <div className="flex gap-2 mb-4 flex-wrap">
+          <div className="flex gap-2 mb-4 flex-wrap overflow-x-auto pb-1">
             <button onClick={() => setSentimentFilter('all')}
               className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${sentimentFilter === 'all' ? 'bg-blue text-white' : 'bg-bg-card text-text-muted hover:text-text-primary border border-border'}`}>
               All

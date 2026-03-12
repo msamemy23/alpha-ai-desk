@@ -83,10 +83,10 @@ export default function InsurancePage() {
   }
 
   return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-4">
+    <div className="p-4 sm:p-6 lg:p-8">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-text-primary">Insurance Jobs</h1>
+          <h1 className="text-xl sm:text-2xl font-bold text-text-primary">Insurance Jobs</h1>
           <p className="text-text-muted text-sm mt-0.5">{filtered.length} job{filtered.length !== 1 ? 's' : ''}</p>
         </div>
       </div>
@@ -105,7 +105,7 @@ export default function InsurancePage() {
           <p className="text-sm">Mark a job as an insurance job to track it here</p>
         </div>
       ) : (
-        <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>
+        <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 340px), 1fr))' }}>
           {filtered.map(j => (
             <div key={j.id as string} className="card hover:border-blue/40 transition-colors cursor-pointer block">
               <div className="flex items-start justify-between mb-3">
@@ -146,7 +146,7 @@ export default function InsurancePage() {
       {/* AI Claim Assistant Modal */}
       {claimJob && (
         <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
-          <div className="bg-bg-card border border-border rounded-xl w-full max-w-2xl h-[80vh] flex flex-col">
+          <div className="bg-bg-card border border-border rounded-xl w-full max-w-2xl h-[90vh] sm:h-[80vh] flex flex-col">
             <div className="flex items-center justify-between p-4 border-b border-border">
               <div>
                 <h2 className="font-bold">🤖 AI Claim Assistant</h2>

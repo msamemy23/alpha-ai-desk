@@ -27,7 +27,7 @@ body {
     @apply bg-bg-card border border-border rounded-lg p-6;
   }
   .btn {
-    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md font-medium text-sm transition-all duration-150 cursor-pointer border-0;
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md font-medium text-sm transition-all duration-150 cursor-pointer border-0 min-h-[44px] sm:min-h-0;
   }
   .btn-primary {
     @apply bg-blue text-white hover:bg-blue/90;
@@ -44,10 +44,10 @@ body {
   .btn-sm { @apply text-xs px-3 py-1.5; }
   .btn-lg { @apply text-base px-6 py-2.5; }
   .form-input {
-    @apply w-full bg-bg-input border border-border rounded-md px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-blue transition-colors;
+    @apply w-full bg-bg-input border border-border rounded-md px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-blue transition-colors min-h-[44px] sm:min-h-0;
   }
   .form-select {
-    @apply form-input appearance-none cursor-pointer;
+    @apply form-input appearance-none cursor-pointer min-h-[44px] sm:min-h-0;
   }
   .form-label {
     @apply block text-xs font-semibold text-text-secondary uppercase tracking-wider mb-1.5;
@@ -64,7 +64,7 @@ body {
   .tag-amber { @apply bg-amber/15 text-amber; }
   .tag-gray { @apply bg-bg-hover text-text-secondary; }
   .nav-item {
-    @apply flex items-center gap-3 px-3 py-2 rounded-md text-sm text-text-secondary cursor-pointer transition-all hover:bg-bg-hover hover:text-text-primary;
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-md text-sm text-text-secondary cursor-pointer transition-all hover:bg-bg-hover hover:text-text-primary min-h-[44px];
   }
   .nav-item.active {
     @apply bg-blue/10 text-blue;
@@ -73,10 +73,10 @@ body {
     @apply w-full text-sm;
   }
   .data-table th {
-    @apply px-4 py-3 text-left text-xs font-semibold text-text-secondary uppercase tracking-wider border-b border-border;
+    @apply px-3 sm:px-4 py-3 text-left text-xs font-semibold text-text-secondary uppercase tracking-wider border-b border-border;
   }
   .data-table td {
-    @apply px-4 py-3 border-b border-border/50;
+    @apply px-3 sm:px-4 py-3 border-b border-border/50;
   }
   .data-table tr:hover td {
     @apply bg-bg-hover;

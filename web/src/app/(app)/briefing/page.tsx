@@ -55,20 +55,20 @@ export default function BriefingPage() {
 
   useEffect(() => { load() }, [load])
 
-  if (loading) return <div className="p-8 text-text-muted">Loading briefing…</div>
+  if (loading) return <div className="p-4 sm:p-6 lg:p-8 text-text-muted">Loading briefing…</div>
   if (!data) return null
 
   const today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
 
   return (
-    <div className="p-8 animate-fade-in max-w-4xl">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold">Daily Briefing</h1>
+    <div className="p-4 sm:p-6 lg:p-8 animate-fade-in max-w-4xl">
+      <div className="mb-6 sm:mb-8">
+        <h1 className="text-xl sm:text-2xl font-bold">Daily Briefing</h1>
         <p className="text-text-muted text-sm mt-1">{today}</p>
       </div>
 
       {/* Quick stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6 sm:mb-8">
         <div className="card text-center">
           <div className="text-2xl font-bold text-blue">{data.openJobs.length}</div>
           <div className="text-xs text-text-muted mt-1">Open Jobs</div>
@@ -88,7 +88,7 @@ export default function BriefingPage() {
       </div>
 
       {/* Revenue */}
-      <div className="grid grid-cols-2 gap-4 mb-8">
+      <div className="grid grid-cols-2 gap-4 mb-6 sm:mb-8">
         <div className="card">
           <div className="text-xs text-text-muted uppercase tracking-wider mb-1">This Week</div>
           <div className="text-xl font-bold text-green">{formatCurrency(data.weekRevenue)}</div>

@@ -36,6 +36,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [notifications, setNotifications] = useState<Notification[]>([])
   const [notifLoading, setNotifLoading] = useState(false)
   const [location, setLocation] = useState('main')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   useEffect(() => {
     getUnreadCount().then(setUnread)
@@ -49,6 +50,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     if (saved) setLocation(saved)
     return () => { supabase.removeChannel(channel) }
   }, [])
+
+  // Close sidebar on route change (mobile)
+  useEffect(() => {
+    setSidebarOpen(false)
+  }, [pathname])
 
   const loadNotifications = async () => {
     setNotifLoading(true)
@@ -72,8 +78,21 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen overflow-hidden">
+      {/* Mobile overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 z-40 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
       {/* Sidebar */}
-      <aside className="w-60 bg-bg-card border-r border-border flex flex-col shrink-0">
+      <aside className={`
+        fixed inset-y-0 left-0 z-50 w-64 bg-bg-card border-r border-border flex flex-col shrink-0
+        transform transition-transform duration-200 ease-in-out
+        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+        lg:static lg:translate-x-0 lg:w-60
+      `}>
         {/* Logo */}
         <div className="flex items-center gap-3 px-4 py-5 border-b border-border">
           <div className="w-9 h-9 rounded-lg bg-blue/20 flex items-center justify-center text-lg">🔧</div>
@@ -81,9 +100,18 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <div className="text-sm font-bold text-text-primary leading-tight">Alpha Desktop AI</div>
             <div className="text-xs text-text-muted">Auto Center</div>
           </div>
+          {/* Close button on mobile */}
+          <button
+            className="ml-auto p-1 rounded-lg hover:bg-bg-hover lg:hidden"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
         </div>
 
-        {/* Feature 20: Location Selector */}
+        {/* Location Selector */}
         <div className="px-3 pt-3">
           <select
             className="form-select text-xs w-full"
@@ -123,9 +151,23 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* Main */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Top bar with notifications */}
-        <div className="h-11 border-b border-border flex items-center justify-end px-4 shrink-0 bg-bg-card">
+      <div className="flex-1 flex flex-col overflow-hidden w-full">
+        {/* Top bar */}
+        <div className="h-12 border-b border-border flex items-center justify-between px-3 sm:px-4 shrink-0 bg-bg-card">
+          {/* Hamburger button - mobile only */}
+          <button
+            className="p-2 rounded-lg hover:bg-bg-hover transition-colors lg:hidden"
+            onClick={() => setSidebarOpen(true)}
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" />
+            </svg>
+          </button>
+          {/* App name on mobile */}
+          <span className="text-sm font-semibold lg:hidden">Alpha AI</span>
+          {/* Spacer for desktop */}
+          <div className="hidden lg:block" />
+          {/* Notifications */}
           <div className="relative">
             <button
               className="relative p-1.5 rounded-lg hover:bg-bg-hover transition-colors"
@@ -139,7 +181,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               )}
             </button>
             {notifOpen && (
-              <div className="absolute right-0 top-full mt-2 w-80 bg-bg-card border border-border rounded-xl shadow-xl z-50 max-h-96 overflow-y-auto">
+              <div className="absolute right-0 top-full mt-2 w-80 max-w-[calc(100vw-2rem)] bg-bg-card border border-border rounded-xl shadow-xl z-50 max-h-96 overflow-y-auto">
                 <div className="px-4 py-3 border-b border-border flex items-center justify-between">
                   <span className="text-sm font-bold">Notifications</span>
                   <button className="text-xs text-text-muted hover:text-text-primary" onClick={() => setNotifOpen(false)}>Close</button>

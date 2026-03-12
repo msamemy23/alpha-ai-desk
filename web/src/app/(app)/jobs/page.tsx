@@ -65,7 +65,7 @@ export default function JobsPage() {
   const fmt = (d: string) => d ? new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : ''
 
   return (
-    <div className="p-8 animate-fade-in">
+    <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
       {editing !== null ? (
         /* ─── Job Form ─── */
         <div>
@@ -80,7 +80,7 @@ export default function JobsPage() {
           <div className="max-w-3xl space-y-6">
             <div className="card space-y-4">
               <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Customer & Vehicle</div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="form-label">Customer</label>
                   <select className="form-select" value={(form as Record<string,unknown>).customer_id as string || ''} onChange={e => selectCustomer(e.target.value)}>
@@ -95,7 +95,7 @@ export default function JobsPage() {
                   </select>
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 {['vehicle_year','vehicle_make','vehicle_model'].map(k => (
                   <div key={k}>
                     <label className="form-label">{k.split('_').slice(1).join(' ').replace(/^\w/,c=>c.toUpperCase())}</label>
@@ -103,7 +103,7 @@ export default function JobsPage() {
                   </div>
                 ))}
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="form-label">VIN</label>
                   <input className="form-input" value={(form as Record<string,string>).vehicle_vin||''} onChange={e => setForm(f=>({...f,vehicle_vin:e.target.value}))} />
@@ -121,7 +121,7 @@ export default function JobsPage() {
                 <label className="form-label">Customer Concern</label>
                 <textarea className="form-textarea" rows={3} value={(form as Record<string,string>).concern||''} onChange={e => setForm(f=>({...f,concern:e.target.value}))} placeholder="What does the customer complain about?" />
               </div>
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                   <label className="form-label">Tech</label>
                   <select className="form-select" value={(form as Record<string,string>).tech||''} onChange={e => setForm(f=>({...f,tech:e.target.value}))}>
@@ -150,11 +150,11 @@ export default function JobsPage() {
       ) : (
         /* ─── Job List / Kanban ─── */
         <div>
-          <div className="flex items-center justify-between mb-6">
-            <h1 className="text-2xl font-bold">Jobs</h1>
-            <div className="flex gap-3">
-              <input className="form-input w-56" placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
-              <select className="form-select w-40" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-6">
+            <h1 className="text-xl sm:text-2xl font-bold">Jobs</h1>
+            <div className="flex flex-wrap gap-3 w-full sm:w-auto">
+              <input className="form-input w-full sm:w-56" placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
+              <select className="form-select w-full sm:w-40" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
                 <option value="active">Active Jobs</option>
                 <option value="all">All Jobs</option>
                 {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
@@ -163,13 +163,13 @@ export default function JobsPage() {
                 <button onClick={()=>setView('list')} className={`btn btn-sm ${view==='list'?'btn-primary':'btn-secondary border-0'}`}>List</button>
                 <button onClick={()=>setView('kanban')} className={`btn btn-sm ${view==='kanban'?'btn-primary':'btn-secondary border-0'}`}>Kanban</button>
               </div>
-              <button className="btn btn-primary" onClick={openNew}>+ New Job</button>
+              <button className="btn btn-primary whitespace-nowrap" onClick={openNew}>+ New Job</button>
             </div>
           </div>
 
           {view === 'list' ? (
-            <div className="card p-0 overflow-hidden">
-              <table className="data-table w-full">
+            <div className="card p-0 overflow-x-auto">
+              <table className="data-table w-full min-w-[640px]">
                 <thead><tr>
                   <th>Customer</th><th>Vehicle</th><th>Concern</th><th>Tech</th><th>Status</th><th>Due</th>
                 </tr></thead>

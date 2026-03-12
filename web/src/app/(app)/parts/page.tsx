@@ -61,11 +61,11 @@ Return a JSON array of 3-5 common part options with realistic pricing. Each obje
   }
 
   return (
-    <div className="p-8 animate-fade-in max-w-4xl">
-      <h1 className="text-2xl font-bold mb-6">Parts Lookup</h1>
+    <div className="p-4 sm:p-6 lg:p-8 animate-fade-in max-w-4xl">
+      <h1 className="text-xl sm:text-2xl font-bold mb-6">Parts Lookup</h1>
 
       <div className="card mb-6">
-        <div className="grid grid-cols-3 gap-4 mb-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
           <input className="form-input" placeholder="Year" value={vehicle.year} onChange={e => setVehicle(v => ({ ...v, year: e.target.value }))} />
           <input className="form-input" placeholder="Make" value={vehicle.make} onChange={e => setVehicle(v => ({ ...v, make: e.target.value }))} />
           <input className="form-input" placeholder="Model" value={vehicle.model} onChange={e => setVehicle(v => ({ ...v, model: e.target.value }))} />
