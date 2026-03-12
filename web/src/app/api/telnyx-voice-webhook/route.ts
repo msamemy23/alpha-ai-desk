@@ -100,11 +100,31 @@ async function aiChat(messages: Array<{role: string; content: string}>, maxToken
     })
     const d = await r.json()
     let text = d?.choices?.[0]?.message?.content?.trim() || ''
-    // Strip markdown formatting that sounds weird on a phone call
+    // Strip markdown bold/italic
     text = text.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\*([^*]+)\*/g, '$1')
-    text = text.replace(/^["']|["']$/g, '').trim() // strip surrounding quotes
-    text = text.replace(/\([^)]*\)/g, '').trim() // strip stage directions like (End call warmly.)
-    return text
+    // Strip surrounding quotes
+    text = text.replace(/^["']|["']$/g, '').trim()
+    // Strip parenthetical stage directions: (laughs), (End call warmly.), etc.
+    text = text.replace(/\([^)]*\)/g, '').trim()
+    // Strip bracketed stage directions: [End call], [hangs up], [After hold:], etc.
+    text = text.replace(/\[[^\]]*\]/g, '').trim()
+    // Strip markdown-style headers, bullets, dashes at line start
+    text = text.replace(/^[-•*#]+\s*/gm, '').trim()
+    // If the AI produced a multi-line response with newlines, collapse to first clean line only
+    // (prevents the AI from outputting scripts/instructions as speech)
+    const lines = text.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0)
+    // Only use first line if second line looks like a meta comment (starts with -, or is short)
+    if (lines.length > 1) {
+      // Check if it looks like a genuine multi-sentence reply or a leaked instruction
+      const secondIsInstruction = lines[1].startsWith('-') || lines[1].length < 20 || /^(speak|note|after|end|call|task|the only)/i.test(lines[1])
+      if (secondIsInstruction) {
+        text = lines[0]
+      } else {
+        // Join natural multi-sentence replies
+        text = lines.slice(0, 3).join(' ')
+      }
+    }
+    return text.trim()
   } catch { return '' }
 }
 
@@ -259,9 +279,12 @@ UNCLEAR RESPONSES:
 - Never guess or assume.
 
 == STYLE ==
-- SHORT replies. 1-3 sentences max.
-- Plain spoken words only. No markdown, no bullets, no stage directions.
-- Sound like a real human on the phone.
+- SHORT replies. 1-3 sentences MAX. Never more.
+- Plain spoken words ONLY. Respond EXACTLY as you would speak it out loud.
+- NO markdown, NO asterisks, NO bullets, NO dashes, NO numbered lists.
+- NO stage directions. Never write (laughs), [hangs up], [After hold:], (End call warmly.) or anything in parentheses or brackets.
+- NO newlines. Your entire reply must be ONE continuous paragraph of spoken words.
+- Sound like a real human on the phone — casual, natural, direct.
 - Never say you are an AI unless directly asked.`
 
     const messages = [
