@@ -8,7 +8,7 @@ import { NextRequest, NextResponse } from 'next/server'
 
 const TELNYX_API_KEY     = process.env.TELNYX_API_KEY     || ''
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
-const AI_MODEL           = process.env.AI_MODEL           || 'deepseek/deepseek-v3-1.5'
+const AI_MODEL           = process.env.AI_MODEL           || 'deepseek/deepseek-chat-v3-0324'
 const SUPABASE_URL       = process.env.NEXT_PUBLIC_SUPABASE_URL  || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
 const SUPABASE_KEY       = process.env.SUPABASE_SERVICE_KEY      || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 const TELNYX_BASE        = 'https://api.telnyx.com/v2'
