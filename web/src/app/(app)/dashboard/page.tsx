@@ -9,15 +9,28 @@ interface Stats {
   monthRevenue: number
   recentJobs: Record<string, unknown>[]
   recentMessages: Record<string, unknown>[]
+  allJobs: Record<string, unknown>[]
+  allDocs: Record<string, unknown>[]
+  staleJobs: Record<string, unknown>[]
+  overdueInvoices: Record<string, unknown>[]
 }
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(true)
+  const [briefingDismissed, setBriefingDismissed] = useState(false)
+  const [briefingExpanded, setBriefingExpanded] = useState(true)
+  const [aiInsight, setAiInsight] = useState('')
+  const [insightLoading, setInsightLoading] = useState(false)
+  const [slowDayMsg, setSlowDayMsg] = useState('')
+  const [slowDaySending, setSlowDaySending] = useState(false)
+  const [slowDayResult, setSlowDayResult] = useState<{sent:number;total:number}|null>(null)
 
-  // Auto-seed settings with env var keys on first load
   useEffect(() => {
     fetch('/api/seed-settings', { method: 'POST' }).catch(() => {})
+    const today = new Date().toISOString().split('T')[0]
+    const dismissed = localStorage.getItem('briefing_dismissed')
+    if (dismissed === today) setBriefingDismissed(true)
   }, [])
 
   const load = useCallback(async () => {
@@ -35,6 +48,16 @@ export default function DashboardPage() {
     const monthDocs = (docs || []).filter((d: Record<string,unknown>) => d.type === 'Receipt' && (d.created_at as string) >= monthStart)
     const monthRevenue = monthDocs.reduce((s: number, d: Record<string,unknown>) => s + calcTotals(d).total, 0)
 
+    const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString()
+    const staleJobs = (jobs || []).filter((j: Record<string,unknown>) =>
+      !['Paid','Closed','Completed','Ready for Pickup'].includes(j.status as string) &&
+      (j.updated_at as string || j.created_at as string) < threeDaysAgo
+    ) as Record<string,unknown>[]
+
+    const overdueInvoices = (docs || []).filter((d: Record<string,unknown>) =>
+      d.type === 'Invoice' && ['Unpaid','Partial'].includes(d.status as string)
+    ) as Record<string,unknown>[]
+
     setStats({
       openJobs,
       unpaidTotal,
@@ -42,6 +65,10 @@ export default function DashboardPage() {
       monthRevenue,
       recentJobs: (jobs || []).slice(0, 6) as Record<string,unknown>[],
       recentMessages: (messages || []) as Record<string,unknown>[],
+      allJobs: (jobs || []) as Record<string,unknown>[],
+      allDocs: (docs || []) as Record<string,unknown>[],
+      staleJobs,
+      overdueInvoices,
     })
     setLoading(false)
   }, [])
@@ -56,6 +83,70 @@ export default function DashboardPage() {
     return () => { supabase.removeChannel(channel) }
   }, [load])
 
+  const dismissBriefing = () => {
+    setBriefingDismissed(true)
+    localStorage.setItem('briefing_dismissed', new Date().toISOString().split('T')[0])
+  }
+
+  const generateInsight = async () => {
+    if (!stats) return
+    setInsightLoading(true)
+    try {
+      const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
+      const apiKey = (settings?.ai_api_key as string) || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || ''
+      const model = (settings?.ai_model as string) || 'meta-llama/llama-3.3-70b-instruct:free'
+      const baseUrl = (settings?.ai_base_url as string) || 'https://openrouter.ai/api/v1'
+      if (!apiKey) { setAiInsight('Configure your AI API key in Settings to use AI insights.'); return }
+
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString()
+      const recentJobs = stats.allJobs.filter(j => (j.created_at as string) >= thirtyDaysAgo)
+      const recentDocs = stats.allDocs.filter(d => (d.created_at as string) >= thirtyDaysAgo)
+
+      const statusCounts: Record<string,number> = {}
+      recentJobs.forEach(j => { statusCounts[j.status as string] = (statusCounts[j.status as string] || 0) + 1 })
+
+      const revenue = recentDocs.filter(d => d.type === 'Receipt').reduce((s, d) => s + calcTotals(d).total, 0)
+      const avgJobValue = recentDocs.length > 0 ? revenue / Math.max(recentDocs.filter(d => d.type === 'Receipt').length, 1) : 0
+
+      const summary = `Last 30 days: ${recentJobs.length} jobs, ${formatCurrency(revenue)} revenue, avg ticket ${formatCurrency(avgJobValue)}. Status breakdown: ${Object.entries(statusCounts).map(([k,v]) => `${k}:${v}`).join(', ')}. ${stats.staleJobs.length} stale jobs, ${stats.overdueInvoices.length} overdue invoices, ${stats.customersCount} total customers.`
+
+      const res = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: 'You are a business analyst for an auto repair shop. Give 2-3 brief, actionable insights based on the data. Keep it under 150 words. Be specific with numbers.' },
+            { role: 'user', content: summary }
+          ],
+          max_tokens: 300,
+        })
+      })
+      const data = await res.json()
+      setAiInsight(data.choices?.[0]?.message?.content || 'Unable to generate insight.')
+    } catch { setAiInsight('Failed to generate insight. Check your AI settings.') }
+    finally { setInsightLoading(false) }
+  }
+
+  const sendSlowDayOutreach = async () => {
+    setSlowDaySending(true); setSlowDayResult(null)
+    try {
+      const res = await fetch('/api/outreach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'follow_up_cold',
+          filter: { daysSinceLastVisit: 60 },
+          template: slowDayMsg || undefined,
+          channel: 'sms',
+        })
+      })
+      const data = await res.json()
+      setSlowDayResult({ sent: data.sent || 0, total: data.total || 0 })
+    } catch { setSlowDayResult({ sent: 0, total: 0 }) }
+    finally { setSlowDaySending(false) }
+  }
+
   if (loading) return <div className="p-8 text-text-muted">Loading…</div>
 
   const STATUS_COLOR: Record<string,string> = {
@@ -63,12 +154,72 @@ export default function DashboardPage() {
     'Ready for Pickup': 'bg-green', 'Waiting on Parts': 'bg-amber', 'Paid': 'bg-bg-hover', 'Closed': 'bg-bg-hover'
   }
 
+  // Tech performance: count jobs per tech from labors
+  const techMap: Record<string, { jobs: number; hours: number; revenue: number }> = {}
+  stats!.allJobs.forEach(j => {
+    const labors = (j.labors as Record<string,unknown>[]) || []
+    labors.forEach(l => {
+      const tech = (l.tech as string) || ''
+      if (!tech) return
+      if (!techMap[tech]) techMap[tech] = { jobs: 0, hours: 0, revenue: 0 }
+      techMap[tech].jobs++
+      techMap[tech].hours += Number(l.hours) || 0
+      techMap[tech].revenue += (Number(l.hours) || 0) * (Number(l.rate) || 0)
+    })
+  })
+  const techs = Object.entries(techMap).sort((a, b) => b[1].revenue - a[1].revenue)
+
+  // Is it a slow day? (fewer than 3 open jobs)
+  const isSlowDay = stats!.openJobs < 3
+
   return (
     <div className="p-8 space-y-8 animate-fade-in">
       <div>
         <h1 className="text-2xl font-bold">Dashboard</h1>
         <p className="text-text-muted text-sm mt-1">Alpha International Auto Center</p>
       </div>
+
+      {/* Feature 2: Morning Briefing */}
+      {!briefingDismissed && (
+        <div className="card border-blue/30 bg-blue/5">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xl">☀️</span>
+              <h2 className="text-sm font-bold uppercase tracking-wider text-blue">Good Morning — Daily Briefing</h2>
+            </div>
+            <div className="flex gap-2">
+              <button className="btn btn-secondary btn-sm" onClick={() => setBriefingExpanded(!briefingExpanded)}>
+                {briefingExpanded ? 'Collapse' : 'Expand'}
+              </button>
+              <button className="btn btn-secondary btn-sm" onClick={dismissBriefing}>Dismiss</button>
+            </div>
+          </div>
+          {briefingExpanded && (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
+              <div className="bg-bg-card border border-border rounded-lg p-3">
+                <div className="text-xs text-text-muted">Open Jobs</div>
+                <div className="text-lg font-bold text-blue">{stats!.openJobs}</div>
+              </div>
+              <div className="bg-bg-card border border-border rounded-lg p-3">
+                <div className="text-xs text-text-muted">Stale Jobs (&gt;3 days)</div>
+                <div className="text-lg font-bold text-amber">{stats!.staleJobs.length}</div>
+                {stats!.staleJobs.length > 0 && (
+                  <div className="text-xs text-text-muted mt-1 truncate">{(stats!.staleJobs[0].customer_name as string) || 'Unknown'}{stats!.staleJobs.length > 1 ? ` +${stats!.staleJobs.length - 1} more` : ''}</div>
+                )}
+              </div>
+              <div className="bg-bg-card border border-border rounded-lg p-3">
+                <div className="text-xs text-text-muted">Overdue Invoices</div>
+                <div className="text-lg font-bold text-red">{stats!.overdueInvoices.length}</div>
+                <div className="text-xs text-text-muted mt-1">{formatCurrency(stats!.overdueInvoices.reduce((s, d) => s + calcTotals(d).balanceDue, 0))} outstanding</div>
+              </div>
+              <div className="bg-bg-card border border-border rounded-lg p-3">
+                <div className="text-xs text-text-muted">Unread Messages</div>
+                <div className="text-lg font-bold text-green">{stats!.recentMessages.filter(m => !m.read && m.direction === 'inbound').length}</div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -84,6 +235,45 @@ export default function DashboardPage() {
             <div className="text-xs text-text-muted mt-1">{s.label}</div>
           </div>
         ))}
+      </div>
+
+      {/* Feature 11: AI Insights + Feature 19: Slow Day Outreach */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="card">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary">🧠 AI Business Insights</h2>
+            <button className="btn btn-primary btn-sm" onClick={generateInsight} disabled={insightLoading}>
+              {insightLoading ? 'Analyzing…' : 'Generate Insight'}
+            </button>
+          </div>
+          {aiInsight ? (
+            <div className="text-sm text-text-primary whitespace-pre-wrap leading-relaxed">{aiInsight}</div>
+          ) : (
+            <p className="text-sm text-text-muted">Click &quot;Generate Insight&quot; to get AI-powered analysis of your shop&apos;s last 30 days.</p>
+          )}
+        </div>
+
+        {isSlowDay && (
+          <div className="card border-amber/30 bg-amber/5">
+            <h2 className="text-sm font-bold uppercase tracking-wider text-amber mb-3">📣 Slow Day — Send Outreach?</h2>
+            <p className="text-sm text-text-muted mb-3">Only {stats!.openJobs} open jobs today. Reach out to customers who haven&apos;t visited in 60+ days.</p>
+            <textarea
+              className="form-textarea mb-3"
+              rows={2}
+              placeholder="Custom message (optional)..."
+              value={slowDayMsg}
+              onChange={e => setSlowDayMsg(e.target.value)}
+            />
+            <button className="btn btn-primary w-full" onClick={sendSlowDayOutreach} disabled={slowDaySending}>
+              {slowDaySending ? 'Sending…' : '🚀 Send Outreach SMS'}
+            </button>
+            {slowDayResult && (
+              <div className="mt-3 bg-green/10 border border-green/30 rounded-lg p-3 text-sm text-green">
+                Sent {slowDayResult.sent} of {slowDayResult.total} eligible customers.
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -125,6 +315,31 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {/* Feature 18: Tech Performance Dashboard */}
+      {techs.length > 0 && (
+        <div className="card">
+          <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary mb-4">👨‍🔧 Technician Performance</h2>
+          <div className="overflow-x-auto">
+            <table className="data-table w-full">
+              <thead>
+                <tr><th>Technician</th><th>Jobs</th><th>Hours</th><th>Revenue</th><th>Avg $/Job</th></tr>
+              </thead>
+              <tbody>
+                {techs.map(([name, data]) => (
+                  <tr key={name}>
+                    <td className="font-medium">{name}</td>
+                    <td>{data.jobs}</td>
+                    <td>{data.hours.toFixed(1)}</td>
+                    <td className="font-semibold text-green">{formatCurrency(data.revenue)}</td>
+                    <td>{formatCurrency(data.jobs > 0 ? data.revenue / data.jobs : 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -2,13 +2,32 @@
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 
-interface Customer { id: string; name: string; phone: string; email: string; address: string; preferred_contact: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin: string; vehicle_plate: string; vehicle_mileage: string; notes: string; created_at: string }
+interface Customer { id: string; name: string; phone: string; email: string; address: string; preferred_contact: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin: string; vehicle_plate: string; vehicle_mileage: string; notes: string; created_at: string; sentiment?: string }
+
+const SENTIMENT_COLORS: Record<string, string> = {
+  happy: 'tag-green',
+  neutral: 'tag-gray',
+  unhappy: 'tag-red',
+  vip: 'tag-blue',
+  'at-risk': 'tag-amber',
+}
+
+const SENTIMENT_LABELS: Record<string, string> = {
+  happy: '😊 Happy',
+  neutral: '😐 Neutral',
+  unhappy: '😞 Unhappy',
+  vip: '⭐ VIP',
+  'at-risk': '⚠️ At Risk',
+}
+
+const SENTIMENT_OPTIONS = ['happy', 'neutral', 'unhappy', 'vip', 'at-risk'] as const
 
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [editing, setEditing] = useState<string | null | 'new'>(null)
   const [form, setForm] = useState<Partial<Customer>>({})
   const [search, setSearch] = useState('')
+  const [sentimentFilter, setSentimentFilter] = useState<string>('all')
   const [sendModal, setSendModal] = useState<{ customer: Customer; channel: 'sms'|'email' } | null>(null)
   const [sendBody, setSendBody] = useState(''); const [sending, setSending] = useState(false)
   const [jobCounts, setJobCounts] = useState<Record<string,number>>({})
@@ -16,7 +35,6 @@ export default function CustomersPage() {
   const load = useCallback(async () => {
     const { data } = await supabase.from('customers').select('*').order('name')
     setCustomers((data || []) as Customer[])
-    // Get job counts
     const { data: jobs } = await supabase.from('jobs').select('customer_id')
     const counts: Record<string,number> = {}
     ;(jobs || []).forEach((j: Record<string,string>) => { counts[j.customer_id] = (counts[j.customer_id]||0) + 1 })
@@ -67,8 +85,12 @@ export default function CustomersPage() {
     finally { setSending(false) }
   }
 
-  const filtered = customers.filter(c => !search || [c.name, c.phone, c.email].some(v => (v||'').toLowerCase().includes(search.toLowerCase())))
-  const fmt = (d: string) => d ? new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : ''
+  const filtered = customers.filter(c => {
+    if (search && ![c.name, c.phone, c.email].some(v => (v||'').toLowerCase().includes(search.toLowerCase()))) return false
+    if (sentimentFilter !== 'all' && (c.sentiment || 'neutral') !== sentimentFilter) return false
+    return true
+  })
+  const fmtDate = (d: string) => d ? new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : ''
 
   return (
     <div className="p-8 animate-fade-in">
@@ -96,6 +118,12 @@ export default function CustomersPage() {
                 </div>
               </div>
               <div><label className="form-label">Address</label><input className="form-input" value={form.address||''} onChange={f('address')} /></div>
+              <div>
+                <label className="form-label">Customer Sentiment</label>
+                <select className="form-select" value={form.sentiment||'neutral'} onChange={f('sentiment')}>
+                  {SENTIMENT_OPTIONS.map(s => <option key={s} value={s}>{SENTIMENT_LABELS[s]}</option>)}
+                </select>
+              </div>
             </div>
             <div className="card space-y-4">
               <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Vehicle Info</div>
@@ -120,8 +148,22 @@ export default function CustomersPage() {
             <h1 className="text-2xl font-bold">Customers <span className="text-text-muted text-lg font-normal ml-2">{customers.length}</span></h1>
             <div className="flex gap-3">
               <input className="form-input w-56" placeholder="Search name, phone, email..." value={search} onChange={e => setSearch(e.target.value)} />
-              <button className="btn btn-primary" onClick={() => { setForm({ preferred_contact: 'Call' }); setEditing('new') }}>+ New Customer</button>
+              <button className="btn btn-primary" onClick={() => { setForm({ preferred_contact: 'Call', sentiment: 'neutral' }); setEditing('new') }}>+ New Customer</button>
             </div>
+          </div>
+
+          {/* Sentiment filter */}
+          <div className="flex gap-2 mb-4 flex-wrap">
+            <button onClick={() => setSentimentFilter('all')}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${sentimentFilter === 'all' ? 'bg-blue text-white' : 'bg-bg-card text-text-muted hover:text-text-primary border border-border'}`}>
+              All
+            </button>
+            {SENTIMENT_OPTIONS.map(s => (
+              <button key={s} onClick={() => setSentimentFilter(s)}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${sentimentFilter === s ? 'bg-blue text-white' : 'bg-bg-card text-text-muted hover:text-text-primary border border-border'}`}>
+                {SENTIMENT_LABELS[s]}
+              </button>
+            ))}
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -135,7 +177,12 @@ export default function CustomersPage() {
               <div key={c.id} className="card hover:border-blue/40 transition-colors cursor-pointer group" onClick={() => { setForm(c); setEditing(c.id) }}>
                 <div className="flex items-start justify-between mb-3">
                   <div>
-                    <div className="font-semibold text-text-primary">{c.name}</div>
+                    <div className="font-semibold text-text-primary flex items-center gap-2">
+                      {c.name}
+                      {c.sentiment && c.sentiment !== 'neutral' && (
+                        <span className={`tag text-xs ${SENTIMENT_COLORS[c.sentiment] || 'tag-gray'}`}>{SENTIMENT_LABELS[c.sentiment] || c.sentiment}</span>
+                      )}
+                    </div>
                     <div className="text-sm text-text-muted mt-0.5">{c.phone || 'No phone'}{c.email ? ` · ${c.email}` : ''}</div>
                   </div>
                   <span className="tag tag-blue text-xs">{c.preferred_contact || 'Call'}</span>
@@ -144,7 +191,7 @@ export default function CustomersPage() {
                   <div className="text-sm text-text-secondary mb-3">{[c.vehicle_year,c.vehicle_make,c.vehicle_model].filter(Boolean).join(' ')}</div>
                 )}
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-text-muted">{jobCounts[c.id] || 0} jobs · Added {fmt(c.created_at)}</span>
+                  <span className="text-xs text-text-muted">{jobCounts[c.id] || 0} jobs · Added {fmtDate(c.created_at)}</span>
                   <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
                     {c.phone && <button className="btn btn-sm btn-secondary" onClick={() => { setSendModal({ customer: c, channel: 'sms' }); setSendBody('') }}>💬</button>}
                     {c.email && <button className="btn btn-sm btn-secondary" onClick={() => { setSendModal({ customer: c, channel: 'email' }); setSendBody('') }}>📧</button>}

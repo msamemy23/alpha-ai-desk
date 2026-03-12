@@ -6,11 +6,17 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<Record<string,unknown>>({})
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [tab, setTab] = useState<'shop'|'ai'|'comms'|'outreach'>('shop')
+  const [tab, setTab] = useState<'shop'|'ai'|'comms'|'outreach'|'reviews'>('shop')
   const [outreachFilter, setOutreachFilter] = useState({ days: 90, channel: 'sms' })
   const [outreachTemplate, setOutreachTemplate] = useState('')
   const [launching, setLaunching] = useState(false)
   const [launchResult, setLaunchResult] = useState<{sent:number;total:number} | null>(null)
+
+  // Feature 17: Google Review Response state
+  const [reviewText, setReviewText] = useState('')
+  const [reviewStars, setReviewStars] = useState(5)
+  const [reviewDraft, setReviewDraft] = useState('')
+  const [reviewLoading, setReviewLoading] = useState(false)
 
   const load = useCallback(async () => {
     const { data } = await supabase.from('settings').select('*').limit(1).single()
@@ -46,11 +52,39 @@ export default function SettingsPage() {
     } finally { setLaunching(false) }
   }
 
+  const draftReviewResponse = async () => {
+    if (!reviewText.trim()) return
+    setReviewLoading(true); setReviewDraft('')
+    try {
+      const apiKey = (settings.ai_api_key as string) || ''
+      const model = (settings.ai_model as string) || 'meta-llama/llama-3.3-70b-instruct:free'
+      const baseUrl = (settings.ai_base_url as string) || 'https://openrouter.ai/api/v1'
+      if (!apiKey) { setReviewDraft('Please configure your AI API key in the AI Config tab first.'); return }
+
+      const shopName = (settings.shop_name as string) || 'our shop'
+      const tone = reviewStars >= 4 ? 'grateful and warm' : reviewStars >= 3 ? 'appreciative and constructive' : 'empathetic, apologetic, and professional'
+
+      const res = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: `You are responding to a ${reviewStars}-star Google review for "${shopName}". The review says: "${reviewText}"\n\nWrite a ${tone} response from the business owner. Keep it 2-4 sentences, professional but personable. Don't use generic filler. Address specific points they mentioned. Return ONLY the response text.` }],
+          max_tokens: 300,
+        })
+      })
+      const data = await res.json()
+      setReviewDraft(data.choices?.[0]?.message?.content || 'Could not generate a response.')
+    } catch { setReviewDraft('Error contacting AI. Check your API settings.') }
+    finally { setReviewLoading(false) }
+  }
+
   const TABS = [
     { id: 'shop', label: '🏪 Shop Info' },
     { id: 'ai', label: '🤖 AI Config' },
     { id: 'comms', label: '📡 Communications' },
     { id: 'outreach', label: '📣 AI Outreach' },
+    { id: 'reviews', label: '⭐ Reviews' },
   ] as const
 
   return (
@@ -138,7 +172,7 @@ export default function SettingsPage() {
       {tab === 'outreach' && (
         <div className="card space-y-5">
           <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">📣 AI Customer Outreach</div>
-          <p className="text-sm text-text-muted">Automatically contact customers who haven't been in recently. AI personalizes each message.</p>
+          <p className="text-sm text-text-muted">Automatically contact customers who haven&apos;t been in recently. AI personalizes each message.</p>
 
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -180,6 +214,45 @@ export default function SettingsPage() {
           <div className="bg-red/10 border border-red/30 rounded-lg p-3 text-xs text-red/80">
             ⚠️ Only launch campaigns if Telnyx/Resend are configured. Test with a small batch first.
           </div>
+        </div>
+      )}
+
+      {tab === 'reviews' && (
+        <div className="card space-y-5">
+          <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">⭐ Google Review Response Drafts</div>
+          <p className="text-sm text-text-muted">Paste a Google review and get an AI-drafted response. Copy and paste the result into your Google Business reply.</p>
+
+          <div>
+            <label className="form-label">Star Rating</label>
+            <div className="flex gap-1">
+              {[1,2,3,4,5].map(n => (
+                <button key={n} onClick={() => setReviewStars(n)}
+                  className={`text-2xl transition-transform hover:scale-110 ${n <= reviewStars ? 'opacity-100' : 'opacity-30'}`}>
+                  ⭐
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="form-label">Customer Review Text</label>
+            <textarea className="form-textarea" rows={4} value={reviewText} onChange={e => setReviewText(e.target.value)}
+              placeholder="Paste the customer's review here..." />
+          </div>
+
+          <button className="btn btn-primary w-full" onClick={draftReviewResponse} disabled={reviewLoading || !reviewText.trim()}>
+            {reviewLoading ? 'Drafting response…' : '✍️ Draft Response'}
+          </button>
+
+          {reviewDraft && (
+            <div className="space-y-3">
+              <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Draft Response</div>
+              <div className="bg-bg-hover border border-border rounded-lg p-4 text-sm whitespace-pre-wrap">{reviewDraft}</div>
+              <button className="btn btn-sm btn-secondary" onClick={() => { navigator.clipboard.writeText(reviewDraft) }}>
+                📋 Copy to Clipboard
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

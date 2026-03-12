@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { supabase, calcTotals, formatCurrency } from '@/lib/supabase'
 
 interface Customer { id: string; name: string; phone: string; email: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin: string; vehicle_plate: string; vehicle_mileage: string }
-interface Doc { id: string; type: string; doc_number: string; status: string; doc_date: string; customer_name: string; customer_id: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string }
+interface Doc { id: string; type: string; doc_number: string; status: string; doc_date: string; customer_name: string; customer_id: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
 
 function getStatuses(type: string) {
   if (type === 'Receipt') return ['Draft','Paid']
@@ -18,6 +18,10 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   const [form, setForm] = useState<Partial<Doc>>({})
   const [search, setSearch] = useState('')
   const [sendModal, setSendModal] = useState<Doc | null>(null)
+  // Feature 13: Payment Plan
+  const [planModal, setPlanModal] = useState<Doc | null>(null)
+  const [planForm, setPlanForm] = useState({ down_payment: 0, installments: 3, frequency: 'monthly' })
+  const [emailSending, setEmailSending] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     const [{ data: d }, { data: c }] = await Promise.all([
@@ -88,10 +92,42 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     setSendModal(null); load()
   }
 
+  // Feature 9: Quick email to customer from list
+  const quickEmail = async (doc: Doc) => {
+    const customer = customers.find(c => c.id === doc.customer_id)
+    if (!customer?.email) return alert('No email on file for this customer')
+    setEmailSending(doc.id)
+    try {
+      await fetch('/api/send-document', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentId: doc.id, channel: 'email', email: customer.email })
+      })
+    } catch { alert('Failed to send email') }
+    finally { setEmailSending(null); load() }
+  }
+
+  // Feature 13: Save payment plan
+  const savePaymentPlan = async () => {
+    if (!planModal) return
+    const t = calcTotals(planModal as unknown as Record<string,unknown>)
+    const remaining = t.total - planForm.down_payment
+    const perPayment = remaining / planForm.installments
+    const payments: { date: string; amount: number; paid: boolean }[] = []
+    const freqDays = planForm.frequency === 'weekly' ? 7 : planForm.frequency === 'biweekly' ? 14 : 30
+    for (let i = 0; i < planForm.installments; i++) {
+      const d = new Date()
+      d.setDate(d.getDate() + freqDays * (i + 1))
+      payments.push({ date: d.toISOString().split('T')[0], amount: Math.round(perPayment * 100) / 100, paid: false })
+    }
+    const plan = { enabled: true, down_payment: planForm.down_payment, installments: planForm.installments, frequency: planForm.frequency, payments }
+    await supabase.from('documents').update({ payment_plan: plan, updated_at: new Date().toISOString() }).eq('id', planModal.id)
+    setPlanModal(null); load()
+  }
+
   return (
     <div className="p-8 animate-fade-in">
       {editing !== null ? (
-        /* ─── Doc Form ─── */
+        /* Doc Form */
         <div className="grid grid-cols-5 gap-6">
           <div className="col-span-3 space-y-4">
             <div className="flex items-center justify-between">
@@ -100,7 +136,8 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                 <button className="btn btn-secondary" onClick={()=>{setEditing(null);setForm({})}}>← Back</button>
                 <button className="btn btn-primary" onClick={save}>Save {type}</button>
                 {editing !== 'new' && <button className="btn btn-danger" onClick={del}>Delete</button>}
-                {editing !== 'new' && <button className="btn btn-secondary" onClick={() => setSendModal(form as Doc)}>📤 Send</button>}
+                {editing !== 'new' && <button className="btn btn-secondary" onClick={() => setSendModal(form as Doc)}>Send</button>}
+                {editing !== 'new' && type === 'Invoice' && <button className="btn btn-secondary" onClick={() => setPlanModal(form as Doc)}>Payment Plan</button>}
               </div>
             </div>
 
@@ -174,6 +211,40 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               <div><label className="form-label">Deposit $</label><input className="form-input" type="number" step="0.01" value={form.deposit||0} onChange={sf('deposit')} /></div>
               <div className="col-span-2"><label className="form-label">Notes</label><textarea className="form-textarea" rows={3} value={form.notes||''} onChange={sf('notes')} /></div>
             </div>
+
+            {/* Payment plan display */}
+            {form.payment_plan?.enabled && (
+              <div className="card border-blue/30">
+                <div className="text-xs font-bold uppercase tracking-wider text-blue mb-3">Payment Plan</div>
+                <div className="text-sm mb-2">Down payment: {formatCurrency(form.payment_plan.down_payment)} · {form.payment_plan.installments} {form.payment_plan.frequency} payments</div>
+                <div className="space-y-1">
+                  {form.payment_plan.payments.map((p, i) => (
+                    <div key={i} className="flex items-center gap-3 text-sm">
+                      <input type="checkbox" checked={p.paid} onChange={e => {
+                        const plan = { ...form.payment_plan! }
+                        const payments = [...plan.payments]
+                        payments[i] = { ...payments[i], paid: e.target.checked }
+                        setForm(f => ({ ...f, payment_plan: { ...plan, payments } }))
+                      }} />
+                      <span className={p.paid ? 'line-through text-text-muted' : ''}>{p.date} — {formatCurrency(p.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+                {(() => {
+                  const paid = form.payment_plan!.payments.filter(p => p.paid).length
+                  const total = form.payment_plan!.payments.length
+                  const pct = total > 0 ? (paid / total) * 100 : 0
+                  return (
+                    <div className="mt-3">
+                      <div className="h-2 bg-bg-hover rounded-full overflow-hidden">
+                        <div className="h-full bg-green rounded-full transition-all" style={{ width: `${pct}%` }} />
+                      </div>
+                      <div className="text-xs text-text-muted mt-1">{paid}/{total} payments complete</div>
+                    </div>
+                  )
+                })()}
+              </div>
+            )}
           </div>
 
           {/* Preview */}
@@ -200,7 +271,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
           </div>
         </div>
       ) : (
-        /* ─── Doc List ─── */
+        /* Doc List */
         <div>
           <div className="flex items-center justify-between mb-6">
             <h1 className="text-2xl font-bold">{type}s</h1>
@@ -224,7 +295,19 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                       <td><span className={`tag ${statusColor[d.status]||'tag-gray'}`}>{d.status}</span></td>
                       <td className="font-semibold">{formatCurrency(t.total)}</td>
                       <td onClick={e => e.stopPropagation()}>
-                        <button className="btn btn-secondary btn-sm" onClick={() => setSendModal(d)}>📤 Send</button>
+                        <div className="flex gap-1">
+                          <button className="btn btn-secondary btn-sm" onClick={() => setSendModal(d)}>Send</button>
+                          {/* Feature 9: Quick email button */}
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => quickEmail(d)}
+                            disabled={emailSending === d.id}
+                          >
+                            {emailSending === d.id ? '…' : 'Email'}
+                          </button>
+                          {/* Feature 13: Payment plan button for invoices */}
+                          {type === 'Invoice' && <button className="btn btn-secondary btn-sm" onClick={() => { setPlanModal(d); setPlanForm({ down_payment: 0, installments: 3, frequency: 'monthly' }) }}>Plan</button>}
+                        </div>
                       </td>
                     </tr>
                   )
@@ -241,9 +324,47 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
           <div className="bg-bg-card border border-border rounded-xl w-full max-w-sm p-6">
             <h2 className="text-lg font-bold mb-4">Send {sendModal.type} #{sendModal.doc_number}</h2>
             <div className="space-y-3">
-              <button className="btn btn-primary w-full" onClick={() => sendDoc('email')}>📧 Send via Email</button>
-              <button className="btn btn-secondary w-full" onClick={() => sendDoc('sms')}>💬 Send via SMS</button>
+              <button className="btn btn-primary w-full" onClick={() => sendDoc('email')}>Send via Email</button>
+              <button className="btn btn-secondary w-full" onClick={() => sendDoc('sms')}>Send via SMS</button>
               <button className="btn btn-secondary w-full" onClick={() => setSendModal(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Feature 13: Payment Plan modal */}
+      {planModal && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-bg-card border border-border rounded-xl w-full max-w-md p-6">
+            <h2 className="text-lg font-bold mb-4">Payment Plan — {planModal.doc_number}</h2>
+            <div className="text-sm text-text-muted mb-4">Total: {formatCurrency(calcTotals(planModal as unknown as Record<string,unknown>).total)}</div>
+            <div className="space-y-4">
+              <div>
+                <label className="form-label">Down Payment</label>
+                <input className="form-input" type="number" step="0.01" value={planForm.down_payment} onChange={e => setPlanForm(f => ({ ...f, down_payment: Number(e.target.value) }))} />
+              </div>
+              <div>
+                <label className="form-label">Number of Installments</label>
+                <select className="form-select" value={planForm.installments} onChange={e => setPlanForm(f => ({ ...f, installments: Number(e.target.value) }))}>
+                  {[2,3,4,5,6,12].map(n => <option key={n} value={n}>{n} payments</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="form-label">Frequency</label>
+                <select className="form-select" value={planForm.frequency} onChange={e => setPlanForm(f => ({ ...f, frequency: e.target.value }))}>
+                  <option value="weekly">Weekly</option>
+                  <option value="biweekly">Bi-weekly</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+              </div>
+              <div className="bg-bg-hover rounded-lg p-3 text-sm">
+                <div>Remaining: {formatCurrency(calcTotals(planModal as unknown as Record<string,unknown>).total - planForm.down_payment)}</div>
+                <div>Per payment: {formatCurrency((calcTotals(planModal as unknown as Record<string,unknown>).total - planForm.down_payment) / planForm.installments)}</div>
+              </div>
+              <div className="flex gap-3">
+                <button className="btn btn-primary flex-1" onClick={savePaymentPlan}>Save Plan</button>
+                <button className="btn btn-secondary" onClick={() => setPlanModal(null)}>Cancel</button>
+              </div>
             </div>
           </div>
         </div>

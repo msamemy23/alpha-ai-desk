@@ -16,10 +16,13 @@ export default function MessagesPage() {
   const [sendTo, setSendTo] = useState(''); const [sendBody, setSendBody] = useState('')
   const [sendChannel, setSendChannel] = useState<'sms'|'email'>('sms')
   const [sending, setSending] = useState(false)
-  const [tab, setTab] = useState<'sms'|'calls'>('sms')
+  const [tab, setTab] = useState<'sms'|'calls'|'summaries'>('sms')
   const [dialerNum, setDialerNum] = useState('')
   const [calling, setCalling] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  // Feature 7: AI Summaries
+  const [summaries, setSummaries] = useState<Record<string, string>>({})
+  const [summarizing, setSummarizing] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     const [{ data: msgs }, { data: acts }, { data: custs }] = await Promise.all([
@@ -86,6 +89,40 @@ export default function MessagesPage() {
   const fmt = (d: string) => new Date(d).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
   const getContactName = (phone: string) => customers.find(c => c.phone?.replace(/\D/g,'') === phone.replace(/\D/g,''))?.name || phone
 
+  // Feature 7: Summarize a thread using AI
+  const summarizeThread = async (contact: string) => {
+    const thread = threadMap[contact]
+    if (!thread) return
+    setSummarizing(contact)
+    try {
+      const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
+      const apiKey = (settings?.ai_api_key as string) || ''
+      const model = (settings?.ai_model as string) || 'meta-llama/llama-3.3-70b-instruct:free'
+      const baseUrl = (settings?.ai_base_url as string) || 'https://openrouter.ai/api/v1'
+      if (!apiKey) { setSummaries(s => ({ ...s, [contact]: 'Configure AI API key in Settings.' })); return }
+
+      const convo = thread.messages.slice().reverse().map(m =>
+        `${m.direction === 'inbound' ? 'Customer' : 'Shop'} (${fmt(m.created_at)}): ${m.body}`
+      ).join('\n')
+
+      const res = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: 'Summarize this auto repair shop conversation in 2-3 sentences. Focus on: what the customer needs, any commitments made, and next steps.' },
+            { role: 'user', content: convo }
+          ],
+          max_tokens: 200,
+        })
+      })
+      const data = await res.json()
+      setSummaries(s => ({ ...s, [contact]: data.choices?.[0]?.message?.content || 'Unable to summarize.' }))
+    } catch { setSummaries(s => ({ ...s, [contact]: 'Failed to summarize.' })) }
+    finally { setSummarizing(null) }
+  }
+
   return (
     <div style={{display:'flex',height:'100vh',overflow:'hidden',flexDirection:'column'}}>
       <div style={{padding:'16px 24px',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
@@ -98,7 +135,43 @@ export default function MessagesPage() {
       <div style={{display:'flex',borderBottom:'1px solid var(--border)',flexShrink:0}}>
         <button onClick={() => setTab('sms')} style={{flex:1,padding:'12px',fontSize:'0.875rem',fontWeight:600,border:'none',borderBottom:tab==='sms'?'2px solid #3b82f6':'2px solid transparent',color:tab==='sms'?'#3b82f6':'var(--text-muted)',background:'transparent',cursor:'pointer'}}>SMS</button>
         <button onClick={() => setTab('calls')} style={{flex:1,padding:'12px',fontSize:'0.875rem',fontWeight:600,border:'none',borderBottom:tab==='calls'?'2px solid #3b82f6':'2px solid transparent',color:tab==='calls'?'#3b82f6':'var(--text-muted)',background:'transparent',cursor:'pointer'}}>Calls</button>
+        <button onClick={() => setTab('summaries')} style={{flex:1,padding:'12px',fontSize:'0.875rem',fontWeight:600,border:'none',borderBottom:tab==='summaries'?'2px solid #3b82f6':'2px solid transparent',color:tab==='summaries'?'#3b82f6':'var(--text-muted)',background:'transparent',cursor:'pointer'}}>AI Summaries</button>
       </div>
+
+      {/* Feature 7: AI Summaries Tab */}
+      {tab === 'summaries' && (
+        <div style={{flex:1,overflowY:'auto',padding:'24px'}}>
+          <div style={{maxWidth:'720px',margin:'0 auto'}}>
+            <p style={{fontSize:'0.875rem',color:'var(--text-muted)',marginBottom:'20px'}}>Select a conversation to generate an AI summary of the discussion.</p>
+            <div style={{display:'flex',flexDirection:'column',gap:'12px'}}>
+              {threads.length === 0 && <p style={{color:'var(--text-muted)',textAlign:'center',padding:'32px'}}>No conversations to summarize.</p>}
+              {threads.map(t => (
+                <div key={t.contact} style={{background:'var(--bg-card)',border:'1px solid var(--border)',borderRadius:'12px',padding:'16px'}}>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'8px'}}>
+                    <div>
+                      <div style={{fontWeight:600,fontSize:'0.875rem'}}>{getContactName(t.contact)}</div>
+                      <div style={{fontSize:'0.75rem',color:'var(--text-muted)'}}>{t.contact} · {t.messages.length} messages</div>
+                    </div>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={() => summarizeThread(t.contact)}
+                      disabled={summarizing === t.contact}
+                    >
+                      {summarizing === t.contact ? 'Summarizing…' : summaries[t.contact] ? 'Re-summarize' : 'Summarize'}
+                    </button>
+                  </div>
+                  {summaries[t.contact] && (
+                    <div style={{background:'var(--bg-hover)',borderRadius:'8px',padding:'12px',fontSize:'0.875rem',lineHeight:'1.5',marginTop:'8px'}}>
+                      {summaries[t.contact]}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {tab === 'sms' && (
         <div style={{display:'flex',flex:1,overflow:'hidden'}}>
           <div style={{width:'280px',borderRight:'1px solid var(--border)',display:'flex',flexDirection:'column',flexShrink:0}}>
@@ -119,10 +192,16 @@ export default function MessagesPage() {
                 <div style={{padding:'12px 16px',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
                   <div><div style={{fontWeight:600}}>{getContactName(selected)}</div><div style={{fontSize:'0.75rem',color:'var(--text-muted)'}}>{selected}</div></div>
                   <div style={{display:'flex',gap:'8px'}}>
+                    <button className="btn btn-secondary btn-sm" onClick={() => summarizeThread(selected)} disabled={summarizing === selected}>{summarizing === selected ? '…' : 'AI Summary'}</button>
                     <button className="btn btn-secondary btn-sm" onClick={() => makeCall(selected, getContactName(selected))} disabled={calling}>Call</button>
                     <button className="btn btn-secondary btn-sm" onClick={() => setSelected(null)}>X</button>
                   </div>
                 </div>
+                {summaries[selected] && (
+                  <div style={{padding:'8px 16px',background:'var(--bg-hover)',borderBottom:'1px solid var(--border)',fontSize:'0.8rem',color:'var(--text-muted)'}}>
+                    <strong>AI Summary:</strong> {summaries[selected]}
+                  </div>
+                )}
                 <div style={{flex:1,overflowY:'auto',padding:'16px',display:'flex',flexDirection:'column',gap:'12px'}}>
                   {[...(activeThread?.messages||[]).slice().reverse()].map(m => (<div key={m.id} style={{display:'flex',justifyContent:m.direction==='outbound'?'flex-end':'flex-start'}}><div style={{maxWidth:'70%',borderRadius:'12px',padding:'10px 14px',fontSize:'0.875rem',background:m.direction==='outbound'?'#2563eb':'var(--bg-card)',color:m.direction==='outbound'?'white':'var(--text)',border:m.direction==='outbound'?'none':'1px solid var(--border)'}}><p style={{margin:0}}>{m.body}</p><p style={{fontSize:'0.7rem',marginTop:'4px',opacity:0.7}}>{fmt(m.created_at)}</p></div></div>))}
                   <div ref={bottomRef} />
