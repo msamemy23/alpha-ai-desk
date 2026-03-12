@@ -1,7 +1,7 @@
 /**
  * Telnyx Voice Webhook — fully inline AI voice agent.
  * State in Supabase (persists across serverless instances).
- * Telnyx Natural TTS (instant ~200ms, runs on Telnyx's own GPUs).
+ * Voice: Telnyx.Natural.abbie (valid, documented Telnyx Natural female voice)
  * Dual-channel recording enabled.
  */
 
@@ -14,8 +14,11 @@ const SUPABASE_URL       = process.env.NEXT_PUBLIC_SUPABASE_URL  || 'https://fzt
 const SUPABASE_KEY       = process.env.SUPABASE_SERVICE_KEY      || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 const TELNYX_BASE        = 'https://api.telnyx.com/v2'
 
-// Warm, natural female voice — instant, runs on Telnyx's colocated GPUs
-const VOICE = 'Telnyx.Natural.astra'
+// CONFIRMED VALID voice — Telnyx.Natural.abbie (per official Telnyx docs, March 2026)
+// WARNING: 'Telnyx.Natural.astra' does NOT exist — astra is a Rime voice (Rime.ArcanaV3.astra)
+// Fallback: 'female' is the basic Telnyx TTS voice (always works)
+const VOICE          = 'Telnyx.Natural.abbie'
+const VOICE_FALLBACK = 'female'
 
 // ── Supabase helpers ──────────────────────────────────────────────────────────
 async function dbGet(callId: string) {
@@ -43,22 +46,48 @@ async function dbUpdate(callId: string, patch: Record<string, unknown>) {
 }
 
 // ── Telnyx call actions ───────────────────────────────────────────────────────
-async function telnyxPost(path: string, body: Record<string, unknown>) {
+async function telnyxPost(path: string, body: Record<string, unknown>): Promise<{ok: boolean; data: unknown}> {
   const r = await fetch(`${TELNYX_BASE}${path}`, {
     method:  'POST',
     headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  return r
+  const data = await r.json()
+  return { ok: r.ok, data }
 }
 
-async function speak(callId: string, text: string) {
+/**
+ * Speak text on the call.
+ * Tries VOICE first, falls back to VOICE_FALLBACK if it fails.
+ * Returns true if speak succeeded, false if failed.
+ */
+async function speak(callId: string, text: string): Promise<boolean> {
   const clean = text.replace(/"/g, "'").slice(0, 3000)
-  await telnyxPost(`/calls/${callId}/actions/speak`, {
+
+  // Primary voice
+  const result = await telnyxPost(`/calls/${callId}/actions/speak`, {
     payload:      clean,
     payload_type: 'text',
     voice:        VOICE,
   })
+
+  if (result.ok) return true
+
+  // Fallback to basic voice if primary fails
+  console.error(`[speak] Primary voice ${VOICE} failed:`, JSON.stringify(result.data))
+  const fallback = await telnyxPost(`/calls/${callId}/actions/speak`, {
+    payload:      clean,
+    payload_type: 'text',
+    voice:        VOICE_FALLBACK,
+  })
+
+  if (fallback.ok) {
+    console.log(`[speak] Fallback voice ${VOICE_FALLBACK} succeeded`)
+    return true
+  }
+
+  console.error(`[speak] Fallback voice also failed:`, JSON.stringify(fallback.data))
+  return false
 }
 
 // ── OpenRouter AI ─────────────────────────────────────────────────────────────
@@ -83,7 +112,7 @@ export async function POST(req: NextRequest) {
 
   // ── call.answered ───────────────────────────────────────────────────────────
   if (eventType === 'call.answered') {
-    // Decode task
+    // Decode task from client_state
     let task = 'Have a helpful conversation'
     const cs = payload?.client_state as string
     if (cs) {
@@ -99,7 +128,7 @@ export async function POST(req: NextRequest) {
       transcription_tracks: 'inbound',
     })
 
-    // Generate greeting
+    // Generate greeting with AI
     const greeting = await aiChat([{
       role:    'user',
       content: `You just called someone on behalf of Alpha International Auto Center (Houston TX auto shop).
@@ -107,7 +136,7 @@ Task: ${task}
 Write a SHORT natural greeting (1-2 sentences max). Warm, friendly, sounds like a real person. Text only.`,
     }], 60) || "Hey there! This is Alpha International Auto Center calling. How are you doing today?"
 
-    // Save to DB — store as JSON objects (Supabase JSONB handles this natively)
+    // Save transcript
     await dbUpdate(callId, {
       status:       'active',
       greeted:      true,
@@ -116,7 +145,12 @@ Write a SHORT natural greeting (1-2 sentences max). Warm, friendly, sounds like 
       conversation: [{ role: 'assistant', content: greeting }],
     })
 
-    await speak(callId, greeting)
+    // Speak — if it fails, unlock processing so the call isn't stuck
+    const spokOk = await speak(callId, greeting)
+    if (!spokOk) {
+      await dbUpdate(callId, { processing: false })
+    }
+
     return NextResponse.json('OK')
   }
 
@@ -162,11 +196,13 @@ RULES:
     if (reply) {
       transcript.push({ speaker: 'ai', text: reply })
       conversation.push({ role: 'assistant', content: reply })
-      await dbUpdate(callId, {
-        transcript,
-        conversation,
-      })
-      await speak(callId, reply)
+      await dbUpdate(callId, { transcript, conversation })
+
+      const spokOk = await speak(callId, reply)
+      if (!spokOk) {
+        // Speak failed — unlock immediately so next transcription can still go through
+        await dbUpdate(callId, { processing: false })
+      }
     } else {
       await dbUpdate(callId, { processing: false })
     }
@@ -212,6 +248,7 @@ RULES:
       Array.isArray(state.transcript) ? state.transcript
       : typeof state.transcript === 'string' ? JSON.parse(state.transcript || '[]')
       : []
+
     if (transcript.length > 0) {
       const lines   = transcript.map(t => `${t.speaker === 'ai' ? 'AI' : 'Person'}: ${t.text}`).join('\n')
       const summary = await aiChat([{
