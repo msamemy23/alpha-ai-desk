@@ -565,14 +565,18 @@ export default function AIPage() {
       `<div style="margin:3px 0;font-size:0.8rem"><span style="color:${t.speaker==='ai'?'#60a5fa':'#a3e635'};font-weight:600">${t.speaker==='ai'?'AI':'Person'}:</span> ${t.text}</div>`
     ).join('')
     const dur = d.duration ? `${Math.floor(d.duration/60)}m ${d.duration%60}s` : ''
-    const recordingBlock = d.recording_url
+    // Use the proxy route so the recording is always accessible (S3 presigned URLs expire in 10min)
+    const proxyUrl = d.recording_url
+      ? `/api/recording-proxy?url=${encodeURIComponent(d.recording_url)}`
+      : ''
+    const recordingBlock = proxyUrl
       ? `<div style="margin-bottom:12px">
           <div style="font-size:0.75rem;color:#9ca3af;margin-bottom:4px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em">Call Recording</div>
           <audio controls style="width:100%;border-radius:8px">
-            <source src="${d.recording_url}" type="audio/mpeg">
+            <source src="${proxyUrl}" type="audio/mpeg">
             Your browser does not support audio playback.
           </audio>
-          <a href="${d.recording_url}" download style="display:inline-block;margin-top:4px;font-size:0.75rem;color:#60a5fa">Download MP3</a>
+          <a href="${proxyUrl}" download="call-recording.mp3" style="display:inline-block;margin-top:4px;font-size:0.75rem;color:#60a5fa">Download MP3</a>
         </div>`
       : ''
     return `<div style="border:1px solid #374151;border-radius:12px;padding:16px;background:var(--bg-card,#1a1a2e)">
