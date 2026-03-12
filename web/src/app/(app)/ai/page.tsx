@@ -57,6 +57,9 @@ GET SHOP STATS:
 SEND MESSAGE (shows confirmation card):
 {"tool":"message","to":"+15551234567","channel":"sms","body":"Hi, your vehicle is ready!"}
 
+PLACE PHONE CALL (dials immediately via Telnyx):
+{"tool":"call","to":"+15551234567","name":"Customer Name"}
+
 NAVIGATE:
 {"tool":"navigate","view":"jobs"}
 
@@ -331,6 +334,31 @@ export default function AIPage() {
         const assistantMsg: ChatMessage = { role: 'assistant', content: '', html: proposalHtml }
         setMessages(prev => [...prev, assistantMsg])
         saveToHistory([...history, assistantMsg])
+        return
+      }
+
+      // Place Phone Call — dials immediately via Telnyx
+      if (parsed.tool === 'call') {
+        setStatus('Calling...')
+        try {
+          const r = await fetch('/api/make-call', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ to: parsed.to, name: parsed.name })
+          })
+          const d = await r.json()
+          if (d.ok) {
+            const assistantMsg: ChatMessage = { role: 'assistant', content: `Call placed to ${parsed.name || parsed.to}. Ringing now.` }
+            setMessages(prev => [...prev, assistantMsg])
+            saveToHistory([...history, assistantMsg])
+          } else {
+            const assistantMsg: ChatMessage = { role: 'assistant', content: `Call failed: ${d.error}` }
+            setMessages(prev => [...prev, assistantMsg])
+          }
+        } catch (err) {
+          const assistantMsg: ChatMessage = { role: 'assistant', content: `Call error: ${err instanceof Error ? err.message : 'Unknown'}` }
+          setMessages(prev => [...prev, assistantMsg])
+        }
         return
       }
 
