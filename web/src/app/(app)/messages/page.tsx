@@ -22,6 +22,7 @@ export default function MessagesPage() {
   const [tab, setTab] = useState<'sms'|'calls'|'summaries'>('sms')
   const [dialerNum, setDialerNum] = useState('')
   const [calling, setCalling] = useState(false)
+  const [deletingCall, setDeletingCall] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   // Feature 7: AI Summaries
   const [summaries, setSummaries] = useState<Record<string, string>>({})
@@ -45,6 +46,7 @@ export default function MessagesPage() {
     const ch = supabase.channel('messages_page')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, load)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'activities' }, load)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ai_calls' }, load)
       .subscribe()
     return () => { supabase.removeChannel(ch) }
   }, [load])
@@ -91,6 +93,25 @@ export default function MessagesPage() {
       alert('Calling ' + (name || to) + ' from (713) 663-6979...'); load()
     } catch (e: unknown) { alert('Call failed: ' + (e as Error).message) } finally { setCalling(false) }
   }
+  const deleteAiCall = async (id: string) => {
+    if (!confirm('Delete this call recording and summary?')) return
+    setDeletingCall(id)
+    try {
+      const res = await fetch('/api/delete-call', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      })
+      if (!res.ok) throw new Error('Delete failed')
+      setAiCalls(prev => prev.filter(c => c.id !== id))
+      if (expandedCall === id) setExpandedCall(null)
+    } catch (e: unknown) {
+      alert('Could not delete: ' + (e as Error).message)
+    } finally {
+      setDeletingCall(null)
+    }
+  }
+
   const fmt = (d: string) => new Date(d).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
   const getContactName = (phone: string) => customers.find(c => c.phone?.replace(/\D/g,'') === phone.replace(/\D/g,''))?.name || phone
 
@@ -261,13 +282,24 @@ export default function MessagesPage() {
                             </span>
                           </div>
                         </div>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          style={{fontSize:'0.75rem',flexShrink:0}}
-                          onClick={() => setExpandedCall(expandedCall === call.id ? null : call.id)}
-                        >
-                          {expandedCall === call.id ? 'Hide' : 'Details'}
-                        </button>
+                        <div style={{display:'flex',gap:'6px',flexShrink:0}}>
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            style={{fontSize:'0.75rem'}}
+                            onClick={() => setExpandedCall(expandedCall === call.id ? null : call.id)}
+                          >
+                            {expandedCall === call.id ? 'Hide' : 'Details'}
+                          </button>
+                          <button
+                            className="btn btn-sm"
+                            style={{fontSize:'0.75rem',background:'#ef444422',color:'#ef4444',border:'1px solid #ef444444',borderRadius:'6px',padding:'4px 10px',cursor:'pointer'}}
+                            onClick={() => deleteAiCall(call.id)}
+                            disabled={deletingCall === call.id}
+                            title="Delete this call"
+                          >
+                            {deletingCall === call.id ? '…' : 'Delete'}
+                          </button>
+                        </div>
                       </div>
 
                       {/* Recording player */}
