@@ -57,8 +57,9 @@ GET SHOP STATS:
 SEND MESSAGE (shows confirmation card):
 {"tool":"message","to":"+15551234567","channel":"sms","body":"Hi, your vehicle is ready!"}
 
-PLACE PHONE CALL (dials immediately via Telnyx):
+PLACE PHONE CALL — use this when user says "call", "dial", "phone", "ring" anyone:
 {"tool":"call","to":"+15551234567","name":"Customer Name"}
+IMPORTANT: "call 2819008141" means PLACE A CALL, not send a text. NEVER use the message tool for a call request.
 
 NAVIGATE:
 {"tool":"navigate","view":"jobs"}
@@ -176,6 +177,31 @@ export default function AIPage() {
     setLoading(true)
     const userMsg: ChatMessage = { role: 'user', content: text }
     setMessages(prev => [...prev, userMsg])
+
+    // Direct call detection — bypass AI for explicit call commands
+    const callMatch = text.match(/^(?:call|dial|phone|ring)\s+([\d\s\-\(\)\+]+)/i)
+    if (callMatch) {
+      const phone = callMatch[1].replace(/\s/g, '')
+      setStatus('Calling...')
+      try {
+        const r = await fetch('/api/make-call', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to: phone, name: phone })
+        })
+        const d = await r.json()
+        const msg: ChatMessage = d.ok
+          ? { role: 'assistant', content: `Call placed to ${phone}. Dialing now.` }
+          : { role: 'assistant', content: `Call failed: ${d.error}` }
+        setMessages(prev => [...prev, msg])
+      } catch (err) {
+        setMessages(prev => [...prev, { role: 'assistant', content: `Call error: ${err instanceof Error ? err.message : 'Unknown'}` }])
+      }
+      setLoading(false)
+      setStatus('')
+      return
+    }
+
     const history = [...messages, userMsg]
     await agentLoop(history)
     setLoading(false)
