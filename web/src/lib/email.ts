@@ -142,6 +142,7 @@ export function estimateEmailHtml(doc: Record<string, unknown>, settings: Record
       ${warrantyExpiry ? `<div>Expires: <strong>${warrantyExpiry}</strong></div>` : ''}
     </div>
     ${warrantyExclusions ? `<div class="warranty-exclusions"><strong>Exclusions:</strong> ${warrantyExclusions}</div>` : ''}
+    <div style="margin-top:10px;font-size:9px;color:#888;line-height:1.4;border-top:1px solid #bfdbfe;padding-top:8px">All warranty claims must be submitted to Alpha International Auto Center at 10710 S. Main St, Houston, TX 77025 during normal business hours. Contact (713) 663-6979 before beginning any warranty repair. Unauthorized repairs will void this warranty. This warranty is governed by the laws of the State of Texas.</div>
   </div>` : ''}
   <div class="footer">
     <div>${settings.payment_terms || 'Payment Terms: Due on receipt'} &nbsp;|&nbsp; Accepted: ${settings.payment_methods || 'Cash, Card, Zelle, Cash App'}</div>

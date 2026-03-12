@@ -6,19 +6,140 @@ interface Customer { id: string; name: string; phone: string; email: string; veh
 interface Doc { id: string; type: string; doc_number: string; status: string; doc_date: string; customer_name: string; customer_id: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; warranty_months: number | null; warranty_mileage: number | null; warranty_start: string | null; warranty_exclusions: string | null; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
 
 const WARRANTY_PRESETS = [
-  { label: 'No Warranty', months: 0, mileage: 0, exclusions: '' },
-  { label: 'Oil Change — 3 months / 3,000 miles', months: 3, mileage: 3000, exclusions: 'Does not cover pre-existing leaks or engine wear. Warranty void if non-recommended oil or filter is used.' },
-  { label: 'Brakes — 12 months / 12,000 miles', months: 12, mileage: 12000, exclusions: 'Covers brake pads and rotors replaced by Alpha International Auto Center only. Does not cover normal wear, damage from accidents, or modifications.' },
-  { label: 'Engine Repair — 12 months / 12,000 miles', months: 12, mileage: 12000, exclusions: 'Covers parts and labor for the specific repair performed. Does not cover unrelated failures, overheating damage, lack of maintenance, or pre-existing conditions.' },
-  { label: 'Engine Rebuild — 24 months / 24,000 miles', months: 24, mileage: 24000, exclusions: 'Covers internal engine components replaced during rebuild. Does not cover damage from overheating, lack of oil changes, modifications, or pre-existing conditions. Customer must follow recommended maintenance schedule.' },
-  { label: 'Transmission Repair — 12 months / 12,000 miles', months: 12, mileage: 12000, exclusions: 'Covers parts and labor for the specific transmission repair. Does not cover damage from towing abuse, fluid neglect, or pre-existing conditions.' },
-  { label: 'Transmission Rebuild — 24 months / 24,000 miles', months: 24, mileage: 24000, exclusions: 'Covers internal transmission components replaced during rebuild. Customer must follow recommended fluid change intervals.' },
-  { label: 'Electrical / Diagnostics — 6 months / 6,000 miles', months: 6, mileage: 6000, exclusions: 'Covers the specific electrical component or sensor replaced. Does not cover wiring harness damage, water intrusion, or aftermarket accessories.' },
-  { label: 'Suspension — 12 months / 12,000 miles', months: 12, mileage: 12000, exclusions: 'Covers suspension components replaced. Does not cover alignment, tire wear, or damage from road hazards or accidents.' },
-  { label: 'AC / Heating — 6 months / 6,000 miles', months: 6, mileage: 6000, exclusions: 'Covers the specific AC/heating component repaired or replaced. Does not cover refrigerant leaks from unrelated components or compressor failure from pre-existing conditions.' },
-  { label: 'Body & Paint — 6 months (cosmetic)', months: 6, mileage: 0, exclusions: 'Covers paint peeling, fading, or defects from workmanship. Does not cover rock chips, scratches, weather damage, or improper wash/care.' },
-  { label: 'State Inspection — No Warranty', months: 0, mileage: 0, exclusions: '' },
-  { label: 'Custom Warranty', months: 0, mileage: 0, exclusions: '' },
+  {
+    label: 'No Warranty',
+    months: 0,
+    mileage: 0,
+    exclusions: ''
+  },
+  {
+    label: 'Oil Change — 3 Months / 3,000 Miles',
+    months: 3,
+    mileage: 3000,
+    exclusions: `LIMITED WARRANTY: The oil change service performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. This warranty covers defects in materials and workmanship for the oil change service, including the oil filter and motor oil installed, for a period of 3 months or 3,000 miles from the date and odometer reading on this invoice, whichever occurs first.
+
+CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will re-perform the oil change service or replace defective materials at no additional cost, provided the vehicle is returned to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs performed by any other facility without prior written authorization from Alpha will void this warranty immediately.
+
+EXCLUSIONS: This warranty does not cover: (a) pre-existing engine leaks, oil consumption, or internal engine wear; (b) damage caused by use of non-recommended oil grade, viscosity, or filter after the warranted service; (c) engine damage resulting from neglect, overheating, coolant contamination, or failure to maintain proper fluid levels; (d) damage caused by accident, collision, misuse, abuse, negligence, or unauthorized modification; (e) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, property damage, business interruption, or any other costs of any kind; (f) customer-supplied parts or fluids. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
+  },
+  {
+    label: 'Brakes — 12 Months / 12,000 Miles',
+    months: 12,
+    mileage: 12000,
+    exclusions: `LIMITED WARRANTY: The brake repair service performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the brake components replaced (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 12 months or 12,000 miles from the date and odometer reading on this invoice, whichever occurs first.
+
+CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace defective brake components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs, diagnostics, or adjustments performed by any other facility without prior written authorization from Alpha will immediately void this warranty in its entirety, and Alpha shall have no further obligation.
+
+EXCLUSIONS: This warranty does not cover: (a) normal wear and tear of brake pads, shoes, rotors, or drums; (b) brake noise, vibration, or pulsation caused by normal wear, road conditions, or driving habits; (c) damage caused by accident, collision, misuse, abuse, negligence, improper driving habits (excessive braking, riding the brakes), or unauthorized modification; (d) brake system failures caused by hydraulic leaks, ABS module failures, or other components not replaced under this invoice; (e) vehicles used for commercial, racing, towing, or off-road purposes unless expressly noted on the invoice; (f) pre-existing conditions or failures in unrelated vehicle systems; (g) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, property damage, business interruption, or any other costs of any kind; (h) customer-supplied or used parts. Alpha reserves the right to warranty wear items (brake pads, shoes, rotors) at its sole discretion. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
+  },
+  {
+    label: 'Engine Repair — 12 Months / 12,000 Miles',
+    months: 12,
+    mileage: 12000,
+    exclusions: `LIMITED WARRANTY: The engine repair service performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the specific engine components repaired or replaced (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 12 months or 12,000 miles from the date and odometer reading on this invoice, whichever occurs first.
+
+CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace the specific defective engine components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs, diagnostics, or service performed by any other facility without prior written authorization from Alpha will immediately void this warranty in its entirety.
+
+EXCLUSIONS: This warranty does not cover: (a) engine components, sensors, or systems not specifically repaired or replaced on this invoice; (b) damage caused by overheating, coolant loss, oil starvation, or failure to maintain proper fluid levels and scheduled maintenance; (c) pre-existing conditions, sludge buildup, or internal engine wear not addressed in the original repair; (d) damage caused by accident, collision, flood, misuse, abuse, negligence, or unauthorized modification including aftermarket performance parts, tuning, or engine swaps; (e) head gasket failure caused by overheating events occurring after the repair; (f) vehicles used for commercial, racing, towing, or off-road purposes unless expressly noted; (g) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, property damage, business interruption, or any other costs of any kind; (h) customer-supplied or used parts. The customer must follow all recommended maintenance schedules and return for any required follow-up inspections noted on the invoice. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
+  },
+  {
+    label: 'Engine Rebuild — 24 Months / 24,000 Miles',
+    months: 24,
+    mileage: 24000,
+    exclusions: `LIMITED WARRANTY: The engine rebuild performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the internal engine components replaced during the rebuild (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 24 months or 24,000 miles from the date and odometer reading on this invoice, whichever occurs first.
+
+CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace defective internal engine components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs, diagnostics, or service performed by any other facility without prior written authorization from Alpha will immediately void this warranty in its entirety, and Alpha shall have no further obligation.
+
+MANDATORY MAINTENANCE: The customer must adhere to the following maintenance schedule to maintain warranty coverage: oil and filter changes every 3,000 miles or 3 months (whichever comes first) using the oil grade and viscosity specified on this invoice. Failure to maintain proper oil change intervals, or use of non-recommended oil or filters, will void this warranty. Customer must retain all maintenance receipts as proof of compliance.
+
+EXCLUSIONS: This warranty does not cover: (a) external engine components, accessories, sensors, wiring, exhaust, or systems not specifically rebuilt or replaced on this invoice; (b) damage caused by overheating, coolant system failure, oil starvation, or failure to maintain proper fluid levels; (c) pre-existing conditions in unrelated vehicle systems (transmission, electrical, cooling system) that cause engine damage; (d) damage caused by accident, collision, flood, misuse, abuse, negligence, or unauthorized modification including aftermarket performance parts, tuning, nitrous oxide, superchargers, turbo kits, or engine swaps; (e) vehicles used for commercial, racing, towing, or off-road purposes unless expressly noted; (f) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, death, property damage, business interruption, or any other costs of any kind; (g) customer-supplied or used parts; (h) damage resulting from failure to complete required follow-up inspections. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
+  },
+  {
+    label: 'Transmission Repair — 12 Months / 12,000 Miles',
+    months: 12,
+    mileage: 12000,
+    exclusions: `LIMITED WARRANTY: The transmission repair performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the specific transmission components repaired or replaced (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 12 months or 12,000 miles from the date and odometer reading on this invoice, whichever occurs first.
+
+CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace the specific defective transmission components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs, diagnostics, or service performed by any other facility without prior written authorization from Alpha will immediately void this warranty in its entirety.
+
+EXCLUSIONS: This warranty does not cover: (a) transmission components, solenoids, sensors, or systems not specifically repaired or replaced on this invoice; (b) damage caused by fluid neglect, use of incorrect transmission fluid, or failure to maintain proper fluid levels; (c) damage caused by towing abuse, excessive payload, or operating the vehicle beyond its rated capacity; (d) pre-existing conditions, internal wear, or contamination not addressed in the original repair; (e) damage caused by accident, collision, flood, misuse, abuse, negligence, or unauthorized modification; (f) vehicles used for commercial, racing, towing, or off-road purposes unless expressly noted; (g) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, property damage, business interruption, or any other costs of any kind; (h) customer-supplied or used parts. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
+  },
+  {
+    label: 'Transmission Rebuild — 24 Months / 24,000 Miles',
+    months: 24,
+    mileage: 24000,
+    exclusions: `LIMITED WARRANTY: The transmission rebuild performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the internal transmission components replaced during the rebuild (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 24 months or 24,000 miles from the date and odometer reading on this invoice, whichever occurs first.
+
+CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace defective internal transmission components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs, diagnostics, or service performed by any other facility without prior written authorization from Alpha will immediately void this warranty in its entirety.
+
+MANDATORY MAINTENANCE: The customer must adhere to the recommended transmission fluid change interval of every 30,000 miles or as specified on this invoice. Failure to maintain proper fluid change intervals or use of non-recommended fluid will void this warranty. Customer must retain all maintenance receipts as proof of compliance.
+
+EXCLUSIONS: This warranty does not cover: (a) external transmission components, cooler lines, mounts, sensors, or systems not specifically rebuilt or replaced on this invoice; (b) damage caused by fluid neglect, contamination, or use of incorrect transmission fluid; (c) damage caused by towing abuse, excessive payload, racing, or operating the vehicle beyond its rated capacity; (d) pre-existing conditions in unrelated vehicle systems (engine, electrical, cooling) that cause transmission damage; (e) damage caused by accident, collision, flood, misuse, abuse, negligence, or unauthorized modification; (f) vehicles used for commercial purposes unless expressly noted; (g) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, death, property damage, business interruption, or any other costs of any kind; (h) customer-supplied or used parts. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
+  },
+  {
+    label: 'Electrical / Diagnostics — 6 Months / 6,000 Miles',
+    months: 6,
+    mileage: 6000,
+    exclusions: `LIMITED WARRANTY: The electrical/diagnostic repair performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the specific electrical components or sensors replaced (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 6 months or 6,000 miles from the date and odometer reading on this invoice, whichever occurs first.
+
+CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace defective electrical components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs or service performed by any other facility without prior written authorization from Alpha will immediately void this warranty.
+
+EXCLUSIONS: This warranty does not cover: (a) electrical components, wiring, modules, or sensors not specifically replaced on this invoice; (b) damage caused by water intrusion, rodent damage, corrosion, or wiring harness failures unrelated to the repair; (c) aftermarket electrical accessories, stereos, alarms, remote starters, or lighting modifications that affect the repaired system; (d) intermittent electrical faults that cannot be replicated during diagnosis; (e) damage caused by jump-starting, incorrect battery installation, or electrical surges; (f) pre-existing conditions or failures in unrelated vehicle systems; (g) damage caused by accident, collision, flood, misuse, abuse, negligence, or unauthorized modification; (h) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, property damage, or any other costs of any kind; (i) customer-supplied parts. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
+  },
+  {
+    label: 'Suspension — 12 Months / 12,000 Miles',
+    months: 12,
+    mileage: 12000,
+    exclusions: `LIMITED WARRANTY: The suspension repair performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the specific suspension components replaced (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 12 months or 12,000 miles from the date and odometer reading on this invoice, whichever occurs first.
+
+CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace defective suspension components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs or service performed by any other facility without prior written authorization will void this warranty.
+
+EXCLUSIONS: This warranty does not cover: (a) wheel alignment services — alignment is a separate service and is not warranted against future misalignment; (b) tire wear, tire damage, or uneven tire wear regardless of cause; (c) suspension components not specifically replaced on this invoice; (d) damage caused by road hazards, potholes, curb strikes, speed bumps, or off-road driving; (e) damage caused by accident, collision, misuse, abuse, negligence, vehicle overloading, or unauthorized modification including lift kits and lowering kits; (f) noise or vibration caused by normal wear or unrelated components; (g) vehicles used for commercial, racing, towing, or off-road purposes unless expressly noted; (h) pre-existing conditions or failures in unrelated vehicle systems; (i) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, property damage, or any other costs of any kind; (j) customer-supplied or used parts. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
+  },
+  {
+    label: 'AC / Heating — 6 Months / 6,000 Miles',
+    months: 6,
+    mileage: 6000,
+    exclusions: `LIMITED WARRANTY: The AC/heating repair performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the specific AC/heating components repaired or replaced (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 6 months or 6,000 miles from the date and odometer reading on this invoice, whichever occurs first.
+
+CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace the specific defective AC/heating components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs or service performed by any other facility without prior written authorization will void this warranty.
+
+EXCLUSIONS: This warranty does not cover: (a) AC/heating components not specifically repaired or replaced on this invoice; (b) refrigerant leaks originating from components not serviced under this invoice; (c) compressor failure caused by pre-existing contamination, debris, or system neglect not addressed in the original repair; (d) cabin air filters, blend door actuators, or ductwork not replaced under this invoice; (e) reduced cooling performance caused by clogged condenser, radiator fan failure, or engine overheating; (f) damage caused by accident, collision, misuse, abuse, negligence, or unauthorized modification; (g) vehicles used for commercial purposes unless expressly noted; (h) pre-existing conditions or failures in unrelated vehicle systems; (i) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, property damage, or any other costs of any kind; (j) customer-supplied parts. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
+  },
+  {
+    label: 'Body & Paint — 6 Months (Cosmetic)',
+    months: 6,
+    mileage: 0,
+    exclusions: `LIMITED WARRANTY: The body and paint work performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the specific body and paint work performed (as documented on this invoice) will be free from defects in workmanship for a period of 6 months from the date on this invoice.
+
+CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, re-perform the defective body or paint work at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed.
+
+EXCLUSIONS: This warranty does not cover: (a) rock chips, scratches, dents, or physical damage occurring after the repair; (b) paint fading, discoloration, or oxidation caused by sun exposure, weather, chemicals, bird droppings, tree sap, or environmental contamination; (c) damage caused by improper washing techniques, automatic car washes, abrasive cleaners, or failure to maintain the finish; (d) paint or body work on panels or areas not documented on this invoice; (e) color matching variations that are within industry-accepted tolerances; (f) rust or corrosion originating from areas not treated during the repair; (g) damage caused by accident, collision, vandalism, misuse, abuse, or negligence; (h) consequential or incidental damages including but not limited to vehicle rental, lost wages, personal injury, property damage, or any other costs of any kind. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
+  },
+  {
+    label: 'State Inspection — No Warranty',
+    months: 0,
+    mileage: 0,
+    exclusions: ''
+  },
+  {
+    label: 'General Repair — 12 Months / 12,000 Miles',
+    months: 12,
+    mileage: 12000,
+    exclusions: `LIMITED WARRANTY: The repair service performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that all parts and labor sold in connection with the services documented on this invoice will be free from defects in materials and workmanship under normal, non-commercial use for a period of 12 months or 12,000 miles from the date and odometer reading on this invoice, whichever occurs first.
+
+CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, with reasonable promptness and subject to parts availability, repair or replace at its sole discretion any defective parts or components covered under this invoice and perform any labor reasonably necessary to complete such repair at no additional cost. The customer must deliver the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs, diagnostics, or service performed by any other facility without prior written authorization from Alpha will immediately void this warranty in its entirety, and Alpha shall have no further obligation to honor this warranty.
+
+EXCLUSIONS: This warranty does not cover, nor extend to: (a) any repairs, replacements, or service made necessary by accident, collision, misuse, abuse, negligence, neglect, or any cause other than normal use and operation of the vehicle; (b) any parts, components, or systems not specifically repaired or replaced as documented on this invoice; (c) pre-existing conditions, wear, or failures in unrelated vehicle systems; (d) damage resulting from unauthorized modifications, tampering, or alteration to the warranted repair by anyone other than Alpha; (e) used parts purchased at customer's request or parts supplied by the customer; (f) vehicles used for commercial, racing, towing, or off-road purposes unless expressly noted on the invoice; (g) customer's towing charges, car rental, lodging, lost wages, interruption of business, personal injury, death, property damage, or any other charges, damages, liability, or costs of any kind whatsoever, whether incidental or consequential; (h) any repairs or replacements made by another repair facility without prior written authorization from Alpha.
+
+GENERAL PROVISIONS: Should any tampering or alteration to the warranted repair or service be evident, all rights under this warranty shall immediately terminate and be void. This warranty is in lieu of and Alpha hereby expressly disclaims any and all other warranties, either express or implied, including without limitation any implied warranty of merchantability or fitness for a particular purpose. This limited warranty may not be altered or modified except in writing signed by the customer and an authorized representative of Alpha International Auto Center.`
+  },
+  {
+    label: 'Custom Warranty',
+    months: 0,
+    mileage: 0,
+    exclusions: ''
+  },
 ]
 
 function getStatuses(type: string) {
@@ -446,6 +567,9 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                       <strong>Exclusions:</strong> {form.warranty_exclusions}
                     </div>
                   )}
+                  <div style={{marginTop:'10px',fontSize:'9px',color:'#888',lineHeight:'1.4',borderTop:'1px solid #bfdbfe',paddingTop:'8px'}}>
+                    All warranty claims must be submitted to Alpha International Auto Center at 10710 S. Main St, Houston, TX 77025 during normal business hours. Contact (713) 663-6979 before beginning any warranty repair. Unauthorized repairs will void this warranty. This warranty is governed by the laws of the State of Texas.
+                  </div>
                 </div>
               )}
 
