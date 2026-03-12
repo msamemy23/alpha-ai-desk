@@ -4,50 +4,77 @@ import { supabase } from '@/lib/supabase'
 
 interface ChatMessage { role: 'user'|'assistant'; content: string; html?: string; imageUrl?: string }
 
-const SYSTEM_PROMPT = `You are Alpha AI, the dedicated AI assistant for Alpha International Auto Center.
+const SYSTEM_PROMPT = `You are Alpha AI, the all-powerful AI assistant that CONTROLS every aspect of Alpha International Auto Center's operations.
 
 SHOP INFO:
 - Name: Alpha International Auto Center
 - Address: 10710 S Main St, Houston TX 77025
 - Phone: (713) 663-6979
-- Labor Rate: $120/hr
-- Tax Rate: 8.25%
+- Labor Rate: $120/hr · Tax Rate: 8.25%
 - Payment: Cash, Card, Zelle, Cash App
 - Technicians: Paul (senior), Devin, Luis, Louie
-- Specialties: Domestic & foreign vehicles, collision repair, mechanical, paint & body, insurance claims
+- Specialties: Domestic & foreign, collision, mechanical, paint & body, insurance claims
 
 YOUR PERSONALITY:
-- You speak like a knowledgeable, friendly shop manager — not a robot
-- You use short, clear sentences. No corporate-speak.
-- You know cars inside and out
-- You're protective of the shop's money and reputation
-- You proactively warn about things that could cost the shop money
+- You're the shop's right hand — confident, knowledgeable, direct
+- Short clear sentences. No corporate-speak. You know cars inside and out
+- Protective of the shop's money and reputation
+- Proactively flag things that could cost money or lose customers
 
-YOUR CAPABILITIES:
-- Look up any customer, job, estimate, invoice, vehicle in real time
-- Build detailed estimates with real market part prices (search the web)
-- Draft and send SMS/email messages to customers
-- Analyze shop performance, revenue, tech productivity
-- Answer any repair or diagnostic question
-- Identify stale jobs, overdue invoices, customers to follow up with
-- Summarize call/message threads
-- Draft responses to Google reviews
-- Help with insurance supplement requests
-- Suggest outreach for slow days
+TOOLS — respond with a SINGLE raw JSON object (no markdown, no wrapping) to take action:
 
-RESPONSE STYLE:
-- If asked a quick question, answer quickly
-- If asked to do something, confirm what you're about to do, then do it
-- When building estimates, always search for current part prices first
-- Always sign off suggestions with confidence — you know this shop
-
-Respond in JSON when using tools:
+1. WEB SEARCH
 {"tool":"webSearch","query":"2014 Chevrolet Malibu front brake pads price"}
-{"tool":"proposeDocument","type":"Estimate","customer":"...","parts":[...],"labors":[...],"notes":"..."}
-{"tool":"navigate","view":"jobs"}
-{"tool":"message","to":"customer_phone_or_id","channel":"sms","body":"..."}
 
-Otherwise respond in plain conversational text.`
+2. CREATE CUSTOMER
+{"tool":"action","action":"createCustomer","payload":{"name":"John Doe","phone":"555-1234","email":"john@example.com"}}
+
+3. CREATE JOB
+{"tool":"action","action":"createJob","payload":{"customer_name":"John Doe","vehicle_year":"2019","vehicle_make":"Toyota","vehicle_model":"Camry","status":"Pending","notes":"Front brakes squeaking"}}
+
+4. CREATE INVOICE/ESTIMATE
+{"tool":"action","action":"createInvoice","payload":{"type":"Estimate","customer_name":"John Doe","vehicle_year":"2019","vehicle_make":"Toyota","vehicle_model":"Camry","parts":[{"name":"Brake Pads","qty":1,"unitPrice":45.99,"taxable":true}],"labors":[{"operation":"Front brake replacement","hours":1.5,"rate":120}],"notes":"Front brake job"}}
+
+5. UPDATE JOB STATUS
+{"tool":"action","action":"updateJobStatus","payload":{"id":"uuid","status":"In Progress"}}
+
+6. UPDATE CUSTOMER
+{"tool":"action","action":"updateCustomer","payload":{"id":"uuid","phone":"555-9999"}}
+
+7. VOID A DOCUMENT
+{"tool":"action","action":"voidDocument","payload":{"id":"uuid"}}
+
+8. DELETE A RECORD
+{"tool":"action","action":"deleteRecord","payload":{"table":"jobs","id":"uuid"}}
+
+9. SCHEDULE FOLLOW-UP (sms, email, or call reminder)
+{"tool":"action","action":"scheduleFollowUp","payload":{"customer_name":"John Doe","channel":"sms","scheduled_for":"2025-01-15T10:00:00Z","message_body":"Hi John, just checking in on your Camry..."}}
+
+10. GET CUSTOMER HISTORY (jobs, invoices, messages)
+{"tool":"action","action":"getCustomerHistory","payload":{"customer_name":"John Doe"}}
+
+11. GET SHOP STATS
+{"tool":"action","action":"getShopStats","payload":{}}
+
+12. PROPOSE ESTIMATE (visual card with save button)
+{"tool":"proposeDocument","type":"Estimate","customer":"John Doe","vehicle":"2019 Toyota Camry","parts":[{"name":"Brake Pads","qty":1,"unitPrice":45.99}],"labors":[{"operation":"Brake replacement","hours":1.5,"rate":120}],"notes":"Front brake job"}
+
+13. SEND MESSAGE (with confirmation)
+{"tool":"message","to":"+15551234567","channel":"sms","body":"Hi, your vehicle is ready for pickup!"}
+{"tool":"message","to":"john@example.com","channel":"email","subject":"Vehicle Ready","body":"Your vehicle is ready for pickup."}
+
+14. NAVIGATE
+{"tool":"navigate","view":"jobs"}
+
+MULTI-STEP: You can chain multiple tool calls across turns. For example: search for part prices → build estimate → send to customer. You get up to 8 steps.
+
+RULES:
+- When building estimates, ALWAYS search for current part prices first
+- When asked to message, default to SMS unless email is specified
+- When asked about a customer, look up their history first
+- Confirm destructive actions (delete, void) before executing
+- For any data question, use getShopStats or getCustomerHistory first
+- Always respond in plain conversational text when not using a tool`
 
 interface HistoryEntry {
   id: string
@@ -58,7 +85,7 @@ interface HistoryEntry {
 
 export default function AIPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: 'assistant', content: "Hey! I'm Alpha AI. I can look up jobs, build estimates, draft messages to customers, search for part prices — whatever you need. What's up?" }
+    { role: 'assistant', content: "Hey! I'm Alpha AI — your shop's command center. I can create customers, open jobs, build estimates, send texts and emails, look up anyone's history, check shop stats, schedule follow-ups, and more. What do you need?" }
   ])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -67,12 +94,13 @@ export default function AIPage() {
   const [speakEnabled, setSpeakEnabled] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [history, setHistory] = useState<HistoryEntry[]>([])
-  const [pendingSms, setPendingSms] = useState<{to:string;body:string}|null>(null)
+  const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:string;subject?:string}|null>(null)
   const [sendingSms, setSendingSms] = useState(false)
   const [toast, setToast] = useState('')
   const recognitionRef = useRef<SpeechRecognition | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const [shopContext, setShopContext] = useState('')
+  const prefillHandled = useRef(false)
 
   // Feature 1: TTS helper
   const speak = useCallback((text: string) => {
@@ -132,6 +160,18 @@ export default function AIPage() {
 
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 3000) }
 
+  // Auto-send prefill from dashboard AI Alert
+  const sendRef = useRef<((overrideInput?: string) => Promise<void>) | null>(null)
+  useEffect(() => {
+    if (prefillHandled.current) return
+    const prefill = localStorage.getItem('ai_prefill')
+    if (prefill && sendRef.current) {
+      prefillHandled.current = true
+      localStorage.removeItem('ai_prefill')
+      setTimeout(() => sendRef.current?.(prefill), 500)
+    }
+  })
+
   const send = useCallback(async (overrideInput?: string) => {
     const text = (overrideInput || input).trim()
     if (!text || loading) return
@@ -145,6 +185,9 @@ export default function AIPage() {
     setStatus('')
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [input, loading, messages, shopContext])
+
+  // Keep sendRef current
+  useEffect(() => { sendRef.current = send }, [send])
 
   // Feature 12: Send image to AI
   const sendImage = async (file: File) => {
@@ -201,21 +244,28 @@ export default function AIPage() {
       return
     }
     const accumulated: string[] = []
-    for (let step = 0; step < 5; step++) {
-      const systemWithContext = SYSTEM_PROMPT + (shopContext ? `\n\nCurrent shop context:\n${shopContext}` : '') + (accumulated.length ? `\n\nResearch gathered:\n${accumulated.join('\n')}` : '')
+    for (let step = 0; step < 8; step++) {
+      const systemWithContext = SYSTEM_PROMPT + (shopContext ? `\n\nCurrent shop context:\n${shopContext}` : '') + (accumulated.length ? `\n\nResearch & action results so far:\n${accumulated.join('\n')}` : '')
       const res = await fetch(`${settings?.ai_base_url || 'https://openrouter.ai/api/v1'}/chat/completions`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: settings?.ai_model || 'meta-llama/llama-3.3-70b-instruct:free',
           messages: [{ role: 'system', content: systemWithContext }, ...history.map(m => ({ role: m.role, content: m.content }))],
-          max_tokens: 1500, temperature: 0.7
+          max_tokens: 2000, temperature: 0.7
         })
       })
       const data = await res.json()
       const raw = data.choices?.[0]?.message?.content?.trim() || ''
+
+      // Try to parse JSON tool call
       let parsed: Record<string, unknown> | null = null
-      try { const json = raw.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim(); parsed = JSON.parse(json) } catch { /* plain */ }
+      try {
+        const json = raw.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim()
+        parsed = JSON.parse(json)
+      } catch { /* plain text */ }
+
+      // ── Web Search ────────────────────────────────────────
       if (parsed?.tool === 'webSearch') {
         setStatus(`Searching: "${parsed.query}"`)
         try {
@@ -225,6 +275,30 @@ export default function AIPage() {
         } catch { accumulated.push(`Search "${parsed.query}": No results`) }
         continue
       }
+
+      // ── AI Action (create, update, delete, stats, history) ─
+      if (parsed?.tool === 'action') {
+        const actionName = parsed.action as string
+        setStatus(`Executing: ${actionName}...`)
+        try {
+          const r = await fetch('/api/ai-action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: actionName, payload: parsed.payload || {} })
+          })
+          const d = await r.json()
+          if (d.ok) {
+            accumulated.push(`Action ${actionName} succeeded: ${JSON.stringify(d.data).slice(0, 500)}`)
+          } else {
+            accumulated.push(`Action ${actionName} failed: ${d.error}`)
+          }
+        } catch (err) {
+          accumulated.push(`Action ${actionName} error: ${err instanceof Error ? err.message : 'Unknown'}`)
+        }
+        continue
+      }
+
+      // ── Propose Document (visual card) ────────────────────
       if (parsed?.tool === 'proposeDocument') {
         const proposalHtml = renderProposal(parsed)
         const assistantMsg: ChatMessage = { role: 'assistant', content: raw, html: proposalHtml }
@@ -232,39 +306,60 @@ export default function AIPage() {
         saveToHistory([...history, assistantMsg])
         return
       }
-      if (parsed?.tool === 'navigate') { window.location.href = `/${parsed.view}`; return }
-      // Feature 3: Auto-text with confirmation
+
+      // ── Navigate ──────────────────────────────────────────
+      if (parsed?.tool === 'navigate') {
+        window.location.href = `/${parsed.view}`
+        return
+      }
+
+      // ── Message (SMS/Email with confirmation) ─────────────
       if (parsed?.tool === 'message') {
-        setPendingSms({ to: parsed.to as string, body: parsed.body as string })
-        const assistantMsg: ChatMessage = { role: 'assistant', content: `I've drafted this message. Review it below and hit Send to deliver it.` }
+        setPendingSms({
+          to: parsed.to as string,
+          body: parsed.body as string,
+          channel: (parsed.channel as string) || 'sms',
+          subject: parsed.subject as string | undefined,
+        })
+        const channel = (parsed.channel as string) || 'sms'
+        const assistantMsg: ChatMessage = { role: 'assistant', content: `I've drafted a ${channel === 'email' ? 'email' : 'text message'}. Review it below and hit Send to deliver it.` }
         setMessages(prev => [...prev, assistantMsg])
         saveToHistory([...history, assistantMsg])
         return
       }
+
+      // ── Plain text response (final) ───────────────────────
       const assistantMsg: ChatMessage = { role: 'assistant', content: raw }
       setMessages(prev => [...prev, assistantMsg])
       speak(raw)
       saveToHistory([...history, assistantMsg])
       return
     }
-    const finalMsg: ChatMessage = { role: 'assistant', content: `I finished researching. Here's what I found:\n\n${accumulated.join('\n\n')}` }
+    // Exhausted all steps — summarize accumulated results
+    const finalMsg: ChatMessage = { role: 'assistant', content: accumulated.length ? `Here's what I found and did:\n\n${accumulated.join('\n\n')}` : 'I completed my research but had trouble forming a response. Please try again.' }
     setMessages(prev => [...prev, finalMsg])
     speak(finalMsg.content)
     saveToHistory([...history, finalMsg])
   }
 
-  // Feature 3: Send SMS
+  // Send SMS/Email
   const confirmSendSms = async () => {
     if (!pendingSms) return
     setSendingSms(true)
     try {
       const res = await fetch('/api/send-message', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: pendingSms.to, body: pendingSms.body, channel: 'sms' })
+        body: JSON.stringify({
+          to: pendingSms.to,
+          body: pendingSms.body,
+          channel: pendingSms.channel || 'sms',
+          subject: pendingSms.subject || undefined,
+        })
       })
       if (!res.ok) throw new Error('Send failed')
-      setMessages(prev => [...prev, { role: 'assistant', content: `Message sent to ${pendingSms.to}` }])
-      showToast('Message sent successfully!')
+      const channelLabel = pendingSms.channel === 'email' ? 'Email' : 'SMS'
+      setMessages(prev => [...prev, { role: 'assistant', content: `${channelLabel} sent to ${pendingSms.to}` }])
+      showToast(`${channelLabel} sent successfully!`)
     } catch { showToast('Failed to send message') }
     setPendingSms(null); setSendingSms(false)
   }
@@ -373,17 +468,17 @@ export default function AIPage() {
     "Build me an estimate for front brakes on a 2019 Toyota Camry",
     "Who hasn't been in for 90+ days?",
     "How much revenue this month?",
+    "Create a new customer: John Smith, 555-123-4567",
+    "Open a new job for the white 2020 Honda Civic — AC not blowing cold",
+    "What are today's shop stats?",
+    "Schedule a follow-up text to remind about the oil change",
     "Draft a follow-up text for customers with unpaid invoices",
     "Who hasn't paid in over 30 days?",
-    "Draft a text to all customers with open jobs",
-    "Summarize this week's activity",
     "Which tech has the most open jobs right now?",
     "Write a supplement request for an insurance job",
-    "Who are my best customers this year?",
-    "What parts do I need to order?",
+    "Look up everything we have on Maria Garcia",
     "Generate a slow-day outreach message",
     "Give me a Google review response",
-    "What's my busiest day of the week?",
   ]
 
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -393,7 +488,7 @@ export default function AIPage() {
       <div className="p-6 border-b border-border flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold">Alpha AI</h1>
-          <p className="text-sm text-text-muted mt-0.5">AI assistant with web search · Knows your shop data in real time</p>
+          <p className="text-sm text-text-muted mt-0.5">Full shop control · Create, update, search, message — all from here</p>
         </div>
         <div className="flex gap-2">
           {/* Feature 5: History button */}
@@ -465,12 +560,15 @@ export default function AIPage() {
           </div>
         ))}
 
-        {/* Feature 3: SMS confirmation card */}
+        {/* SMS/Email confirmation card */}
         {pendingSms && (
           <div className="flex justify-start">
             <div className="max-w-[80%] bg-bg-card border border-blue/30 rounded-xl px-4 py-3">
-              <p className="text-xs font-bold uppercase tracking-wider text-blue mb-2">Draft Message</p>
+              <p className="text-xs font-bold uppercase tracking-wider text-blue mb-2">
+                Draft {pendingSms.channel === 'email' ? 'Email' : 'SMS'}
+              </p>
               <p className="text-sm text-text-secondary mb-1">To: {pendingSms.to}</p>
+              {pendingSms.subject && <p className="text-sm text-text-secondary mb-1">Subject: {pendingSms.subject}</p>}
               <div className="bg-bg-hover rounded-lg p-3 text-sm mb-3">{pendingSms.body}</div>
               <div className="flex gap-2">
                 <button onClick={confirmSendSms} disabled={sendingSms} className="btn btn-primary btn-sm">{sendingSms ? 'Sending...' : 'Send Now'}</button>
@@ -494,7 +592,7 @@ export default function AIPage() {
           <textarea
             className="form-input flex-1 resize-none text-sm"
             rows={2}
-            placeholder="Ask anything about your shop, customers, vehicles, parts prices..."
+            placeholder="Ask anything — or tell me to create, update, message, search..."
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}

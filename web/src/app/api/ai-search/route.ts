@@ -2,6 +2,28 @@ import { NextRequest, NextResponse } from 'next/server'
 
 type SearchResult = { title: string; snippet: string; url: string }
 
+// Serper.dev — best results when API key is available
+async function searchSerper(query: string): Promise<SearchResult[]> {
+  const key = process.env.SERPER_API_KEY
+  if (!key) return []
+  try {
+    const res = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: query, num: 8 }),
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!res.ok) return []
+    const data = await res.json()
+    const results: SearchResult[] = (data.organic || []).slice(0, 8).map((r: Record<string, string>) => ({
+      title: r.title || '',
+      snippet: (r.snippet || '').slice(0, 300),
+      url: r.link || '',
+    }))
+    return results
+  } catch { return [] }
+}
+
 // Try SearXNG public instances (free, no key, real web results)
 async function searchSearXNG(query: string): Promise<SearchResult[]> {
   const instances = [
@@ -52,8 +74,9 @@ export async function GET(req: NextRequest) {
   const query = req.nextUrl.searchParams.get('q')
   if (!query) return NextResponse.json({ results: [] })
 
-  // Try real web search first, fallback to DDG
-  let results = await searchSearXNG(query)
+  // Serper first → SearXNG → DDG fallback
+  let results = await searchSerper(query)
+  if (results.length === 0) results = await searchSearXNG(query)
   if (results.length === 0) results = await searchDDG(query)
 
   return NextResponse.json({ results, query })

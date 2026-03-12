@@ -25,12 +25,18 @@ export default function DashboardPage() {
   const [slowDayMsg, setSlowDayMsg] = useState('')
   const [slowDaySending, setSlowDaySending] = useState(false)
   const [slowDayResult, setSlowDayResult] = useState<{sent:number;total:number}|null>(null)
+  const [aiAlerts, setAiAlerts] = useState<{id:string;title:string;body:string;priority?:string}[]>([])
+
 
   useEffect(() => {
     fetch('/api/seed-settings', { method: 'POST' }).catch(() => {})
     const today = new Date().toISOString().split('T')[0]
     const dismissed = localStorage.getItem('briefing_dismissed')
     if (dismissed === today) setBriefingDismissed(true)
+    // Load AI alerts
+    fetch('/api/notifications').then(r => r.json()).then(d => {
+      if (d.notifications) setAiAlerts(d.notifications.slice(0, 3))
+    }).catch(() => {})
   }, [])
 
   const load = useCallback(async () => {
@@ -236,6 +242,32 @@ export default function DashboardPage() {
           </div>
         ))}
       </div>
+
+      {/* AI Alert Card */}
+      {aiAlerts.length > 0 && (
+        <div className="card border-amber/30 bg-amber/5">
+          <h2 className="text-sm font-bold uppercase tracking-wider text-amber mb-3">🤖 AI Alerts</h2>
+          <div className="space-y-3">
+            {aiAlerts.map(alert => (
+              <div key={alert.id} className="flex items-start justify-between gap-3 bg-bg-card border border-border rounded-lg p-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium">{alert.title}</p>
+                  <p className="text-xs text-text-muted mt-0.5 truncate">{alert.body}</p>
+                </div>
+                <button
+                  className="btn btn-primary btn-sm shrink-0"
+                  onClick={() => {
+                    localStorage.setItem('ai_prefill', alert.body)
+                    window.location.href = '/ai'
+                  }}
+                >
+                  Ask AI
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Feature 11: AI Insights + Feature 19: Slow Day Outreach */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
