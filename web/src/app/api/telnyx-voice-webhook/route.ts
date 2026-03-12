@@ -409,6 +409,7 @@ RULES:
     return NextResponse.json('OK')
   }
 
+  // version check
+  if (eventType === 'version') return NextResponse.json({ v: 'v4.1-insert-fix' })
   return NextResponse.json('OK')
 }
-// force redeploy Thu Mar 12 16:40:11 UTC 2026
