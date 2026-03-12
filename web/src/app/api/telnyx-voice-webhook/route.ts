@@ -99,7 +99,12 @@ async function aiChat(messages: Array<{role: string; content: string}>, maxToken
       body: JSON.stringify({ model: AI_MODEL, messages, max_tokens: maxTokens, temperature: 0.7 }),
     })
     const d = await r.json()
-    return d?.choices?.[0]?.message?.content?.trim() || ''
+    let text = d?.choices?.[0]?.message?.content?.trim() || ''
+    // Strip markdown formatting that sounds weird on a phone call
+    text = text.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\*([^*]+)\*/g, '$1')
+    text = text.replace(/^["']|["']$/g, '').trim() // strip surrounding quotes
+    text = text.replace(/\([^)]*\)/g, '').trim() // strip stage directions like (End call warmly.)
+    return text
   } catch { return '' }
 }
 
@@ -135,10 +140,10 @@ export async function POST(req: NextRequest) {
     // Generate greeting with AI
     const greeting = await aiChat([{
       role:    'user',
-      content: `You just called someone on behalf of Alpha International Auto Center (Houston TX auto shop).
+      content: `You are Alex, calling on behalf of Alpha International Auto Center (Houston TX auto shop).
 Task: ${task}
-Write a SHORT natural greeting (1-2 sentences max). Warm, friendly, sounds like a real person. Text only.`,
-    }], 60) || "Hey there! This is Alpha International Auto Center calling. How are you doing today?"
+Write a SHORT natural phone greeting (1-2 sentences). Warm and friendly. Plain speech only - no markdown, no asterisks, no stage directions, no quotes around the text.`,
+    }], 60) || "Hey there, this is Alex calling from Alpha International Auto Center. How are you doing today?"
 
     // Save transcript
     await dbUpdate(callId, {
@@ -184,14 +189,16 @@ Write a SHORT natural greeting (1-2 sentences max). Warm, friendly, sounds like 
     transcript.push({ speaker: 'customer', text })
     await dbUpdate(callId, { transcript })
 
-    const system = `You are a phone AI agent calling on behalf of Alpha International Auto Center (auto repair shop, Houston TX, 10710 S Main St, (713) 663-6979).
+    const system = `You are Alex, a phone agent calling on behalf of Alpha International Auto Center (auto repair shop, Houston TX, 10710 S Main St, (713) 663-6979).
 
 TASK: ${state.task}
 
 RULES:
-- Live phone call. 1-3 sentences MAX. Natural, warm, human.
-- When the task is complete, say: "Thank you so much, have a great day!"
-- Never reveal you are an AI unless directly asked.`
+- This is a LIVE PHONE CALL. Respond naturally like a real person talking on the phone.
+- Keep replies SHORT: 1-3 sentences MAX. No bullet points, no markdown, no asterisks.
+- Just plain conversational speech. No stage directions.
+- When the task is complete, say goodbye warmly and end.
+- Never say you are an AI unless directly asked.`
 
     const messages = [
       { role: 'system', content: system },

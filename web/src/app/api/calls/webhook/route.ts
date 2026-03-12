@@ -84,7 +84,11 @@ async function aiChat(messages: Array<{role: string; content: string}>, maxToken
       body: JSON.stringify({ model: AI_MODEL, messages, max_tokens: maxTokens, temperature: 0.7 }),
     })
     const d = await r.json()
-    return d?.choices?.[0]?.message?.content?.trim() || ''
+    let text = d?.choices?.[0]?.message?.content?.trim() || ''
+    text = text.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\*([^*]+)\*/g, '$1')
+    text = text.replace(/^["']|["']$/g, '').trim()
+    text = text.replace(/\([^)]*\)/g, '').trim()
+    return text
   } catch { return '' }
 }
 
@@ -136,9 +140,9 @@ export async function POST(req: NextRequest) {
     // Generate greeting
     const greeting = await aiChat([{
       role:    'user',
-      content: `You are the AI receptionist for Alpha International Auto Center, an auto repair shop at 10710 S Main St, Houston TX 77025. Phone: (713) 663-6979.
-A customer is calling. Write a SHORT, warm, professional greeting (1-2 sentences). Sound like a real person. Text only, no emojis.`,
-    }], 60) || "Thank you for calling Alpha International Auto Center! How can I help you today?"
+      content: `You are the receptionist for Alpha International Auto Center, an auto repair shop at 10710 S Main St, Houston TX 77025.
+A customer is calling. Write a SHORT warm greeting (1-2 sentences). Plain conversational speech only - no markdown, no asterisks, no quotes around the text.`,
+    }], 60) || "Thank you for calling Alpha International Auto Center, how can I help you today?"
 
     await dbUpdate(callId, {
       greeted:      true,
