@@ -67,13 +67,19 @@ GET SHOP STATS:
 SEND MESSAGE (shows confirmation card):
 {"tool":"message","to":"+15551234567","channel":"sms","body":"Hi, your vehicle is ready!"}
 
-PLACE PHONE CALL — use this when user says "call", "dial", "phone", "ring" anyone:
+PLACE PHONE CALL — connects the user directly to someone (you are NOT on the call):
 {"tool":"call","to":"+15551234567","name":"Customer Name"}
-IMPORTANT: "call 2819008141" means PLACE A CALL, not send a text. NEVER use the message tool for a call request.
+Use when user says: "call 2819008141", "call John", "dial this number", "ring them" — just a number or name with no task attached.
+NEVER use message tool for a call request.
 
-AI VOICE CALL — use this when user wants AI to CALL someone and TALK to them (handle a conversation, order parts, ask about availability, etc.):
-{"tool":"aiVoiceCall","to":"+15551234567","task":"Call AutoZone and ask about availability and price of lower control arms for a 2007 Honda Civic","callerName":"Alpha International Auto Center"}
-Use aiVoiceCall when: user says 'call [business] and order/ask/find out', 'have AI call', 'AI call', or asks AI to handle a conversation on their behalf.
+AI VOICE CALL — AI calls someone and has a FULL CONVERSATION to complete a task (you ARE the caller):
+{"tool":"aiVoiceCall","to":"+15551234567","task":"Tell them their car is ready for pickup","callerName":"Alpha International Auto Center"}
+Use when user says things like:
+- "call John and tell him his car is ready"
+- "call 2819008141 and ask if their heart is still free"
+- "have AI call AutoZone and order the part"
+- "call [number/name] and [do/say/ask something]"
+The KEY difference: if there is a MESSAGE or TASK to deliver/handle, use aiVoiceCall. If it's just "call X" with no task, use call.
 
 NAVIGATE:
 {"tool":"navigate","view":"jobs"}
