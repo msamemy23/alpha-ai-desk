@@ -1,12 +1,13 @@
 /**
- * Telnyx Voice Webhook — AI voice agent v4.4
- * - Returns 200 IMMEDIATELY to Telnyx, then processes async
+ * Telnyx Voice Webhook — AI voice agent v4.5
+ * - Returns 200 IMMEDIATELY to Telnyx, uses waitUntil() to keep async work alive
  * - Engine A with interim filtering in code
  * - DeepSeek Chat v3
  * - Barge-in, Alpha Auto Center script, not-interested handling
  */
 
 import { NextRequest, NextResponse } from 'next/server'
+import { waitUntil } from '@vercel/functions'
 
 const TELNYX_API_KEY     = process.env.TELNYX_API_KEY     || ''
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
@@ -281,7 +282,7 @@ export async function POST(req: NextRequest) {
   console.log(`[webhook] ${eventType} ${callId?.slice(0,25)}`)
 
   // Version check
-  if (eventType === 'version') return NextResponse.json({ v: 'v4.4-async' })
+  if (eventType === 'version') return NextResponse.json({ v: 'v4.5-waitUntil' })
 
   // ── call.answered ─────────────────────────────────────────────────────────
   if (eventType === 'call.answered') {
@@ -290,14 +291,14 @@ export async function POST(req: NextRequest) {
     if (cs) {
       try { task = JSON.parse(Buffer.from(cs, 'base64').toString()).task || task } catch { /* ok */ }
     }
-    // Fire async — don't await, return 200 immediately
-    handleAnswered(callId, task)
+    // Fire async — return 200 immediately, waitUntil keeps the function alive
+    waitUntil(handleAnswered(callId, task))
     return NextResponse.json('OK')
   }
 
   // ── call.speak.ended ──────────────────────────────────────────────────────
   if (eventType === 'call.speak.ended') {
-    dbPatch(callId, { is_speaking: false, processing: false })
+    waitUntil(dbPatch(callId, { is_speaking: false, processing: false }))
     return NextResponse.json('OK')
   }
 
@@ -307,8 +308,8 @@ export async function POST(req: NextRequest) {
     const text    = (td?.transcript as string || '').trim()
     const isFinal = td?.is_final as boolean
     if (text) {
-      // Fire async — return 200 immediately
-      handleTranscription(callId, text, isFinal)
+      // Fire async — return 200 immediately, waitUntil keeps the function alive
+      waitUntil(handleTranscription(callId, text, isFinal))
     }
     return NextResponse.json('OK')
   }
@@ -324,15 +325,15 @@ export async function POST(req: NextRequest) {
         || Object.values(urls as Record<string, string>)[0] || ''
     }
     if (!url && payload?.public_url) url = payload.public_url as string
-    if (url) dbPatch(callId, { recording_url: url })
+    if (url) waitUntil(dbPatch(callId, { recording_url: url }))
     return NextResponse.json('OK')
   }
 
   // ── call.hangup ───────────────────────────────────────────────────────────
   if (eventType === 'call.hangup') {
-    dbPatch(callId, { status: 'ended', is_speaking: false, processing: false })
-    // Generate summary async
-    ;(async () => {
+    waitUntil(dbPatch(callId, { status: 'ended', is_speaking: false, processing: false }))
+    // Generate summary async — waitUntil keeps the function alive
+    waitUntil((async () => {
       const state = await dbGet(callId)
       if (!state) return
       const transcript: Array<{ speaker: string; text: string }> =
@@ -346,7 +347,7 @@ export async function POST(req: NextRequest) {
         }], 200)
         await dbPatch(callId, { summary: summary || `Call ended. ${transcript.length} exchanges.`, status: 'ended' })
       }
-    })()
+    })())
     return NextResponse.json('OK')
   }
 
