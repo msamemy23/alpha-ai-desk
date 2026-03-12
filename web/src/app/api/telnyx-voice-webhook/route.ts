@@ -208,11 +208,12 @@ export async function POST(req: NextRequest) {
     })
     console.log(`[call.answered] row upserted for ${callId?.slice(0,30)}`)
 
-    // Engine B — accurate, final-only. No interim flooding.
+    // Engine A — fires reliably. We filter non-final in code.
     await telnyxPost(`/calls/${callId}/actions/transcription_start`, {
       language: 'en',
-      transcription_engine: 'B',
+      transcription_engine: 'A',
       transcription_tracks: 'inbound',
+      interim_results: true,
     })
 
     // Recording
@@ -276,7 +277,7 @@ No markdown, no brackets. You can call yourself Sam.`
       await new Promise(res => setTimeout(res, 400))
     }
 
-    // ONLY process final transcriptions for AI replies
+    // Only process final transcriptions — filter interim in code
     if (!isFinal) return NextResponse.json('OK')
     if (state.processing) return NextResponse.json('OK')
 
@@ -415,6 +416,6 @@ RULES:
   }
 
   // version check
-  if (eventType === 'version') return NextResponse.json({ v: 'v4.2-upsert-debug' })
+  if (eventType === 'version') return NextResponse.json({ v: 'v4.3-engineA' })
   return NextResponse.json('OK')
 }
