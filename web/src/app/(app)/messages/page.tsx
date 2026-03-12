@@ -7,6 +7,19 @@ interface Thread { contact: string; messages: Message[]; unread: number; lastMsg
 interface Activity { id: string; type: string; customer_name?: string; notes?: string; phone?: string; created_at: string }
 interface AiCall { id: string; task: string; status: string; transcript: Array<{speaker: string; text: string}>; summary: string; recording_url: string; started_at: number }
 interface Customer { id: string; name: string; phone: string; email: string }
+interface TelnyxRecording {
+  id: string
+  from: string
+  to: string
+  connection_id: string
+  recording_started_at: string
+  recording_ended_at: string
+  duration_millis: number
+  download_urls: { mp3?: string; wav?: string }
+  status: string
+  initiated_by: string
+  call_session_id: string
+}
 
 export default function MessagesPage() {
   const [messages, setMessages] = useState<Message[]>([])
@@ -19,7 +32,7 @@ export default function MessagesPage() {
   const [sendTo, setSendTo] = useState(''); const [sendBody, setSendBody] = useState('')
   const [sendChannel, setSendChannel] = useState<'sms'|'email'>('sms')
   const [sending, setSending] = useState(false)
-  const [tab, setTab] = useState<'sms'|'calls'|'summaries'>('sms')
+  const [tab, setTab] = useState<'sms'|'calls'|'recordings'|'summaries'>('sms')
   const [dialerNum, setDialerNum] = useState('')
   const [calling, setCalling] = useState(false)
   const [deletingCall, setDeletingCall] = useState<string | null>(null)
@@ -27,6 +40,9 @@ export default function MessagesPage() {
   // Feature 7: AI Summaries
   const [summaries, setSummaries] = useState<Record<string, string>>({})
   const [summarizing, setSummarizing] = useState<string | null>(null)
+  // Telnyx Recordings
+  const [recordings, setRecordings] = useState<TelnyxRecording[]>([])
+  const [recordingsLoading, setRecordingsLoading] = useState(false)
 
   const load = useCallback(async () => {
     const [{ data: msgs }, { data: acts }, { data: custs }, { data: aiCallData }] = await Promise.all([
@@ -149,6 +165,27 @@ export default function MessagesPage() {
     finally { setSummarizing(null) }
   }
 
+  const fetchRecordings = useCallback(async () => {
+    setRecordingsLoading(true)
+    try {
+      const res = await fetch('/api/telnyx-recordings')
+      const data = await res.json()
+      setRecordings((data.recordings || []) as TelnyxRecording[])
+    } catch { setRecordings([]) }
+    finally { setRecordingsLoading(false) }
+  }, [])
+
+  useEffect(() => { if (tab === 'recordings') fetchRecordings() }, [tab, fetchRecordings])
+
+  const fmtDuration = (ms: number) => {
+    const totalSec = Math.round(ms / 1000)
+    const min = Math.floor(totalSec / 60)
+    const sec = totalSec % 60
+    return `${min}:${sec.toString().padStart(2, '0')}`
+  }
+
+  const INBOUND_CONNECTION = '2786787533428623349'
+
   return (
     <div className="flex flex-col h-[calc(100vh-48px)] overflow-hidden">
       {/* Header */}
@@ -162,13 +199,13 @@ export default function MessagesPage() {
 
       {/* Tab bar */}
       <div className="flex border-b border-border shrink-0">
-        {(['sms', 'calls', 'summaries'] as const).map(t => (
+        {(['sms', 'calls', 'recordings', 'summaries'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`flex-1 py-3 text-sm font-semibold border-b-2 bg-transparent cursor-pointer transition-colors ${
               tab === t ? 'border-blue text-blue' : 'border-transparent text-text-muted hover:text-text-primary'
             }`}
           >
-            {t === 'sms' ? 'SMS' : t === 'calls' ? 'Calls' : 'AI Summaries'}
+            {t === 'sms' ? 'SMS' : t === 'calls' ? 'Calls' : t === 'recordings' ? 'Recordings' : 'AI Summaries'}
           </button>
         ))}
       </div>
@@ -202,6 +239,56 @@ export default function MessagesPage() {
                   )}
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Recordings Tab */}
+      {tab === 'recordings' && (
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+          <div className="max-w-[720px] mx-auto">
+            <div className="flex items-center justify-between mb-5">
+              <p className="text-sm text-text-muted">Call recordings from Telnyx.</p>
+              <button className="btn btn-secondary btn-sm" onClick={fetchRecordings} disabled={recordingsLoading}>
+                {recordingsLoading ? 'Loading…' : 'Refresh'}
+              </button>
+            </div>
+            {recordingsLoading && recordings.length === 0 && (
+              <div className="flex justify-center py-12">
+                <div className="w-6 h-6 border-2 border-blue border-t-transparent rounded-full animate-spin" />
+              </div>
+            )}
+            {!recordingsLoading && recordings.length === 0 && (
+              <p className="text-text-muted text-center py-8">No recordings found.</p>
+            )}
+            <div className="flex flex-col gap-3">
+              {recordings.map(rec => {
+                const isInbound = rec.connection_id === INBOUND_CONNECTION
+                const audioUrl = rec.download_urls?.mp3 || rec.download_urls?.wav || ''
+                return (
+                  <div key={rec.id} className="bg-bg-card border border-border rounded-xl p-4">
+                    <div className="flex flex-wrap items-center gap-2 mb-2">
+                      <span className={`text-[11px] font-bold px-2 py-0.5 rounded ${isInbound ? 'bg-green/10 text-green' : 'bg-blue/10 text-blue'}`}>
+                        {isInbound ? 'Inbound' : 'Outbound'}
+                      </span>
+                      <span className="text-xs text-text-muted">
+                        {new Date(rec.recording_started_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                      </span>
+                      {rec.duration_millis > 0 && (
+                        <span className="text-xs text-text-muted">{fmtDuration(rec.duration_millis)}</span>
+                      )}
+                    </div>
+                    <div className="text-sm mb-2">
+                      <span className="text-text-muted">From:</span> <span className="font-medium">{rec.from || '—'}</span>
+                      <span className="text-text-muted ml-3">To:</span> <span className="font-medium">{rec.to || '—'}</span>
+                    </div>
+                    {audioUrl && (
+                      <audio controls className="w-full h-9" src={audioUrl} preload="none" />
+                    )}
+                  </div>
+                )
+              })}
             </div>
           </div>
         </div>

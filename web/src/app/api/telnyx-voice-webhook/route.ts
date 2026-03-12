@@ -25,9 +25,9 @@ function randomFiller(): string {
   return FILLER_PHRASES[Math.floor(Math.random() * FILLER_PHRASES.length)]
 }
 
-const AI_MODEL = 'deepseek/deepseek-chat-v3-0324'
-const VOICE    = 'Telnyx.Natural.abbie'
-const VOICE_FB = 'female'
+const AI_MODEL = 'openai/gpt-4o'
+const VOICE    = 'Telnyx.NaturalHD.orion'
+const VOICE_FB = 'Telnyx.NaturalHD.sirius'
 
 // ── Supabase ──────────────────────────────────────────────────────────────────
 async function dbGet(callId: string) {
