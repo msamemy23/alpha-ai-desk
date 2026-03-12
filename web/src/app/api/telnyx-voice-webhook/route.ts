@@ -163,8 +163,8 @@ Rules:
     await speak(callId, greeting)
 
     // CRITICAL: Always unlock after greeting speak — do NOT rely on call.speak.ended
-    // (call.speak.ended is unreliable in Telnyx serverless — often never fires)
-    await dbUpdate(callId, { processing: false })
+    // Store last_spoke_at so transcription handler can ignore echoes for a few seconds
+    await dbUpdate(callId, { processing: false, last_spoke_at: Date.now() })
 
     return NextResponse.json('OK')
   }
@@ -178,6 +178,37 @@ Rules:
 
     const state = await dbGet(callId)
     if (!state || state.processing) return NextResponse.json('OK')
+
+    // ── Echo / self-reply guard ──────────────────────────────────────────────
+    // The AI's own TTS audio bleeds into the inbound mic and gets transcribed
+    // back as if the other person said it. Detect and drop these.
+    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim()
+    const normText = normalize(text)
+    const recentAiLines: Array<{speaker: string; text: string}> =
+      Array.isArray(state.transcript) ? state.transcript : []
+    const isEcho = recentAiLines
+      .filter(l => l.speaker === 'ai')
+      .slice(-3) // only check last 3 AI lines
+      .some(l => {
+        const normAi = normalize(l.text)
+        // If transcribed text is a substring of what AI just said (or vice versa)
+        // and it's more than 6 words, it's almost certainly an echo
+        const words = normText.split(' ').length
+        if (words < 4) return false // too short to be a reliable match
+        return normAi.includes(normText) || normText.includes(normAi.slice(0, 40))
+      })
+    if (isEcho) {
+      console.log('[transcription] dropped echo:', text.slice(0, 60))
+      return NextResponse.json('OK')
+    }
+
+    // Hard cooldown: ignore transcription for 2.5s after AI finishes speaking
+    // This catches partial echoes the text-match guard might miss
+    const lastSpoke = (state.last_spoke_at as number) || 0
+    if (Date.now() - lastSpoke < 2500) {
+      console.log('[transcription] dropped — too soon after AI spoke:', text.slice(0, 60))
+      return NextResponse.json('OK')
+    }
 
     // Lock immediately so concurrent transcription events don't double-fire
     await dbUpdate(callId, { processing: true })
@@ -221,8 +252,8 @@ Rules:
       await speak(callId, reply)
     }
 
-    // Always unlock
-    await dbUpdate(callId, { processing: false })
+    // Always unlock + stamp when AI last spoke (echo guard uses this)
+    await dbUpdate(callId, { processing: false, last_spoke_at: Date.now() })
     return NextResponse.json('OK')
   }
 
