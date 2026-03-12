@@ -32,17 +32,17 @@ export default function MessagesPage() {
   const [sendTo, setSendTo] = useState(''); const [sendBody, setSendBody] = useState('')
   const [sendChannel, setSendChannel] = useState<'sms'|'email'>('sms')
   const [sending, setSending] = useState(false)
-  const [tab, setTab] = useState<'sms'|'calls'|'recordings'|'summaries'>('sms')
+  const [tab, setTab] = useState<'sms'|'calls'|'recordings'>('sms')
   const [dialerNum, setDialerNum] = useState('')
   const [calling, setCalling] = useState(false)
   const [deletingCall, setDeletingCall] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
-  // Feature 7: AI Summaries
-  const [summaries, setSummaries] = useState<Record<string, string>>({})
-  const [summarizing, setSummarizing] = useState<string | null>(null)
   // Telnyx Recordings
   const [recordings, setRecordings] = useState<TelnyxRecording[]>([])
   const [recordingsLoading, setRecordingsLoading] = useState(false)
+  const [expandedRecording, setExpandedRecording] = useState<string | null>(null)
+  const [recordingSummaries, setRecordingSummaries] = useState<Record<string, { summary: string; transcript: string }>>({})
+  const [summarizingRecording, setSummarizingRecording] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     const [{ data: msgs }, { data: acts }, { data: custs }, { data: aiCallData }] = await Promise.all([
@@ -131,38 +131,22 @@ export default function MessagesPage() {
   const fmt = (d: string) => new Date(d).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
   const getContactName = (phone: string) => customers.find(c => c.phone?.replace(/\D/g,'') === phone.replace(/\D/g,''))?.name || phone
 
-  // Feature 7: Summarize a thread using AI
-  const summarizeThread = async (contact: string) => {
-    const thread = threadMap[contact]
-    if (!thread) return
-    setSummarizing(contact)
-    try {
-      const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
-      const apiKey = (settings?.ai_api_key as string) || ''
-      const model = (settings?.ai_model as string) || 'meta-llama/llama-3.3-70b-instruct:free'
-      const baseUrl = (settings?.ai_base_url as string) || 'https://openrouter.ai/api/v1'
-      if (!apiKey) { setSummaries(s => ({ ...s, [contact]: 'Configure AI API key in Settings.' })); return }
+  const fmtPhone = (phone: string) => {
+    const d = phone.replace(/\D/g, '')
+    if (d.length === 11 && d.startsWith('1')) {
+      return `(${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`
+    }
+    if (d.length === 10) {
+      return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`
+    }
+    return phone
+  }
 
-      const convo = thread.messages.slice().reverse().map(m =>
-        `${m.direction === 'inbound' ? 'Customer' : 'Shop'} (${fmt(m.created_at)}): ${m.body}`
-      ).join('\n')
-
-      const res = await fetch(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: 'system', content: 'Summarize this auto repair shop conversation in 2-3 sentences. Focus on: what the customer needs, any commitments made, and next steps.' },
-            { role: 'user', content: convo }
-          ],
-          max_tokens: 200,
-        })
-      })
-      const data = await res.json()
-      setSummaries(s => ({ ...s, [contact]: data.choices?.[0]?.message?.content || 'Unable to summarize.' }))
-    } catch { setSummaries(s => ({ ...s, [contact]: 'Failed to summarize.' })) }
-    finally { setSummarizing(null) }
+  const fmtDuration = (ms: number) => {
+    const totalSec = Math.round(ms / 1000)
+    const min = Math.floor(totalSec / 60)
+    const sec = totalSec % 60
+    return `${min}:${sec.toString().padStart(2, '0')}`
   }
 
   const fetchRecordings = useCallback(async () => {
@@ -177,14 +161,27 @@ export default function MessagesPage() {
 
   useEffect(() => { if (tab === 'recordings') fetchRecordings() }, [tab, fetchRecordings])
 
-  const fmtDuration = (ms: number) => {
-    const totalSec = Math.round(ms / 1000)
-    const min = Math.floor(totalSec / 60)
-    const sec = totalSec % 60
-    return `${min}:${sec.toString().padStart(2, '0')}`
+  const generateSummary = async (recordingId: string) => {
+    setSummarizingRecording(recordingId)
+    try {
+      const res = await fetch('/api/recording-summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recording_id: recordingId }),
+      })
+      const data = await res.json()
+      setRecordingSummaries(prev => ({
+        ...prev,
+        [recordingId]: { summary: data.summary || 'No summary available.', transcript: data.transcript || '' }
+      }))
+    } catch {
+      setRecordingSummaries(prev => ({
+        ...prev,
+        [recordingId]: { summary: 'Failed to generate summary.', transcript: '' }
+      }))
+    }
+    finally { setSummarizingRecording(null) }
   }
-
-  const INBOUND_CONNECTION = '2786787533428623349'
 
   return (
     <div className="flex flex-col h-[calc(100vh-48px)] overflow-hidden">
@@ -199,57 +196,23 @@ export default function MessagesPage() {
 
       {/* Tab bar */}
       <div className="flex border-b border-border shrink-0">
-        {(['sms', 'calls', 'recordings', 'summaries'] as const).map(t => (
+        {(['sms', 'calls', 'recordings'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`flex-1 py-3 text-sm font-semibold border-b-2 bg-transparent cursor-pointer transition-colors ${
               tab === t ? 'border-blue text-blue' : 'border-transparent text-text-muted hover:text-text-primary'
             }`}
           >
-            {t === 'sms' ? 'SMS' : t === 'calls' ? 'Calls' : t === 'recordings' ? 'Recordings' : 'AI Summaries'}
+            {t === 'sms' ? 'SMS' : t === 'calls' ? 'Calls' : 'Recordings'}
           </button>
         ))}
       </div>
-
-      {/* Feature 7: AI Summaries Tab */}
-      {tab === 'summaries' && (
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-          <div className="max-w-[720px] mx-auto">
-            <p className="text-sm text-text-muted mb-5">Select a conversation to generate an AI summary of the discussion.</p>
-            <div className="flex flex-col gap-3">
-              {threads.length === 0 && <p className="text-text-muted text-center py-8">No conversations to summarize.</p>}
-              {threads.map(t => (
-                <div key={t.contact} className="bg-bg-card border border-border rounded-xl p-4">
-                  <div className="flex items-center justify-between gap-3 mb-2">
-                    <div className="min-w-0">
-                      <div className="font-semibold text-sm truncate">{getContactName(t.contact)}</div>
-                      <div className="text-xs text-text-muted">{t.contact} · {t.messages.length} messages</div>
-                    </div>
-                    <button
-                      className="btn btn-primary btn-sm shrink-0"
-                      onClick={() => summarizeThread(t.contact)}
-                      disabled={summarizing === t.contact}
-                    >
-                      {summarizing === t.contact ? 'Summarizing…' : summaries[t.contact] ? 'Re-summarize' : 'Summarize'}
-                    </button>
-                  </div>
-                  {summaries[t.contact] && (
-                    <div className="bg-bg-hover rounded-lg p-3 text-sm leading-relaxed mt-2">
-                      {summaries[t.contact]}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Recordings Tab */}
       {tab === 'recordings' && (
         <div className="flex-1 overflow-y-auto p-4 sm:p-6">
           <div className="max-w-[720px] mx-auto">
             <div className="flex items-center justify-between mb-5">
-              <p className="text-sm text-text-muted">Call recordings from Telnyx.</p>
+              <p className="text-sm text-text-muted">Inbound call recordings.</p>
               <button className="btn btn-secondary btn-sm" onClick={fetchRecordings} disabled={recordingsLoading}>
                 {recordingsLoading ? 'Loading…' : 'Refresh'}
               </button>
@@ -264,27 +227,76 @@ export default function MessagesPage() {
             )}
             <div className="flex flex-col gap-3">
               {recordings.map(rec => {
-                const isInbound = rec.connection_id === INBOUND_CONNECTION
                 const audioUrl = rec.download_urls?.mp3 || rec.download_urls?.wav || ''
+                const isExpanded = expandedRecording === rec.id
+                const summaryData = recordingSummaries[rec.id]
+                const isSummarizing = summarizingRecording === rec.id
                 return (
                   <div key={rec.id} className="bg-bg-card border border-border rounded-xl p-4">
-                    <div className="flex flex-wrap items-center gap-2 mb-2">
-                      <span className={`text-[11px] font-bold px-2 py-0.5 rounded ${isInbound ? 'bg-green/10 text-green' : 'bg-blue/10 text-blue'}`}>
-                        {isInbound ? 'Inbound' : 'Outbound'}
-                      </span>
-                      <span className="text-xs text-text-muted">
-                        {new Date(rec.recording_started_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-                      </span>
-                      {rec.duration_millis > 0 && (
-                        <span className="text-xs text-text-muted">{fmtDuration(rec.duration_millis)}</span>
-                      )}
+                    {/* Clickable header */}
+                    <div
+                      className="cursor-pointer"
+                      onClick={() => setExpandedRecording(isExpanded ? null : rec.id)}
+                    >
+                      <div className="flex flex-wrap items-center gap-2 mb-2">
+                        <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-green/10 text-green">
+                          Inbound
+                        </span>
+                        <span className="text-sm font-medium">
+                          From: {fmtPhone(rec.from || '')}
+                        </span>
+                        <span className="text-xs text-text-muted">
+                          {new Date(rec.recording_started_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                        </span>
+                        {rec.duration_millis > 0 && (
+                          <span className="text-xs text-text-muted">{fmtDuration(rec.duration_millis)}</span>
+                        )}
+                        <span className="ml-auto text-xs text-text-muted">{isExpanded ? '▲' : '▼'}</span>
+                      </div>
                     </div>
-                    <div className="text-sm mb-2">
-                      <span className="text-text-muted">From:</span> <span className="font-medium">{rec.from || '—'}</span>
-                      <span className="text-text-muted ml-3">To:</span> <span className="font-medium">{rec.to || '—'}</span>
-                    </div>
+                    {/* Audio player always visible */}
                     {audioUrl && (
                       <audio controls className="w-full h-9" src={audioUrl} preload="none" />
+                    )}
+                    {/* Expanded section */}
+                    {isExpanded && (
+                      <div className="mt-3 pt-3 border-t border-border">
+                        {!summaryData && !isSummarizing && (
+                          <button
+                            className="btn btn-primary btn-sm"
+                            onClick={(e) => { e.stopPropagation(); generateSummary(rec.id) }}
+                          >
+                            Generate Summary
+                          </button>
+                        )}
+                        {isSummarizing && (
+                          <div className="flex items-center gap-2 text-sm text-text-muted">
+                            <div className="w-4 h-4 border-2 border-blue border-t-transparent rounded-full animate-spin" />
+                            Generating summary…
+                          </div>
+                        )}
+                        {summaryData && (
+                          <div className="flex flex-col gap-3">
+                            <div className="bg-bg-hover rounded-lg p-3">
+                              <div className="text-xs font-bold text-text-muted mb-1.5">SUMMARY</div>
+                              <div className="text-sm leading-relaxed whitespace-pre-wrap">{summaryData.summary}</div>
+                            </div>
+                            {summaryData.transcript && summaryData.transcript !== '[Audio recording - transcription unavailable]' && (
+                              <div className="bg-bg-hover rounded-lg p-3">
+                                <div className="text-xs font-bold text-text-muted mb-1.5">TRANSCRIPT</div>
+                                <div className="text-sm leading-relaxed whitespace-pre-wrap">{summaryData.transcript}</div>
+                              </div>
+                            )}
+                            <button
+                              className="btn btn-secondary btn-sm self-start"
+                              onClick={(e) => { e.stopPropagation(); generateSummary(rec.id) }}
+                              disabled={isSummarizing}
+                            >
+                              Re-generate
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                 )
@@ -338,16 +350,10 @@ export default function MessagesPage() {
                   </div>
                   <div className="flex gap-2 shrink-0">
                     <button className="btn btn-secondary btn-sm lg:hidden" onClick={() => setSelected(null)}>←</button>
-                    <button className="btn btn-secondary btn-sm hidden sm:inline-flex" onClick={() => summarizeThread(selected)} disabled={summarizing === selected}>{summarizing === selected ? '…' : 'AI Summary'}</button>
                     <button className="btn btn-secondary btn-sm" onClick={() => makeCall(selected, getContactName(selected))} disabled={calling}>Call</button>
                     <button className="btn btn-secondary btn-sm hidden lg:inline-flex" onClick={() => setSelected(null)}>X</button>
                   </div>
                 </div>
-                {summaries[selected] && (
-                  <div className="px-4 py-2 bg-bg-hover border-b border-border text-xs text-text-muted">
-                    <strong>AI Summary:</strong> {summaries[selected]}
-                  </div>
-                )}
                 <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
                   {[...(activeThread?.messages||[]).slice().reverse()].map(m => (
                     <div key={m.id} className={`flex ${m.direction === 'outbound' ? 'justify-end' : 'justify-start'}`}>

@@ -1,33 +1,32 @@
 import { NextResponse } from 'next/server'
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
+const INBOUND_CONNECTION = '2786787533428623349'
 
 export async function GET() {
   try {
     const res = await fetch('https://api.telnyx.com/v2/recordings?page[size]=50', {
       headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` },
-      // Don't cache — we need fresh signed URLs every time
       cache: 'no-store',
     })
     if (!res.ok) throw new Error(`Telnyx API error: ${res.status}`)
     const data = await res.json()
 
-    // Group recordings by call_session_id to deduplicate
-    // (Telnyx creates multiple recording entries per call: one per initiator type)
-    // Pick the best one per session (prefer mp3, prefer StartCallRecordingAPI or OutboundAPI)
+    // Filter to only inbound recordings (AI assistant handled calls)
+    const inbound = (data.data || []).filter((rec: any) => rec.connection_id === INBOUND_CONNECTION)
+
+    // Deduplicate by call_session_id — pick the one with longest duration
     const sessionMap: Record<string, any> = {}
-    for (const rec of (data.data || [])) {
+    for (const rec of inbound) {
       const sid = rec.call_session_id || rec.id
       const existing = sessionMap[sid]
-      const hasMp3 = !!rec.download_urls?.mp3
-      const existingHasMp3 = existing && !!existing.download_urls?.mp3
-
-      if (!existing || (hasMp3 && !existingHasMp3)) {
+      if (!existing || (rec.duration_millis || 0) > (existing.duration_millis || 0)) {
         sessionMap[sid] = rec
       }
     }
 
     const recordings = Object.values(sessionMap)
+      .filter((r: any) => (r.duration_millis || 0) > 2000) // Skip very short (<2s) recordings
       .sort((a: any, b: any) => new Date(b.recording_started_at).getTime() - new Date(a.recording_started_at).getTime())
 
     return NextResponse.json({ recordings })
