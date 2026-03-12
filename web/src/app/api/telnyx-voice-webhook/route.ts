@@ -1,9 +1,10 @@
 /**
- * Telnyx Voice Webhook — AI voice agent v4.5
+ * Telnyx Voice Webhook — AI voice agent v4.6
  * - Returns 200 IMMEDIATELY to Telnyx, uses waitUntil() to keep async work alive
  * - Engine A with interim filtering in code
  * - DeepSeek Chat v3
  * - Barge-in, Alpha Auto Center script, not-interested handling
+ * - Instant filler phrases before AI response to reduce perceived latency
  */
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -14,6 +15,15 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
 const SUPABASE_URL       = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
 const SUPABASE_KEY       = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 const TELNYX_BASE        = 'https://api.telnyx.com/v2'
+
+// ── Filler phrases (reduce perceived latency) ───────────────────────────────
+const FILLER_PHRASES = [
+  'Mmhmm', 'Yeah for sure', 'Oh gotcha', 'Right right',
+  'Yeah', 'Oh okay', 'Sure sure', 'Gotcha',
+]
+function randomFiller(): string {
+  return FILLER_PHRASES[Math.floor(Math.random() * FILLER_PHRASES.length)]
+}
 
 const AI_MODEL = 'deepseek/deepseek-chat-v3-0324'
 const VOICE    = 'Telnyx.Natural.abbie'
@@ -235,6 +245,7 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     const isSoftNo = /no thank|no thanks|can.?t right now|not right now|maybe later|not today|not looking/i.test(text)
     const isAlpha = /alpha|oil.?change|auto.?center/i.test(state.task || '')
 
+    // Hard no / end-of-call — skip filler, go straight to goodbye
     if (isHardNo || (isSoftNo && objectionCount >= 1)) {
       const bye = 'No problem at all — I appreciate your time. Have a great day!'
       transcript.push({ speaker: 'ai', text: bye })
@@ -243,6 +254,17 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
       await speak(callId, bye)
       await dbPatch(callId, { is_speaking: false })
       return
+    }
+
+    // Fire a filler phrase to reduce perceived latency
+    // Skip filler for very short inputs (1 word) — they deserve a direct response
+    const wordCount = text.trim().split(/\s+/).length
+    if (wordCount > 1) {
+      const filler = randomFiller()
+      // Fire-and-forget — don't await, just give it a head start
+      speak(callId, filler)
+      // Small delay so filler starts playing before AI response overwrites it
+      await new Promise(res => setTimeout(res, 400))
     }
 
     const systemPrompt = isAlpha
@@ -282,7 +304,7 @@ export async function POST(req: NextRequest) {
   console.log(`[webhook] ${eventType} ${callId?.slice(0,25)}`)
 
   // Version check
-  if (eventType === 'version') return NextResponse.json({ v: 'v4.5-waitUntil' })
+  if (eventType === 'version') return NextResponse.json({ v: 'v4.6-filler' })
 
   // ── call.answered ─────────────────────────────────────────────────────────
   if (eventType === 'call.answered') {
