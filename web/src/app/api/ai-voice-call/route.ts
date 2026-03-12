@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from 'next/server'
  * The Python server handles: STT → DeepSeek V3.2 → TTS → stream audio back
  */
 
-const VOICE_AGENT_URL = process.env.VOICE_AGENT_URL || 'https://hello-entire-quote-numerous.trycloudflare.com'
+const VOICE_AGENT_URL = process.env.VOICE_AGENT_URL || 'https://msamemy23-alpha-voice-agent.hf.space'
 
 export async function POST(req: NextRequest) {
   try {

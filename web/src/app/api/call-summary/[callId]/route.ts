@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-const VOICE_AGENT_URL = process.env.VOICE_AGENT_URL || 'https://hello-entire-quote-numerous.trycloudflare.com'
+const VOICE_AGENT_URL = process.env.VOICE_AGENT_URL || 'https://msamemy23-alpha-voice-agent.hf.space'
 
 export async function GET(
   _req: NextRequest,
