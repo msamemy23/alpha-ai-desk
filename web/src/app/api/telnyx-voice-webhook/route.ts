@@ -137,13 +137,19 @@ export async function POST(req: NextRequest) {
     // Lock for greeting generation
     await dbUpdate(callId, { processing: true })
 
-    // Generate greeting with AI
+    // Generate greeting — task is the ONLY thing that matters
     const greeting = await aiChat([{
-      role:    'user',
-      content: `You are Alex, calling on behalf of Alpha International Auto Center (Houston TX auto shop).
-Task: ${task}
-Write a SHORT natural phone greeting (1-2 sentences). Warm and friendly. Plain speech only - no markdown, no asterisks, no stage directions, no quotes around the text.`,
-    }], 60) || "Hey there, this is Alex calling from Alpha International Auto Center. How are you doing today?"
+      role:    'system',
+      content: `You are making a phone call. Your ONLY job is to say the opening line that accomplishes this task: "${task}"
+
+Rules:
+- Plain spoken words only. No markdown, no asterisks, no quotes, no stage directions.
+- 1-2 sentences max.
+- Jump straight into the task — don't give a generic business greeting.
+- If the task is personal (calling a friend, telling someone something), speak like a real person, not a receptionist.
+- If the task involves the shop (business call), mention Alpha International Auto Center.
+- Speak exactly what you would say out loud on the phone.`,
+    }], 80) || `Hey, I'm calling from Alpha International Auto Center — ${task}`
 
     // Save transcript
     await dbUpdate(callId, {
@@ -189,16 +195,17 @@ Write a SHORT natural phone greeting (1-2 sentences). Warm and friendly. Plain s
     transcript.push({ speaker: 'customer', text })
     await dbUpdate(callId, { transcript })
 
-    const system = `You are Alex, a phone agent calling on behalf of Alpha International Auto Center (auto repair shop, Houston TX, 10710 S Main St, (713) 663-6979).
+    const system = `You are on a live phone call. Your task is:
+"${state.task}"
 
-TASK: ${state.task}
+FOLLOW THE TASK EXACTLY. If the task says tell them something specific, say it. If it's personal, be personal. If it's business, be professional.
 
-RULES:
-- This is a LIVE PHONE CALL. Respond naturally like a real person talking on the phone.
-- Keep replies SHORT: 1-3 sentences MAX. No bullet points, no markdown, no asterisks.
-- Just plain conversational speech. No stage directions.
-- When the task is complete, say goodbye warmly and end.
-- Never say you are an AI unless directly asked.`
+Rules:
+- Live phone call. SHORT replies — 1-3 sentences max.
+- Plain speech only. No markdown, no asterisks, no bullet points, no stage directions.
+- Stay on task. Do not drift into generic conversation.
+- Once the task is done, wrap up naturally and say goodbye.
+- Never admit you are an AI unless directly asked.`
 
     const messages = [
       { role: 'system', content: system },
