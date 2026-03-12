@@ -144,7 +144,7 @@ RULES:
 // ── Handle call.answered asynchronously ──────────────────────────────────────
 async function handleAnswered(callId: string, task: string) {
   try {
-    const isAlpha = /alpha|oil.?change|auto.?center/i.test(task)
+    const isAlpha = task === 'Alpha Auto Center oil change call' || /oil.?change|auto.?center|brake|transmission|engine|state inspection/i.test(task)
 
     // Upsert row
     await dbUpsert(callId, {
@@ -233,7 +233,7 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     const objectionCount = (state.objection_count as number) || 0
     const isHardNo = /not interested|do not call|take me off|remove me|stop calling/i.test(text)
     const isSoftNo = /no thank|no thanks|can.?t right now|not right now|maybe later|not today|not looking/i.test(text)
-    const isAlpha = /alpha|oil.?change|auto.?center/i.test(state.task || '')
+    const isAlpha = (state.task || '') === 'Alpha Auto Center oil change call' || /oil.?change|auto.?center|brake|transmission|engine|state inspection/i.test(state.task || '')
 
     // Hard no / end-of-call — go straight to goodbye
     if (isHardNo || (isSoftNo && objectionCount >= 1)) {
