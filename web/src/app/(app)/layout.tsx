@@ -18,6 +18,7 @@ const NAV = [
   { href: '/parts', icon: '🔩', label: 'Parts Lookup' },
   { href: '/messages', icon: '💬', label: 'Calls & Messages' },
   { href: '/ai', icon: '🤖', label: 'Alpha AI' },
+  { href: '/connectors', icon: '🔌', label: 'Connectors' },
   { href: '/settings', icon: '⚙️', label: 'Settings' },
 ]
 

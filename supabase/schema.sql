@@ -215,3 +215,30 @@ alter table messages disable row level security;
 alter table activities disable row level security;
 alter table audit_log disable row level security;
 alter table campaigns disable row level security;
+
+-- ── Connectors (Social Media & Calendar OAuth) ────────────────
+create table if not exists connectors (
+  id uuid primary key default gen_random_uuid(),
+  service text not null unique,
+  enabled boolean default false,
+  access_token text,
+  refresh_token text,
+  token_expires_at timestamptz,
+  page_id text,
+  page_access_token text,
+  metadata jsonb default '{}',
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+alter table connectors disable row level security;
+
+-- Seed initial rows
+insert into connectors (service, enabled) values
+  ('facebook', false),
+  ('instagram', false),
+  ('google_business', false),
+  ('google_calendar', false)
+on conflict (service) do nothing;
+
+alter publication supabase_realtime add table connectors;

@@ -149,7 +149,66 @@ EXECUTION RULES:
 7. NEVER ask for info already in the conversation — use what was provided
 8. Confirm destructive actions (void, delete) before executing
 9. When user says "email it" or "text it" — just do it, don't ask for confirmation unless you're missing the recipient
-10. If a customer name and email are mentioned together, always associate them`
+10. If a customer name and email are mentioned together, always associate them
+
+SOCIAL MEDIA & CONNECTORS:
+- When the user asks to post to Facebook, Instagram, or Google Business — use the connector tool
+- When asked to check comments, reviews, or messages — fetch and present them
+- When asked to reply to comments or reviews — use the reply connector tool
+- When asked to schedule an appointment — use Google Calendar
+- When asked to find customers on social media — search Facebook messages and comments
+- Always confirm before posting publicly (show draft first, say "Here's the draft — want me to post this?")
+- For Instagram posts, an image URL is required
+
+CONNECTOR TOOL CALLS — respond with ONLY a raw JSON object:
+
+FACEBOOK POST:
+{"tool":"connector","connector":"facebook","action":"post","payload":{"message":"text here","link":"optional url"}}
+
+FACEBOOK GET POSTS:
+{"tool":"connector","connector":"facebook","action":"get_posts","payload":{}}
+
+FACEBOOK GET COMMENTS:
+{"tool":"connector","connector":"facebook","action":"get_comments","payload":{"post_id":"12345_67890"}}
+
+FACEBOOK REPLY COMMENT:
+{"tool":"connector","connector":"facebook","action":"reply_comment","payload":{"comment_id":"...","message":"Thanks for your feedback!"}}
+
+FACEBOOK GET MESSAGES:
+{"tool":"connector","connector":"facebook","action":"get_messages","payload":{}}
+
+FACEBOOK SEND MESSAGE:
+{"tool":"connector","connector":"facebook","action":"send_message","payload":{"recipient_id":"...","message":"Hi there!"}}
+
+INSTAGRAM POST:
+{"tool":"connector","connector":"instagram","action":"post","payload":{"image_url":"https://...","caption":"text here"}}
+
+INSTAGRAM GET POSTS:
+{"tool":"connector","connector":"instagram","action":"get_posts","payload":{}}
+
+INSTAGRAM GET COMMENTS:
+{"tool":"connector","connector":"instagram","action":"get_comments","payload":{"media_id":"..."}}
+
+INSTAGRAM REPLY COMMENT:
+{"tool":"connector","connector":"instagram","action":"reply_comment","payload":{"comment_id":"...","message":"Thank you!"}}
+
+GOOGLE BUSINESS POST:
+{"tool":"connector","connector":"google_business","action":"post","payload":{"summary":"We're running a spring special this week!","call_to_action":{"type":"LEARN_MORE","url":"https://..."}}}
+
+GOOGLE BUSINESS GET REVIEWS:
+{"tool":"connector","connector":"google_business","action":"get_reviews","payload":{}}
+
+GOOGLE BUSINESS REPLY REVIEW:
+{"tool":"connector","connector":"google_business","action":"reply_review","payload":{"review_id":"...","reply":"Thank you for your kind review!"}}
+
+GOOGLE CALENDAR LIST EVENTS:
+{"tool":"connector","connector":"google_calendar","action":"list_events","payload":{"days":7}}
+
+GOOGLE CALENDAR CREATE EVENT:
+{"tool":"connector","connector":"google_calendar","action":"create_event","payload":{"title":"Oil Change - John Doe","start":"2026-03-15T10:00:00","end":"2026-03-15T11:00:00","description":"2019 Toyota Camry"}}
+
+GOOGLE CALENDAR DELETE EVENT:
+{"tool":"connector","connector":"google_calendar","action":"delete_event","payload":{"event_id":"..."}}`
 
 interface HistoryEntry {
   id: string
@@ -729,6 +788,43 @@ export default function AIPage() {
         setMessages(prev => [...prev, assistantMsg])
         saveToHistory([...history, assistantMsg])
         return
+      }
+
+      // Connector tools — Facebook, Instagram, Google Business, Google Calendar
+      if (parsed.tool === 'connector') {
+        const connectorName = parsed.connector as string
+        const connAction    = parsed.action as string
+        const connPayload   = (parsed.payload || {}) as Record<string, unknown>
+        setStatus(`Running ${connectorName}...`)
+        let connResult = ''
+        try {
+          const endpointMap: Record<string, string> = {
+            facebook:        '/api/connectors/facebook',
+            instagram:       '/api/connectors/instagram',
+            google_business: '/api/connectors/google-business',
+            google_calendar: '/api/connectors/google-calendar',
+          }
+          const endpoint = endpointMap[connectorName]
+          if (!endpoint) {
+            connResult = `Unknown connector: ${connectorName}`
+          } else {
+            const r = await fetch(endpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: connAction, ...connPayload }),
+            })
+            const d = await r.json()
+            connResult = d.ok
+              ? `Success: ${JSON.stringify(d.data).slice(0, 500)}`
+              : `Failed: ${d.error}`
+          }
+        } catch (err) {
+          connResult = `Error: ${err instanceof Error ? err.message : 'Unknown'}`
+        }
+        accumulated.push(`[${connectorName}.${connAction}]: ${connResult}`)
+        agentMessages.push({ role: 'assistant', content: raw })
+        agentMessages.push({ role: 'user', content: `${connectorName} ${connAction} result: ${connResult}\n\nContinue to the next step silently.` })
+        continue
       }
 
       // Unknown — treat as final response
