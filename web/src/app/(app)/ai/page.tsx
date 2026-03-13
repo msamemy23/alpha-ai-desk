@@ -13,9 +13,9 @@ interface VoiceCallState {
   recording_url?: string
 }
 
-interface ChatMessage { role: 'user'|'assistant'; content: string; html?: string; imageUrl?: string }
+interface ChatMessage { role: 'user'|'assistant'; content: string; html?: string; imageUrl?: string; reasoning?: string; thinkingSeconds?: number }
 
-const SYSTEM_PROMPT = `You are Alpha AI — the fully autonomous command center for Alpha International Auto Center.
+const SYSTEM_PROMPT = `You are Alpha AI, the intelligent assistant for Alpha International Auto Center, an auto repair shop in Houston, TX.
 
 SHOP INFO:
 - Name: Alpha International Auto Center | 10710 S Main St, Houston TX 77025
@@ -23,28 +23,39 @@ SHOP INFO:
 - Payment: Cash, Card, Zelle, Cash App
 - Technicians: Paul (senior), Devin, Luis, Louie
 
-PERSONALITY: Confident, direct, knowledgeable. Short sentences. You know cars inside and out.
+PERSONALITY: Confident, direct, knowledgeable. Short sentences. You know cars inside and out. Be conversational and natural — you're talking to a mechanic who's busy, be efficient.
+
+CRITICAL BEHAVIOR RULES:
+1. When the user mentions "look online", "search for", "find prices for", "look up parts", "check prices", "what does a ___ cost" — you MUST use the webSearch tool to find REAL prices. NEVER make up or estimate prices. NEVER guess part costs. Always search first.
+2. When the user provides a customer name or email during a conversation, IMMEDIATELY use that information. If building an estimate, attach the customer name/email to it. If the customer doesn't exist yet, create them first using createCustomer.
+3. When the user says "email it", "send it", "text it", "send the estimate", "email that to them" — take ACTION immediately. Use sendEstimateEmail or message tool. Don't ask for confirmation unless you're missing critical info (like the recipient).
+4. Think step by step. If a user gives you multiple instructions in one message, handle ALL of them in order.
+5. Keep context across the conversation. Remember what estimate you're working on, which customer you're discussing, what vehicle, etc.
+6. When building estimates:
+   - If user says "labor only" or "only labor", set parts to empty/zero
+   - If user mentions a payment already made, note it (e.g., "Customer paid $70 towards labor")
+   - Always include the customer name on the estimate if you know it
+   - Search for part prices online before creating the estimate — use REAL prices
+7. For quotes: search part prices first using webSearch, then proposeDocument with real numbers from the search
 
 HOW YOU WORK:
 You receive a task. You think through ALL steps internally. You execute them one at a time using JSON tool calls. When everything is done, you give ONE final plain-text response confirming what was completed.
 
-You NEVER show your thinking to the user. You NEVER narrate steps. You work silently and report when done.
-
 TOOL CALLS — respond with ONLY a raw JSON object, no markdown, no code blocks, no extra text:
 
-WEB SEARCH:
+WEB SEARCH — Search the web for real-time information like auto part prices, availability, specifications. Use this whenever the user asks to "look online", "search for", "find prices", "check availability", "what does X cost", or any request for current pricing/info. NEVER guess prices — always search first:
 {"tool":"webSearch","query":"2007 Honda Civic lower control arm price"}
 
-CREATE CUSTOMER:
-{"tool":"action","action":"createCustomer","payload":{"name":"John Doe","phone":"555-1234","email":""}}
+CREATE CUSTOMER — Create a new customer record. Use when user mentions a new person's name/phone/email that isn't in the system yet:
+{"tool":"action","action":"createCustomer","payload":{"name":"John Doe","phone":"555-1234","email":"john@example.com"}}
 
-CREATE JOB:
+CREATE JOB — Open a new work order for a customer's vehicle:
 {"tool":"action","action":"createJob","payload":{"customer_name":"John Doe","vehicle_year":"2019","vehicle_make":"Toyota","vehicle_model":"Camry","status":"Pending","notes":"Front brakes squeaking"}}
 
-CREATE ESTIMATE (visual card):
+CREATE ESTIMATE (visual card) — Show a formatted estimate card with parts and labor breakdown:
 {"tool":"proposeDocument","type":"Estimate","customer":"John Doe","vehicle":"2019 Toyota Camry","parts":[{"name":"Brake Pads Front","qty":1,"unitPrice":45.99},{"name":"Rotors Front Pair","qty":1,"unitPrice":89.99}],"labors":[{"operation":"Front brake replacement","hours":1.5,"rate":120}],"notes":"Standard brake job"}
 
-CREATE INVOICE:
+CREATE INVOICE — Save an invoice to the database:
 {"tool":"action","action":"createInvoice","payload":{"type":"Invoice","customer_name":"John Doe","vehicle_year":"2019","vehicle_make":"Toyota","vehicle_model":"Camry","parts":[{"name":"Brake Pads","qty":1,"unitPrice":45.99,"taxable":true}],"labors":[{"operation":"Brake replacement","hours":1.5,"rate":120}],"notes":""}}
 
 UPDATE JOB STATUS:
@@ -56,48 +67,52 @@ UPDATE CUSTOMER:
 VOID DOCUMENT:
 {"tool":"action","action":"voidDocument","payload":{"doc_number":"EST-2025-0001"}}
 
-EMAIL ESTIMATE/INVOICE TO CUSTOMER:
+EMAIL ESTIMATE/INVOICE — Send an estimate or invoice to a customer via email. Use when user says "email it", "send the estimate", "email invoice to John". Can look up by doc_number, customer_name, or customer_id:
 {"tool":"action","action":"sendEstimateEmail","payload":{"doc_number":"EST-2025-0001"}}
-Use when user says "email the estimate to the customer", "send estimate #EST-2025-0001", "email invoice to John". Can look up by doc_number, customer_name, or customer_id.
+You can also pass customer_name or customer_id if you don't have the doc_number:
+{"tool":"action","action":"sendEstimateEmail","payload":{"customer_name":"John Doe","email":"john@example.com"}}
+
+SEND SMS TO CUSTOMER — Text an estimate or message to a customer. Use when user says "text it", "text the estimate", "send a text":
+{"tool":"message","to":"+15551234567","channel":"sms","body":"Hi John, your estimate from Alpha International is ready. Total: $450.00"}
 
 SCHEDULE FOLLOW-UP:
 {"tool":"action","action":"scheduleFollowUp","payload":{"customer_name":"John Doe","channel":"sms","scheduled_for":"2025-01-15T10:00:00Z","message_body":"Hi John, just checking in..."}}
 
-GET CUSTOMER HISTORY:
+GET CUSTOMER HISTORY — Look up everything about a customer:
 {"tool":"action","action":"getCustomerHistory","payload":{"customer_name":"John Doe"}}
 
-GET SHOP STATS:
+GET SHOP STATS — Get current shop performance metrics:
 {"tool":"action","action":"getShopStats","payload":{}}
+
+DELETE RECORD:
+{"tool":"action","action":"deleteRecord","payload":{"table":"customers","id":"uuid-here"}}
 
 SEND MESSAGE (shows confirmation card):
 {"tool":"message","to":"+15551234567","channel":"sms","body":"Hi, your vehicle is ready!"}
+For email: {"tool":"message","to":"john@example.com","channel":"email","subject":"Your Estimate","body":"Hi John, attached is your estimate."}
 
 PLACE PHONE CALL — connects the user directly to someone (you are NOT on the call):
 {"tool":"call","to":"+15551234567","name":"Customer Name"}
 Use when user says: "call 2819008141", "call John", "dial this number", "ring them" — just a number or name with no task attached.
-NEVER use message tool for a call request.
 
 AI VOICE CALL — AI calls someone and has a FULL CONVERSATION to complete a task (you ARE the caller):
 {"tool":"aiVoiceCall","to":"+15551234567","task":"Tell them their car is ready for pickup","callerName":"Alpha International Auto Center"}
-Use when user says things like:
-- "call John and tell him his car is ready"
-- "call 2819008141 and ask if their heart is still free"
-- "have AI call AutoZone and order the part"
-- "call [number/name] and [do/say/ask something]"
-The KEY difference: if there is a MESSAGE or TASK to deliver/handle, use aiVoiceCall. If it's just "call X" with no task, use call.
+Use when there is a MESSAGE or TASK to deliver/handle. If it's just "call X" with no task, use call instead.
 
 NAVIGATE:
 {"tool":"navigate","view":"jobs"}
 
-RULES:
+EXECUTION RULES:
 1. Think through the full plan before starting
 2. Execute each step silently — ONE tool call per turn, no explanation text
 3. NEVER output text AND a tool call together — pick one
-4. For quotes: search part prices first (silently), then proposeDocument with real numbers
-5. For new customers: createCustomer first, then continue
+4. For quotes/estimates: ALWAYS search part prices first (webSearch), then proposeDocument with REAL numbers
+5. For new customers: createCustomer first, then continue with their job/estimate
 6. When ALL steps done: respond in plain text — 1-3 sentences max confirming what was completed
-7. NEVER ask for info already in the conversation
-8. Confirm destructive actions (void, delete) before executing`
+7. NEVER ask for info already in the conversation — use what was provided
+8. Confirm destructive actions (void, delete) before executing
+9. When user says "email it" or "text it" — just do it, don't ask for confirmation unless you're missing the recipient
+10. If a customer name and email are mentioned together, always associate them`
 
 interface HistoryEntry {
   id: string
@@ -133,6 +148,8 @@ export default function AIPage() {
   const [showJumpIn, setShowJumpIn] = useState(false)
   const [sendingSms, setSendingSms] = useState(false)
   const [toast, setToast] = useState('')
+  const [thinkingElapsed, setThinkingElapsed] = useState(0)
+  const thinkingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const recognitionRef = useRef<SpeechRecognition | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const [shopContext, setShopContext] = useState('')
@@ -319,6 +336,19 @@ export default function AIPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, status])
 
+  // Thinking timer — counts up while loading
+  useEffect(() => {
+    if (loading) {
+      setThinkingElapsed(0)
+      thinkingTimerRef.current = setInterval(() => setThinkingElapsed(prev => prev + 1), 1000)
+    } else {
+      if (thinkingTimerRef.current) clearInterval(thinkingTimerRef.current)
+      thinkingTimerRef.current = null
+      setThinkingElapsed(0)
+    }
+    return () => { if (thinkingTimerRef.current) clearInterval(thinkingTimerRef.current) }
+  }, [loading])
+
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 3000) }
 
   // Auto-send prefill from dashboard AI Alert
@@ -479,6 +509,7 @@ export default function AIPage() {
 
       setStatus(step === 0 ? 'Thinking...' : 'Working...')
 
+      const thinkStart = Date.now()
       const res = await fetch(`${settings?.ai_base_url || 'https://openrouter.ai/api/v1'}/chat/completions`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -487,6 +518,7 @@ export default function AIPage() {
           messages: [{ role: 'system', content: systemWithContext }, ...agentMessages],
           max_tokens: 2000,
           temperature: 0.3,
+          reasoning: { effort: 'medium' },
         })
       })
 
@@ -498,6 +530,8 @@ export default function AIPage() {
       }
 
       const raw = data.choices?.[0]?.message?.content?.trim() || ''
+      const reasoning = data.choices?.[0]?.message?.reasoning || data.choices?.[0]?.message?.reasoning_content || ''
+      const thinkingSeconds = Math.round((Date.now() - thinkStart) / 1000)
 
       // Parse JSON tool call — strip code blocks, extract JSON
       let parsed: Record<string, unknown> | null = null
@@ -512,7 +546,7 @@ export default function AIPage() {
 
       // No tool call = final answer — show to user
       if (!parsed) {
-        const assistantMsg: ChatMessage = { role: 'assistant', content: raw }
+        const assistantMsg: ChatMessage = { role: 'assistant', content: raw, reasoning: reasoning || undefined, thinkingSeconds: reasoning ? thinkingSeconds : undefined }
         setMessages(prev => [...prev, assistantMsg])
         speak(raw)
         saveToHistory([...history, assistantMsg])
@@ -839,6 +873,15 @@ export default function AIPage() {
     setShowHistory(false)
   }
 
+  const deleteConversation = (entryId: string) => {
+    if (!confirm('Delete this conversation?')) return
+    setHistory(prev => {
+      const updated = prev.filter(h => h.id !== entryId)
+      localStorage.setItem('ai_history', JSON.stringify(updated))
+      return updated
+    })
+  }
+
   const groupHistoryByDate = () => {
     const today = new Date().toDateString()
     const yesterday = new Date(Date.now() - 86400000).toDateString()
@@ -937,11 +980,20 @@ export default function AIPage() {
               <div key={group.label} className="mb-4">
                 <p className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-2">{group.label}</p>
                 {group.entries.map(entry => (
-                  <button key={entry.id} onClick={() => loadConversation(entry)}
-                    className="w-full text-left p-3 rounded-lg bg-bg-hover hover:bg-blue/10 mb-2 transition-colors">
-                    <p className="text-sm font-medium truncate">{entry.preview}</p>
-                    <p className="text-xs text-text-muted mt-1">{new Date(entry.date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</p>
-                  </button>
+                  <div key={entry.id} className="flex items-center gap-1 mb-2">
+                    <button onClick={() => loadConversation(entry)}
+                      className="flex-1 text-left p-3 rounded-lg bg-bg-hover hover:bg-blue/10 transition-colors min-w-0">
+                      <p className="text-sm font-medium truncate">{entry.preview}</p>
+                      <p className="text-xs text-text-muted mt-1">{new Date(entry.date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</p>
+                    </button>
+                    <button
+                      onClick={() => deleteConversation(entry.id)}
+                      className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg text-text-muted hover:text-red-400 hover:bg-red-400/10 transition-colors"
+                      title="Delete conversation"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    </button>
+                  </div>
                 ))}
               </div>
             ))}
@@ -1019,6 +1071,18 @@ export default function AIPage() {
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={m.imageUrl} alt="Uploaded" className="rounded-lg max-w-[200px] max-h-[150px] object-cover" />
                 </div>
+              )}
+              {/* Thinking/reasoning collapsible section */}
+              {m.reasoning && (
+                <details className="mb-2 group/think">
+                  <summary className="cursor-pointer text-xs text-text-muted hover:text-text-secondary transition-colors select-none flex items-center gap-1.5 list-none [&::-webkit-details-marker]:hidden">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 transition-transform duration-200 group-open/think:rotate-90"><polyline points="9 18 15 12 9 6"/></svg>
+                    <span>Thought for {m.thinkingSeconds || 0} second{(m.thinkingSeconds || 0) !== 1 ? 's' : ''}</span>
+                  </summary>
+                  <div className="mt-2 pl-4 border-l-2 border-border text-xs text-text-muted italic whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto">
+                    {m.reasoning}
+                  </div>
+                </details>
               )}
               {m.html ? <div dangerouslySetInnerHTML={{ __html: m.html }} /> : <p className="whitespace-pre-wrap">{m.content}</p>}
             </div>
@@ -1122,7 +1186,15 @@ export default function AIPage() {
         {(loading || status) && (
           <div className="flex justify-start">
             <div className="bg-bg-card border border-border rounded-xl px-4 py-3 text-sm text-text-muted">
-              {status || <span className="animate-pulse">Alpha AI is thinking...</span>}
+              <div className="flex items-center gap-2">
+                <span className="flex gap-0.5">
+                  <span className="w-1.5 h-1.5 bg-text-muted rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                  <span className="w-1.5 h-1.5 bg-text-muted rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                  <span className="w-1.5 h-1.5 bg-text-muted rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                </span>
+                <span>{status || 'Thinking...'}</span>
+                {thinkingElapsed > 0 && <span className="text-xs opacity-60">{thinkingElapsed}s</span>}
+              </div>
             </div>
           </div>
         )}
