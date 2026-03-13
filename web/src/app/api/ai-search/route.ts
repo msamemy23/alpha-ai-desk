@@ -19,6 +19,7 @@ export async function GET(req: NextRequest) {
         query,
         search_depth: 'basic',
         include_answer: true,
+        include_images: true,
         max_results: 5,
       }),
       signal: AbortSignal.timeout(10000),
@@ -38,10 +39,14 @@ export async function GET(req: NextRequest) {
       })
     )
 
+    // Include image URLs from Tavily if available
+    const images: string[] = (data.images || []).slice(0, 5)
+
     return NextResponse.json({
       results,
       query,
       ...(data.answer ? { answer: data.answer } : {}),
+      ...(images.length ? { images } : {}),
     })
   } catch {
     return NextResponse.json({ results: [], query })

@@ -43,10 +43,23 @@ WHEN TO SEARCH vs WHEN TO BUILD AN ESTIMATE — THIS IS CRITICAL:
 - If the user says "make an estimate", "quote it", "build a quote", "make a receipt", "write it up", "create an estimate" → THEN search prices first and use proposeDocument to create an estimate.
 - If the user gives you specific line items with prices (like "Replace charcoal canister: $180, labor 1 hour") → THEN they want an estimate, use proposeDocument.
 - If the user says "look online for X AND make a quote/estimate" → THEN search AND build an estimate.
-- When presenting search results WITHOUT an estimate request, format them clearly in plain text with prices, options, and sources. Then ask: "Want me to build an estimate with any of these?"
+- When presenting search results WITHOUT an estimate request, format them clearly with prices, options, sources, and clickable links. Then ask: "Want me to build an estimate with any of these?"
 - NOT everything needs to be an estimate. Sometimes the user just wants information. Be conversational FIRST — present info, then ask what they want to do next.
 - "Look online for front brakes for a 2016 Civic" = SEARCH and SHOW results as text. That's it. Do NOT call proposeDocument.
 - "Look online for front brakes and make me a quote" = SEARCH then BUILD estimate with proposeDocument.
+
+WHEN PRESENTING SEARCH RESULTS:
+- ALWAYS include clickable markdown links to the source/product page for each result. The search results include URLs — use them.
+- Format each result with: product name (bold), price, key details, and a markdown link
+- Example format:
+  1. **Duralast Gold Ceramic Brake Pads** - $71.99
+     Low dust, includes hardware, 2-year warranty
+     [View on AutoZone](https://www.autozone.com/p/duralast-gold...)
+  2. **ACDelco Professional Ceramic** - $34.99
+     OE-quality fit, low noise
+     [View on Amazon](https://www.amazon.com/dp/...)
+- If product image URLs are available in the search results, include them as markdown images: ![Product](url)
+- Make results scannable: bold product name, price, key features, and a link to buy/view
 
 HOW YOU WORK:
 You receive a task. You think through ALL steps internally. You execute them one at a time using JSON tool calls. When everything is done, you give ONE final plain-text response confirming what was completed.
@@ -570,7 +583,10 @@ export default function AIPage() {
         try {
           const r = await fetch(`/api/ai-search?q=${encodeURIComponent(parsed.query as string)}`)
           const d = await r.json()
-          searchResult = d.results?.slice(0, 6).map((r: Record<string,string>) => `- ${r.title}: ${r.snippet}`).join('\n') || 'No results'
+          searchResult = d.results?.slice(0, 6).map((r: Record<string,string>) => `- ${r.title}: ${r.snippet}\n  URL: ${r.url}`).join('\n') || 'No results'
+          if (d.images?.length) {
+            searchResult += '\n\nProduct images:\n' + (d.images as string[]).slice(0, 3).map((url: string) => `- ${url}`).join('\n')
+          }
         } catch { searchResult = 'Search failed' }
         accumulated.push(`[Search: "${parsed.query}"]\n${searchResult}`)
         agentMessages.push({ role: 'assistant', content: raw })
@@ -806,12 +822,35 @@ export default function AIPage() {
     try {
       const res = await fetch('/api/create-estimate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customer: parsed.customer, parts: parsed.parts, labors: parsed.labors, notes: parsed.notes })
+        body: JSON.stringify({
+          customer: parsed.customer,
+          vehicle: parsed.vehicle,
+          parts: parsed.parts,
+          labors: parsed.labors,
+          notes: parsed.notes,
+        })
       })
       if (!res.ok) throw new Error('Failed')
       showToast('Estimate saved as draft')
       setTimeout(() => { window.location.href = '/estimates' }, 1000)
     } catch { showToast('Failed to save estimate') }
+  }
+
+  // Render markdown links, images, and bold in chat messages
+  const renderMarkdown = (text: string): string => {
+    const escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+    return escaped
+      // Images: ![alt](url)
+      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="rounded-lg max-w-[280px] max-h-[200px] object-cover my-1 inline-block" />')
+      // Links: [text](url)
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue underline hover:text-blue/80">$1</a>')
+      // Bold: **text**
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      // Newlines
+      .replace(/\n/g, '<br />')
   }
 
   const renderProposal = (parsed: Record<string, unknown>): string => {
@@ -1094,7 +1133,11 @@ export default function AIPage() {
                   </div>
                 </details>
               )}
-              {m.html ? <div dangerouslySetInnerHTML={{ __html: m.html }} /> : <p className="whitespace-pre-wrap">{m.content}</p>}
+              {m.html
+                ? <div dangerouslySetInnerHTML={{ __html: m.html }} />
+                : m.role === 'assistant' && (m.content.includes('[') || m.content.includes('**') || m.content.includes('!['))
+                  ? <div className="whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
+                  : <p className="whitespace-pre-wrap">{m.content}</p>}
             </div>
           </div>
         ))}
