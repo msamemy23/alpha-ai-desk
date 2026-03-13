@@ -471,7 +471,61 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
 
           {/* Preview */}
           <div className="lg:col-span-2">
-            <div className="sticky top-4 bg-white text-gray-900 rounded-xl shadow-2xl overflow-hidden" style={{fontFamily:'Arial,Helvetica,sans-serif'}}>
+            {/* PDF Download & Print buttons */}
+            <div className="flex gap-2 mb-3">
+              <button
+                onClick={() => {
+                  // Load html2pdf.js from CDN if not already loaded then download
+                  const el = document.getElementById('doc-preview-panel')
+                  if (!el) return
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const doDownload = (h2p: any) => {
+                    h2p(el).set({
+                      margin: [8, 8, 8, 8],
+                      filename: `${form.doc_number || type}.pdf`,
+                      image: { type: 'jpeg', quality: 0.98 },
+                      html2canvas: { scale: 2, useCORS: true },
+                      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+                    }).save()
+                  }
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  if ((window as any).html2pdf) {
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    doDownload((window as any).html2pdf)
+                  } else {
+                    const script = document.createElement('script')
+                    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js'
+                    script.onload = () => {
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                      doDownload((window as any).html2pdf)
+                    }
+                    document.head.appendChild(script)
+                  }
+                }}
+                className="btn btn-secondary btn-sm flex items-center gap-1.5"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Download PDF
+              </button>
+              <button
+                onClick={() => {
+                  // Print just the preview panel
+                  const el = document.getElementById('doc-preview-panel')
+                  if (!el) return
+                  const w = window.open('', '_blank', 'width=800,height=1000')
+                  if (!w) { window.print(); return }
+                  w.document.write(`<!DOCTYPE html><html><head><title>${form.doc_number || type}</title><style>body{margin:0;padding:16px;font-family:Arial,Helvetica,sans-serif;background:#fff;color:#111;}</style></head><body>${el.innerHTML}</body></html>`)
+                  w.document.close()
+                  w.focus()
+                  setTimeout(() => { w.print(); w.close() }, 300)
+                }}
+                className="btn btn-secondary btn-sm flex items-center gap-1.5"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                Print
+              </button>
+            </div>
+            <div id="doc-preview-panel" className="sticky top-4 bg-white text-gray-900 rounded-xl shadow-2xl overflow-hidden" style={{fontFamily:'Arial,Helvetica,sans-serif'}}>
               {/* Header */}
               <div style={{background:'#1a1a2e',padding:'24px 28px',textAlign:'center'}}>
                 <h2 style={{margin:0,fontSize:'18px',fontWeight:700,color:'#fff',letterSpacing:'0.5px'}}>Alpha International Auto Center</h2>

@@ -2,6 +2,17 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 
+// Connector info for popup
+const CONNECTOR_SERVICE_INFO: Record<string, { icon: string; name: string; description: string; color: string; bgColor: string; oauthPath: string }> = {
+  facebook: { icon: '📘', name: 'Facebook Pages', description: 'Post updates, reply to comments, manage messages', color: '#1877F2', bgColor: 'rgba(24,119,242,0.1)', oauthPath: '/api/auth/facebook' },
+  instagram: { icon: '📸', name: 'Instagram Business', description: 'Post photos, reply to comments and DMs', color: '#E1306C', bgColor: 'rgba(225,48,108,0.1)', oauthPath: '/api/auth/facebook' },
+  google_business: { icon: '🗺️', name: 'Google Business Profile', description: 'Post updates, reply to reviews, see ratings', color: '#4285F4', bgColor: 'rgba(66,133,244,0.1)', oauthPath: '/api/auth/google' },
+  google_calendar: { icon: '📅', name: 'Google Calendar', description: 'Schedule appointments, manage bookings', color: '#0F9D58', bgColor: 'rgba(15,157,88,0.1)', oauthPath: '/api/auth/google' },
+}
+const CONNECTOR_ORDER = ['facebook', 'instagram', 'google_business', 'google_calendar']
+
+interface ConnectorRecord { id: string; service: string; enabled: boolean; page_id: string | null; metadata: Record<string, unknown>; updated_at: string }
+
 interface VoiceCallState {
   callId: string
   to: string
@@ -447,6 +458,90 @@ export default function AIPage() {
 
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 3000) }
 
+  // ==================== NEW STATE ====================
+  // Feature toggles
+  const [features, setFeatures] = useState({ search: true, webAutomation: false, socialMedia: false })
+  const toggleFeature = (key: keyof typeof features) => setFeatures(prev => ({ ...prev, [key]: !prev[key] }))
+
+  // Connectors popup state
+  const [showConnectorsPopup, setShowConnectorsPopup] = useState(false)
+  const [connectors, setConnectors] = useState<Record<string, ConnectorRecord>>({})
+  const [connectorsLoading, setConnectorsLoading] = useState(false)
+  const [disconnecting, setDisconnecting] = useState<string | null>(null)
+  const [connectorToast, setConnectorToast] = useState('')
+
+  const loadConnectors = useCallback(async () => {
+    setConnectorsLoading(true)
+    try {
+      const { data } = await supabase.from('connectors').select('*')
+      const map: Record<string, ConnectorRecord> = {}
+      for (const c of (data || [])) map[c.service] = c
+      setConnectors(map)
+    } catch { /* ignore */ }
+    setConnectorsLoading(false)
+  }, [])
+
+  const handleConnectorDisconnect = useCallback(async (service: string) => {
+    setDisconnecting(service)
+    try {
+      await supabase.from('connectors').update({ enabled: false, access_token: null, refresh_token: null, token_expires_at: null, page_id: null, page_access_token: null, metadata: {}, updated_at: new Date().toISOString() }).eq('service', service)
+      setConnectorToast(`${CONNECTOR_SERVICE_INFO[service]?.name || service} disconnected`)
+      setTimeout(() => setConnectorToast(''), 3000)
+      await loadConnectors()
+    } catch { setConnectorToast('Disconnect failed'); setTimeout(() => setConnectorToast(''), 3000) }
+    setDisconnecting(null)
+  }, [loadConnectors])
+
+  // File attachment state
+  const [attachedFile, setAttachedFile] = useState<{ name: string; content: string; type: 'text' | 'image' } | null>(null)
+  const attachInputRef = useRef<HTMLInputElement>(null)
+
+  const handleFileAttach = useCallback(async (file: File) => {
+    const isImage = file.type.startsWith('image/')
+    const isPDF = file.type === 'application/pdf'
+    const isText = file.type.startsWith('text/') || file.name.endsWith('.txt') || file.name.endsWith('.csv')
+
+    if (isImage) {
+      const reader = new FileReader()
+      reader.onload = () => { setAttachedFile({ name: file.name, content: reader.result as string, type: 'image' }) }
+      reader.readAsDataURL(file)
+    } else if (isText) {
+      const reader = new FileReader()
+      reader.onload = () => { setAttachedFile({ name: file.name, content: reader.result as string, type: 'text' }) }
+      reader.readAsText(file)
+    } else if (isPDF) {
+      setAttachedFile({ name: file.name, content: '[Reading PDF...]', type: 'text' })
+      const reader = new FileReader()
+      reader.onload = async () => {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const pdfjsLib = (window as any).pdfjsLib
+          if (pdfjsLib) {
+            const arrayBuffer = reader.result as ArrayBuffer
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+            let text = ''
+            for (let i = 1; i <= Math.min(pdf.numPages, 20); i++) {
+              const page = await pdf.getPage(i)
+              const content = await page.getTextContent()
+              text += content.items.map((item: Record<string, unknown>) => item.str).join(' ') + '\n'
+            }
+            setAttachedFile({ name: file.name, content: text.trim() || '[Empty PDF]', type: 'text' })
+          } else {
+            setAttachedFile({ name: file.name, content: `[PDF file: ${file.name} — ${(file.size/1024).toFixed(0)}KB. PDF text extraction unavailable.]`, type: 'text' })
+          }
+        } catch {
+          setAttachedFile({ name: file.name, content: `[PDF file: ${file.name}]`, type: 'text' })
+        }
+      }
+      reader.readAsArrayBuffer(file)
+    } else {
+      const reader = new FileReader()
+      reader.onload = () => { setAttachedFile({ name: file.name, content: typeof reader.result === 'string' ? reader.result : `[File: ${file.name}]`, type: 'text' }) }
+      reader.readAsText(file)
+    }
+  }, [])
+  // ==================== END NEW STATE ====================
+
   // Auto-send prefill from dashboard AI Alert
   const sendRef = useRef<((overrideInput?: string) => Promise<void>) | null>(null)
   useEffect(() => {
@@ -464,7 +559,19 @@ export default function AIPage() {
     if (!text || loading) return
     if (!overrideInput) setInput('')
     setLoading(true)
-    const userMsg: ChatMessage = { role: 'user', content: text }
+    // Build message content — include attached file if any
+    let fullContent = text
+    let attachImageUrl: string | undefined
+    if (attachedFile && !overrideInput) {
+      if (attachedFile.type === 'image') {
+        attachImageUrl = attachedFile.content
+        fullContent = text + (text ? '\n\n' : '') + `[Image attached: ${attachedFile.name}]`
+      } else {
+        fullContent = text + '\n\n---\n**Attached file: ' + attachedFile.name + '**\n' + attachedFile.content.slice(0, 8000)
+      }
+      setAttachedFile(null)
+    }
+    const userMsg: ChatMessage = { role: 'user', content: text, imageUrl: attachImageUrl }
     setMessages(prev => [...prev, userMsg])
 
     // AI voice call detection — "AI call", "call [business] and order/ask", "have AI call"
@@ -499,12 +606,16 @@ export default function AIPage() {
       return
     }
 
-    const history2 = [...messages, userMsg]
-    await agentLoop(history2)
+    // Build history with full content (including file)
+    const msgForHistory: ChatMessage = fullContent !== text
+      ? { role: 'user', content: fullContent, imageUrl: attachImageUrl }
+      : userMsg
+    const history2 = [...messages, msgForHistory]
+    await agentLoop(history2, features)
     setLoading(false)
     setStatus('')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [input, loading, messages, shopContext])
+  }, [input, loading, messages, shopContext, attachedFile, features])
 
   // Poll for voice call status/summary
   const startVoicePoll = useCallback((callId: string) => {
@@ -587,7 +698,8 @@ export default function AIPage() {
     reader.readAsDataURL(file)
   }
 
-  const agentLoop = async (history: ChatMessage[]) => {
+  const agentLoop = async (history: ChatMessage[], featureFlags?: { search: boolean; webAutomation: boolean; socialMedia: boolean }) => {
+    const activeFeatures = featureFlags || { search: true, webAutomation: true, socialMedia: true }
     const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
     const apiKey = settings?.ai_api_key
     if (!apiKey) {
@@ -647,6 +759,20 @@ export default function AIPage() {
         speak(raw)
         saveToHistory([...history, assistantMsg])
         return
+      }
+
+      // Feature gate: block webSearch if search is disabled
+      if (parsed.tool === 'webSearch' && !activeFeatures.search) {
+        agentMessages.push({ role: 'assistant', content: raw })
+        agentMessages.push({ role: 'user', content: 'Web search is currently disabled by the user. Respond without searching.' })
+        continue
+      }
+
+      // Feature gate: block connector tools for social media if socialMedia is disabled
+      if (parsed.tool === 'connector' && !activeFeatures.socialMedia) {
+        agentMessages.push({ role: 'assistant', content: raw })
+        agentMessages.push({ role: 'user', content: 'Social media connectors are currently disabled by the user. Inform the user that Social Media toggle is off.' })
+        continue
       }
 
       // Web Search — execute silently, feed result back to AI
@@ -1369,6 +1495,24 @@ export default function AIPage() {
         <div ref={bottomRef} />
       </div>
       <div className="p-4 border-t border-border">
+        {/* Attached file chip */}
+        {attachedFile && (
+          <div className="flex items-center gap-2 mb-2">
+            <div className="flex items-center gap-1.5 bg-blue/10 border border-blue/30 rounded-full px-3 py-1 text-xs text-blue max-w-xs">
+              <span>{attachedFile.type === 'image' ? '🖼️' : '📎'}</span>
+              <span className="truncate max-w-[180px]">{attachedFile.name}</span>
+              <button
+                onClick={() => setAttachedFile(null)}
+                className="ml-1 text-blue/60 hover:text-red-400 transition-colors"
+                title="Remove file"
+              >✕</button>
+            </div>
+            {attachedFile.content === '[Reading PDF...]' && (
+              <span className="text-xs text-text-muted animate-pulse">Reading...</span>
+            )}
+          </div>
+        )}
+
         <div className="flex gap-2 items-end">
           <textarea
             className="form-input flex-1 resize-none text-sm"
@@ -1380,6 +1524,8 @@ export default function AIPage() {
           />
           {/* Feature 12: Photo button */}
           <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) sendImage(f); e.target.value = '' }} />
+          {/* File attach (hidden input) */}
+          <input ref={attachInputRef} type="file" accept="image/*,.pdf,.txt,.csv,.doc,.docx" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFileAttach(f); e.target.value = '' }} />
           <button
             onClick={() => fileInputRef.current?.click()}
             title="Upload photo for analysis"
@@ -1432,9 +1578,165 @@ export default function AIPage() {
             }
           </button>
         </div>
+
+        {/* Feature toggle buttons row */}
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {/* Search toggle */}
+          <button
+            onClick={() => toggleFeature('search')}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border ${
+              features.search
+                ? 'bg-blue/20 border-blue/50 text-blue'
+                : 'bg-bg-card border-border text-text-muted hover:border-blue/30 hover:text-text-secondary'
+            }`}
+            title={features.search ? 'Web search ON — click to disable' : 'Web search OFF — click to enable'}
+          >
+            {features.search && <span className="w-1.5 h-1.5 rounded-full bg-blue flex-shrink-0" />}
+            🔍 Search
+          </button>
+
+          {/* Web Auto toggle */}
+          <button
+            onClick={() => toggleFeature('webAutomation')}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border ${
+              features.webAutomation
+                ? 'bg-blue/20 border-blue/50 text-blue'
+                : 'bg-bg-card border-border text-text-muted hover:border-blue/30 hover:text-text-secondary'
+            }`}
+            title={features.webAutomation ? 'Web automation ON — click to disable' : 'Web automation OFF — click to enable'}
+          >
+            {features.webAutomation && <span className="w-1.5 h-1.5 rounded-full bg-blue flex-shrink-0" />}
+            🌐 Web Auto
+          </button>
+
+          {/* Social toggle */}
+          <button
+            onClick={() => toggleFeature('socialMedia')}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border ${
+              features.socialMedia
+                ? 'bg-blue/20 border-blue/50 text-blue'
+                : 'bg-bg-card border-border text-text-muted hover:border-blue/30 hover:text-text-secondary'
+            }`}
+            title={features.socialMedia ? 'Social media ON — click to disable' : 'Social media OFF — click to enable'}
+          >
+            {features.socialMedia && <span className="w-1.5 h-1.5 rounded-full bg-blue flex-shrink-0" />}
+            📱 Social
+          </button>
+
+          {/* Connectors button */}
+          <button
+            onClick={() => { setShowConnectorsPopup(true); loadConnectors() }}
+            className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border bg-bg-card border-border text-text-muted hover:border-blue/30 hover:text-text-secondary"
+            title="Open Connectors"
+          >
+            🔌 Connectors
+          </button>
+
+          {/* Files button */}
+          <button
+            onClick={() => attachInputRef.current?.click()}
+            className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border bg-bg-card border-border text-text-muted hover:border-blue/30 hover:text-text-secondary"
+            title="Attach a file"
+          >
+            📎 Files
+          </button>
+        </div>
+
         {listening && !voiceActive && <p className="text-xs mt-2 text-red-400 animate-pulse">Listening... speak now</p>}
         {voiceActive && voiceStatus === 'listening' && <p className="text-xs mt-2 text-red-400 animate-pulse">Voice mode active — speak now</p>}
       </div>
+
+      {/* Connectors Popup Modal */}
+      {showConnectorsPopup && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-bg-card border border-border rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
+            {/* Modal header */}
+            <div className="flex items-center justify-between p-5 border-b border-border">
+              <div>
+                <h2 className="text-lg font-bold">Connectors</h2>
+                <p className="text-xs text-text-muted mt-0.5">Connect social media and calendar accounts for AI to manage</p>
+              </div>
+              <button
+                onClick={() => setShowConnectorsPopup(false)}
+                className="w-8 h-8 flex items-center justify-center rounded-xl bg-bg-hover hover:bg-red-500/10 hover:text-red-400 transition-colors"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+
+            {/* Toast inside popup */}
+            {connectorToast && (
+              <div className="mx-5 mt-4 px-4 py-2 rounded-lg bg-green-500/10 border border-green-500/30 text-green-400 text-sm">✅ {connectorToast}</div>
+            )}
+
+            {/* Cards */}
+            <div className="p-5">
+              {connectorsLoading ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {CONNECTOR_ORDER.map(s => (
+                    <div key={s} className="h-28 rounded-xl bg-bg-hover animate-pulse" />
+                  ))}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {CONNECTOR_ORDER.map(service => {
+                    const info = CONNECTOR_SERVICE_INFO[service]
+                    if (!info) return null
+                    const connector = connectors[service]
+                    const isConnected = connector?.enabled === true
+                    const isLoading = disconnecting === service
+                    const accountName = connector?.metadata?.page_name as string | undefined || (connector?.page_id ? `ID: ${connector.page_id}` : null)
+                    return (
+                      <div key={service} className="rounded-xl border border-border p-4 flex flex-col gap-3" style={{ borderTop: `3px solid ${info.color}` }}>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl flex-shrink-0" style={{ background: info.bgColor }}>{info.icon}</div>
+                            <div>
+                              <div className="font-semibold text-sm">{info.name}</div>
+                              <div className="text-xs text-text-muted">{info.description}</div>
+                            </div>
+                          </div>
+                          <span className={`shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold ${ isConnected ? 'bg-green-500/15 text-green-400' : 'bg-bg-hover text-text-muted' }`}>
+                            {isConnected ? '● Connected' : '○ Not connected'}
+                          </span>
+                        </div>
+                        {isConnected && accountName && (
+                          <div className="text-xs text-text-muted bg-bg-hover rounded-lg px-3 py-1.5 truncate">
+                            <span className="text-text-secondary font-medium">Account:</span> {accountName}
+                          </div>
+                        )}
+                        <div className="flex justify-end">
+                          {isConnected ? (
+                            <button
+                              className="text-sm px-4 py-1.5 rounded-lg border border-red-500/20 text-red-400 hover:bg-red-500/10 transition-colors"
+                              onClick={() => handleConnectorDisconnect(service)}
+                              disabled={isLoading}
+                            >
+                              {isLoading ? 'Disconnecting…' : 'Disconnect'}
+                            </button>
+                          ) : (
+                            <button
+                              className="text-sm px-4 py-1.5 rounded-lg text-white font-medium transition-opacity hover:opacity-90"
+                              style={{ background: info.color }}
+                              onClick={() => { window.location.href = info.oauthPath }}
+                            >
+                              Connect
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              <div className="mt-5 p-3 rounded-xl bg-bg-hover border border-border text-xs text-text-muted">
+                <span className="font-medium text-text-secondary">💡 Tip:</span> Facebook & Instagram share one OAuth flow. Google Business & Calendar share one Google login.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toast */}
       {toast && (
