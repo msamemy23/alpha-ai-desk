@@ -13,7 +13,7 @@ export async function sendEmail({
   const key = apiKey || process.env.RESEND_API_KEY
   if (!key) throw new Error('RESEND_API_KEY not configured')
 
-  const fromAddr = from || process.env.FROM_EMAIL || 'Alpha Auto <noreply@alphainternationalauto.com>'
+  const fromAddr = from || process.env.FROM_EMAIL || 'Alpha Auto <onboarding@resend.dev>'
 
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',

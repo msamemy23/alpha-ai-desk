@@ -155,6 +155,15 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   const [form, setForm] = useState<Partial<Doc>>({})
   const [search, setSearch] = useState('')
   const [sendModal, setSendModal] = useState<Doc | null>(null)
+  const [sendingDoc, setSendingDoc] = useState(false)
+  const [sendError, setSendError] = useState('')
+  const [sendSuccess, setSendSuccess] = useState('')
+  // Inline new customer creation
+  const [showNewCustomer, setShowNewCustomer] = useState(false)
+  const [newCustName, setNewCustName] = useState('')
+  const [newCustEmail, setNewCustEmail] = useState('')
+  const [newCustPhone, setNewCustPhone] = useState('')
+  const [savingCustomer, setSavingCustomer] = useState(false)
   // Feature 13: Payment Plan
   const [planModal, setPlanModal] = useState<Doc | null>(null)
   const [planForm, setPlanForm] = useState({ down_payment: 0, installments: 3, frequency: 'monthly' })
@@ -204,8 +213,34 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   }
 
   const selectCustomer = (id: string) => {
+    if (id === '__new__') {
+      setShowNewCustomer(true)
+      setNewCustName(''); setNewCustEmail(''); setNewCustPhone('')
+      return
+    }
     const c = customers.find(c => c.id === id)
     if (c) setForm(f => ({ ...f, customer_id: c.id, customer_name: c.name, vehicle_year: c.vehicle_year, vehicle_make: c.vehicle_make, vehicle_model: c.vehicle_model, vehicle_vin: c.vehicle_vin, vehicle_plate: c.vehicle_plate, vehicle_mileage: c.vehicle_mileage }))
+  }
+
+  const createInlineCustomer = async () => {
+    if (!newCustName.trim()) return
+    setSavingCustomer(true)
+    try {
+      const { data, error } = await supabase.from('customers').insert({
+        name: newCustName.trim(),
+        email: newCustEmail.trim() || null,
+        phone: newCustPhone.trim() || null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }).select().single()
+      if (error) throw error
+      if (data) {
+        await load()
+        setForm(f => ({ ...f, customer_id: data.id, customer_name: data.name }))
+      }
+      setShowNewCustomer(false)
+    } catch (e) { alert('Failed to create customer: ' + (e instanceof Error ? e.message : 'Unknown error')) }
+    finally { setSavingCustomer(false) }
   }
 
   const sf = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
@@ -219,14 +254,30 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
 
   const sendDoc = async (channel: 'sms'|'email') => {
     if (!sendModal) return
+    setSendError(''); setSendSuccess('')
     const customer = customers.find(c => c.id === sendModal.customer_id)
     const to = channel === 'sms' ? customer?.phone : customer?.email
-    if (!to) return alert(`No ${channel === 'sms' ? 'phone' : 'email'} on file`)
-    await fetch('/api/send-document', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ documentId: sendModal.id, channel, [channel === 'sms' ? 'phone' : 'email']: to })
-    })
-    setSendModal(null); load()
+    if (!to) {
+      setSendError(channel === 'sms'
+        ? 'No phone number on file for this customer. Edit the customer to add one.'
+        : 'No email on file for this customer. Edit the customer to add one, or go to Customers page.')
+      return
+    }
+    setSendingDoc(true)
+    try {
+      const res = await fetch('/api/send-document', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentId: sendModal.id, channel, [channel === 'sms' ? 'phone' : 'email']: to })
+      })
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}))
+        throw new Error(d.error || 'Send failed')
+      }
+      setSendSuccess(`${channel === 'email' ? 'Email' : 'SMS'} sent to ${to}`)
+      setTimeout(() => { setSendModal(null); setSendSuccess(''); load() }, 1500)
+    } catch (e) {
+      setSendError((e instanceof Error ? e.message : 'Failed to send'))
+    } finally { setSendingDoc(false) }
   }
 
   // Feature 9: Quick email to customer from list
@@ -290,7 +341,8 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               <div className="sm:col-span-2"><label className="form-label">Customer</label>
                 <select className="form-select" value={(form as Record<string,string>).customer_id||''} onChange={e => selectCustomer(e.target.value)}>
                   <option value="">Select customer...</option>
-                  {customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+                  <option value="__new__">+ New Customer</option>
+                  {customers.map(c=><option key={c.id} value={c.id}>{c.name}{c.email ? ` (${c.email})` : ''}</option>)}
                 </select>
               </div>
               <div><label className="form-label">Tax Rate %</label><input className="form-input" type="number" step="0.01" value={form.tax_rate||8.25} onChange={sf('tax_rate')} /></div>
@@ -630,14 +682,39 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
       )}
 
       {/* Send modal */}
-      {sendModal && (
+      {sendModal && (() => {
+        const cust = customers.find(c => c.id === sendModal.customer_id)
+        return (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
           <div className="bg-bg-card border border-border rounded-xl w-full max-w-sm p-6">
-            <h2 className="text-lg font-bold mb-4">Send {sendModal.type} #{sendModal.doc_number}</h2>
+            <h2 className="text-lg font-bold mb-2">Send {sendModal.type} #{sendModal.doc_number}</h2>
+            {cust && <p className="text-sm text-text-muted mb-1">Customer: <strong>{cust.name}</strong></p>}
+            {cust && <p className="text-xs text-text-muted mb-4">{cust.email ? `Email: ${cust.email}` : 'No email on file'}{cust.phone ? ` · Phone: ${cust.phone}` : ''}</p>}
+            {sendError && <div className="text-sm text-red-400 bg-red-400/10 border border-red-400/30 rounded-lg p-3 mb-3">{sendError}</div>}
+            {sendSuccess && <div className="text-sm text-green-400 bg-green-400/10 border border-green-400/30 rounded-lg p-3 mb-3">{sendSuccess}</div>}
             <div className="space-y-3">
-              <button className="btn btn-primary w-full" onClick={() => sendDoc('email')}>Send via Email</button>
-              <button className="btn btn-secondary w-full" onClick={() => sendDoc('sms')}>Send via SMS</button>
-              <button className="btn btn-secondary w-full" onClick={() => setSendModal(null)}>Cancel</button>
+              <button className="btn btn-primary w-full" onClick={() => sendDoc('email')} disabled={sendingDoc}>{sendingDoc ? 'Sending...' : 'Send via Email'}</button>
+              <button className="btn btn-secondary w-full" onClick={() => sendDoc('sms')} disabled={sendingDoc}>{sendingDoc ? 'Sending...' : 'Send via SMS'}</button>
+              <button className="btn btn-secondary w-full" onClick={() => { setSendModal(null); setSendError(''); setSendSuccess('') }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+        )
+      })()}
+
+      {/* Inline new customer modal */}
+      {showNewCustomer && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-bg-card border border-border rounded-xl w-full max-w-md p-6">
+            <h2 className="text-lg font-bold mb-4">New Customer</h2>
+            <div className="space-y-3">
+              <div><label className="form-label">Name *</label><input className="form-input" value={newCustName} onChange={e => setNewCustName(e.target.value)} placeholder="Customer name" autoFocus /></div>
+              <div><label className="form-label">Email</label><input className="form-input" type="email" value={newCustEmail} onChange={e => setNewCustEmail(e.target.value)} placeholder="customer@email.com" /></div>
+              <div><label className="form-label">Phone</label><input className="form-input" value={newCustPhone} onChange={e => setNewCustPhone(e.target.value)} placeholder="(555) 123-4567" /></div>
+            </div>
+            <div className="flex gap-3 mt-4">
+              <button className="btn btn-primary flex-1" onClick={createInlineCustomer} disabled={savingCustomer || !newCustName.trim()}>{savingCustomer ? 'Creating...' : 'Create & Select'}</button>
+              <button className="btn btn-secondary" onClick={() => setShowNewCustomer(false)}>Cancel</button>
             </div>
           </div>
         </div>

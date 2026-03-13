@@ -56,6 +56,10 @@ UPDATE CUSTOMER:
 VOID DOCUMENT:
 {"tool":"action","action":"voidDocument","payload":{"doc_number":"EST-2025-0001"}}
 
+EMAIL ESTIMATE/INVOICE TO CUSTOMER:
+{"tool":"action","action":"sendEstimateEmail","payload":{"doc_number":"EST-2025-0001"}}
+Use when user says "email the estimate to the customer", "send estimate #EST-2025-0001", "email invoice to John". Can look up by doc_number, customer_name, or customer_id.
+
 SCHEDULE FOLLOW-UP:
 {"tool":"action","action":"scheduleFollowUp","payload":{"customer_name":"John Doe","channel":"sms","scheduled_for":"2025-01-15T10:00:00Z","message_body":"Hi John, just checking in..."}}
 

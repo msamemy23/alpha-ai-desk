@@ -20,13 +20,14 @@ export async function POST(req: NextRequest) {
 
     if (channel === 'email' && email) {
       const html = estimateEmailHtml(doc, settings || {})
+      const fromEmail = settings?.from_email || 'Alpha Auto <onboarding@resend.dev>'
       await sendEmail({
         to: email,
         subject: `${docType} #${doc.doc_number} from ${shopName}`,
         html,
         replyTo: settings?.shop_email,
         apiKey: settings?.resend_api_key,
-        from: settings?.from_email,
+        from: fromEmail,
       })
       // Log
       await db.from('messages').insert({

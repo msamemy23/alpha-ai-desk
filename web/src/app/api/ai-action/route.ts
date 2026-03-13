@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { sendEmail, estimateEmailHtml } from '@/lib/email'
 
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
 function fail(error: string, status = 400) { return NextResponse.json({ ok: false, error }, { status }) }
@@ -196,6 +197,61 @@ export async function POST(req: NextRequest) {
         const res = await fetch(`${baseUrl}/api/ai-search?q=${encodeURIComponent(query)}`)
         const data = await res.json()
         return ok(data)
+      }
+
+      // ── Send Estimate/Invoice via Email ────────────────────
+      case 'sendEstimateEmail': {
+        const { doc_number, customer_name, customer_id, email: overrideEmail } = payload
+        // Find the document
+        let docQuery = sb.from('documents').select('*')
+        if (doc_number) docQuery = docQuery.eq('doc_number', doc_number)
+        else if (customer_name) docQuery = docQuery.ilike('customer_name', `%${customer_name}%`).order('created_at', { ascending: false }).limit(1)
+        else if (customer_id) docQuery = docQuery.eq('customer_id', customer_id).order('created_at', { ascending: false }).limit(1)
+        else return fail('Provide doc_number, customer_name, or customer_id')
+
+        const { data: docs } = await docQuery
+        const doc = docs?.[0]
+        if (!doc) return fail('Document not found')
+
+        // Find customer email
+        let toEmail = overrideEmail as string | undefined
+        if (!toEmail && doc.customer_id) {
+          const { data: cust } = await sb.from('customers').select('email').eq('id', doc.customer_id).single()
+          toEmail = cust?.email
+        }
+        if (!toEmail) return fail('No email on file for this customer. Ask the user to add an email first.')
+
+        // Get settings for email template
+        const { data: settings } = await sb.from('settings').select('*').limit(1).single()
+        const html = estimateEmailHtml(doc, settings || {})
+        const fromEmail = settings?.from_email || 'Alpha Auto <onboarding@resend.dev>'
+        const shopName = settings?.shop_name || 'Alpha International Auto Center'
+
+        await sendEmail({
+          to: toEmail,
+          subject: `${doc.type} #${doc.doc_number} from ${shopName}`,
+          html,
+          replyTo: settings?.shop_email,
+          apiKey: settings?.resend_api_key,
+          from: fromEmail,
+        })
+
+        // Log the message
+        await sb.from('messages').insert({
+          direction: 'outbound', channel: 'email',
+          from_address: fromEmail,
+          to_address: toEmail,
+          subject: `${doc.type} #${doc.doc_number}`,
+          body: `${doc.type} #${doc.doc_number} sent via AI`,
+          document_id: doc.id,
+          customer_id: doc.customer_id,
+          status: 'sent', read: true,
+        })
+
+        // Mark doc as sent
+        await sb.from('documents').update({ sent_at: new Date().toISOString() }).eq('id', doc.id)
+
+        return ok({ sent: true, to: toEmail, doc_number: doc.doc_number, type: doc.type })
       }
 
       default:
