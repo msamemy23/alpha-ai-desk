@@ -61,6 +61,13 @@ WHEN PRESENTING SEARCH RESULTS:
 - If product image URLs are available in the search results, include them as markdown images: ![Product](url)
 - Make results scannable: bold product name, price, key features, and a link to buy/view
 
+LINKS AND URLs — STRICT RULES:
+- NEVER fabricate or make up URLs. Only use EXACT URLs that were returned by the webSearch tool results.
+- When showing search results, copy the EXACT URL from the search results. Do NOT modify URLs, guess URL patterns, or construct new URLs.
+- If the search results don't include a direct product URL, either don't include a link or use the URL that was actually returned. NEVER invent a URL.
+- NEVER invent part numbers. Only mention part numbers if they appeared in the search results text.
+- It is BETTER to have NO link than a FAKE link. Fake links lead to 404 pages and make the shop look bad.
+
 HOW YOU WORK:
 You receive a task. You think through ALL steps internally. You execute them one at a time using JSON tool calls. When everything is done, you give ONE final plain-text response confirming what was completed.
 
@@ -590,7 +597,10 @@ export default function AIPage() {
         try {
           const r = await fetch(`/api/ai-search?q=${encodeURIComponent(parsed.query as string)}`)
           const d = await r.json()
-          searchResult = d.results?.slice(0, 6).map((r: Record<string,string>) => `- ${r.title}: ${r.snippet}\n  URL: ${r.url}`).join('\n') || 'No results'
+          searchResult = d.results?.slice(0, 6).map((r: Record<string,string>, i: number) => `Result ${i + 1}:\nTitle: ${r.title}\nURL: ${r.url}\nSnippet: ${r.snippet}`).join('\n\n') || 'No results'
+          if (d.results?.length) {
+            searchResult += '\n\nIMPORTANT: Use ONLY the exact URLs listed above when linking to products. Do NOT fabricate or guess URLs.'
+          }
           if (d.images?.length) {
             searchResult += '\n\nProduct images:\n' + (d.images as string[]).slice(0, 3).map((url: string) => `- ${url}`).join('\n')
           }
