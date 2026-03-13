@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 
+export const dynamic = 'force-dynamic'
+
 export async function GET() {
   const sb = getServiceClient()
   const notifications: { id: string; type: string; title: string; body: string; time: string }[] = []
