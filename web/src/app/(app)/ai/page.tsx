@@ -1210,7 +1210,7 @@ export default function AIPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   return (
-    <div className="flex flex-col h-screen">
+    <div className="flex flex-col h-screen max-h-screen">
       <div className="p-3 sm:p-6 border-b border-border flex items-center justify-between gap-2">
         <div className="min-w-0">
           <h1 className="text-lg sm:text-xl font-bold">Alpha AI</h1>
