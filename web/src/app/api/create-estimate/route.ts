@@ -34,8 +34,7 @@ export async function POST(req: NextRequest) {
 
     if (existing && existing.length > 0) {
       customer_id = existing[0].id
-
-      // Update existing customer with email/phone if they're missing and we have new values
+      // Update existing customer with email/phone if they were missing
       const updates: Record<string, string> = {}
       if (customerEmail && !existing[0].email) updates.email = customerEmail
       if (customerPhone && !existing[0].phone) updates.phone = customerPhone
@@ -50,7 +49,6 @@ export async function POST(req: NextRequest) {
       }
       if (customerEmail) insertData.email = customerEmail
       if (customerPhone) insertData.phone = customerPhone
-
       const { data: created } = await sb
         .from('customers')
         .insert(insertData)
