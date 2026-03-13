@@ -25,6 +25,8 @@ export async function POST(req: NextRequest) {
         subject: `${docType} #${doc.doc_number} from ${shopName}`,
         html,
         replyTo: settings?.shop_email,
+        apiKey: settings?.resend_api_key,
+        from: settings?.from_email,
       })
       // Log
       await db.from('messages').insert({

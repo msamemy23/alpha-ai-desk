@@ -64,7 +64,9 @@ export async function POST(req: NextRequest) {
           await sendEmail({
             to: c.email as string,
             subject: `${shopName} — We miss you!`,
-            html: `<div style="font-family:Arial;padding:20px"><p>Hi ${name},</p><p>${msg.replace(/\n/g,'<br>')}</p><p style="color:#888;font-size:12px;margin-top:20px">${shopName} | ${settings?.shop_phone}</p></div>`
+            html: `<div style="font-family:Arial;padding:20px"><p>Hi ${name},</p><p>${msg.replace(/\n/g,'<br>')}</p><p style="color:#888;font-size:12px;margin-top:20px">${shopName} | ${settings?.shop_phone}</p></div>`,
+            apiKey: settings?.resend_api_key,
+            from: settings?.from_email,
           })
           await db.from('messages').insert({
             direction: 'outbound', channel: 'email',

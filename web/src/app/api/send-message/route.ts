@@ -23,6 +23,8 @@ export async function POST(req: NextRequest) {
         to,
         subject: subject || `Message from ${settings?.shop_name || 'Alpha Auto'}`,
         html: `<div style="font-family:Arial,sans-serif;padding:20px;max-width:600px"><p>${body.replace(/\n/g,'<br>')}</p><hr><p style="color:#888;font-size:12px">${settings?.shop_name} | ${settings?.shop_phone}</p></div>`,
+        apiKey: settings?.resend_api_key,
+        from: settings?.from_email,
       })
     }
 

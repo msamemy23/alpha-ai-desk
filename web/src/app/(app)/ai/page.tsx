@@ -346,7 +346,7 @@ export default function AIPage() {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: settings?.ai_model || 'deepseek/deepseek-v3.2',
+          model: settings?.ai_model || 'deepseek/deepseek-chat-v3-0324',
           messages: [{ role: 'system', content: systemWithContext }, ...agentMessages],
           max_tokens: 2000,
           temperature: 0.3,
@@ -604,11 +604,19 @@ export default function AIPage() {
           subject: pendingSms.subject || undefined,
         })
       })
-      if (!res.ok) throw new Error('Send failed')
       const channelLabel = pendingSms.channel === 'email' ? 'Email' : 'SMS'
-      setMessages(prev => [...prev, { role: 'assistant', content: `${channelLabel} sent to ${pendingSms.to}` }])
-      showToast(`${channelLabel} sent successfully!`)
-    } catch { showToast('Failed to send message') }
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        const errMsg = errData.error || 'Send failed'
+        setMessages(prev => [...prev, { role: 'assistant', content: `Failed to send ${channelLabel}: ${errMsg}` }])
+        showToast(`Failed to send ${channelLabel}: ${errMsg}`)
+      } else {
+        setMessages(prev => [...prev, { role: 'assistant', content: `${channelLabel} sent to ${pendingSms.to}` }])
+        showToast(`${channelLabel} sent successfully!`)
+      }
+    } catch (e) {
+      showToast('Failed to send message: ' + (e instanceof Error ? e.message : 'Unknown error'))
+    }
     setPendingSms(null); setSendingSms(false)
   }
 

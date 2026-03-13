@@ -27,7 +27,7 @@ TELNYX_API_KEY     = os.environ.get("TELNYX_API_KEY", "")
 TELNYX_PHONE       = os.environ.get("TELNYX_PHONE", "+17136636979")
 TELNYX_CONN_ID     = os.environ.get("TELNYX_CONN_ID", "2912878759822493204")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-AI_MODEL           = os.environ.get("AI_MODEL", "deepseek/deepseek-v3.2")
+AI_MODEL           = os.environ.get("AI_MODEL", "deepseek/deepseek-chat-v3-0324")
 PUBLIC_URL         = os.environ.get("PUBLIC_URL", "")
 
 TELNYX_BASE = "https://api.telnyx.com/v2"
