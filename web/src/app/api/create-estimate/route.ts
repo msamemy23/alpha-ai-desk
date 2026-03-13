@@ -7,6 +7,8 @@ export async function POST(req: NextRequest) {
 
   // Accept both "customer" (from proposeDocument) and "customer_name"
   const customerName: string = body.customer || body.customer_name || ''
+  const customerEmail: string = body.customer_email || ''
+  const customerPhone: string = body.customer_phone || ''
   const { vehicle, vehicle_year, vehicle_make, vehicle_model, parts, labors, notes } = body
 
   // Parse vehicle string like "2019 Toyota Camry" if individual fields aren't provided
@@ -26,20 +28,32 @@ export async function POST(req: NextRequest) {
     // Try to find existing customer by name (case-insensitive)
     const { data: existing } = await sb
       .from('customers')
-      .select('id')
+      .select('id, email, phone')
       .ilike('name', customerName)
       .limit(1)
 
     if (existing && existing.length > 0) {
       customer_id = existing[0].id
+
+      // Update existing customer with email/phone if they're missing and we have new values
+      const updates: Record<string, string> = {}
+      if (customerEmail && !existing[0].email) updates.email = customerEmail
+      if (customerPhone && !existing[0].phone) updates.phone = customerPhone
+      if (Object.keys(updates).length > 0) {
+        await sb.from('customers').update(updates).eq('id', customer_id)
+      }
     } else {
-      // Auto-create the customer
+      // Auto-create the customer with email and phone if provided
+      const insertData: Record<string, string> = {
+        name: customerName,
+        created_at: new Date().toISOString(),
+      }
+      if (customerEmail) insertData.email = customerEmail
+      if (customerPhone) insertData.phone = customerPhone
+
       const { data: created } = await sb
         .from('customers')
-        .insert({
-          name: customerName,
-          created_at: new Date().toISOString(),
-        })
+        .insert(insertData)
         .select('id')
         .single()
       if (created) customer_id = created.id
