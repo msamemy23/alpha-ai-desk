@@ -94,11 +94,12 @@ function ConnectorsContent() {
     // Check for OAuth callback params
     const success = searchParams.get('success')
     const error = searchParams.get('error')
+    const detail = searchParams.get('detail')
     if (success === 'facebook') showToast('Facebook & Instagram connected successfully!')
     else if (success === 'google') showToast('Google Business & Calendar connected successfully!')
-    else if (error === 'facebook_denied') showToast('Facebook connection was cancelled', 'error')
-    else if (error === 'google_denied') showToast('Google connection was cancelled', 'error')
-    else if (error) showToast(`Connection error: ${error.replace(/_/g, ' ')}`, 'error')
+    else if (error === 'facebook_denied') showToast(`Facebook connection was cancelled${detail ? ': ' + detail : ''}`, 'error')
+    else if (error === 'google_denied') showToast(`Google connection was cancelled${detail ? ': ' + detail : ''}`, 'error')
+    else if (error) showToast(`Connection error: ${error.replace(/_/g, ' ')}${detail ? ' — ' + detail : ''}`, 'error')
   }, [loadConnectors, searchParams])
 
   const handleConnect = (service: string) => {

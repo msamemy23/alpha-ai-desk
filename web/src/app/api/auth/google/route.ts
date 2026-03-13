@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+export const dynamic = 'force-dynamic'
+
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '1736123851-r05fmhp9eb9pv7cn3t7joihcdjf1tl0m.apps.googleusercontent.com'
 const CALLBACK  = 'https://alpha-ai-desk.vercel.app/api/auth/google/callback'
 

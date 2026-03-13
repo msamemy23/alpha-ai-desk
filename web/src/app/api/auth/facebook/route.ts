@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
 
+export const dynamic = 'force-dynamic'
+
 const APP_ID = process.env.FACEBOOK_APP_ID || '1379263117302106'
 const CALLBACK = 'https://alpha-ai-desk.vercel.app/api/auth/facebook/callback'
 

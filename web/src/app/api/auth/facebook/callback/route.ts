@@ -1,14 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+export const dynamic = 'force-dynamic'
+
 const APP_ID     = process.env.FACEBOOK_APP_ID     || '1379263117302106'
 const APP_SECRET = process.env.FACEBOOK_APP_SECRET || 'f7c21374d2d0b34fc00f9061dae5d286'
 const CALLBACK   = 'https://alpha-ai-desk.vercel.app/api/auth/facebook/callback'
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
-const TARGET_PAGE = 'Alpha international auto center'
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+
+const BASE = 'https://alpha-ai-desk.vercel.app'
 
 async function upsertConnector(service: string, data: Record<string, unknown>) {
-  await fetch(`${SUPABASE_URL}/rest/v1/connectors`, {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/connectors`, {
     method: 'POST',
     headers: {
       'apikey': SUPABASE_KEY,
@@ -18,15 +21,23 @@ async function upsertConnector(service: string, data: Record<string, unknown>) {
     },
     body: JSON.stringify({ service, ...data }),
   })
+  if (!r.ok) {
+    const text = await r.text()
+    console.error(`[upsert ${service}] ${r.status}: ${text}`)
+  }
+  return r
 }
 
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl
   const code  = searchParams.get('code')
   const error = searchParams.get('error')
+  const errorReason = searchParams.get('error_reason') || ''
+  const errorDesc   = searchParams.get('error_description') || ''
 
   if (error || !code) {
-    return NextResponse.redirect('https://alpha-ai-desk.vercel.app/connectors?error=facebook_denied')
+    const msg = errorDesc || errorReason || error || 'no_code'
+    return NextResponse.redirect(`${BASE}/connectors?error=facebook_denied&detail=${encodeURIComponent(msg)}`)
   }
 
   try {
@@ -36,11 +47,13 @@ export async function GET(req: NextRequest) {
       `?client_id=${APP_ID}` +
       `&client_secret=${APP_SECRET}` +
       `&redirect_uri=${encodeURIComponent(CALLBACK)}` +
-      `&code=${code}`
+      `&code=${encodeURIComponent(code)}`
     )
     const tokenData = await tokenRes.json()
     if (!tokenData.access_token) {
-      return NextResponse.redirect('https://alpha-ai-desk.vercel.app/connectors?error=facebook_token_failed')
+      const detail = tokenData.error?.message || tokenData.error?.type || JSON.stringify(tokenData)
+      console.error('[facebook-callback] token error:', detail)
+      return NextResponse.redirect(`${BASE}/connectors?error=facebook_token_failed&detail=${encodeURIComponent(detail)}`)
     }
     const userToken = tokenData.access_token as string
 
@@ -61,9 +74,10 @@ export async function GET(req: NextRequest) {
       await upsertConnector('facebook', {
         enabled: true,
         access_token: userToken,
+        metadata: { note: 'no_pages_found' },
         updated_at: new Date().toISOString(),
       })
-      return NextResponse.redirect('https://alpha-ai-desk.vercel.app/connectors?success=facebook')
+      return NextResponse.redirect(`${BASE}/connectors?success=facebook&note=no_pages`)
     }
 
     // 3. Get Instagram business account linked to this page
@@ -97,9 +111,10 @@ export async function GET(req: NextRequest) {
       })
     }
 
-    return NextResponse.redirect('https://alpha-ai-desk.vercel.app/connectors?success=facebook')
+    return NextResponse.redirect(`${BASE}/connectors?success=facebook`)
   } catch (err) {
-    console.error('[facebook-callback]', err)
-    return NextResponse.redirect('https://alpha-ai-desk.vercel.app/connectors?error=facebook_internal')
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[facebook-callback]', msg)
+    return NextResponse.redirect(`${BASE}/connectors?error=facebook_internal&detail=${encodeURIComponent(msg)}`)
   }
 }
