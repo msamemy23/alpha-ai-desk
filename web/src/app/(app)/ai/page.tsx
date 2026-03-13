@@ -2,6 +2,8 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 
+type VoiceChatPhase = 'idle' | 'listening' | 'thinking' | 'speaking'
+
 interface VoiceCallState {
   callId: string
   to: string
@@ -115,6 +117,14 @@ export default function AIPage() {
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:string;subject?:string}|null>(null)
   const [voiceCall, setVoiceCall] = useState<VoiceCallState | null>(null)
+  const [voiceModeOpen, setVoiceModeOpen] = useState(false)
+  const [voicePhase, setVoicePhase] = useState<VoiceChatPhase>('idle')
+  const [voiceTranscript, setVoiceTranscript] = useState<{role:'user'|'assistant';text:string}[]>([])
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const voiceRecRef = useRef<any>(null)
+  const voiceSynthRef = useRef<SpeechSynthesisUtterance | null>(null)
+  const voiceTranscriptEndRef = useRef<HTMLDivElement>(null)
+  const bestVoiceRef = useRef<SpeechSynthesisVoice | null>(null)
   const voicePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [jumpingIn, setJumpingIn] = useState(false)
   const [jumpInPhone, setJumpInPhone] = useState('')
@@ -137,6 +147,247 @@ export default function AIPage() {
     if (natural) u.voice = natural
     window.speechSynthesis.speak(u)
   }, [speakEnabled])
+
+  // Voice mode: pick best TTS voice
+  useEffect(() => {
+    const pickBest = () => {
+      const voices = window.speechSynthesis?.getVoices() || []
+      if (!voices.length) return
+      const google = voices.find(v => v.name.includes('Google US English'))
+      if (google) { bestVoiceRef.current = google; return }
+      const samantha = voices.find(v => v.name.includes('Samantha') || v.name.includes('Alex'))
+      if (samantha) { bestVoiceRef.current = samantha; return }
+      const natural = voices.find(v => v.name.includes('Natural'))
+      if (natural) { bestVoiceRef.current = natural; return }
+      const english = voices.find(v => v.lang.startsWith('en'))
+      if (english) { bestVoiceRef.current = english; return }
+      bestVoiceRef.current = voices[0] || null
+    }
+    pickBest()
+    window.speechSynthesis?.addEventListener('voiceschanged', pickBest)
+    return () => window.speechSynthesis?.removeEventListener('voiceschanged', pickBest)
+  }, [])
+
+  // Voice mode: speak text via TTS, then call onDone
+  const voiceSpeak = useCallback((text: string, onDone: () => void) => {
+    if (typeof window === 'undefined') { onDone(); return }
+    window.speechSynthesis.cancel()
+    const plain = text.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+    if (!plain) { onDone(); return }
+    const u = new SpeechSynthesisUtterance(plain)
+    u.rate = 0.95; u.pitch = 1.0
+    if (bestVoiceRef.current) u.voice = bestVoiceRef.current
+    voiceSynthRef.current = u
+    u.onend = () => { voiceSynthRef.current = null; onDone() }
+    u.onerror = () => { voiceSynthRef.current = null; onDone() }
+    window.speechSynthesis.speak(u)
+  }, [])
+
+  // Voice mode: start listening via SpeechRecognition
+  const voiceStartListening = useCallback(() => {
+    if (typeof window === 'undefined') return
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (!SR) return
+    try {
+      const rec = new SR()
+      voiceRecRef.current = rec
+      rec.continuous = false
+      rec.interimResults = true
+      rec.lang = 'en-US'
+      rec.onstart = () => setVoicePhase('listening')
+      rec.onend = () => { voiceRecRef.current = null }
+      rec.onerror = () => { voiceRecRef.current = null; setVoicePhase('idle') }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rec.onresult = (e: any) => {
+        const last = e.results[e.results.length - 1]
+        if (last.isFinal) {
+          const transcript = last[0].transcript.trim()
+          if (transcript) {
+            voiceRecRef.current = null
+            rec.stop()
+            voiceSendMessage(transcript)
+          }
+        }
+      }
+      rec.start()
+    } catch { setVoicePhase('idle') }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Voice mode: stop listening
+  const voiceStopListening = useCallback(() => {
+    voiceRecRef.current?.stop()
+    voiceRecRef.current = null
+    window.speechSynthesis?.cancel()
+    voiceSynthRef.current = null
+    setVoicePhase('idle')
+  }, [])
+
+  // Voice mode: send message through existing AI flow
+  const voiceSendMessage = useCallback(async (text: string) => {
+    setVoicePhase('thinking')
+    // Add to voice transcript
+    setVoiceTranscript(prev => [...prev, { role: 'user', text }])
+    // Also add to main messages
+    const userMsg: ChatMessage = { role: 'user', content: text }
+    setMessages(prev => [...prev, userMsg])
+
+    // Run through the same agent loop
+    const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
+    const apiKey = settings?.ai_api_key
+    if (!apiKey) {
+      const errText = 'No AI API key configured.'
+      setVoiceTranscript(prev => [...prev, { role: 'assistant', text: errText }])
+      setMessages(prev => [...prev, { role: 'assistant', content: errText }])
+      setVoicePhase('idle')
+      return
+    }
+
+    // Build agent messages from current messages state + new user msg
+    setMessages(prev => {
+      const history2 = [...prev]
+      // Run agent loop asynchronously using the latest messages
+      ;(async () => {
+        const accumulated: string[] = []
+        const agentMessages: {role: string; content: string}[] = history2.map(m => ({ role: m.role, content: m.content }))
+
+        for (let step = 0; step < 10; step++) {
+          const systemWithContext = SYSTEM_PROMPT +
+            (shopContext ? `\n\nLive shop context:\n${shopContext}` : '') +
+            (accumulated.length ? `\n\nCompleted steps so far:\n${accumulated.join('\n')}` : '')
+
+          const res = await fetch(`${settings?.ai_base_url || 'https://openrouter.ai/api/v1'}/chat/completions`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: settings?.ai_model || 'deepseek/deepseek-chat-v3-0324',
+              messages: [{ role: 'system', content: systemWithContext }, ...agentMessages],
+              max_tokens: 2000,
+              temperature: 0.3,
+            })
+          })
+
+          const data = await res.json()
+          if (data.error) {
+            const errText = `Error: ${data.error.message || JSON.stringify(data.error)}`
+            setMessages(p => [...p, { role: 'assistant', content: errText }])
+            setVoiceTranscript(p => [...p, { role: 'assistant', text: errText }])
+            voiceSpeak(errText, () => voiceStartListening())
+            setVoicePhase('speaking')
+            return
+          }
+
+          const raw = data.choices?.[0]?.message?.content?.trim() || ''
+
+          // Parse tool call
+          let parsed: Record<string, unknown> | null = null
+          try {
+            const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
+            try { parsed = JSON.parse(cleaned) } catch {
+              const match = cleaned.match(/\{[\s\S]*"tool"[\s\S]*\}/)
+              if (match) { try { parsed = JSON.parse(match[0]) } catch { parsed = null } }
+            }
+            if (parsed && !parsed.tool) parsed = null
+          } catch { parsed = null }
+
+          // Final answer — speak it
+          if (!parsed) {
+            const plainText = raw.replace(/<[^>]*>/g, '').trim()
+            setMessages(p => [...p, { role: 'assistant', content: raw }])
+            setVoiceTranscript(p => [...p, { role: 'assistant', text: plainText }])
+            setVoicePhase('speaking')
+            voiceSpeak(plainText, () => voiceStartListening())
+            return
+          }
+
+          // Execute tool calls silently (same as agentLoop)
+          if (parsed.tool === 'webSearch') {
+            let searchResult = 'No results'
+            try {
+              const r = await fetch(`/api/ai-search?q=${encodeURIComponent(parsed.query as string)}`)
+              const d = await r.json()
+              searchResult = d.results?.slice(0, 6).map((r: Record<string,string>) => `- ${r.title}: ${r.snippet}`).join('\n') || 'No results'
+            } catch { searchResult = 'Search failed' }
+            accumulated.push(`[Search: "${parsed.query}"]\n${searchResult}`)
+            agentMessages.push({ role: 'assistant', content: raw })
+            agentMessages.push({ role: 'user', content: `Search results for "${parsed.query}":\n${searchResult}\n\nContinue to the next step silently.` })
+            continue
+          }
+
+          if (parsed.tool === 'action') {
+            const actionName = parsed.action as string
+            let actionResult = ''
+            try {
+              const r = await fetch('/api/ai-action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: actionName, payload: parsed.payload || {} })
+              })
+              const d = await r.json()
+              actionResult = d.ok ? `Success: ${JSON.stringify(d.data).slice(0, 300)}` : `Failed: ${d.error}`
+            } catch (err) {
+              actionResult = `Error: ${err instanceof Error ? err.message : 'Unknown'}`
+            }
+            accumulated.push(`[${actionName}]: ${actionResult}`)
+            agentMessages.push({ role: 'assistant', content: raw })
+            agentMessages.push({ role: 'user', content: `Action "${actionName}" result: ${actionResult}\n\nContinue to the next step silently.` })
+            continue
+          }
+
+          if (parsed.tool === 'proposeDocument') {
+            const plainText = `Here's the ${parsed.type || 'estimate'} for ${parsed.customer || 'the customer'}. Check the text chat for the full details.`
+            setMessages(p => [...p, { role: 'assistant', content: plainText }])
+            setVoiceTranscript(p => [...p, { role: 'assistant', text: plainText }])
+            setVoicePhase('speaking')
+            voiceSpeak(plainText, () => voiceStartListening())
+            return
+          }
+
+          if (parsed.tool === 'message') {
+            const plainText = `Draft ${(parsed.channel as string) === 'email' ? 'email' : 'text'} ready. Check the text chat to review and send.`
+            setMessages(p => [...p, { role: 'assistant', content: plainText }])
+            setVoiceTranscript(p => [...p, { role: 'assistant', text: plainText }])
+            setVoicePhase('speaking')
+            voiceSpeak(plainText, () => voiceStartListening())
+            return
+          }
+
+          // For call/navigate/other tools — just speak confirmation
+          const plainText = raw.replace(/<[^>]*>/g, '').trim() || 'Done.'
+          setMessages(p => [...p, { role: 'assistant', content: raw }])
+          setVoiceTranscript(p => [...p, { role: 'assistant', text: plainText }])
+          setVoicePhase('speaking')
+          voiceSpeak(plainText, () => voiceStartListening())
+          return
+        }
+
+        // Max steps reached
+        const finalText = accumulated.length ? `Done. Completed ${accumulated.length} steps.` : 'Had trouble completing that.'
+        setMessages(p => [...p, { role: 'assistant', content: finalText }])
+        setVoiceTranscript(p => [...p, { role: 'assistant', text: finalText }])
+        setVoicePhase('speaking')
+        voiceSpeak(finalText, () => voiceStartListening())
+      })()
+      return prev
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shopContext, voiceSpeak, voiceStartListening])
+
+  // Auto-scroll voice transcript
+  useEffect(() => {
+    voiceTranscriptEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [voiceTranscript])
+
+  // Clean up voice mode on close
+  const closeVoiceMode = useCallback(() => {
+    voiceRecRef.current?.stop()
+    voiceRecRef.current = null
+    window.speechSynthesis?.cancel()
+    voiceSynthRef.current = null
+    setVoicePhase('idle')
+    setVoiceModeOpen(false)
+  }, [])
 
   // Feature 5: Load history from localStorage
   useEffect(() => {
@@ -760,6 +1011,20 @@ export default function AIPage() {
           >
             {speakEnabled ? '🔊' : '🔇'} Voice
           </button>
+          {/* Talk to Alpha — voice conversation mode */}
+          <button
+            onClick={() => { setVoiceModeOpen(true); setVoiceTranscript([]); setVoicePhase('idle') }}
+            className="btn btn-sm font-semibold text-white"
+            style={{ background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)', border: 'none' }}
+            title="Start voice conversation"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="inline mr-1">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            </svg>
+            <span className="hidden sm:inline">Talk to Alpha</span>
+            <span className="sm:hidden">Talk</span>
+          </button>
         </div>
       </div>
 
@@ -966,6 +1231,162 @@ export default function AIPage() {
         </div>
         {listening && <p className="text-xs mt-2 text-red-400 animate-pulse">🎤 Listening... speak now</p>}
       </div>
+
+      {/* Voice Conversation Mode Overlay */}
+      {voiceModeOpen && (
+        <div className="fixed inset-0 z-50 flex flex-col items-center" style={{ background: 'linear-gradient(180deg, #0a0a1a 0%, #111827 50%, #0a0a1a 100%)' }}>
+          {/* CSS Animations */}
+          <style>{`
+            @keyframes vc-glow-idle {
+              0%, 100% { box-shadow: 0 0 20px 4px rgba(59,130,246,0.3), 0 0 40px 8px rgba(59,130,246,0.1); }
+              50% { box-shadow: 0 0 30px 8px rgba(59,130,246,0.5), 0 0 60px 16px rgba(59,130,246,0.15); }
+            }
+            @keyframes vc-glow-listening {
+              0%, 100% { box-shadow: 0 0 20px 6px rgba(239,68,68,0.4), 0 0 40px 12px rgba(239,68,68,0.15); }
+              50% { box-shadow: 0 0 35px 12px rgba(239,68,68,0.6), 0 0 60px 20px rgba(239,68,68,0.2); }
+            }
+            @keyframes vc-glow-thinking {
+              0% { box-shadow: 0 0 20px 4px rgba(245,158,11,0.4); }
+              25% { box-shadow: 0 0 30px 8px rgba(245,158,11,0.6); }
+              50% { box-shadow: 0 0 20px 4px rgba(245,158,11,0.3); }
+              75% { box-shadow: 0 0 30px 8px rgba(245,158,11,0.5); }
+              100% { box-shadow: 0 0 20px 4px rgba(245,158,11,0.4); }
+            }
+            @keyframes vc-glow-speaking {
+              0%, 100% { box-shadow: 0 0 20px 6px rgba(34,197,94,0.3); transform: scale(1); }
+              50% { box-shadow: 0 0 35px 12px rgba(34,197,94,0.5); transform: scale(1.03); }
+            }
+            @keyframes vc-spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+            @keyframes vc-mic-pulse {
+              0%, 100% { transform: scale(1); }
+              50% { transform: scale(1.08); }
+            }
+            .vc-logo-idle { animation: vc-glow-idle 3s ease-in-out infinite; }
+            .vc-logo-listening { animation: vc-glow-listening 1.2s ease-in-out infinite; }
+            .vc-logo-thinking { animation: vc-glow-thinking 1.5s ease-in-out infinite; }
+            .vc-logo-speaking { animation: vc-glow-speaking 1.5s ease-in-out infinite; }
+            .vc-ring-thinking { animation: vc-spin 2s linear infinite; }
+            .vc-mic-listening { animation: vc-mic-pulse 1s ease-in-out infinite; }
+          `}</style>
+
+          {/* Close button */}
+          <button
+            onClick={closeVoiceMode}
+            className="absolute top-4 right-4 w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors z-10"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+
+          {/* Logo + Status */}
+          <div className="flex-shrink-0 flex flex-col items-center pt-10 sm:pt-16">
+            <div className="relative">
+              {/* Spinning ring for thinking */}
+              {voicePhase === 'thinking' && (
+                <div className="absolute inset-[-8px] rounded-full border-2 border-transparent vc-ring-thinking" style={{ borderTopColor: '#f59e0b', borderRightColor: '#f59e0b' }} />
+              )}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/alpha-bot.jpg"
+                alt="Alpha AI"
+                className={`w-[120px] h-[120px] sm:w-[160px] sm:h-[160px] rounded-full object-cover ${
+                  voicePhase === 'idle' ? 'vc-logo-idle' :
+                  voicePhase === 'listening' ? 'vc-logo-listening' :
+                  voicePhase === 'thinking' ? 'vc-logo-thinking' :
+                  'vc-logo-speaking'
+                }`}
+              />
+            </div>
+            <h2 className="text-white text-lg font-bold mt-4">Alpha AI</h2>
+            <p className="text-sm mt-1" style={{
+              color: voicePhase === 'idle' ? '#9ca3af' :
+                     voicePhase === 'listening' ? '#ef4444' :
+                     voicePhase === 'thinking' ? '#f59e0b' : '#22c55e'
+            }}>
+              {voicePhase === 'idle' ? 'Tap to talk' :
+               voicePhase === 'listening' ? 'Listening...' :
+               voicePhase === 'thinking' ? 'Thinking...' : 'Speaking...'}
+            </p>
+          </div>
+
+          {/* Conversation transcript */}
+          <div className="flex-1 w-full max-w-lg mx-auto overflow-y-auto px-4 mt-4 mb-2" style={{ maxHeight: 'calc(100vh - 360px)' }}>
+            {voiceTranscript.length === 0 && voicePhase === 'idle' && (
+              <p className="text-center text-gray-500 text-sm mt-8">Tap the mic to start a conversation</p>
+            )}
+            {voiceTranscript.slice(-6).map((t, i) => (
+              <div key={i} className={`mb-3 flex ${t.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[85%] rounded-xl px-3 py-2 text-sm ${
+                  t.role === 'user'
+                    ? 'bg-blue-600/30 text-blue-100'
+                    : 'bg-white/10 text-gray-200'
+                }`}>
+                  <p className="text-[10px] uppercase tracking-wider mb-0.5 opacity-60">
+                    {t.role === 'user' ? 'You' : 'Alpha'}
+                  </p>
+                  <p className="whitespace-pre-wrap">{t.text}</p>
+                </div>
+              </div>
+            ))}
+            <div ref={voiceTranscriptEndRef} />
+          </div>
+
+          {/* Big mic button */}
+          <div className="flex-shrink-0 pb-8 sm:pb-12">
+            <button
+              onClick={() => {
+                if (voicePhase === 'listening') {
+                  voiceStopListening()
+                } else if (voicePhase === 'speaking') {
+                  // Stop speaking, go idle
+                  window.speechSynthesis?.cancel()
+                  voiceSynthRef.current = null
+                  setVoicePhase('idle')
+                } else if (voicePhase === 'idle') {
+                  voiceStartListening()
+                }
+                // If thinking, button does nothing
+              }}
+              disabled={voicePhase === 'thinking'}
+              className={`w-16 h-16 sm:w-[72px] sm:h-[72px] rounded-full flex items-center justify-center transition-all ${
+                voicePhase === 'listening'
+                  ? 'bg-red-500 vc-mic-listening'
+                  : voicePhase === 'thinking'
+                  ? 'bg-yellow-500/50 cursor-not-allowed'
+                  : voicePhase === 'speaking'
+                  ? 'bg-green-500/80 hover:bg-green-600'
+                  : 'bg-white/20 hover:bg-white/30'
+              }`}
+              style={{ boxShadow: voicePhase === 'listening' ? '0 0 20px rgba(239,68,68,0.5)' : 'none' }}
+            >
+              {voicePhase === 'listening' ? (
+                // Stop square
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="white"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+              ) : voicePhase === 'thinking' ? (
+                // Spinner
+                <span className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              ) : (
+                // Mic icon
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                  <line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+                </svg>
+              )}
+            </button>
+          </div>
+
+          {/* Browser support warning */}
+          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+          {typeof window !== 'undefined' && !(window as any).SpeechRecognition && !(window as any).webkitSpeechRecognition && (
+            <div className="absolute bottom-4 left-4 right-4 text-center text-xs text-red-400 bg-red-900/30 rounded-lg px-3 py-2">
+              Voice not supported on this browser. Please use Chrome or Edge.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Toast */}
       {toast && (
