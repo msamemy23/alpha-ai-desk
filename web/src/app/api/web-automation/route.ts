@@ -31,7 +31,12 @@ async function fetchRead(url: string): Promise<{ title: string; text: string; ur
 }
 
 // Create a Steel browser session and return the viewer URL
-async function createSteelSession(url: string): Promise<{ sessionId: string; sessionViewerUrl: string; websocketUrl: string; rawSession: Record<string, unknown> }> {
+async function createSteelSession(url: string): Promise<{
+  sessionId: string;
+  sessionViewerUrl: string;
+  websocketUrl: string;
+  rawSession: Record<string, unknown>
+}> {
   const steelApiKey = process.env.STEEL_API_KEY
   if (!steelApiKey) throw new Error('STEEL_API_KEY not configured')
 
@@ -54,10 +59,13 @@ async function createSteelSession(url: string): Promise<{ sessionId: string; ses
 
   const session = await createRes.json() as Record<string, unknown>
   const sessionId = session.id as string
+
   const sessionViewerUrl = session.debugUrl
     ? `${session.debugUrl}?interactive=true&showControls=true`
     : (session.session_viewer_url as string) || (session.sessionViewerUrl as string) || `https://viewer.steel.dev?sessionId=${sessionId}`
+
   const websocketUrl = `wss://connect.steel.dev?apiKey=${steelApiKey}&sessionId=${sessionId}`
+
   return { sessionId, sessionViewerUrl, websocketUrl, rawSession: session }
 }
 
@@ -81,29 +89,42 @@ export async function POST(req: NextRequest) {
 
   try {
     switch (action) {
+
       // Create a Steel live browser session
       case 'steel_session': {
         if (!url) return fail('url required')
         try {
           const { sessionId, sessionViewerUrl, websocketUrl, rawSession } = await createSteelSession(url)
-// Navigate Steel session via puppeteer-core CDP
-            const steelApiKey = process.env.STEEL_API_KEY!
-            try {
-              const browser = await puppeteer.connect({
-                browserWSEndpoint: `wss://connect.steel.dev?apiKey=${steelApiKey}&sessionId=${sessionId}`,
-              })
-              const pages = await browser.pages()
-              const page = pages[0] || await browser.newPage()
-              await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
-              browser.disconnect()
-            } catch (navErr) {
-              console.error('Puppeteer navigation failed:', navErr)
-            }
+
+          // Navigate Steel session via puppeteer-core CDP
+          const steelApiKey = process.env.STEEL_API_KEY!
+          let initialScreenshot = ''
+          let initialTitle = ''
+          let initialUrl = url
+          try {
+            const browser = await puppeteer.connect({
+              browserWSEndpoint: `wss://connect.steel.dev?apiKey=${steelApiKey}&sessionId=${sessionId}`,
+            })
+            const pages = await browser.pages()
+            const page = pages[0] || await browser.newPage()
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+            // Capture initial screenshot for AI vision
+            initialScreenshot = await page.screenshot({ encoding: 'base64' }) as string
+            initialTitle = await page.title()
+            initialUrl = page.url()
+            browser.disconnect()
+          } catch (navErr) {
+            console.error('Puppeteer navigation failed:', navErr)
+          }
+
           return ok({
             sessionId,
             sessionViewerUrl,
             websocketUrl,
             startUrl: url,
+            screenshot: initialScreenshot ? 'data:image/png;base64,' + initialScreenshot : undefined,
+            currentUrl: initialUrl,
+            currentTitle: initialTitle,
             message: `Live browser session started! Session ID: ${sessionId}`,
             debugFields: {
               debugUrl: rawSession.debugUrl,
@@ -122,6 +143,7 @@ export async function POST(req: NextRequest) {
         if (!sessionId) return fail('sessionId required')
         const actions = body.actions as Array<{type: string; selector?: string; text?: string; url?: string; delay?: number}>
         if (!actions?.length) return fail('actions array required')
+
         const steelApiKey = process.env.STEEL_API_KEY!
         try {
           const browser = await puppeteer.connect({
@@ -130,6 +152,7 @@ export async function POST(req: NextRequest) {
           const pages = await browser.pages()
           const page = pages[0] || await browser.newPage()
           const results: string[] = []
+
           for (const act of actions) {
             try {
               if (act.type === 'wait') { await new Promise(r => setTimeout(r, act.delay || 1000)); results.push('waited') }
@@ -139,12 +162,20 @@ export async function POST(req: NextRequest) {
               else if (act.type === 'press') { await page.keyboard.press(act.text! as any); results.push(`pressed ${act.text}`) }
               else if (act.type === 'select') { await page.select(act.selector!, act.text!); results.push(`selected ${act.text}`) }
               else if (act.type === 'read') { const t = await page.evaluate(() => document.body.innerText.slice(0, 5000)); results.push(t) }
-              else if (act.type === 'screenshot') { results.push('screenshot taken') }
+              else if (act.type === 'screenshot') { const ss = await page.screenshot({ encoding: 'base64' }); results.push('SCREENSHOT:' + ss) }
               else { results.push(`unknown action: ${act.type}`) }
-            } catch (actErr) { results.push(`action ${act.type} failed: ${actErr instanceof Error ? actErr.message : 'error'}`) }
+            } catch (actErr) {
+              results.push(`action ${act.type} failed: ${actErr instanceof Error ? actErr.message : 'error'}`)
+            }
           }
+
+          // Always capture final screenshot for AI vision loop
+          const finalSS = await page.screenshot({ encoding: 'base64' }) as string
+          const finalUrl = page.url()
+          const finalTitle = await page.title()
+
           browser.disconnect()
-          return ok({ results, message: results.join(' → ') })
+          return ok({ results, message: results.join(' \u2192 '), screenshot: 'data:image/png;base64,' + finalSS, currentUrl: finalUrl, currentTitle: finalTitle })
         } catch (e) {
           return fail(`Browser action error: ${e instanceof Error ? e.message : 'unknown'}`)
         }
@@ -168,14 +199,15 @@ export async function POST(req: NextRequest) {
             return fail(`Could not read ${url}: ${e instanceof Error ? e.message : 'fetch error'}. Use webSearch tool for Google/social sites.`)
           }
         }
+
         const puppeteerScript = `
-module.exports = async ({ page }) => {
-  await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle2', timeout: 30000 });
-  const title = await page.title();
-  const text = await page.evaluate(() => document.body.innerText.slice(0, 5000));
-  return { data: { title, text, url: page.url() } };
-};
-`
+          module.exports = async ({ page }) => {
+            await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle2', timeout: 30000 });
+            const title = await page.title();
+            const text = await page.evaluate(() => document.body.innerText.slice(0, 5000));
+            return { data: { title, text, url: page.url() } };
+          };
+        `
         const blRes = await fetch(`https://chrome.browserless.io/function?token=${browserlessToken}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/javascript' },
@@ -193,37 +225,39 @@ module.exports = async ({ page }) => {
         if (!browserlessToken) {
           return fail(`Browserless not configured for "${action}". Use webSearch or steel_session instead.`)
         }
+
         let puppeteerScript = ''
         if (action === 'click') {
           puppeteerScript = `module.exports = async ({ page }) => {
-  await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle2' });
-  await page.click(${JSON.stringify(selector)});
-  const text = await page.evaluate(() => document.body.innerText.slice(0, 3000));
-  return { data: { clicked: true, resultText: text } };
-};`
+            await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle2' });
+            await page.click(${JSON.stringify(selector)});
+            const text = await page.evaluate(() => document.body.innerText.slice(0, 3000));
+            return { data: { clicked: true, resultText: text } };
+          };`
         } else if (action === 'fill') {
           const fields = (body.fields as Array<{selector: string; value: string}>) || [{selector, value}]
           const fillSteps = fields.map(f => `await page.type(${JSON.stringify(f.selector)}, ${JSON.stringify(f.value)});`).join('\n')
           puppeteerScript = `module.exports = async ({ page }) => {
-  await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle2' });
-  ${fillSteps}
-  ${body.submit_selector ? `await page.click(${JSON.stringify(body.submit_selector)});` : ''}
-  const resultText = await page.evaluate(() => document.body.innerText.slice(0, 3000));
-  return { data: { filled: true, resultText } };
-};`
+            await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle2' });
+            ${fillSteps}
+            ${body.submit_selector ? `await page.click(${JSON.stringify(body.submit_selector)});` : ''}
+            const resultText = await page.evaluate(() => document.body.innerText.slice(0, 3000));
+            return { data: { filled: true, resultText } };
+          };`
         } else if (action === 'screenshot') {
           puppeteerScript = `module.exports = async ({ page }) => {
-  await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle2' });
-  const screenshot = await page.screenshot({ encoding: 'base64' });
-  return { data: { screenshot: 'data:image/png;base64,' + screenshot, title: await page.title() } };
-};`
+            await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle2' });
+            const screenshot = await page.screenshot({ encoding: 'base64' });
+            return { data: { screenshot: 'data:image/png;base64,' + screenshot, title: await page.title() } };
+          };`
         } else {
           puppeteerScript = `module.exports = async ({ page }) => {
-  ${url ? `await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle2' });` : ''}
-  ${script || ''}
-  return { data: { done: true } };
-};`
+            ${url ? `await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle2' });` : ''}
+            ${script || ''}
+            return { data: { done: true } };
+          };`
         }
+
         const blRes = await fetch(`https://chrome.browserless.io/function?token=${browserlessToken}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/javascript' },
