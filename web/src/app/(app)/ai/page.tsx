@@ -1140,8 +1140,8 @@ Continue silently.` }); continue } // Unknown — treat as final response
     return escaped
       // YouTube embeds: [YouTube](embed_url) or bare embed URLs
       .replace(/(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([\w-]{11})/g, '<div style="margin:8px 0;border-radius:12px;overflow:hidden;max-width:480px"><iframe width="100%" height="270" src="https://www.youtube.com/embed/$1" frameborder="0" allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture" allowfullscreen style="border-radius:12px"></iframe></div>')
-      // Images: ![alt](url)
-      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="rounded-lg max-w-[280px] max-h-[200px]" onerror="this.style.display='none' object-cover my-1 inline-block" />')
+            // Images: ![alt](url)
+      .replace(/!\[([^\]]*)]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="rounded-lg max-w-[300px] max-h-[300px] object-cover my-1 inline-block" />')
       // Links: [text](url)
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue underline hover:text-blue/80">$1</a>')
       // Bold: **text**
