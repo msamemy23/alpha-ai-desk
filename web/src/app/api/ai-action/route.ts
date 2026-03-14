@@ -158,31 +158,62 @@ export async function POST(req: NextRequest) {
 
 
 
+
             // -- Search Customers (FULL SYSTEM SEARCH) -------------------------
       case 'searchCustomers': {
         const { query } = payload
         if (!query) return fail('Search query is required')
         const q = (query as string).trim()
 
-        // Search ALL tables in parallel for maximum coverage
-        const [custRes, docsRes, jobsRes, msgsRes] = await Promise.all([
-          // 1. Customers table — by name, phone, email, address
+        // Search customers + jobs in parallel
+        const [custRes, jobsRes, docsRes, msgsRes] = await Promise.all([
           sb.from('customers').select('*').or(`name.ilike.%${q}%,phone.ilike.%${q}%,email.ilike.%${q}%,address.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
-          // 2. Documents table (invoices, estimates, receipts) — by customer_name, doc_number, notes
-          sb.from('documents').select('*').or(`customer_name.ilike.%${q}%,doc_number.ilike.%${q}%,notes.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
-          // 3. Jobs table — by customer_name, notes, vin
           sb.from('jobs').select('*').or(`customer_name.ilike.%${q}%,notes.ilike.%${q}%,vin.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
-          // 4. Messages table — by body, from_address, to_address
+          sb.from('documents').select('*').or(`customer_name.ilike.%${q}%,doc_number.ilike.%${q}%,notes.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
           sb.from('messages').select('*').or(`body.ilike.%${q}%,from_address.ilike.%${q}%,to_address.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
         ])
 
+        // Enrich customers with their jobs/vehicle info
+        const customers = custRes.data || []
+        const allJobs = jobsRes.data || []
+        const enriched = customers.map((c: Record<string, unknown>) => {
+          const custJobs = allJobs.filter((j: Record<string, unknown>) => {
+            const cName = (c.name as string || '').toLowerCase()
+            const jName = (j.customer_name as string || '').toLowerCase()
+            return j.customer_id === c.id || jName.includes(cName) || cName.includes(jName)
+          })
+          const vehicles = custJobs.map((j: Record<string, unknown>) => ({
+            year: j.vehicle_year, make: j.vehicle_make, model: j.vehicle_model, vin: j.vin
+          })).filter((v: Record<string, unknown>) => v.year || v.make || v.model)
+          const uniqueVehicles = vehicles.filter((v: Record<string, unknown>, i: number, arr: Record<string, unknown>[]) =>
+            arr.findIndex((u: Record<string, unknown>) => u.year === v.year && u.make === v.make && u.model === v.model) === i
+          )
+          return { ...c, vehicles: uniqueVehicles, recent_jobs: custJobs.slice(0, 5) }
+        })
+
+        // Also find customers referenced in jobs but not in customers table
+        const custNames = new Set(customers.map((c: Record<string, unknown>) => (c.name as string || '').toLowerCase()))
+        const jobOnlyCustomers = allJobs
+          .filter((j: Record<string, unknown>) => {
+            const jName = (j.customer_name as string || '').toLowerCase()
+            return !custNames.has(jName) && ![...custNames].some(cn => jName.includes(cn) || cn.includes(jName))
+          })
+          .reduce((acc: Record<string, Record<string, unknown>>, j: Record<string, unknown>) => {
+            const name = j.customer_name as string || ''
+            if (!acc[name]) acc[name] = { name, source: 'jobs', vehicles: [], recent_jobs: [] }
+            const v = { year: j.vehicle_year, make: j.vehicle_make, model: j.vehicle_model, vin: j.vin };
+            if (v.year || v.make || v.model) (acc[name].vehicles as unknown[]).push(v);
+            (acc[name].recent_jobs as unknown[]).push(j)
+            return acc
+          }, {} as Record<string, Record<string, unknown>>)
+
         return ok({
-          customers: custRes.data || [],
+          customers: [...enriched, ...Object.values(jobOnlyCustomers)],
           documents: docsRes.data || [],
-          jobs: jobsRes.data || [],
+          jobs: allJobs,
           messages: msgsRes.data || [],
           search_query: q,
-          total_results: (custRes.data?.length || 0) + (docsRes.data?.length || 0) + (jobsRes.data?.length || 0) + (msgsRes.data?.length || 0)
+          total_results: enriched.length + Object.keys(jobOnlyCustomers).length
         })
       }
       // ── Get Shop Stats ───────────────────────────────────────
