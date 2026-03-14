@@ -14,9 +14,95 @@ const STATUS_COLORS: Record<string, string> = {
 
 const TECHS = ['Paul', 'Devin', 'Luis', 'Louie', 'Unassigned']
 
+const EMPLOYEES = [
+  { id: 'masoud', name: 'Masoud', emoji: '👨‍🔧' },
+  { id: 'omar', name: 'Omar', emoji: '🔧' },
+  { id: 'javier', name: 'Javier (Gordo)', emoji: '🛠️' },
+]
+
+const MOTIVATIONAL_QUOTES = [
+  "Let's get this bread! Time to make moves. 💪",
+  "Another day, another opportunity to be great. 🔥",
+  "Champions don't take days off. Let's go! 🏆",
+  "Hard work beats talent when talent doesn't work hard. 💯",
+  "Stay focused, stay hungry. Today is YOUR day! 🚀",
+  "Every car you fix is someone's lifeline. You matter. 🙏",
+  "Grind now, shine later. Let's eat! 💰",
+  "Be the mechanic you'd want working on YOUR car. ⭐",
+  "Success is built one repair at a time. Keep pushing! 🔨",
+  "You showed up — that's already winning. Now dominate! 👑",
+  "The shop doesn't run without you. Let's make it happen! 🏁",
+  "Excellence is not an act, it's a habit. Go be excellent! 💎",
+]
+
+interface ClockEntry {
+  employee: string
+  clockIn: string
+  clockOut?: string
+}
+
 export default function ShopBoardPage() {
   const [jobs, setJobs] = useState<any[]>([])
   const [filter, setFilter] = useState<'active' | 'all' | 'today'>('active')
+  const [clockEntries, setClockEntries] = useState<ClockEntry[]>([])
+  const [clockQuote, setClockQuote] = useState<{ name: string; quote: string } | null>(null)
+
+  // Load clock entries from localStorage
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('time_clock')
+      if (stored) setClockEntries(JSON.parse(stored))
+    } catch { /* ignore */ }
+  }, [])
+
+  const saveClockEntries = (entries: ClockEntry[]) => {
+    setClockEntries(entries)
+    localStorage.setItem('time_clock', JSON.stringify(entries))
+  }
+
+  const getEmployeeStatus = (empId: string) => {
+    const today = new Date().toDateString()
+    const todayEntries = clockEntries.filter(
+      e => e.employee === empId && new Date(e.clockIn).toDateString() === today
+    )
+    const lastEntry = todayEntries[todayEntries.length - 1]
+    if (lastEntry && !lastEntry.clockOut) {
+      return { clockedIn: true, since: lastEntry.clockIn, todayEntries }
+    }
+    return { clockedIn: false, since: null, todayEntries }
+  }
+
+  const getTotalHoursToday = (empId: string) => {
+    const today = new Date().toDateString()
+    const todayEntries = clockEntries.filter(
+      e => e.employee === empId && new Date(e.clockIn).toDateString() === today
+    )
+    let total = 0
+    for (const entry of todayEntries) {
+      const start = new Date(entry.clockIn).getTime()
+      const end = entry.clockOut ? new Date(entry.clockOut).getTime() : Date.now()
+      total += (end - start) / 1000 / 60 / 60
+    }
+    return total
+  }
+
+  const handleClockIn = (empId: string, empName: string) => {
+    const quote = MOTIVATIONAL_QUOTES[Math.floor(Math.random() * MOTIVATIONAL_QUOTES.length)]
+    const newEntry: ClockEntry = { employee: empId, clockIn: new Date().toISOString() }
+    saveClockEntries([...clockEntries, newEntry])
+    setClockQuote({ name: empName, quote })
+    setTimeout(() => setClockQuote(null), 6000)
+  }
+
+  const handleClockOut = (empId: string) => {
+    const updated = clockEntries.map(e => {
+      if (e.employee === empId && !e.clockOut) {
+        return { ...e, clockOut: new Date().toISOString() }
+      }
+      return e
+    })
+    saveClockEntries(updated)
+  }
 
   useEffect(() => {
     const load = async () => {
@@ -48,32 +134,90 @@ export default function ShopBoardPage() {
           ))}
         </div>
       </div>
-      <div className="flex gap-4 overflow-x-auto pb-4 flex-1">
+
+      {/* ===== EMPLOYEE TIME CLOCK ===== */}
+      <div className="mb-6 bg-bg-card border border-border rounded-xl p-4">
+        <h2 className="text-lg font-bold text-text-primary mb-3">⏰ Employee Time Clock</h2>
+
+        {/* Motivational quote popup */}
+        {clockQuote && (
+          <div className="mb-4 p-4 rounded-xl bg-green/10 border border-green/30 animate-fade-in">
+            <p className="text-sm font-bold text-green">Welcome in, {clockQuote.name}! 🎉</p>
+            <p className="text-sm text-text-secondary mt-1 italic">&quot;{clockQuote.quote}&quot;</p>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {EMPLOYEES.map(emp => {
+            const status = getEmployeeStatus(emp.id)
+            const hours = getTotalHoursToday(emp.id)
+            return (
+              <div key={emp.id} className={`rounded-xl border p-4 transition-all ${status.clockedIn ? 'border-green/50 bg-green/5' : 'border-border bg-bg-hover'}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xl">{emp.emoji}</span>
+                    <span className="font-semibold text-text-primary">{emp.name}</span>
+                  </div>
+                  <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${status.clockedIn ? 'bg-green/20 text-green' : 'bg-gray-500/20 text-gray-400'}`}>
+                    {status.clockedIn ? '● Clocked In' : '○ Off'}
+                  </span>
+                </div>
+
+                {status.clockedIn && status.since && (
+                  <p className="text-xs text-text-muted mb-2">
+                    Since {new Date(status.since).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                  </p>
+                )}
+
+                <p className="text-xs text-text-muted mb-3">
+                  Today: {hours.toFixed(1)}h
+                </p>
+
+                {status.clockedIn ? (
+                  <button onClick={() => handleClockOut(emp.id)}
+                    className="w-full py-2 rounded-lg text-sm font-semibold bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/30 transition-colors">
+                    Clock Out
+                  </button>
+                ) : (
+                  <button onClick={() => handleClockIn(emp.id, emp.name)}
+                    className="w-full py-2 rounded-lg text-sm font-semibold bg-green/20 text-green hover:bg-green/30 border border-green/30 transition-colors">
+                    Clock In
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* ===== JOBS BY TECH ===== */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 flex-1 overflow-auto">
         {TECHS.map(tech => {
           const techJobs = filtered.filter(j => tech === 'Unassigned' ? !j.tech : j.tech === tech)
           return (
-            <div key={tech} className="flex-shrink-0 w-[240px] sm:w-64 flex flex-col">
-              <div className="flex items-center justify-between px-3 py-2 bg-bg-card border border-border rounded-t-lg">
-                <span className="font-semibold text-sm">{tech}</span>
-                <span className="bg-bg-base text-text-muted text-xs font-bold px-2 py-0.5 rounded-full">{techJobs.length}</span>
+            <div key={tech} className="bg-bg-card border border-border rounded-xl p-3 flex flex-col">
+              <div className="flex items-center justify-between mb-3">
+                <span className="font-semibold text-text-primary">{tech}</span>
+                <span className="text-xs text-text-muted bg-bg-hover px-2 py-0.5 rounded-full">{techJobs.length}</span>
               </div>
-              <div className="flex-1 bg-bg-base/50 border border-t-0 border-border rounded-b-lg p-2 space-y-2 overflow-y-auto" style={{ minHeight: 200 }}>
+              <div className="space-y-2 flex-1 overflow-auto">
                 {techJobs.length === 0 ? (
-                  <p className="text-center text-text-muted text-xs py-8">No jobs</p>
+                  <p className="text-xs text-text-muted text-center py-4">No jobs</p>
                 ) : techJobs.map(j => (
-                  <a key={j.id} href={`/jobs`}
-                    className="block bg-bg-card border border-border rounded-lg p-3 hover:border-blue/50 transition-colors cursor-pointer">
-                    <div className="font-medium text-sm truncate mb-1">{j.customer_name || 'Unknown'}</div>
-                    <div className="text-xs text-text-muted mb-1">
+                  <a key={j.id} href="/jobs" className="block p-2.5 rounded-lg bg-bg-hover border border-border hover:border-blue/30 transition-colors">
+                    <p className="text-sm font-medium text-text-primary truncate">{j.customer_name || 'Unknown'}</p>
+                    <p className="text-xs text-text-muted truncate">
                       {[j.vehicle_year, j.vehicle_make, j.vehicle_model].filter(Boolean).join(' ') || 'No vehicle'}
-                    </div>
-                    <div className="text-xs text-text-secondary line-clamp-2 mb-2">{j.concern || ''}</div>
-                    <div className="flex items-center justify-between">
-                      <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${STATUS_COLORS[j.status] || 'bg-gray-500/20 text-gray-400'}`}>
+                    </p>
+                    <p className="text-xs text-text-muted truncate mt-0.5">{j.concern || ''}</p>
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${STATUS_COLORS[j.status] || 'bg-gray-500/20 text-gray-400'}`}>
                         {j.status || 'New'}
                       </span>
                       {j.promise_date && (
-                        <span className="text-xs text-text-muted">Due {new Date(j.promise_date).toLocaleDateString()}</span>
+                        <span className="text-xs text-text-muted">
+                          Due {new Date(j.promise_date).toLocaleDateString()}
+                        </span>
                       )}
                     </div>
                   </a>
