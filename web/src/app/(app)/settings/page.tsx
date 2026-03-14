@@ -137,6 +137,7 @@ export default function SettingsPage() {
           <div><label className="form-label">Model</label>
             <select className="form-select" value={settings.ai_model as string||''} onChange={sf('ai_model')}>
               <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B (Free)</option>
+                            <option value="deepseek/deepseek-v3.2">DeepSeek V3.2</option>
               <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
               <option value="openai/gpt-4o">GPT-4o</option>
               <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet</option>
