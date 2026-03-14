@@ -38,7 +38,7 @@ PERSONALITY: Confident, direct, knowledgeable. Short sentences. You know cars in
 
 CRITICAL BEHAVIOR RULES:
 1. When the user mentions "look online", "search for", "find prices for", "look up parts", "check prices", "what does a ___ cost" — you MUST use the webSearch tool to find REAL prices. NEVER make up or estimate prices. NEVER guess part costs. Always search first.
-2. When the user provides a customer name or email during a conversation, IMMEDIATELY use that information. If building an estimate, attach the customer name/email to it. If the customer doesn't exist yet, create them first using createCustomer.
+2. When the user provides a customer name or email during a conversation, IMMEDIATELY use that information. If building an estimate, attach the customer name/email to it. NEVER auto-create a customer just because someone mentions a name. ALWAYS use searchCustomers FIRST to check if they already exist. Only use createCustomer if the user EXPLICITLY says to add/create a new customer AND the search confirms they don't exist.
 3. When the user says "email it", "send it", "text it", "send the estimate", "email that to them" — take ACTION immediately. Use sendEstimateEmail or message tool. Don't ask for confirmation unless you're missing critical info (like the recipient).
 4. Think step by step. If a user gives you multiple instructions in one message, handle ALL of them in order.
 5. Keep context across the conversation. Remember what estimate you're working on, which customer you're discussing, what vehicle, etc.
@@ -119,6 +119,10 @@ SEND SMS TO CUSTOMER — Text an estimate or message to a customer. Use when use
 SCHEDULE FOLLOW-UP:
 {"tool":"action","action":"scheduleFollowUp","payload":{"customer_name":"John Doe","channel":"sms","scheduled_for":"2025-01-15T10:00:00Z","message_body":"Hi John, just checking in..."}}
 
+SEARCH CUSTOMERS — Search for existing customers by name, phone, email, or any text. ALWAYS use this BEFORE creating a customer. Use when user mentions ANY customer name, asks "find customer", "look up", "who is", "do we have", or any customer reference:
+{"tool":"action","action":"searchCustomers","payload":{"query":"John"}}
+Searches by partial name, phone number, email, or address. Returns matching customers AND their related jobs. Present results clearly: show name, phone, email, and recent jobs. If no match found, tell the user and ask if they want to create a new customer.
+
 GET CUSTOMER HISTORY — Look up everything about a customer:
 {"tool":"action","action":"getCustomerHistory","payload":{"customer_name":"John Doe"}}
 
@@ -155,7 +159,7 @@ EXECUTION RULES:
 2. Execute each step silently — ONE tool call per turn, no explanation text
 3. NEVER output text AND a tool call together — pick one
 4. For quotes/estimates: ALWAYS search part prices first (webSearch), then proposeDocument with REAL numbers. But ONLY use proposeDocument if the user actually asked for an estimate/quote — if they just asked to search or find prices, respond with plain text results instead.
-5. For new customers: createCustomer first, then continue with their job/estimate
+5. For new customers: ALWAYS searchCustomers first. Only createCustomer if user explicitly asks AND search confirms they don't exist
 6. When ALL steps done: respond in plain text — 1-3 sentences max confirming what was completed
 7. NEVER ask for info already in the conversation — use what was provided
 8. Confirm destructive actions (void, delete) before executing
@@ -722,7 +726,7 @@ export default function AIPage() {
       const systemWithContext = SYSTEM_PROMPT +
         (shopContext ? `\n\nLive shop context:\n${shopContext}` : '') +
         (accumulated.length ? `\n\nCompleted steps so far:\n${accumulated.join('\n')}` : '') + +
-          `\n\nCRITICAL INSTRUCTIONS:\n1. NEW RECEIPT vs REPRINT: When user says "new receipt" or "I need a receipt for [item]", CREATE a NEW document using proposeDocument. Do NOT reprint or lookup old receipts. A "new receipt" means build a fresh one from scratch.\n2. UNDERSTAND SIMPLE REQUESTS: If the user gives you a customer name and says they need something, DO IT. Don't ask them to repeat. Example: "I need a new receipt for thermostat, $280 flat for Asheanna" = immediately create a receipt with those details, no tax, flat total.\n3. CUSTOMER SEARCH: When the user mentions a name, immediately search for that customer using getCustomerHistory. Show results clearly.\n4. NEVER LOOP: Give ONE clear response per turn. If you're unsure, ask ONE clarifying question. Never repeat yourself.\n5. FLAT RATE: When user says "flat" or "no tax", set tax to 0 and use the exact total they gave.` +
+          `\n\nCRITICAL INSTRUCTIONS:\n1. NEW RECEIPT vs REPRINT: When user says "new receipt" or "I need a receipt for [item]", CREATE a NEW document using proposeDocument. Do NOT reprint or lookup old receipts. A "new receipt" means build a fresh one from scratch.\n2. UNDERSTAND SIMPLE REQUESTS: If the user gives you a customer name and says they need something, DO IT. Don't ask them to repeat. Example: "I need a new receipt for thermostat, $280 flat for Asheanna" = immediately create a receipt with those details, no tax, flat total.\n3. CUSTOMER SEARCH: When the user mentions a customer name, phone, or asks about a customer, ALWAYS use searchCustomers first (NOT createCustomer). Show matching results with name, phone, email, jobs. If no match, say so and ask before creating.\n4. NEVER LOOP: Give ONE clear response per turn. If you're unsure, ask ONE clarifying question. Never repeat yourself.\n5. FLAT RATE: When user says "flat" or "no tax", set tax to 0 and use the exact total they gave.` +
                     `\n\nFEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' : 'OFF'}\n- Social Media: ${activeFeatures.socialMedia ? 'ON' : 'OFF'}\n- Deep Thinking: ${activeFeatures.thinking ? 'ON' : 'OFF'}\nIf a feature is OFF and the user tries to use it, tell them to enable the toggle at the bottom of the chat input.`
 
       setStatus(step === 0 ? 'Thinking...' : 'Working...')
