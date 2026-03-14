@@ -52,7 +52,7 @@ async function createSteelSession(url: string): Promise<{ sessionId: string; ses
   }
   const session = await createRes.json()
   const sessionId = session.id
-  const sessionViewerUrl = `https://viewer.steel.dev?sessionId=${sessionId}`
+  const sessionViewerUrl = session.debugUrl ? `${session.debugUrl}?interactive=true&showControls=true` : session.session_viewer_url || session.sessionViewerUrl || `https://viewer.steel.dev?sessionId=${sessionId}`
   const websocketUrl = `wss://connect.steel.dev?apiKey=${steelApiKey}&sessionId=${sessionId}`
 
   return { sessionId, sessionViewerUrl, websocketUrl }
