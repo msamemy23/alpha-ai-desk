@@ -5,7 +5,9 @@ export const dynamic = 'force-dynamic'
 const APP_ID = process.env.FACEBOOK_APP_ID || '1379263117302106'
 const CALLBACK = 'https://alpha-ai-desk.vercel.app/api/auth/facebook/callback'
 
-// Using current Facebook Graph API scopes (approved in Developer console)
+// All scopes below are added and approved in Facebook Developer Console
+// instagram_business_* scopes use a different OAuth flow (Instagram Login)
+// so we use the standard Pages + instagram_basic scopes here
 const SCOPES = [
   'public_profile',
   'pages_show_list',
@@ -14,9 +16,8 @@ const SCOPES = [
   'pages_manage_engagement',
   'pages_read_user_content',
   'instagram_basic',
-  'instagram_business_basic',
-  'instagram_business_manage_comments',
-  'instagram_business_content_publish',
+  'instagram_manage_comments',
+  'instagram_content_publish',
 ].join(',')
 
 export async function GET() {
