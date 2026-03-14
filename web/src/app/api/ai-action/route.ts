@@ -157,31 +157,33 @@ export async function POST(req: NextRequest) {
       }
 
 
-            // -- Search Customers ------------------------------------------------
+
+            // -- Search Customers (FULL SYSTEM SEARCH) -------------------------
       case 'searchCustomers': {
         const { query } = payload
         if (!query) return fail('Search query is required')
         const q = (query as string).trim()
 
-        // Try exact phone match first
-        const phoneDigits = q.replace(/\D/g, '')
-        let results: unknown[] = []
+        // Search ALL tables in parallel for maximum coverage
+        const [custRes, docsRes, jobsRes, msgsRes] = await Promise.all([
+          // 1. Customers table — by name, phone, email, address
+          sb.from('customers').select('*').or(`name.ilike.%${q}%,phone.ilike.%${q}%,email.ilike.%${q}%,address.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
+          // 2. Documents table (invoices, estimates, receipts) — by customer_name, doc_number, notes
+          sb.from('documents').select('*').or(`customer_name.ilike.%${q}%,doc_number.ilike.%${q}%,notes.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
+          // 3. Jobs table — by customer_name, notes, vin
+          sb.from('jobs').select('*').or(`customer_name.ilike.%${q}%,notes.ilike.%${q}%,vin.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
+          // 4. Messages table — by body, from_address, to_address
+          sb.from('messages').select('*').or(`body.ilike.%${q}%,from_address.ilike.%${q}%,to_address.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
+        ])
 
-        if (phoneDigits.length >= 7) {
-          const { data } = await sb.from('customers').select('*').or(`phone.ilike.%${phoneDigits}%,phone.ilike.%${q}%`).limit(10)
-          results = data || []
-        }
-
-        // Also search by name and email (ilike for partial match)
-        if (results.length === 0) {
-          const { data } = await sb.from('customers').select('*').or(`name.ilike.%${q}%,email.ilike.%${q}%,phone.ilike.%${q}%,address.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20)
-          results = data || []
-        }
-
-        // Also search jobs by customer_name for broader matching
-        const { data: jobMatches } = await sb.from('jobs').select('customer_name,customer_id,vehicle_year,vehicle_make,vehicle_model,status,created_at').ilike('customer_name', `%${q}%`).order('created_at', { ascending: false }).limit(10)
-
-        return ok({ customers: results, related_jobs: jobMatches || [] })
+        return ok({
+          customers: custRes.data || [],
+          documents: docsRes.data || [],
+          jobs: jobsRes.data || [],
+          messages: msgsRes.data || [],
+          search_query: q,
+          total_results: (custRes.data?.length || 0) + (docsRes.data?.length || 0) + (jobsRes.data?.length || 0) + (msgsRes.data?.length || 0)
+        })
       }
       // ── Get Shop Stats ───────────────────────────────────────
       case 'getShopStats': {
