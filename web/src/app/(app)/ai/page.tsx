@@ -493,7 +493,8 @@ export default function AIPage() {
   }, [loadConnectors])
 
   // File attachment state
-  const [attachedFile, setAttachedFile] = useState<{ name: string; content: string; type: 'text' | 'image' } | null>(null)
+  const [attachedFile, setAttachedFile] = useState<{ name: string; content: string; type: 'text' | 'image' } | null>(null)   const [browserUrl, setBrowserUrl] = useState<string | null>(null)
+    const [browserUrl, setBrowserUrl] = useState<string | null>(null)
   const attachInputRef = useRef<HTMLInputElement>(null)
 
   const handleFileAttach = useCallback(async (file: File) => {
@@ -953,7 +954,7 @@ export default function AIPage() {
         continue
       }
 
-      if (parsed.tool === 'webAutomate') { setStatus('Automating...'); let ar = ''; try { const r = await fetch('/api/web-automation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) }); const d = await r.json(); ar = d.ok ? `Success: ${JSON.stringify(d.data).slice(0, 500)}` : `Failed: ${d.error}` } catch (e) { ar = `Error: ${e instanceof Error ? e.message : 'Unknown'}` } accumulated.push(`[webAutomate]: ${ar}`); agentMessages.push({ role: 'assistant', content: raw }); agentMessages.push({ role: 'user', content: `Web automation result: ${ar}
+      if (parsed.tool === 'webAutomate') { const targetUrl = (parsed.url || parsed.view || '') as string; if (targetUrl) setBrowserUrl(targetUrl); setStatus('Automating...'); let ar = ''; try { const r = await fetch('/api/web-automation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) }); const d = await r.json(); ar = d.ok ? `Success: ${JSON.stringify(d.data).slice(0, 500)}` : `Failed: ${d.error}` } catch (e) { ar = `Error: ${e instanceof Error ? e.message : 'Unknown'}` } accumulated.push(`[webAutomate]: ${ar}`); agentMessages.push({ role: 'assistant', content: raw }); agentMessages.push({ role: 'user', content: `Web automation result: ${ar}
 Continue silently.` }); continue } if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; try { const r = await fetch('/api/automations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create', name: parsed.name || 'Scheduled Task', description: parsed.description || '', schedule: parsed.schedule, task_prompt: parsed.task_prompt }) }); const d = await r.json(); sr = d.ok ? `Scheduled "${d.data?.name}" at ${d.data?.schedule}` : `Failed: ${d.error}` } catch (e) { sr = `Error: ${e instanceof Error ? e.message : 'Unknown'}` } accumulated.push(`[scheduleTask]: ${sr}`); agentMessages.push({ role: 'assistant', content: raw }); agentMessages.push({ role: 'user', content: `Schedule result: ${sr}
 Continue silently.` }); continue } // Unknown — treat as final response
       const assistantMsg: ChatMessage = { role: 'assistant', content: raw }
@@ -1342,7 +1343,7 @@ Continue silently.` }); continue } // Unknown — treat as final response
         </>
       )}
 
-      <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-4">
+      {/* Visual Browser Panel */}       {browserUrl && (         <div className="border-b border-border" style={{height:'45vh',position:'relative',background:'#0d0d1a'}}>           <div className="flex items-center gap-2 px-3 py-1.5 bg-bg-card border-b border-border text-xs">             <span className="w-2 h-2 rounded-full bg-green animate-pulse" />             <span className="text-text-muted font-medium">Browser</span>             <span className="flex-1 truncate text-text-muted bg-bg-hover rounded px-2 py-0.5">{browserUrl}</span>             <button onClick={() => setBrowserUrl(null)} className="text-text-muted hover:text-red-400 transition-colors" title="Close browser">✕</button>           </div>           <iframe             src={`/api/web-proxy?url=${encodeURIComponent(browserUrl)}`}             className="w-full border-0"             style={{height:'calc(45vh - 32px)'}}             sandbox="allow-same-origin allow-scripts allow-forms"             title="Web Browser"           />         </div>       )}       <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-4">
         {messages.length === 1 && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-2xl">
             <p className="text-xs text-text-muted font-semibold uppercase tracking-wider mb-1 col-span-full">Try asking:</p>
