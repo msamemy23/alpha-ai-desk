@@ -742,7 +742,7 @@ export default function AIPage() {
           temperature: 0.2,
           frequency_penalty: 0.6,
           presence_penalty: 0.4,
-            ...(activeFeatures.thinking ? { reasoning: { effort: 'high' } } : { reasoning: { enabled: false } }),
+            ...(activeFeatures.thinking ? { reasoning: { effort: 'high' } } : {}),
         })
       })
 
