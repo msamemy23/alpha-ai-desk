@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import puppeteer from 'puppeteer-core'
 import { getServiceClient } from '@/lib/supabase'
 
 export const dynamic = 'force-dynamic'
@@ -85,23 +86,19 @@ export async function POST(req: NextRequest) {
         if (!url) return fail('url required')
         try {
           const { sessionId, sessionViewerUrl, websocketUrl, rawSession } = await createSteelSession(url)
-          // Navigate the Steel session browser to the requested URL
-          const steelApiKey = process.env.STEEL_API_KEY!
-          try {
-            await fetch(`https://api.steel.dev/v1/sessions/${sessionId}/actions/navigate`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Steel-Api-Key': steelApiKey },
-              body: JSON.stringify({ url }),
-            })
-          } catch { /* navigation via actions API failed, try scrape fallback */ 
+// Navigate Steel session via puppeteer-core CDP
+            const steelApiKey = process.env.STEEL_API_KEY!
             try {
-              await fetch('https://api.steel.dev/v1/scrape', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Steel-Api-Key': steelApiKey },
-                body: JSON.stringify({ url, sessionId }),
+              const browser = await puppeteer.connect({
+                browserWSEndpoint: `wss://connect.steel.dev?apiKey=${steelApiKey}&sessionId=${sessionId}`,
               })
-            } catch { /* scrape fallback also failed, session will show blank */ }
-          }
+              const pages = await browser.pages()
+              const page = pages[0] || await browser.newPage()
+              await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+              browser.disconnect()
+            } catch (navErr) {
+              console.error('Puppeteer navigation failed:', navErr)
+            }
           return ok({
             sessionId,
             sessionViewerUrl,
