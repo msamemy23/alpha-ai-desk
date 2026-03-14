@@ -84,8 +84,8 @@ You receive a task. You think through ALL steps internally. You execute them one
 
 TOOL CALLS — respond with ONLY a raw JSON object, no markdown, no code blocks, no extra text:
 
-WEB SEARCH — Search the web for real-time information including prices, images, news, part numbers, and anything else. Use this whenever the user asks to "look online", "search for", "find prices", "find images", "find pictures", "show me", "check availability", "what does X cost", "go to google", "get me a picture of", or any request for current pricing/info/images. NEVER guess prices — always search first. Use webSearch for ALL web lookups. For general web lookups and price searches, prefer webSearch. Web automation has been removed. Use webSearch for ALL lookups including prices, images, videos, and information. webSearch now returns rich results including product images, YouTube videos, price comparisons (Price Radar), and smart follow-up suggestions.
-{"tool":"webSearch","query":"2007 Honda Civic lower control arm price"} webSearch now returns RICH results: text results with URLs, product images, YouTube videos with embed URLs, Price Radar (price comparison across stores), AI summary, and Smart Follow-up suggestions. ALWAYS present these rich results to the user: show images using markdown ![img](url), embed YouTube videos using the embed_url, show Price Radar as a comparison table with the best deal highlighted, and offer the follow-up suggestions as clickable options.
+WEB SEARCH — Search the web for real-time information including prices, images, news, part numbers, and anything else. Use this whenever the user asks to "look online", "search for", "find prices", "find images", "find pictures", "show me", "check availability", "what does X cost", "go to google", "get me a picture of", or any request for current pricing/info/images. NEVER guess prices — always search first. Use webSearch for ALL web lookups. Use webSearch for ALL web lookups — prices, images, videos, part numbers, diagnostics, labor times, TSBs, recalls, and any real-time information. webSearch returns rich results including: text results with URLs and favicons, product images, YouTube videos with embed URLs, Price Radar (price comparison across stores with best deal highlighted), Knowledge Panels (DTC codes, fluid specs), AI summaries, Smart Follow-up suggestions, and Related Searches. webSearch now returns rich results including product images, YouTube videos, price comparisons (Price Radar), and smart follow-up suggestions.
+{"tool":"webSearch","query":"2007 Honda Civic lower control arm price"} ALWAYS present rich results to the user: show product images using markdown ![img](url), embed YouTube videos, show Price Radar as a comparison table with best deal highlighted, display Knowledge Panels for DTC codes and fluid specs, offer follow-up suggestions as clickable options, and show related searches.
 
 CREATE CUSTOMER — Create a new customer record. Use when user mentions a new person's name/phone/email that isn't in the system yet:
 {"tool":"action","action":"createCustomer","payload":{"name":"John Doe","phone":"555-1234","email":"john@example.com"}}
@@ -835,6 +835,13 @@ export default function AIPage() {
               searchResult += '\n\nSuggested follow-ups for the user: ' + (d.follow_ups as string[]).join(' | ')
             }
         lastSearchMedia = { images: d.images || [], videos: d.videos || [] }
+                    if (d.knowledge_panel) {
+              searchResult += '\n\nKNOWLEDGE PANEL — ' + d.knowledge_panel.title + ':\n' + Object.entries(d.knowledge_panel.facts).map(([k, v]: [string, string]) => `- ${k}: ${v}`).join('\n')
+              if (d.knowledge_panel.source) searchResult += '\nSource: ' + d.knowledge_panel.source
+            }
+            if (d.related_searches?.length) {
+              searchResult += '\n\nRelated searches: ' + (d.related_searches as string[]).join(' | ')
+            }
             } catch { searchResult = 'Search failed' }
         accumulated.push(`[Search: "${parsed.query}"]\n${searchResult}`)
         agentMessages.push({ role: 'assistant', content: raw })
