@@ -714,6 +714,8 @@ export default function AIPage() {
     }
 
     const accumulated: string[] = []
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let lastSearchMedia: {images: any[], videos: any[]} | null = null
     const agentMessages: {role: string; content: string}[] = history.map(m => ({ role: m.role, content: m.content }))
 
     for (let step = 0; step < 10; step++) {
@@ -761,7 +763,30 @@ export default function AIPage() {
 
       // No tool call = final answer — show to user
       if (!parsed) {
-        const assistantMsg: ChatMessage = { role: 'assistant', content: raw, reasoning: reasoning || undefined, thinkingSeconds: reasoning ? thinkingSeconds : undefined }
+        let mediaHtml = ''
+            if (lastSearchMedia) {
+              const imgs = (lastSearchMedia.images || []).slice(0, 4)
+              const vids = (lastSearchMedia.videos || []).slice(0, 3)
+              if (vids.length > 0) {
+                mediaHtml += '<div style="margin-top:12px"><strong>📺 Videos</strong></div>'
+                for (const v of vids) {
+                  const yt = (v.url || '').match(/(?:watch\?v=|youtu\.be\/|shorts\/|embed\/)([\w-]{11})/)
+                  if (yt) {
+                    mediaHtml += `<div style="margin:8px 0"><iframe width="100%" height="200" src="https://www.youtube.com/embed/${yt[1]}" frameborder="0" allowfullscreen style="border-radius:8px"></iframe><div style="font-size:12px;margin-top:4px">${v.title || ''}</div></div>`
+                  }
+                }
+              }
+              if (imgs.length > 0) {
+                mediaHtml += '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">'
+                for (const img of imgs) {
+                  const src = typeof img === 'string' ? img : img.url || img.thumbnail || ''
+                  if (src) mediaHtml += `<img src="${src}" alt="Result" style="max-width:120px;max-height:120px;border-radius:8px;object-fit:cover" />`
+                }
+                mediaHtml += '</div>'
+              }
+              lastSearchMedia = null
+            }
+            const assistantMsg: ChatMessage = { role: 'assistant', content: raw, html: mediaHtml || undefined, reasoning: reasoning || undefined, thinkingSeconds: reasoning ? thinkingSeconds : undefined }
         setMessages(prev => [...prev, assistantMsg])
         speak(raw)
         saveToHistory([...history, assistantMsg])
@@ -794,10 +819,10 @@ export default function AIPage() {
               searchResult += '\n\nIMPORTANT: Use ONLY the exact URLs listed above when linking to products. Do NOT fabricate or guess URLs.'
             }
             if (d.images?.length) {
-              searchResult += '\n\nProduct images:\n' + (d.images as {url:string}[]).slice(0, 4).map((img: {url:string}) => `- ${img.url}`).join('\n')
+              searchResult += '\n\nProduct images:\n' + (d.images as {url:string}[]).slice(0, 4).map((img: {url:string}) => `![Product](${img.url})`).join('\n')
             }
             if (d.videos?.length) {
-              searchResult += '\n\nYouTube Videos:\n' + (d.videos as {title:string;url:string;channel?:string;embed_url?:string}[]).slice(0, 3).map((v: {title:string;url:string;channel?:string;embed_url?:string}, i: number) => `${i+1}. ${v.title} — ${v.url}${v.channel ? ` (${v.channel})` : ''}${v.embed_url ? `\nEmbed: ${v.embed_url}` : ''}`).join('\n')
+              searchResult += '\n\nYouTube Videos:\n' + (d.videos as {title:string;url:string;channel?:string;embed_url?:string}[]).slice(0, 3).map((v: {title:string;url:string;channel?:string;embed_url?:string}, i: number) => `${i+1}. **${v.title}**${v.channel ? ` (${v.channel})` : ''}\n${v.embed_url || v.url}\n![thumbnail](${v.thumbnail || ''})`).join('\n')
             }
             if (d.price_radar?.length) {
               searchResult += '\n\nPRICE COMPARISON (Price Radar):\n' + (d.price_radar as {store:string;price:number;url:string;shipping?:string}[]).map((p: {store:string;price:number;url:string;shipping?:string}) => `- ${p.store}: $${p.price.toFixed(2)} ${p.shipping || ''} — ${p.url}`).join('\n')
@@ -809,7 +834,8 @@ export default function AIPage() {
             if (d.follow_ups?.length) {
               searchResult += '\n\nSuggested follow-ups for the user: ' + (d.follow_ups as string[]).join(' | ')
             }
-        } catch { searchResult = 'Search failed' }
+        lastSearchMedia = { images: d.images || [], videos: d.videos || [] }
+            } catch { searchResult = 'Search failed' }
         accumulated.push(`[Search: "${parsed.query}"]\n${searchResult}`)
         agentMessages.push({ role: 'assistant', content: raw })
         agentMessages.push({ role: 'user', content: `Search results for "${parsed.query}":\n${searchResult}\n\nContinue to the next step silently.` })
@@ -1398,7 +1424,7 @@ Continue silently.` }); continue } // Unknown — treat as final response
                 </details>
               )}
               {m.html
-                ? <div dangerouslySetInnerHTML={{ __html: m.html }} />
+                ? <div dangerouslySetInnerHTML={{ __html: (m.content ? renderMarkdown(m.content) : '') + (m.html || '') }} />
                 : m.role === 'assistant' && (m.content.includes('[') || m.content.includes('**') || m.content.includes('!['))
                   ? <div className="whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
                   : <p className="whitespace-pre-wrap">{m.content}</p>}
