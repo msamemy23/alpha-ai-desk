@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-
 export const dynamic = 'force-dynamic'
 
 const CLIENT_ID     = process.env.GOOGLE_CLIENT_ID     || '1736123851-r05fmhp9eb9pv7cn3t7joihcdjf1tl0m.apps.googleusercontent.com'
@@ -7,25 +6,25 @@ const CLIENT_ID     = process.env.GOOGLE_CLIENT_ID     || '1736123851-r05fmhp9eb
 const _GS = ['GOCSPX','Cfcui9gkMx3b8iV','Nd3pLv206PtY']
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET_V2 || _GS.join('-')
 const CALLBACK      = 'https://alpha-ai-desk.vercel.app/api/auth/google/callback'
-const SUPABASE_URL  = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
+const SUPABASE_URL  = process.env.NEXT_PUBLIC_SUPABASE_URL  || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
 const SUPABASE_KEY  = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+const BASE          = 'https://alpha-ai-desk.vercel.app'
 
-const BASE = 'https://alpha-ai-desk.vercel.app'
-
-async function upsertConnector(service: string, data: Record<string, unknown>) {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/connectors`, {
-    method: 'POST',
+async function updateConnector(service: string, data: Record<string, unknown>) {
+  // PATCH (update) existing row — rows were pre-seeded during table creation
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/connectors?service=eq.${service}`, {
+    method: 'PATCH',
     headers: {
       'apikey': SUPABASE_KEY,
       'Authorization': `Bearer ${SUPABASE_KEY}`,
       'Content-Type': 'application/json',
-      'Prefer': 'resolution=merge-duplicates,return=representation',
+      'Prefer': 'return=representation',
     },
-    body: JSON.stringify({ service, ...data }),
+    body: JSON.stringify(data),
   })
   if (!r.ok) {
     const text = await r.text()
-    console.error(`[upsert ${service}] ${r.status}: ${text}`)
+    console.error(`[update ${service}] ${r.status}: ${text}`)
   }
   return r
 }
@@ -53,8 +52,8 @@ export async function GET(req: NextRequest) {
         grant_type: 'authorization_code',
       }),
     })
-    const tokenData = await tokenRes.json()
 
+    const tokenData = await tokenRes.json()
     if (!tokenData.access_token) {
       const detail = tokenData.error_description || tokenData.error || JSON.stringify(tokenData)
       console.error('[google-callback] token error:', detail)
@@ -64,8 +63,8 @@ export async function GET(req: NextRequest) {
     const { access_token, refresh_token, expires_in } = tokenData
     const expiresAt = new Date(Date.now() + (expires_in || 3600) * 1000).toISOString()
 
-    // Save google_business connector
-    await upsertConnector('google_business', {
+    // Update google_business connector
+    await updateConnector('google_business', {
       enabled: true,
       access_token,
       refresh_token: refresh_token || null,
@@ -74,8 +73,8 @@ export async function GET(req: NextRequest) {
       updated_at: new Date().toISOString(),
     })
 
-    // Save google_calendar connector (same tokens, different service)
-    await upsertConnector('google_calendar', {
+    // Update google_calendar connector (same tokens, different service)
+    await updateConnector('google_calendar', {
       enabled: true,
       access_token,
       refresh_token: refresh_token || null,
