@@ -736,7 +736,7 @@ export default function AIPage() {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: settings?.ai_model || 'deepseek/deepseek-chat-v3-0324',
+          model: settings?.ai_model || 'deepseek/deepseek-v3.2',
           messages: [{ role: 'system', content: systemWithContext }, ...agentMessages],
           max_tokens: 1500,
           temperature: 0.2,
