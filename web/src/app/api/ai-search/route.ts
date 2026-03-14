@@ -107,8 +107,26 @@ export async function GET(req: NextRequest) {
   ])
 
   const tavilyData = tavilyResult.status === 'fulfilled' ? tavilyResult.value : null
-  const videoResults = videos.status === 'fulfilled' ? videos.value : []
+  let videoResults = videos.status === 'fulfilled' ? videos.value : []
   const imageResults = searxImages.status === 'fulfilled' ? searxImages.value : []
+
+    // Fallback: extract YouTube videos from Tavily results if SearXNG failed
+  if (videoResults.length === 0) {
+    const seen = new Set<string>()
+    for (const r of (tavilyData?.results || [])) {
+      const yt = (r.url || '').match(/(?:watch\?v=|youtu\.be\/|shorts\/)([\w-]{11})/)
+      if (yt && !seen.has(yt[1])) {
+        seen.add(yt[1])
+        videoResults.push({
+          title: r.title || '',
+          url: r.url || '',
+          thumbnail: `https://img.youtube.com/vi/${yt[1]}/hqdefault.jpg`,
+          channel: (r.content || '').match(/(?:channel|by)\s+([^\n.]+)/i)?.[1] || undefined,
+          embed_url: `https://www.youtube.com/embed/${yt[1]}`,
+        })
+      }
+    }
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const results: SearchResult[] = (tavilyData?.results || []).map((r: any) => ({
