@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
       // ── Create Invoice / Estimate ────────────────────────────
       case 'createInvoice': {
         const docType = (payload.type as string) || 'Invoice'
-        const prefix = docType === 'Estimate' ? 'EST' : 'INV'
+        const prefix = docType === 'Estimate' ? 'EST' : docType === 'Receipt' ? 'REC' : 'INV'
         const year = new Date().getFullYear()
         const { data: existing } = await sb.from('documents').select('doc_number').eq('type', docType).like('doc_number', `${prefix}-${year}-%`)
         const nums = (existing || []).map((d: Record<string, string>) => parseInt(d.doc_number.split('-').pop() || '0'))
