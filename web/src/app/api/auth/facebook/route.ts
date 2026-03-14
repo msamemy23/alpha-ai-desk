@@ -5,16 +5,17 @@ export const dynamic = 'force-dynamic'
 const APP_ID = process.env.FACEBOOK_APP_ID || '1379263117302106'
 const CALLBACK = 'https://alpha-ai-desk.vercel.app/api/auth/facebook/callback'
 
+// Only use scopes that are valid in Facebook Development Mode (no App Review needed)
 const SCOPES = [
-  'pages_manage_posts',
+  'public_profile',
+  'pages_show_list',
   'pages_read_engagement',
+  'pages_manage_posts',
   'pages_manage_engagement',
   'pages_read_user_content',
-  'pages_manage_metadata',
   'instagram_basic',
   'instagram_manage_comments',
   'instagram_content_publish',
-  'public_profile',
 ].join(',')
 
 export async function GET() {
