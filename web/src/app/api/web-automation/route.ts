@@ -116,6 +116,40 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // Perform browser actions on an existing Steel session
+      case 'browser_action': {
+        const sessionId = body.sessionId as string
+        if (!sessionId) return fail('sessionId required')
+        const actions = body.actions as Array<{type: string; selector?: string; text?: string; url?: string; delay?: number}>
+        if (!actions?.length) return fail('actions array required')
+        const steelApiKey = process.env.STEEL_API_KEY!
+        try {
+          const browser = await puppeteer.connect({
+            browserWSEndpoint: `wss://connect.steel.dev?apiKey=${steelApiKey}&sessionId=${sessionId}`,
+          })
+          const pages = await browser.pages()
+          const page = pages[0] || await browser.newPage()
+          const results: string[] = []
+          for (const act of actions) {
+            try {
+              if (act.type === 'wait') { await new Promise(r => setTimeout(r, act.delay || 1000)); results.push('waited') }
+              else if (act.type === 'goto') { await page.goto(act.url!, { waitUntil: 'domcontentloaded', timeout: 30000 }); results.push(`navigated to ${act.url}`) }
+              else if (act.type === 'click') { await page.click(act.selector!); results.push(`clicked ${act.selector}`) }
+              else if (act.type === 'type') { await page.type(act.selector!, act.text!, { delay: 50 }); results.push(`typed into ${act.selector}`) }
+              else if (act.type === 'press') { await page.keyboard.press(act.text! as any); results.push(`pressed ${act.text}`) }
+              else if (act.type === 'select') { await page.select(act.selector!, act.text!); results.push(`selected ${act.text}`) }
+              else if (act.type === 'read') { const t = await page.evaluate(() => document.body.innerText.slice(0, 5000)); results.push(t) }
+              else if (act.type === 'screenshot') { results.push('screenshot taken') }
+              else { results.push(`unknown action: ${act.type}`) }
+            } catch (actErr) { results.push(`action ${act.type} failed: ${actErr instanceof Error ? actErr.message : 'error'}`) }
+          }
+          browser.disconnect()
+          return ok({ results, message: results.join(' → ') })
+        } catch (e) {
+          return fail(`Browser action error: ${e instanceof Error ? e.message : 'unknown'}`)
+        }
+      }
+
       // Read / scrape a webpage
       case 'read': {
         if (!url) return fail('url required')
