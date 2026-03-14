@@ -192,11 +192,11 @@ export async function POST(req: NextRequest) {
         })
 
         // Also find customers referenced in jobs but not in customers table
-        const custNames = new Set(customers.map((c: Record<string, unknown>) => (c.name as string || '').toLowerCase()))
+        const custNames = new Set<string>(customers.map((c: Record<string, unknown>) => (c.name as string || '').toLowerCase()))
         const jobOnlyCustomers = allJobs
           .filter((j: Record<string, unknown>) => {
             const jName = (j.customer_name as string || '').toLowerCase()
-            return !custNames.has(jName) && ![...custNames].some(cn => jName.includes(cn) || cn.includes(jName))
+            return !custNames.has(jName) && !Array.from(custNames).some(cn => jName.includes(cn) || cn.includes(jName))
           })
           .reduce((acc: Record<string, Record<string, unknown>>, j: Record<string, unknown>) => {
             const name = j.customer_name as string || ''
