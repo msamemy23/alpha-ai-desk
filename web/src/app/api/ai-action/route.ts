@@ -156,6 +156,33 @@ export async function POST(req: NextRequest) {
         return ok({ jobs, documents: docs, messages: msgs })
       }
 
+
+            // -- Search Customers ------------------------------------------------
+      case 'searchCustomers': {
+        const { query } = payload
+        if (!query) return fail('Search query is required')
+        const q = (query as string).trim()
+
+        // Try exact phone match first
+        const phoneDigits = q.replace(/\D/g, '')
+        let results: unknown[] = []
+
+        if (phoneDigits.length >= 7) {
+          const { data } = await sb.from('customers').select('*').or(`phone.ilike.%${phoneDigits}%,phone.ilike.%${q}%`).limit(10)
+          results = data || []
+        }
+
+        // Also search by name and email (ilike for partial match)
+        if (results.length === 0) {
+          const { data } = await sb.from('customers').select('*').or(`name.ilike.%${q}%,email.ilike.%${q}%,phone.ilike.%${q}%,address.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20)
+          results = data || []
+        }
+
+        // Also search jobs by customer_name for broader matching
+        const { data: jobMatches } = await sb.from('jobs').select('customer_name,customer_id,vehicle_year,vehicle_make,vehicle_model,status,created_at').ilike('customer_name', `%${q}%`).order('created_at', { ascending: false }).limit(10)
+
+        return ok({ customers: results, related_jobs: jobMatches || [] })
+      }
       // ── Get Shop Stats ───────────────────────────────────────
       case 'getShopStats': {
         const today = new Date().toISOString().split('T')[0]
