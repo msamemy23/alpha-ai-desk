@@ -54,30 +54,48 @@ export async function POST(req: NextRequest) {
   try {
     switch (action) {
 
-      // ── Post to ALL targets (primary page + Aaron Sammy profile) ─────────────
+      // ── Post with target selection ─────────────────────────────────────────
       case 'post': {
-        const { message, link, photo_url } = body as { message?: string; link?: string; photo_url?: string }
+        const { message, link, photo_url, target } = body as {
+          message?: string
+          link?: string
+          photo_url?: string
+          // target: 'page' | 'profile' | 'both' (default: 'both')
+          target?: string
+        }
         if (!message && !photo_url) return fail('message or photo_url required')
         const msg = (message || '') as string
-
+        const postTarget = target || 'both'
         const results: Record<string, unknown> = {}
 
-        // 1. Post to Alpha International Auto Center Page
-        results.page = await fbPost(page_id, page_access_token, msg, link, photo_url as string | undefined)
+        // Post to Alpha International Auto Center Page
+        if (postTarget === 'page' || postTarget === 'both') {
+          results.page = await fbPost(page_id, page_access_token, msg, link, photo_url as string | undefined)
+          results.page_name = 'Alpha International Auto Center'
+        }
 
-        // 2. Also post to Aaron Sammy personal profile feed (using user token)
-        if (access_token) {
+        // Post to Aaron Sammy personal profile
+        if ((postTarget === 'profile' || postTarget === 'both') && access_token) {
           try {
             results.profile = await fbPost('me', access_token, msg, link, photo_url as string | undefined)
+            results.profile_name = 'Aaron Sammy'
           } catch (e) {
             results.profile_error = e instanceof Error ? e.message : String(e)
           }
         }
 
+        // Build a human-readable summary
+        const posted: string[] = []
+        if (results.page && !(results.page as Record<string,unknown>).error) posted.push('Alpha International Auto Center page')
+        if (results.profile && !(results.profile as Record<string,unknown>).error) posted.push('Aaron Sammy profile')
+        results.summary = posted.length
+          ? `Posted to: ${posted.join(' and ')}`
+          : 'Post may have failed — check errors'
+
         return ok(results)
       }
 
-      // ── Get recent posts ──────────────────────────────────────────────────
+      // ── Get recent posts ────────────────────────────────────────────────
       case 'get_posts': {
         const r = await fetch(
           `${FB_BASE}/${page_id}/posts?fields=message,created_time,likes.summary(true),comments.summary(true)&limit=10&access_token=${page_access_token}`
@@ -86,7 +104,7 @@ export async function POST(req: NextRequest) {
         return ok(data)
       }
 
-      // ── Get comments on a post ────────────────────────────────────────
+      // ── Get comments on a post ──────────────────────────────────────
       case 'get_comments': {
         const { post_id } = body as { post_id: string }
         if (!post_id) return fail('post_id required')
@@ -96,7 +114,7 @@ export async function POST(req: NextRequest) {
         return ok(await r.json())
       }
 
-      // ── Reply to a comment ──────────────────────────────────────────────
+      // ── Reply to a comment ────────────────────────────────────────────
       case 'reply_comment': {
         const { comment_id, message } = body as { comment_id: string; message: string }
         if (!comment_id || !message) return fail('comment_id and message required')
@@ -108,7 +126,7 @@ export async function POST(req: NextRequest) {
         return ok(await r.json())
       }
 
-      // ── Get page messages ────────────────────────────────────────────────
+      // ── Get page messages ──────────────────────────────────────────────
       case 'get_messages': {
         const r = await fetch(
           `${FB_BASE}/${page_id}/conversations?fields=messages{message,from,created_time}&limit=10&access_token=${page_access_token}`
@@ -116,7 +134,7 @@ export async function POST(req: NextRequest) {
         return ok(await r.json())
       }
 
-      // ── Send a message ─────────────────────────────────────────────────────
+      // ── Send a message ───────────────────────────────────────────────────
       case 'send_message': {
         const { recipient_id, message } = body as { recipient_id: string; message: string }
         if (!recipient_id || !message) return fail('recipient_id and message required')
