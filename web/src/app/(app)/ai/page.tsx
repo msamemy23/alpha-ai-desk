@@ -460,7 +460,7 @@ export default function AIPage() {
 
   // ==================== NEW STATE ====================
   // Feature toggles
-  const [features, setFeatures] = useState({ search: true, webAutomation: false, socialMedia: false })
+  const [features, setFeatures] = useState({ search: true, webAutomation: false, socialMedia: true })
   const toggleFeature = (key: keyof typeof features) => setFeatures(prev => ({ ...prev, [key]: !prev[key] }))
 
   // Connectors popup state
