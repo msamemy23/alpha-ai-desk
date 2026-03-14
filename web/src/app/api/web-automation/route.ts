@@ -85,7 +85,7 @@ export async function POST(req: NextRequest) {
             sessionViewerUrl,
             websocketUrl,
             startUrl: url,
-            message: `Live browser session started! Session ID: ${sessionId}`,
+            message: `Live browser session started! Session ID: ${sessionId}`, debugFields: { debugUrl: session.debugUrl, sessionViewerUrl_raw: session.sessionViewerUrl, session_viewer_url: session.session_viewer_url },
           })
         } catch (e) {
           return fail(`Steel session error: ${e instanceof Error ? e.message : 'unknown error'}`)
