@@ -254,10 +254,18 @@ export async function GET(req: NextRequest) {
   })
 
   // Merge images from Tavily and SearXNG
-  const tavilyImages: string[] = (tavilyData?.images || []).slice(0, 5)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rawTavilyImages = (tavilyData?.images || []).slice(0, 5)
+    // Tavily images can be strings OR objects {url, title, description} when inc. search
+  const tavilyImageUrls: string[] = rawTavilyImages.map((img: any) => {
+    if (typeof img === 'string') return img
+    if (img?.url?.url) return img.url.url
+    if (typeof img?.url === 'string') return img.url
+    return ''
+  }).filter((u: string) => u && u.startsWith('http'))
   const allImages: ImageResult[] = [
-    ...tavilyImages.map((url: string) => ({ url, thumbnail: url, title: '', source: '', source_url: '' })),
-    ...imageResults.filter(img => !tavilyImages.includes(img.url)),
+    ...tavilyImageUrls.map((url: string) => ({ url, thumbnail: url, title: '', source: '', source_url: '' })),
+    ...imageResults.filter(img => !tavilyImageUrls.includes(img.url)),
   ].slice(0, 10)
 
   // Price Radar
