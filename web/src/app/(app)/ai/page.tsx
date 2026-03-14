@@ -465,7 +465,7 @@ export default function AIPage() {
 
   // ==================== NEW STATE ====================
   // Feature toggles
-  const [features, setFeatures] = useState({ search: true, socialMedia: true })
+    const [features, setFeatures] = useState({ search: true, socialMedia: true, thinking: false })
   const toggleFeature = (key: keyof typeof features) => setFeatures(prev => ({ ...prev, [key]: !prev[key] }))
 
   // Connectors popup state
@@ -704,8 +704,8 @@ export default function AIPage() {
     reader.readAsDataURL(file)
   }
 
-  const agentLoop = async (history: ChatMessage[], featureFlags?: { search: boolean;  socialMedia: boolean }) => {
-    const activeFeatures = featureFlags || { search: true, socialMedia: true }
+    const agentLoop = async (history: ChatMessage[], featureFlags?: { search: boolean;  socialMedia: boolean; thinking: boolean }) => {
+        const activeFeatures = featureFlags || { search: true, socialMedia: true, thinking: false }
     const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
     const apiKey = settings?.ai_api_key
     if (!apiKey) {
@@ -721,8 +721,9 @@ export default function AIPage() {
     for (let step = 0; step < 10; step++) {
       const systemWithContext = SYSTEM_PROMPT +
         (shopContext ? `\n\nLive shop context:\n${shopContext}` : '') +
-        (accumulated.length ? `\n\nCompleted steps so far:\n${accumulated.join('\n')}` : '') +
-          `\n\nFEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' : 'OFF'}\n - Social Media: ${activeFeatures.socialMedia ? 'ON' : 'OFF'}\nIf a feature is OFF and the user tries to use it, tell them to enable the toggle at the bottom of the chat input.`
+        (accumulated.length ? `\n\nCompleted steps so far:\n${accumulated.join('\n')}` : '') + +
+          `\n\nCRITICAL INSTRUCTIONS:\n1. NEW RECEIPT vs REPRINT: When user says "new receipt" or "I need a receipt for [item]", CREATE a NEW document using proposeDocument. Do NOT reprint or lookup old receipts. A "new receipt" means build a fresh one from scratch.\n2. UNDERSTAND SIMPLE REQUESTS: If the user gives you a customer name and says they need something, DO IT. Don't ask them to repeat. Example: "I need a new receipt for thermostat, $280 flat for Asheanna" = immediately create a receipt with those details, no tax, flat total.\n3. CUSTOMER SEARCH: When the user mentions a name, immediately search for that customer using getCustomerHistory. Show results clearly.\n4. NEVER LOOP: Give ONE clear response per turn. If you're unsure, ask ONE clarifying question. Never repeat yourself.\n5. FLAT RATE: When user says "flat" or "no tax", set tax to 0 and use the exact total they gave.` +
+                    `\n\nFEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' : 'OFF'}\n- Social Media: ${activeFeatures.socialMedia ? 'ON' : 'OFF'}\n- Deep Thinking: ${activeFeatures.thinking ? 'ON' : 'OFF'}\nIf a feature is OFF and the user tries to use it, tell them to enable the toggle at the bottom of the chat input.`
 
       setStatus(step === 0 ? 'Thinking...' : 'Working...')
 
@@ -733,9 +734,11 @@ export default function AIPage() {
         body: JSON.stringify({
           model: settings?.ai_model || 'deepseek/deepseek-chat-v3-0324',
           messages: [{ role: 'system', content: systemWithContext }, ...agentMessages],
-          max_tokens: 2000,
-          temperature: 0.3,
-          reasoning: { effort: 'medium' },
+          max_tokens: 1500,
+          temperature: 0.2,
+          frequency_penalty: 0.6,
+          presence_penalty: 0.4,
+          reasoning: { effort: activeFeatures.thinking ? 'high' : 'medium' },
         })
       })
 
@@ -747,6 +750,31 @@ export default function AIPage() {
       }
 
       const raw = data.choices?.[0]?.message?.content?.trim() || ''
+
+            // OUTPUT SANITIZATION — detect repeating patterns and cut them off
+      const sanitizeOutput = (text: string): string => {
+        if (!text) return text
+        // Detect repeating phrases (3+ repetitions of same 2-20 word phrase)
+        const words = text.split(/\s+/)
+        if (words.length > 50) {
+          for (let len = 2; len <= 20; len++) {
+            const phrase = words.slice(0, len).join(' ')
+            let count = 0
+            for (let i = 0; i <= words.length - len; i += len) {
+              if (words.slice(i, i + len).join(' ') === phrase) count++
+              else break
+            }
+            if (count >= 3) return phrase + ' [Response was repetitive and was cut short. Please try again.]'
+          }
+        }
+        // Also check for any substring repeated 5+ times
+        const repeatMatch = text.match(/(.{3,50})\1{4,}/)
+        if (repeatMatch) return text.slice(0, text.indexOf(repeatMatch[0])) + ' [Repetitive output detected and trimmed.]'
+        // Max length guard
+        if (text.length > 8000) return text.slice(0, 8000) + '... [Output truncated]'
+        return text
+      }
+      const cleanRaw = sanitizeOutput(raw)
       const reasoning = data.choices?.[0]?.message?.reasoning || data.choices?.[0]?.message?.reasoning_content || ''
       const thinkingSeconds = Math.round((Date.now() - thinkStart) / 1000)
 
@@ -786,9 +814,9 @@ export default function AIPage() {
               }
               lastSearchMedia = null
             }
-            const assistantMsg: ChatMessage = { role: 'assistant', content: raw, html: mediaHtml || undefined, reasoning: reasoning || undefined, thinkingSeconds: reasoning ? thinkingSeconds : undefined }
+            const assistantMsg: ChatMessage = { role: 'assistant', content: cleanRaw, html: mediaHtml || undefined, reasoning: reasoning || undefined, thinkingSeconds: reasoning ? thinkingSeconds : undefined }
         setMessages(prev => [...prev, assistantMsg])
-        speak(raw)
+        speak(cleanRaw)
         saveToHistory([...history, assistantMsg])
         return
       }
@@ -1664,6 +1692,20 @@ Continue silently.` }); continue } // Unknown — treat as final response
             {features.socialMedia && <span className="w-1.5 h-1.5 rounded-full bg-blue flex-shrink-0" />}
             📱 Social
           </button>
+
+                      {/* Thinking toggle */}
+            <button
+              onClick={() => toggleFeature('thinking')}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border ${
+                features.thinking
+                  ? 'bg-purple-500/20 border-purple-500/50 text-purple-400'
+                  : 'bg-bg-card border-border text-text-muted hover:border-purple-400/30 hover:text-text-secondary'
+              }`}
+              title={features.thinking ? 'Deep thinking ON' : 'Deep thinking OFF'}
+            >
+              {features.thinking && <span className="w-1.5 h-1.5 rounded-full bg-purple-400 flex-shrink-0" />}
+              🧠 Thinking
+            </button>
 
           {/* Connectors button */}
           <button
