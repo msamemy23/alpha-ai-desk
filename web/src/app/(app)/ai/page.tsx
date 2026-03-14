@@ -493,7 +493,7 @@ export default function AIPage() {
   }, [loadConnectors])
 
   // File attachment state
-  const [attachedFile, setAttachedFile] = useState<{ name: string; content: string; type: 'text' | 'image' } | null>(null)   const [browserUrl, setBrowserUrl] = useState<string | null>(null)
+  const [attachedFile, setAttachedFile] = useState<{ name: string; content: string; type: 'text' | 'image' } | null>(null) 
     const [browserUrl, setBrowserUrl] = useState<string | null>(null)
   const attachInputRef = useRef<HTMLInputElement>(null)
 
