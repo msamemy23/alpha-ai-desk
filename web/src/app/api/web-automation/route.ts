@@ -7,10 +7,31 @@ export const maxDuration = 60
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
 function fail(msg: string, status = 400) { return NextResponse.json({ ok: false, error: msg }, { status }) }
 
-// Web Automation API
-// Supports: navigate, read, click, fill, screenshot, scrape, search
-// Uses Browserless.io for real browser automation (set BROWSERLESS_TOKEN in env)
-// Falls back to fetch-based scraping for simple reads
+// Fetch-based page reader — works without Browserless
+async function fetchRead(url: string): Promise<{ title: string; text: string; url: string }> {
+  const r = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,*/*',
+    }
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status} from ${url}`)
+  const html = await r.text()
+  const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i)
+  const title = titleMatch?.[1]?.trim() || url
+  const text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 8000)
+  return { title, text, url }
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.json() as Record<string, unknown>
@@ -30,56 +51,57 @@ export async function POST(req: NextRequest) {
   try {
     switch (action) {
 
-      // Read / scrape a webpage (no JS required)
+      // Read / scrape a webpage
       case 'read': {
         if (!url) return fail('url required')
-        const r = await fetch(url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,*/*',
-          }
-        })
-        if (!r.ok) return fail(`HTTP ${r.status} from ${url}`)
-        const html = await r.text()
-        // Extract readable text from HTML
-        const text = html
-          .replace(/<script[\s\S]*?<\/script>/gi, '')
-          .replace(/<style[\s\S]*?<\/style>/gi, '')
-          .replace(/<[^>]+>/g, ' ')
-          .replace(/&nbsp;/g, ' ')
-          .replace(/&amp;/g, '&')
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/\s+/g, ' ')
-          .trim()
-          .slice(0, 8000)
-        return ok({ url, text, length: text.length })
+        const result = await fetchRead(url)
+        return ok(result)
       }
 
-      // Full browser automation via Browserless
-      case 'navigate':
+      // Navigate — uses Browserless if available, otherwise falls back to fetch read
+      case 'navigate': {
+        if (!url) return fail('url required')
+        if (!browserlessToken) {
+          // Graceful fallback: just fetch and read the page
+          try {
+            const result = await fetchRead(url)
+            return ok({ ...result, note: 'Used fetch fallback (no Browserless token). For JS-heavy pages, add BROWSERLESS_TOKEN.' })
+          } catch (e) {
+            return fail(`Could not read ${url}: ${e instanceof Error ? e.message : 'fetch error'}. Note: For Google/social sites, use the webSearch tool instead.`)
+          }
+        }
+        // Use Browserless
+        const puppeteerScript = `
+          module.exports = async ({ page }) => {
+            await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle2', timeout: 30000 });
+            const title = await page.title();
+            const text = await page.evaluate(() => document.body.innerText.slice(0, 5000));
+            const currentUrl = page.url();
+            return { data: { title, text, url: currentUrl } };
+          };
+        `
+        const blRes = await fetch(`https://chrome.browserless.io/function?token=${browserlessToken}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/javascript' },
+          body: puppeteerScript,
+        })
+        if (!blRes.ok) {
+          const errText = await blRes.text()
+          return fail(`Browserless error: ${errText}`)
+        }
+        const result = await blRes.json()
+        return ok(result.data || result)
+      }
+
       case 'click':
       case 'fill':
       case 'screenshot':
       case 'run_script': {
         if (!browserlessToken) {
-          return fail('Browserless token not configured. Add BROWSERLESS_TOKEN to settings or environment variables. Get a free token at browserless.io')
+          return fail(`Browserless token not configured for action "${action}". Add BROWSERLESS_TOKEN to Vercel env vars (free at browserless.io). For lookups and searches, use the webSearch tool instead.`)
         }
-
-        // Use Browserless /function endpoint to run custom Puppeteer code
         let puppeteerScript = ''
-
-        if (action === 'navigate' || action === 'read_js') {
-          puppeteerScript = `
-            module.exports = async ({ page }) => {
-              await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle2', timeout: 30000 });
-              const title = await page.title();
-              const text = await page.evaluate(() => document.body.innerText.slice(0, 5000));
-              const currentUrl = page.url();
-              return { data: { title, text, url: currentUrl } };
-            };
-          `
-        } else if (action === 'click') {
+        if (action === 'click') {
           puppeteerScript = `
             module.exports = async ({ page }) => {
               await page.goto(${JSON.stringify(url)}, { waitUntil: 'networkidle2', timeout: 30000 });
@@ -90,7 +112,6 @@ export async function POST(req: NextRequest) {
             };
           `
         } else if (action === 'fill') {
-          // fill can take multiple fields: fields = [{selector, value}]
           const fields = (body.fields as Array<{selector: string; value: string}>) || [{selector, value}]
           const fillSteps = fields.map(f =>
             `await page.type(${JSON.stringify(f.selector)}, ${JSON.stringify(f.value)});`
@@ -123,47 +144,21 @@ export async function POST(req: NextRequest) {
             };
           `
         }
-
         const blRes = await fetch(`https://chrome.browserless.io/function?token=${browserlessToken}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/javascript' },
           body: puppeteerScript,
         })
-
         if (!blRes.ok) {
           const errText = await blRes.text()
           return fail(`Browserless error: ${errText}`)
         }
-
         const result = await blRes.json()
         return ok(result.data || result)
       }
 
-      // Search Google via scraping
-      case 'google_search': {
-        if (!query) return fail('query required')
-        const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query as string)}&num=10`
-        const r = await fetch(searchUrl, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
-            'Accept': 'text/html',
-          }
-        })
-        const html = await r.text()
-        // Extract search result snippets
-        const snippets: string[] = []
-        const matches = html.matchAll(/<div class="[^"]*">([^<]{30,300})<\/div>/g)
-        for (const m of matches) {
-          const clean = m[1].replace(/&amp;/g, '&').replace(/&#39;/g, "'").trim()
-          if (clean.length > 30 && !clean.includes('{') && snippets.length < 10) {
-            snippets.push(clean)
-          }
-        }
-        return ok({ query, results: snippets, searched: true })
-      }
-
       default:
-        return fail(`Unknown action: ${action}. Use: read, navigate, click, fill, screenshot, run_script, google_search`)
+        return fail(`Unknown action: ${action}. Use: read, navigate, click, fill, screenshot, run_script`)
     }
   } catch (err) {
     return fail(err instanceof Error ? err.message : 'Internal error', 500)
