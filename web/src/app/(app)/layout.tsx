@@ -18,7 +18,7 @@ const NAV = [
   { href: '/parts', icon: '🔩', label: 'Parts Lookup' },
   { href: '/messages', icon: '💬', label: 'Calls & Messages' },
   { href: '/ai', icon: '🤖', label: 'Alpha AI' },
-  { href: '/settings', icon: '⚙️', label: 'Settings' },
+  { href: '/automations', icon: '⏰', label: 'Automations' },   { href: '/settings', icon: '⚙️', label: 'Settings' },
 ]
 
 interface Notification {
