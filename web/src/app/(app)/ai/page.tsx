@@ -893,7 +893,7 @@ export default function AIPage() {
             body: JSON.stringify({ action: actionName, payload: parsed.payload || {} })
           })
           const d = await r.json()
-          actionResult = d.ok ? `Success: ${JSON.stringify(d.data).slice(0, 300)}` : `Failed: ${d.error}`
+          actionResult = d.ok ? `Success: ${JSON.stringify(d.data).slice(0, 2000)}` : `Failed: ${d.error}`
         } catch (err) {
           actionResult = `Error: ${err instanceof Error ? err.message : 'Unknown'}`
         }
