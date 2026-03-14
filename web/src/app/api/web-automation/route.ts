@@ -85,6 +85,23 @@ export async function POST(req: NextRequest) {
         if (!url) return fail('url required')
         try {
           const { sessionId, sessionViewerUrl, websocketUrl, rawSession } = await createSteelSession(url)
+          // Navigate the Steel session browser to the requested URL
+          const steelApiKey = process.env.STEEL_API_KEY!
+          try {
+            await fetch(`https://api.steel.dev/v1/sessions/${sessionId}/actions/navigate`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Steel-Api-Key': steelApiKey },
+              body: JSON.stringify({ url }),
+            })
+          } catch { /* navigation via actions API failed, try scrape fallback */ 
+            try {
+              await fetch('https://api.steel.dev/v1/scrape', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Steel-Api-Key': steelApiKey },
+                body: JSON.stringify({ url, sessionId }),
+              })
+            } catch { /* scrape fallback also failed, session will show blank */ }
+          }
           return ok({
             sessionId,
             sessionViewerUrl,
