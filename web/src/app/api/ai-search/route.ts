@@ -43,7 +43,7 @@ function extractPrices(results: SearchResult[]): PriceResult[] {
   const partRe = /(?:part|item|sku|#|number)[:\s#]*(\w[\w-]{3,})/i
   for (const r of results) {
     const text = r.snippet + ' ' + r.title
-    const m = [...text.matchAll(re)]
+        const m = Array.from(text.matchAll(re))
     if (m.length > 0) {
       const price = parseFloat(m[0][1].replace(',', ''))
       if (price > 0 && price < 50000) {
@@ -53,7 +53,7 @@ function extractPrices(results: SearchResult[]): PriceResult[] {
           price, url: r.url,
           in_stock: /in stock|available|ready/i.test(text) ? true : /out of stock|unavailable|backorder/i.test(text) ? false : undefined,
           shipping: /free ship/i.test(text) ? 'Free shipping' : undefined,
-          rating: text.match(/(\d\.\d)\s*(?:out of|\/)\s*5/)?.​[1] || undefined,
+          rating: text.match(/(\d\.\d)\s*(?:out of|\/)\s*5/)?.[1] || undefined,
           part_number: partMatch?.[1] || undefined,
         })
       }
