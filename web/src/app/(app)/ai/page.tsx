@@ -174,7 +174,7 @@ SOCIAL MEDIA & CONNECTORS:
 CONNECTOR TOOL CALLS — respond with ONLY a raw JSON object:
 
 FACEBOOK POST:
-{"tool":"connector","connector":"facebook","action":"post","payload":{"message":"text here","link":"optional url"}}
+{"tool":"connector","connector":"facebook","action":"post","payload":{"message":"text here","link":"optional url","target":"page or profile or both"}}
 
 FACEBOOK GET POSTS:
 {"tool":"connector","connector":"facebook","action":"get_posts","payload":{}}
@@ -218,7 +218,7 @@ GOOGLE CALENDAR LIST EVENTS:
 GOOGLE CALENDAR CREATE EVENT:
 {"tool":"connector","connector":"google_calendar","action":"create_event","payload":{"title":"Oil Change - John Doe","start":"2026-03-15T10:00:00","end":"2026-03-15T11:00:00","description":"2019 Toyota Camry"}}
 
-GOOGLE CALENDAR DELETE EVENT:
+WEB AUTOMATION — Read webpages, fill forms, click buttons, take screenshots of any website. Use when the user says "go to", "open", "fill out", "look up online", "check this website": {"tool":"webAutomate","action":"read","url":"https://example.com"} {"tool":"webAutomate","action":"fill","url":"https://example.com/form","fields":[{"selector":"#name","value":"John"}],"submit_selector":"button[type=submit]"} {"tool":"webAutomate","action":"screenshot","url":"https://example.com"} {"tool":"webAutomate","action":"navigate","url":"https://example.com"} For simple page reads, use action "read". For JS-heavy pages or form filling, use "navigate", "fill", "click", "screenshot". When the user says "go to google.com" or similar, use webAutomate with action "read" or "navigate".  SCHEDULE TASK — Schedule automated tasks to run at specific times. Use when user says "post at 5am", "remind me at", "schedule", "every morning", "do this at 7pm": {"tool":"scheduleTask","name":"Morning Post","schedule":"5:00am","task_prompt":"Post to Facebook: Good morning Houston!"} Schedule formats: "5:00am" (daily), "mon 9:00am" (weekly), "every 2h" (repeating) The task_prompt should be exactly what you'd type in the AI chat to execute the task.  FACEBOOK POST TARGET: When posting to Facebook, ALWAYS include "target" in payload. Ask the user: "Want me to post to the business page, your personal profile, or both?" Target options: "page" (Alpha International), "profile" (Aaron Sammy), "both" (default)  NAVIGATE: {"tool":"navigate","view":"jobs"} — For app views OR URLs. Pass full URL for web pages.  GOOGLE CALENDAR DELETE EVENT:
 {"tool":"connector","connector":"google_calendar","action":"delete_event","payload":{"event_id":"..."}}`
 
 interface HistoryEntry {
@@ -460,7 +460,7 @@ export default function AIPage() {
 
   // ==================== NEW STATE ====================
   // Feature toggles
-  const [features, setFeatures] = useState({ search: true, webAutomation: false, socialMedia: true })
+  const [features, setFeatures] = useState({ search: true, webAutomation: true, socialMedia: true })
   const toggleFeature = (key: keyof typeof features) => setFeatures(prev => ({ ...prev, [key]: !prev[key] }))
 
   // Connectors popup state
@@ -894,7 +894,7 @@ export default function AIPage() {
 
       // Navigate
       if (parsed.tool === 'navigate') {
-        window.location.href = `/${parsed.view as string}`
+        const v = parsed.view as string; if (v.startsWith('http')) { window.open(v, '_blank') } else { window.location.href = `/${v}` }
         return
       }
 
@@ -953,7 +953,9 @@ export default function AIPage() {
         continue
       }
 
-      // Unknown — treat as final response
+      if (parsed.tool === 'webAutomate') { setStatus('Automating...'); let ar = ''; try { const r = await fetch('/api/web-automation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) }); const d = await r.json(); ar = d.ok ? `Success: ${JSON.stringify(d.data).slice(0, 500)}` : `Failed: ${d.error}` } catch (e) { ar = `Error: ${e instanceof Error ? e.message : 'Unknown'}` } accumulated.push(`[webAutomate]: ${ar}`); agentMessages.push({ role: 'assistant', content: raw }); agentMessages.push({ role: 'user', content: `Web automation result: ${ar}
+Continue silently.` }); continue } if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; try { const r = await fetch('/api/automations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create', name: parsed.name || 'Scheduled Task', description: parsed.description || '', schedule: parsed.schedule, task_prompt: parsed.task_prompt }) }); const d = await r.json(); sr = d.ok ? `Scheduled "${d.data?.name}" at ${d.data?.schedule}` : `Failed: ${d.error}` } catch (e) { sr = `Error: ${e instanceof Error ? e.message : 'Unknown'}` } accumulated.push(`[scheduleTask]: ${sr}`); agentMessages.push({ role: 'assistant', content: raw }); agentMessages.push({ role: 'user', content: `Schedule result: ${sr}
+Continue silently.` }); continue } // Unknown — treat as final response
       const assistantMsg: ChatMessage = { role: 'assistant', content: raw }
       setMessages(prev => [...prev, assistantMsg])
       speak(raw)
