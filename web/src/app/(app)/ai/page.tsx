@@ -84,8 +84,8 @@ You receive a task. You think through ALL steps internally. You execute them one
 
 TOOL CALLS — respond with ONLY a raw JSON object, no markdown, no code blocks, no extra text:
 
-WEB SEARCH — Search the web for real-time information including prices, images, news, part numbers, and anything else. Use this whenever the user asks to "look online", "search for", "find prices", "find images", "find pictures", "show me", "check availability", "what does X cost", "go to google", "get me a picture of", or any request for current pricing/info/images. NEVER guess prices — always search first. You can navigate to ANY website including Google using webAutomate. For general web lookups and price searches, prefer webSearch. For navigating to specific websites, filling forms, or when the user says "go to [site]", use webAutomate with action "steel_session" to open a live browser:
-{"tool":"webSearch","query":"2007 Honda Civic lower control arm price"}
+WEB SEARCH — Search the web for real-time information including prices, images, news, part numbers, and anything else. Use this whenever the user asks to "look online", "search for", "find prices", "find images", "find pictures", "show me", "check availability", "what does X cost", "go to google", "get me a picture of", or any request for current pricing/info/images. NEVER guess prices — always search first. You can navigate to ANY website including Google using webAutomate. For general web lookups and price searches, prefer webSearch. Web automation has been removed. Use webSearch for ALL lookups including prices, images, videos, and information. webSearch now returns rich results including product images, YouTube videos, price comparisons (Price Radar), and smart follow-up suggestions.
+{"tool":"webSearch","query":"2007 Honda Civic lower control arm price"} webSearch now returns RICH results: text results with URLs, product images, YouTube videos with embed URLs, Price Radar (price comparison across stores), AI summary, and Smart Follow-up suggestions. ALWAYS present these rich results to the user: show images using markdown ![img](url), embed YouTube videos using the embed_url, show Price Radar as a comparison table with the best deal highlighted, and offer the follow-up suggestions as clickable options.
 
 CREATE CUSTOMER — Create a new customer record. Use when user mentions a new person's name/phone/email that isn't in the system yet:
 {"tool":"action","action":"createCustomer","payload":{"name":"John Doe","phone":"555-1234","email":"john@example.com"}}
@@ -218,12 +218,12 @@ GOOGLE CALENDAR LIST EVENTS:
 GOOGLE CALENDAR CREATE EVENT:
 {"tool":"connector","connector":"google_calendar","action":"create_event","payload":{"title":"Oil Change - John Doe","start":"2026-03-15T10:00:00","end":"2026-03-15T11:00:00","description":"2019 Toyota Camry"}}
 
-WEB AUTOMATION — Fill out real web forms, interact with actual websites (e.g. AutoZone ordering, supplier portals, booking forms). Use ONLY when the user says "go to [specific website]", "fill out this form", "submit on [site]". NEVER use for general lookups. EXCEPTION: If user says "see the browser", "watch it", "open browser", "let me see", use action "steel_session" for LIVE visual browser. Can navigate to ANY website. For price lookups, use webSearch. For visiting sites, filling forms, or "go to [url]" requests, use webAutomate: {"tool":"webAutomate","action":"read","url":"https://example.com"} {"tool":"webAutomate","action":"fill","url":"https://example.com/form","fields":[{"selector":"#name","value":"John"}],"submit_selector":"button[type=submit]"} {"tool":"webAutomate","action":"screenshot","url":"https://example.com"} {"tool":"webAutomate","action":"navigate","url":"https://example.com"} LIVE BROWSER SESSION — Open a real live browser that you AND the user can see. Use ONLY when user says "see the browser", "show me", "let me see it", "open browser", "watch it", "watch it". This shows a LIVE browser in the chat that the user can watch in real-time. You CAN use this for any website including Google. When the response includes a sessionViewerUrl, it will be displayed as a live browser window in the chat: {"tool":"webAutomate","action":"steel_session","url":"https://google.com"} For simple page reads, use action "read". For JS-heavy pages or form filling, use "navigate", "fill", "click", "screenshot".
+         
 
-BROWSER ACTIONS — After opening a live browser with steel_session, use browser_action to control the mouse and keyboard. The sessionId is returned by steel_session. Chain multiple actions:
-{"tool":"webAutomate","action":"browser_action","sessionId":"SESSION_ID_HERE","actions":[{"type":"click","selector":"#search-bar"},{"type":"type","selector":"#search-bar","text":"lower control arm 2016 civic"},{"type":"press","text":"Enter"},{"type":"wait","delay":2000},{"type":"read"}]}
-Available action types: click (CSS selector), type (selector + text), press (key name like Enter/Tab), wait (delay in ms), goto (url), select (selector + value), read (get page text).
-ALWAYS use browser_action after steel_session when the user wants you to search, click, fill forms, or interact with the website. First open the session, then use browser_action with the sessionId to control it.   SCHEDULE TASK — Schedule automated tasks to run at specific times. Use when user says "post at 5am", "remind me at", "schedule", "every morning", "do this at 7pm": {"tool":"scheduleTask","name":"Morning Post","schedule":"5:00am","task_prompt":"Post to Facebook: Good morning Houston!"} Schedule formats: "5:00am" (daily), "mon 9:00am" (weekly), "every 2h" (repeating) The task_prompt should be exactly what you'd type in the AI chat to execute the task.  FACEBOOK POST TARGET: When posting to Facebook, ALWAYS include "target" in payload. Ask the user: "Want me to post to the business page, your personal profile, or both?" Target options: "page" (Alpha International), "profile" (Aaron Sammy), "both" (default)  NAVIGATE: {"tool":"navigate","view":"jobs"} — For app views OR URLs. Pass full URL for web pages.  GOOGLE CALENDAR DELETE EVENT:
+ 
+ 
+ 
+    SCHEDULE TASK — Schedule automated tasks to run at specific times. Use when user says "post at 5am", "remind me at", "schedule", "every morning", "do this at 7pm": {"tool":"scheduleTask","name":"Morning Post","schedule":"5:00am","task_prompt":"Post to Facebook: Good morning Houston!"} Schedule formats: "5:00am" (daily), "mon 9:00am" (weekly), "every 2h" (repeating) The task_prompt should be exactly what you'd type in the AI chat to execute the task.  FACEBOOK POST TARGET: When posting to Facebook, ALWAYS include "target" in payload. Ask the user: "Want me to post to the business page, your personal profile, or both?" Target options: "page" (Alpha International), "profile" (Aaron Sammy), "both" (default)  NAVIGATE: {"tool":"navigate","view":"jobs"} — For app views OR URLs. Pass full URL for web pages.  GOOGLE CALENDAR DELETE EVENT:
 {"tool":"connector","connector":"google_calendar","action":"delete_event","payload":{"event_id":"..."}}`
 
 interface HistoryEntry {
@@ -465,7 +465,7 @@ export default function AIPage() {
 
   // ==================== NEW STATE ====================
   // Feature toggles
-  const [features, setFeatures] = useState({ search: true, webAutomation: true, socialMedia: true })
+  const [features, setFeatures] = useState({ search: true, socialMedia: true })
   const toggleFeature = (key: keyof typeof features) => setFeatures(prev => ({ ...prev, [key]: !prev[key] }))
 
   // Connectors popup state
@@ -704,8 +704,8 @@ export default function AIPage() {
     reader.readAsDataURL(file)
   }
 
-  const agentLoop = async (history: ChatMessage[], featureFlags?: { search: boolean; webAutomation: boolean; socialMedia: boolean }) => {
-    const activeFeatures = featureFlags || { search: true, webAutomation: true, socialMedia: true }
+  const agentLoop = async (history: ChatMessage[], featureFlags?: { search: boolean;  socialMedia: boolean }) => {
+    const activeFeatures = featureFlags || { search: true, socialMedia: true }
     const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
     const apiKey = settings?.ai_api_key
     if (!apiKey) {
@@ -720,7 +720,7 @@ export default function AIPage() {
       const systemWithContext = SYSTEM_PROMPT +
         (shopContext ? `\n\nLive shop context:\n${shopContext}` : '') +
         (accumulated.length ? `\n\nCompleted steps so far:\n${accumulated.join('\n')}` : '') +
-          `\n\nFEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' : 'OFF'}\n- Web Automation (Live Browser): ${activeFeatures.webAutomation ? 'ON' : 'OFF'}\n- Social Media: ${activeFeatures.socialMedia ? 'ON' : 'OFF'}\nIf a feature is OFF and the user tries to use it, tell them to enable the toggle at the bottom of the chat input.`
+          `\n\nFEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' : 'OFF'}\n - Social Media: ${activeFeatures.socialMedia ? 'ON' : 'OFF'}\nIf a feature is OFF and the user tries to use it, tell them to enable the toggle at the bottom of the chat input.`
 
       setStatus(step === 0 ? 'Thinking...' : 'Working...')
 
@@ -789,13 +789,26 @@ export default function AIPage() {
         try {
           const r = await fetch(`/api/ai-search?q=${encodeURIComponent(parsed.query as string)}`)
           const d = await r.json()
-          searchResult = d.results?.slice(0, 6).map((r: Record<string,string>, i: number) => `Result ${i + 1}:\nTitle: ${r.title}\nURL: ${r.url}\nSnippet: ${r.snippet}`).join('\n\n') || 'No results'
-          if (d.results?.length) {
-            searchResult += '\n\nIMPORTANT: Use ONLY the exact URLs listed above when linking to products. Do NOT fabricate or guess URLs.'
-          }
-          if (d.images?.length) {
-            searchResult += '\n\nProduct images:\n' + (d.images as string[]).slice(0, 3).map((url: string) => `- ${url}`).join('\n')
-          }
+                      searchResult = d.results?.slice(0, 8).map((r: Record<string,string>, i: number) => `Result ${i + 1}:\nTitle: ${r.title}\nURL: ${r.url}\nSource: ${r.source || ''}\nSnippet: ${r.snippet}`).join('\n\n') || 'No results'
+            if (d.results?.length) {
+              searchResult += '\n\nIMPORTANT: Use ONLY the exact URLs listed above when linking to products. Do NOT fabricate or guess URLs.'
+            }
+            if (d.images?.length) {
+              searchResult += '\n\nProduct images:\n' + (d.images as {url:string}[]).slice(0, 4).map((img: {url:string}) => `- ${img.url}`).join('\n')
+            }
+            if (d.videos?.length) {
+              searchResult += '\n\nYouTube Videos:\n' + (d.videos as {title:string;url:string;channel?:string;embed_url?:string}[]).slice(0, 3).map((v: {title:string;url:string;channel?:string;embed_url?:string}, i: number) => `${i+1}. ${v.title} — ${v.url}${v.channel ? ` (${v.channel})` : ''}${v.embed_url ? `\nEmbed: ${v.embed_url}` : ''}`).join('\n')
+            }
+            if (d.price_radar?.length) {
+              searchResult += '\n\nPRICE COMPARISON (Price Radar):\n' + (d.price_radar as {store:string;price:number;url:string;shipping?:string}[]).map((p: {store:string;price:number;url:string;shipping?:string}) => `- ${p.store}: $${p.price.toFixed(2)} ${p.shipping || ''} — ${p.url}`).join('\n')
+              searchResult += '\nBest price: $' + (d.price_radar as {price:number}[])[0].price.toFixed(2) + ' at ' + (d.price_radar as {store:string}[])[0].store
+            }
+            if (d.answer) {
+              searchResult += '\n\nAI Summary: ' + d.answer
+            }
+            if (d.follow_ups?.length) {
+              searchResult += '\n\nSuggested follow-ups for the user: ' + (d.follow_ups as string[]).join(' | ')
+            }
         } catch { searchResult = 'Search failed' }
         accumulated.push(`[Search: "${parsed.query}"]\n${searchResult}`)
         agentMessages.push({ role: 'assistant', content: raw })
@@ -960,20 +973,7 @@ export default function AIPage() {
         continue
       }
 
-      if (parsed.tool === 'webAutomate' && !activeFeatures.webAutomation) {
-        agentMessages.push({ role: 'assistant', content: raw });
-        agentMessages.push({ role: 'user', content: 'Web automation is currently disabled by the user. The Web Auto toggle is OFF. Inform the user they need to enable the Web Auto toggle to use browser automation.' });
-        continue;
-      }
-
-      if (parsed.tool === 'webAutomate') { const targetUrl = (parsed.url || parsed.view || '') as string;  setStatus('Automating...'); let ar = ''; try { const r = await fetch('/api/web-automation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) }); const d = await r.json(); ar = d.ok ? `Success: ${JSON.stringify(d.data).slice(0, 500)}` : `Failed: ${d.error}`
-      if (d.ok && d.data?.sessionViewerUrl) {
-        const viewerUrl = d.data.sessionViewerUrl;
-        const iframeHtml = `<div style="width:100%;aspect-ratio:16/9;max-height:70vh;border-radius:12px;overflow:hidden;border:1px solid #444;background:#000"><iframe src="${viewerUrl}" style="width:100%;height:100%;border:none" sandbox="allow-same-origin allow-scripts allow-popups allow-forms" allow="clipboard-read;clipboard-write"></iframe></div>`;
-        const browserMsg: ChatMessage = { role: 'assistant', content: 'Live browser session opened — watch the automation below:', html: iframeHtml };
-        setMessages(prev => [...prev, browserMsg]);
-      } } catch (e) { ar = `Error: ${e instanceof Error ? e.message : 'Unknown'}` } accumulated.push(`[webAutomate]: ${ar}`); agentMessages.push({ role: 'assistant', content: raw }); agentMessages.push({ role: 'user', content: `Web automation result: ${ar}
-Continue silently.` }); continue } if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; try { const r = await fetch('/api/automations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create', name: parsed.name || 'Scheduled Task', description: parsed.description || '', schedule: parsed.schedule, task_prompt: parsed.task_prompt }) }); const d = await r.json(); sr = d.ok ? `Scheduled "${d.data?.name}" at ${d.data?.schedule}` : `Failed: ${d.error}` } catch (e) { sr = `Error: ${e instanceof Error ? e.message : 'Unknown'}` } accumulated.push(`[scheduleTask]: ${sr}`); agentMessages.push({ role: 'assistant', content: raw }); agentMessages.push({ role: 'user', content: `Schedule result: ${sr}
+if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; try { const r = await fetch('/api/automations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create', name: parsed.name || 'Scheduled Task', description: parsed.description || '', schedule: parsed.schedule, task_prompt: parsed.task_prompt }) }); const d = await r.json(); sr = d.ok ? `Scheduled "${d.data?.name}" at ${d.data?.schedule}` : `Failed: ${d.error}` } catch (e) { sr = `Error: ${e instanceof Error ? e.message : 'Unknown'}` } accumulated.push(`[scheduleTask]: ${sr}`); agentMessages.push({ role: 'assistant', content: raw }); agentMessages.push({ role: 'user', content: `Schedule result: ${sr}
 Continue silently.` }); continue } // Unknown — treat as final response
       const assistantMsg: ChatMessage = { role: 'assistant', content: raw }
       setMessages(prev => [...prev, assistantMsg])
@@ -1105,6 +1105,8 @@ Continue silently.` }); continue } // Unknown — treat as final response
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
     return escaped
+      // YouTube embeds: [YouTube](embed_url) or bare embed URLs
+      .replace(/(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([\w-]{11})/g, '<div style="margin:8px 0;border-radius:12px;overflow:hidden;max-width:480px"><iframe width="100%" height="270" src="https://www.youtube.com/embed/$1" frameborder="0" allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture" allowfullscreen style="border-radius:12px"></iframe></div>')
       // Images: ![alt](url)
       .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="rounded-lg max-w-[280px] max-h-[200px] object-cover my-1 inline-block" />')
       // Links: [text](url)
@@ -1614,20 +1616,6 @@ Continue silently.` }); continue } // Unknown — treat as final response
           >
             {features.search && <span className="w-1.5 h-1.5 rounded-full bg-blue flex-shrink-0" />}
             🔍 Search
-          </button>
-
-          {/* Web Auto toggle */}
-          <button
-            onClick={() => toggleFeature('webAutomation')}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border ${
-              features.webAutomation
-                ? 'bg-blue/20 border-blue/50 text-blue'
-                : 'bg-bg-card border-border text-text-muted hover:border-blue/30 hover:text-text-secondary'
-            }`}
-            title={features.webAutomation ? 'Web automation ON — click to disable' : 'Web automation OFF — click to enable'}
-          >
-            {features.webAutomation && <span className="w-1.5 h-1.5 rounded-full bg-blue flex-shrink-0" />}
-            🌐 Web Auto
           </button>
 
           {/* Social toggle */}
