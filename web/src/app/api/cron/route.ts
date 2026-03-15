@@ -24,7 +24,12 @@ async function callApi(path: string, body?: Record<string, unknown>) {
       headers: { 'Content-Type': 'application/json' },
       body: body ? JSON.stringify(body) : '{}',
     })
-    return await res.json()
+    const text = await res.text()
+    try {
+      return JSON.parse(text)
+    } catch {
+      return { status: res.status, error: `Non-JSON response from ${path}`, preview: text.slice(0, 200) }
+    }
   } catch (e) {
     console.error(`Cron call to ${path} failed:`, e)
     return { error: (e as Error).message }
@@ -43,15 +48,11 @@ export async function GET(req: NextRequest) {
     radius: 15000
   })
 
-  results.scan_social = await callApi('/api/growth/scan-social', {})
-
   results.follow_ups = await callApi('/api/growth/capture', {
     action: 'follow_up_pending'
   })
 
   results.automations = await callApi('/api/automations', {})
-
-  results.reviews = await callApi('/api/growth/reviews', {})
 
   await supabase.from('growth_scans').upsert({
     id: 'last_cron_run',
