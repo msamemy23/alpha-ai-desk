@@ -12,9 +12,9 @@ function Toast({ message, type, onClose }: { message: string; type: 'success' | 
   const bg = type === 'success' ? 'bg-emerald-500' : type === 'error' ? 'bg-red-500' : 'bg-blue-500'
   return (
     <div className={`fixed top-4 right-4 z-[100] ${bg} text-white px-5 py-3 rounded-xl shadow-2xl flex items-center gap-3 animate-slide-in max-w-sm`}>
-      <span className="text-lg">{type === 'success' ? '\u2713' : type === 'error' ? '\u2717' : '\u2139'}</span>
+      <span className="text-lg">{type === 'success' ? '✓' : type === 'error' ? '✗' : 'ℹ'}</span>
       <span className="text-sm font-medium">{message}</span>
-      <button onClick={onClose} className="ml-auto text-white/70 hover:text-white text-lg">\u00d7</button>
+      <button onClick={onClose} className="ml-auto text-white/70 hover:text-white text-lg">×</button>
     </div>
   )
 }
@@ -32,7 +32,7 @@ function timeAgo(d: string) {
 type Tab = 'followups' | 'reviews' | 'referrals' | 'leads' | 'capture' | 'ads'
 const TABS: { key: Tab; label: string; icon: string; desc: string }[] = [
   { key: 'followups', label: 'Follow-ups', icon: '\ud83d\udd01', desc: 'Re-engage inactive customers' },
-  { key: 'reviews',   label: 'Reviews',    icon: '\u2b50', desc: 'Build your reputation' },
+  { key: 'reviews',   label: 'Reviews',    icon: '⭐', desc: 'Build your reputation' },
   { key: 'referrals', label: 'Referrals',  icon: '\ud83e\udd1d', desc: 'Turn customers into promoters' },
   { key: 'leads',     label: 'Lead Gen',   icon: '\ud83c\udfaf', desc: 'Find and convert new leads' },
   { key: 'capture',   label: 'Capture',    icon: '\ud83d\udcde', desc: 'Log walk-ins and calls' },
@@ -46,7 +46,7 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
       <div className="bg-[#1e2a3a] rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto border border-white/10" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between p-5 border-b border-white/10">
           <h2 className="text-lg font-bold text-white">{title}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl leading-none">\u00d7</button>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl leading-none">×</button>
         </div>
         <div className="p-5">{children}</div>
       </div>
@@ -133,7 +133,7 @@ export default function GrowthPage() {
     setSending(c.id)
     try {
       const name = c.name?.split(' ')[0] || 'there'
-      await sendSms(c.phone, `Hi ${name}! It's Alpha International Auto Center. Been a while since your last visit \u2014 time for a checkup? Reply YES to book or call (713) 663-6979!`)
+      await sendSms(c.phone, `Hi ${name}! It's Alpha International Auto Center. Been a while since your last visit — time for a checkup? Reply YES to book or call (713) 663-6979!`)
       await supabase.from('customers').update({ last_contact: new Date().toISOString() }).eq('id', c.id)
       notify(`Follow-up sent to ${c.name}`, 'success')
       await load()
@@ -169,7 +169,7 @@ export default function GrowthPage() {
     const code = `ALPHA-${c.name?.split(' ')[0]?.toUpperCase() || 'REF'}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`
     await supabase.from('referrals').insert({ customer_id: c.id, customer_name: c.name, code, discount_percent: 10, uses: 0 })
     if (c.phone) {
-      await sendSms(c.phone, `Hey ${c.name?.split(' ')[0]}! Share code ${code} with friends \u2014 they get 10% off, you get $25 credit at Alpha International!`)
+      await sendSms(c.phone, `Hey ${c.name?.split(' ')[0]}! Share code ${code} with friends — they get 10% off, you get $25 credit at Alpha International!`)
     }
     notify(`Referral code ${code} created`, 'success')
     await load()
@@ -224,7 +224,7 @@ export default function GrowthPage() {
       const d = await r.json()
       notify(`Scan complete! Found ${d.total || 0} competitors, ${d.low_review_leads || 0} unhappy customers`, 'success')
       await load()
-    } catch { notify('Scan failed \u2014 check API key', 'error') }
+    } catch { notify('Scan failed — check API key', 'error') }
     setScanning(false)
   }
 
@@ -319,7 +319,7 @@ export default function GrowthPage() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
         {[
           { label: 'Total Customers', value: customers.length, color: 'text-white', icon: '\ud83d\udc65' },
-          { label: 'Need Follow-up', value: staleCustomers.length, color: 'text-amber-400', icon: '\u23f0' },
+          { label: 'Need Follow-up', value: staleCustomers.length, color: 'text-amber-400', icon: '⏰' },
           { label: 'Active Referrals', value: referrals.length, color: 'text-emerald-400', icon: '\ud83e\udd1d' },
           { label: 'Open Leads', value: leads.filter(l => l.status !== 'converted').length, color: 'text-blue-400', icon: '\ud83c\udfaf' },
         ].map((s, i) => (
@@ -361,7 +361,7 @@ export default function GrowthPage() {
           </div>
           {staleCustomers.length === 0 ? (
             <div className="text-center py-12">
-              <p className="text-4xl mb-3">\u2705</p>
+              <p className="text-4xl mb-3">✅</p>
               <p className="text-gray-400 font-medium">All customers are active!</p>
               <p className="text-gray-500 text-sm mt-1">No one needs a follow-up right now</p>
             </div>
@@ -371,7 +371,7 @@ export default function GrowthPage() {
                 <div key={c.id} className="flex items-center justify-between p-4 bg-[#0f1923] rounded-xl hover:bg-[#162030] transition-colors">
                   <div>
                     <p className="font-semibold text-white">{c.name}</p>
-                    <p className="text-xs text-gray-500">{c.phone || 'No phone'} \u00b7 Last: {timeAgo(c.last_visit || c.created_at)}</p>
+                    <p className="text-xs text-gray-500">{c.phone || 'No phone'} · Last: {timeAgo(c.last_visit || c.created_at)}</p>
                   </div>
                   <button onClick={() => sendFollowUp(c)} disabled={sending === c.id || !c.phone}
                     className={c.phone ? btnPrimary : btnSecondary}>
@@ -396,7 +396,7 @@ export default function GrowthPage() {
               <div key={c.id} className="flex items-center justify-between p-4 bg-[#0f1923] rounded-xl hover:bg-[#162030] transition-colors">
                 <div>
                   <p className="font-semibold text-white">{c.name}</p>
-                  <p className="text-xs text-gray-500">{c.phone || 'No phone'}{c.review_requested ? ` \u00b7 Requested ${timeAgo(c.review_requested)}` : ''}</p>
+                  <p className="text-xs text-gray-500">{c.phone || 'No phone'}{c.review_requested ? ` · Requested ${timeAgo(c.review_requested)}` : ''}</p>
                 </div>
                 <button onClick={() => requestReview(c)} disabled={sending === c.id || !c.phone}
                   className={c.review_requested ? btnSecondary : btnSuccess}>
@@ -424,7 +424,7 @@ export default function GrowthPage() {
                     <div>
                       <p className="font-semibold text-white">{c.name}</p>
                       {existing ? (
-                        <p className="text-xs text-emerald-400 font-mono">{existing.code} \u00b7 {existing.uses || 0} uses</p>
+                        <p className="text-xs text-emerald-400 font-mono">{existing.code} · {existing.uses || 0} uses</p>
                       ) : (
                         <p className="text-xs text-gray-500">{c.phone || 'No phone'}</p>
                       )}
@@ -449,7 +449,7 @@ export default function GrowthPage() {
                       <span className="font-mono text-sm text-blue-400">{r.code}</span>
                       <span className="text-xs text-gray-500 ml-2">by {r.customer_name}</span>
                     </div>
-                    <span className="text-sm text-gray-300">{r.uses || 0} referrals \u00b7 {r.discount_percent}% off</span>
+                    <span className="text-sm text-gray-300">{r.uses || 0} referrals · {r.discount_percent}% off</span>
                   </div>
                 ))}
               </div>
@@ -493,11 +493,11 @@ export default function GrowthPage() {
                     <div className="flex-1 min-w-0">
                       <p className="font-semibold text-white truncate">{l.name}</p>
                       <p className="text-xs text-gray-500 truncate">
-                        {l.source} \u00b7 {l.service_needed || 'General'} \u00b7{' '}
+                        {l.source} · {l.service_needed || 'General'} ·{' '}
                         <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
                           l.status === 'new' ? 'bg-blue-500/20 text-blue-400' : l.status === 'contacted' ? 'bg-yellow-500/20 text-yellow-400' : 'bg-emerald-500/20 text-emerald-400'
                         }`}>{l.status}</span>
-                        {l.notes && <span className="ml-1 text-gray-600 italic"> \u00b7 {l.notes}</span>}
+                        {l.notes && <span className="ml-1 text-gray-600 italic"> · {l.notes}</span>}
                       </p>
                     </div>
                     <button onClick={() => followUpLead(l)} disabled={sending === l.id || !l.phone}
@@ -543,7 +543,7 @@ export default function GrowthPage() {
                 <div key={l.id} className="flex items-center justify-between p-4 bg-[#0f1923] rounded-xl hover:bg-[#162030] transition-colors">
                   <div>
                     <p className="font-semibold text-white">{l.name}</p>
-                    <p className="text-xs text-gray-500">{l.source} \u00b7 {l.service_needed || 'General'} \u00b7 {timeAgo(l.created_at)}</p>
+                    <p className="text-xs text-gray-500">{l.source} · {l.service_needed || 'General'} · {timeAgo(l.created_at)}</p>
                   </div>
                   <button onClick={() => followUpLead(l)} disabled={!l.phone || sending === l.id}
                     className={l.phone ? btnPrimary : btnSecondary}>
@@ -588,11 +588,11 @@ export default function GrowthPage() {
                     <div>
                       <p className="font-semibold text-white">{c.name}</p>
                       <p className="text-xs text-gray-500">
-                        {c.platform} \u00b7{' '}
+                        {c.platform} ·{' '}
                         <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
                           c.status === 'active' ? 'bg-emerald-500/20 text-emerald-400' : c.status === 'draft' ? 'bg-yellow-500/20 text-yellow-400' : 'bg-white/10 text-gray-400'
                         }`}>{c.status}</span>
-                        {' '}\u00b7 {timeAgo(c.created_at)}
+                        {' '}· {timeAgo(c.created_at)}
                       </p>
                     </div>
                     <span className="text-sm font-semibold text-gray-300">${c.spend || 0} spent</span>
