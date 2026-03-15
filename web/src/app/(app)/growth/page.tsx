@@ -526,13 +526,13 @@ export default function GrowthPage() {
                 🚛 Import Fleet Lead
               </button>
                         <button className={`${btn} bg-purple-600 text-white hover:bg-purple-700`} onClick={async () => {
-            const r = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/scan-competitor-reviews`, {
+                          const r = await fetch('/api/growth/scan-competitors', {
               method: 'POST',
-              headers: { 'Authorization': `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json' },
-              body: '{}'
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ query: 'auto repair shop Houston TX', radius: 15000 })
             })
             const d = await r.json()
-            alert(`Scan complete! ${d.total_new_leads || 0} new leads found from unhappy competitor reviews.`)
+                          alert(`Scan complete! Found ${d.total || 0} competitors with ${d.low_review_leads || 0} unhappy customers.`)
             await load()
           }}>
             🔬 AI Scan Competitors
