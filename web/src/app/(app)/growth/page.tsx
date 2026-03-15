@@ -503,7 +503,7 @@ export default function GrowthPage() {
           <div className={card}>
             <h2 className="text-lg font-semibold mb-2">Lead Generation & Outreach</h2>
             <p className="text-sm text-gray-500 mb-4">Track and follow up on all leads. Import leads manually or use outreach tools.</p>
-            <div className="grid md:grid-cols-3 gap-3 mb-4">
+            <div className="grid md:grid-cols-4 gap-3 mb-4">
               <button className={btnPrimary} onClick={() => {
                 setImportSource('competitor')
                 setImportNotes('Found via competitor Google review — unhappy customer')
@@ -525,6 +525,18 @@ export default function GrowthPage() {
               }}>
                 🚛 Import Fleet Lead
               </button>
+                        <button className={`${btn} bg-purple-600 text-white hover:bg-purple-700`} onClick={async () => {
+            const r = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/scan-competitor-reviews`, {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json' },
+              body: '{}'
+            })
+            const d = await r.json()
+            alert(`Scan complete! ${d.total_new_leads || 0} new leads found from unhappy competitor reviews.`)
+            await load()
+          }}>
+            🔬 AI Scan Competitors
+          </button>
             </div>
             <div className="flex gap-2">
               <input
