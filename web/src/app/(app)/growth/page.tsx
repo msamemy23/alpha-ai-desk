@@ -6,7 +6,7 @@ type Rec = Record<string, any>
 
 // ── CONFIG ─────────────────────────────────────────────────────────────────
 // Replace this with your real Google review URL from Google Business Profile
-const GOOGLE_REVIEW_URL = 'https://g.page/r/YOUR_GOOGLE_REVIEW_LINK/review'
+const GOOGLE_REVIEW_URL = 'https://g.page/r/CSSKpJahtMmSEBM/review'
 
 function timeAgo(d: string) {
   if (!d) return 'Never'
