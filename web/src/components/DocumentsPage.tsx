@@ -171,7 +171,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
 
   const load = useCallback(async () => {
     const [{ data: d }, { data: c }] = await Promise.all([
-      supabase.from('documents').select('*').eq('type', type).order('created_at', { ascending: false }),
+      supabase.from('documents').select('*').in('type', type === 'Invoice' ? ['Invoice', 'Receipt'] : [type]).order('created_at', { ascending: false }),
       supabase.from('customers').select('id,name,phone,email,vehicle_year,vehicle_make,vehicle_model,vehicle_vin,vehicle_plate,vehicle_mileage').order('name')
     ])
     setDocs((d || []) as Doc[]); setCustomers((c || []) as Customer[])
@@ -186,7 +186,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   const genDocNumber = async () => {
     const prefix = type === 'Estimate' ? 'EST' : type === 'Invoice' ? 'INV' : 'REC'
     const year = new Date().getFullYear()
-    const { data } = await supabase.from('documents').select('doc_number').eq('type', type).like('doc_number', `${prefix}-${year}-%`)
+    const { data } = await supabase.from('documents').select('doc_number').in('type', type === 'Invoice' ? ['Invoice', 'Receipt'] : [type]).like('doc_number', `${prefix}-${year}-%`)
     const nums = (data || []).map((d: Record<string,string>) => parseInt(d.doc_number.split('-').pop() || '0'))
     const next = Math.max(0, ...nums) + 1
     return `${prefix}-${year}-${String(next).padStart(4,'0')}`
