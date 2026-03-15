@@ -1155,11 +1155,11 @@ Continue silently.` }); continue } // Unknown — treat as final response
           vehicle: parsed.vehicle,
           parts: parsed.parts,
           labors: parsed.labors,
-          notes: parsed.notes,
+          notes: parsed.notes,             type: parsed.type || 'Estimate',
         })
       })
       if (!res.ok) throw new Error('Failed')
-      showToast('Estimate saved as draft')
+      showToast('Document saved')
       setTimeout(() => { window.location.href = '/estimates' }, 1000)
     } catch { showToast('Failed to save estimate') }
   }
@@ -1203,7 +1203,7 @@ Continue silently.` }); continue } // Unknown — treat as final response
         <div class="flex justify-between font-bold text-base mt-1 pt-1 border-t border-border"><span>Total</span><span class="text-green">${fmt(total)}</span></div>
       </div>
       <div class="flex gap-2 mt-3">
-        <button onclick="window.__saveEstimate && window.__saveEstimate('${encodedData}')" class="btn btn-success btn-sm">Save as Draft Estimate</button>
+        <button onclick="window.__saveEstimate && window.__saveEstimate('${encodedData}')" class="btn btn-success btn-sm">Save ${parsed.type || 'Estimate'}</button>
         <button onclick="window.location.href='/estimates'" class="btn btn-secondary btn-sm">View Estimates</button>
       </div>
     </div>`
