@@ -18,12 +18,12 @@ async function searchSerperPlaces(query: string) {
     const res = await fetchT('https://google.serper.dev/places', {
       method: 'POST',
       headers: { 'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ q: query, num: 6 })
+      body: JSON.stringify({ q: query, num: 8 })
     }, 10000)
     const data = await res.json()
     return (data.places || []).map((p: any) => ({
       name: p.title, address: p.address, phone: p.phoneNumber || null,
-      rating: p.rating, reviews: p.reviews, website: p.website || null
+      rating: p.rating, reviews: p.reviews, website: p.website || null, cid: p.cid || null
     }))
   } catch { return [] }
 }
@@ -44,21 +44,21 @@ async function searchSerper(query: string) {
 async function deepResearchCompetitor(comp: any) {
   const name = comp.name
   const [ownerResults, reviewResults, emailResults] = await Promise.all([
-    searchSerper(`"${name}" owner OR manager Houston`),
-    searchSerper(`"${name}" bad review complaint Houston auto repair`),
+    searchSerper(`"${name}" owner OR manager OR president Houston`),
+    searchSerper(`"${name}" reviews complaints Houston auto repair`),
     searchSerper(`"${name}" email contact Houston`)
   ])
   const emailMatch = JSON.stringify(emailResults).match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/)
   return {
     ...comp,
     owner_search: ownerResults.slice(0, 2).map((r: any) => r.snippet).join(' | '),
-    bad_reviews: reviewResults.slice(0, 3).map((r: any) => r.snippet).join(' | '),
+    review_snippets: reviewResults.slice(0, 3).map((r: any) => r.snippet).join(' | '),
     email: emailMatch ? emailMatch[0] : null
   }
 }
 
-async function aiDeepAnalyze(competitors: any[], city: string) {
-  if (!AI_KEY) return []
+async function aiAnalyzeCompetitors(competitors: any[], city: string) {
+  if (!AI_KEY || !competitors.length) return []
   try {
     const res = await fetchT(AI_URL, {
       method: 'POST',
@@ -67,13 +67,37 @@ async function aiDeepAnalyze(competitors: any[], city: string) {
         model: AI_MODEL,
         messages: [{
           role: 'system',
-          content: `You are a competitive intelligence analyst for Alpha International Auto Center in Houston TX. Analyze competitor auto shops and find their unhappy customers. Return JSON array with DEEP profiles:\n[{\n  "name": "customer/reviewer name",\n  "competitor_name": "which competitor they complained about",\n  "phone": "if findable",\n  "email": "if findable",\n  "address": "competitor address",\n  "city": "Houston",\n  "website": "competitor website",\n  "owner_name": "competitor owner/manager name",\n  "owner_title": "title",\n  "google_rating": competitor rating,\n  "google_reviews_count": number,\n  "employee_count": "estimated",\n  "revenue_estimate": "estimated",\n  "years_in_business": number or null,\n  "industry": "auto repair",\n  "service_area": "areas served",\n  "pain_points": "specific complaints from reviews",\n  "service_needed": "what service the customer needed",\n  "review_snippet": "the actual bad review text",\n  "confidence": "high/medium/low",\n  "fleet_score": 1-10,\n  "outreach_pitch": "personalized pitch to steal this customer",\n  "suggested_message": "ready-to-send SMS",\n  "annual_value_estimate": "$X,XXX"\n}]`
+          content: `You are a competitive intelligence analyst for Alpha International Auto Center in Houston TX. Analyze competitor auto shops and create DEEP profiles on each one. Return a JSON array where each object represents a COMPETITOR SHOP with ALL these fields:
+{
+  "name": "competitor shop name",
+  "phone": "their phone",
+  "email": "their email if found",
+  "address": "full address",
+  "city": "Houston",
+  "website": "website",
+  "owner_name": "owner/manager name from search data",
+  "owner_title": "Owner/Manager/President",
+  "google_rating": rating number,
+  "google_reviews_count": review count,
+  "employee_count": "estimated (e.g. 5-15)",
+  "revenue_estimate": "estimated (e.g. $500K-$1M)",
+  "years_in_business": number or null,
+  "industry": "auto repair",
+  "service_area": "areas they serve",
+  "pain_points": "their weaknesses from reviews (wait times, pricing, quality issues)",
+  "fleet_score": 1-10 (how easy to steal their customers),
+  "confidence": "high/medium/low",
+  "outreach_pitch": "pitch to their unhappy customers mentioning specific complaints",
+  "annual_value_estimate": "potential revenue if we capture their customers",
+  "review_snippet": "notable bad review quote",
+  "best_services": ["services we can offer better"]
+}
+Use the search snippets and review data provided to fill real info. Be thorough.`
         }, {
           role: 'user',
-          content: `Find unhappy customers from these ${city} competitors. Use review data:\n${JSON.stringify(competitors.slice(0, 10))}`
+          content: `Deep analyze these ${city} auto repair competitors:\n${JSON.stringify(competitors.slice(0, 10))}`
         }],
-        temperature: 0.3,
-        max_tokens: 4000
+        temperature: 0.3, max_tokens: 4000
       })
     }, 45000)
     const data = await res.json()
@@ -86,28 +110,37 @@ export async function POST(req: NextRequest) {
   try {
     const { city = 'Houston TX' } = await req.json()
     const db = getServiceClient()
-    const queries = ['auto repair shop', 'mechanic shop', 'car service center', 'oil change shop']
+
+    const queries = ['auto repair shop', 'mechanic shop', 'car service center', 'oil change shop', 'brake shop', 'transmission repair']
     const shuffled = queries.sort(() => Math.random() - 0.5).slice(0, 3)
 
     const results = await Promise.all(shuffled.map(q => searchSerperPlaces(`${q} ${city}`)))
-    let topComps = results.flat()
-    const seen = new Set()
-    topComps = topComps.filter(c => { if (seen.has(c.name)) return false; seen.add(c.name); return true })
-      .filter(c => c.rating && c.rating < 4.5).slice(0, 6)
+    let allComps = results.flat()
+    const seen = new Set<string>()
+    allComps = allComps.filter(c => {
+      const k = c.name?.toLowerCase()
+      if (!k || seen.has(k) || k.includes('alpha international')) return false
+      seen.add(k); return true
+    }).slice(0, 8)
 
-    const researched = await Promise.all(topComps.map(c => deepResearchCompetitor(c)))
-    const leads = await aiDeepAnalyze(researched, city)
+    const researched = await Promise.all(allComps.slice(0, 6).map(c => deepResearchCompetitor(c)))
+    const leads = await aiAnalyzeCompetitors(researched, city)
+    const sorted = (leads || []).sort((a: any, b: any) => (b.fleet_score || 0) - (a.fleet_score || 0)).slice(0, 15)
 
-    if (leads.length > 0) {
-      const rows = leads.map((l: any) => ({
-        name: l.name || l.competitor_name || 'Unknown',
-        phone: l.phone || null, email: l.email || null,
-        service_needed: l.service_needed || 'Auto repair',
-        source: 'ai-competitor-scan', status: 'new',
+    if (sorted.length > 0) {
+      const rows = sorted.map((l: any) => ({
+        name: l.name || 'Unknown Competitor',
+        phone: l.phone || null,
+        email: l.email || null,
+        service_needed: 'Competitor - ' + (l.pain_points?.split(',')[0] || 'Auto repair'),
+        source: 'ai-competitor-scan',
+        status: 'new',
         business_type: 'auto repair competitor',
         confidence: l.confidence || 'medium',
-        owner_name: l.owner_name || null, owner_title: l.owner_title || null,
-        address: l.address || null, city: l.city || 'Houston',
+        owner_name: l.owner_name || null,
+        owner_title: l.owner_title || null,
+        address: l.address || null,
+        city: l.city || 'Houston',
         website: l.website || null,
         google_rating: l.google_rating || null,
         google_reviews_count: l.google_reviews_count || null,
@@ -117,9 +150,13 @@ export async function POST(req: NextRequest) {
         industry: l.industry || 'auto repair',
         service_area: l.service_area || null,
         pain_points: l.pain_points || null,
-        deep_research: { review_snippet: l.review_snippet, competitor_name: l.competitor_name,
-          fleet_score: l.fleet_score, outreach_pitch: l.outreach_pitch,
-          suggested_message: l.suggested_message, annual_value_estimate: l.annual_value_estimate },
+        deep_research: {
+          review_snippet: l.review_snippet,
+          fleet_score: l.fleet_score,
+          outreach_pitch: l.outreach_pitch,
+          best_services: l.best_services,
+          annual_value_estimate: l.annual_value_estimate
+        },
         research_completed_at: new Date().toISOString(),
         notes: JSON.stringify(l),
         follow_up_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
@@ -130,12 +167,11 @@ export async function POST(req: NextRequest) {
 
     await db.from('growth_activity').insert({
       action: 'ai_competitor_scan', target: city,
-      details: `Deep research: ${leads.length} unhappy customers from ${topComps.length} competitors`,
+      details: `Deep research: ${sorted.length} competitors from ${allComps.length} shops`,
       status: 'complete', created_at: new Date().toISOString()
     })
 
-    return NextResponse.json({ success: true, total_competitors: topComps.length,
-      total_leads: leads.length, leads })
+    return NextResponse.json({ success: true, total_competitors: allComps.length, total_leads: sorted.length, leads: sorted })
   } catch (e) {
     console.error('AI competitor leads error:', e)
     return NextResponse.json({ error: 'Failed' }, { status: 500 })
