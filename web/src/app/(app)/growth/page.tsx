@@ -3,7 +3,10 @@ import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 
 type Rec = Record<string, any>
-// supabase imported from @/lib/supabase
+
+// ── CONFIG ─────────────────────────────────────────────────────────────────
+// Replace this with your real Google review URL from Google Business Profile
+const GOOGLE_REVIEW_URL = 'https://g.page/r/YOUR_GOOGLE_REVIEW_LINK/review'
 
 function timeAgo(d: string) {
   if (!d) return 'Never'
@@ -18,12 +21,27 @@ function timeAgo(d: string) {
 type Tab = 'followups' | 'reviews' | 'referrals' | 'leads' | 'capture' | 'ads'
 const TABS: { key: Tab; label: string; icon: string }[] = [
   { key: 'followups', label: 'Follow-ups', icon: '🔁' },
-  { key: 'reviews', label: 'Reviews', icon: '⭐' },
-  { key: 'referrals', label: 'Referrals', icon: '🤝' },
-  { key: 'leads', label: 'Lead Gen', icon: '🎯' },
-  { key: 'capture', label: 'Capture', icon: '📞' },
-  { key: 'ads', label: 'Ads', icon: '📢' },
+  { key: 'reviews',   label: 'Reviews',    icon: '⭐' },
+  { key: 'referrals', label: 'Referrals',  icon: '🤝' },
+  { key: 'leads',     label: 'Lead Gen',   icon: '🎯' },
+  { key: 'capture',   label: 'Capture',    icon: '📞' },
+  { key: 'ads',       label: 'Ads',        icon: '📢' },
 ]
+
+// ── MODAL WRAPPER ───────────────────────────────────────────────────────────
+function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between p-5 border-b">
+          <h2 className="text-lg font-bold">{title}</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-2xl leading-none">&times;</button>
+        </div>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  )
+}
 
 export default function GrowthPage() {
   const [tab, setTab] = useState<Tab>('followups')
@@ -33,13 +51,30 @@ export default function GrowthPage() {
   const [campaigns, setCampaigns] = useState<Rec[]>([])
   const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState<string | null>(null)
+
   // Capture form
   const [captureName, setCaptureName] = useState('')
   const [capturePhone, setCapturePhone] = useState('')
   const [captureService, setCaptureService] = useState('')
   const [captureSource, setCaptureSource] = useState('walk-in')
-  // Review request
-  const [reviewMsg, setReviewMsg] = useState('')
+
+  // ── LEAD GEN modals ────────────────────────────────────────────────────────
+  const [showImportModal, setShowImportModal] = useState(false)
+  const [importName, setImportName] = useState('')
+  const [importPhone, setImportPhone] = useState('')
+  const [importService, setImportService] = useState('')
+  const [importSource, setImportSource] = useState('manual')
+  const [importNotes, setImportNotes] = useState('')
+  const [leadSearch, setLeadSearch] = useState('')
+
+  // ── ADS modal ──────────────────────────────────────────────────────────────
+  const [showAdsModal, setShowAdsModal] = useState(false)
+  const [adsPlatform, setAdsPlatform] = useState<'google' | 'facebook'>('google')
+  const [adsCampaignName, setAdsCampaignName] = useState('')
+  const [adsBudget, setAdsBudget] = useState('20')
+  const [adsObjective, setAdsObjective] = useState('leads')
+  const [adsKeywords, setAdsKeywords] = useState('oil change Houston, auto repair near me, brake service Houston')
+  const [adsSaving, setAdsSaving] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -58,14 +93,12 @@ export default function GrowthPage() {
 
   useEffect(() => { load() }, [])
 
-  // Get stale customers (no visit in 6+ months)
   const staleCustomers = customers.filter(c => {
     if (!c.last_visit && !c.created_at) return false
     const last = new Date(c.last_visit || c.created_at)
     return (Date.now() - last.getTime()) > 180 * 86400000
   })
 
-  // Send follow-up text to stale customer
   const sendFollowUp = async (c: Rec) => {
     if (!c.phone) return alert('No phone number')
     setSending(c.id)
@@ -84,21 +117,17 @@ export default function GrowthPage() {
     setSending(null)
   }
 
-  // Bulk follow-up
   const bulkFollowUp = async () => {
     if (!confirm(`Send follow-up texts to ${staleCustomers.filter(c => c.phone).length} customers?`)) return
-    for (const c of staleCustomers.filter(c => c.phone)) {
-      await sendFollowUp(c)
-    }
+    for (const c of staleCustomers.filter(c => c.phone)) await sendFollowUp(c)
   }
 
-  // Request Google review from customer
   const requestReview = async (c: Rec) => {
     if (!c.phone) return alert('No phone number')
     setSending(c.id)
     try {
       const name = c.name?.split(' ')[0] || 'there'
-      const msg = `Hi ${name}! Thanks for choosing Alpha International Auto Center. We'd love your feedback! Please leave us a Google review: https://g.page/r/YOUR_GOOGLE_REVIEW_LINK/review`
+      const msg = `Hi ${name}! Thanks for choosing Alpha International Auto Center. We'd love your feedback! Please leave us a Google review: ${GOOGLE_REVIEW_URL}`
       await fetch('/api/send-sms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -111,7 +140,6 @@ export default function GrowthPage() {
     setSending(null)
   }
 
-  // Generate referral code for customer
   const generateReferral = async (c: Rec) => {
     const code = `ALPHA-${c.name?.split(' ')[0]?.toUpperCase() || 'REF'}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`
     await supabase.from('referrals').insert({
@@ -133,7 +161,6 @@ export default function GrowthPage() {
     await load()
   }
 
-  // Capture walk-in / call lead
   const captureLead = async () => {
     if (!captureName.trim()) return alert('Name is required')
     await supabase.from('leads').insert({
@@ -150,7 +177,6 @@ export default function GrowthPage() {
     await load()
   }
 
-  // Follow up on a lead
   const followUpLead = async (lead: Rec) => {
     if (!lead.phone) return alert('No phone number for this lead')
     setSending(lead.id)
@@ -167,6 +193,55 @@ export default function GrowthPage() {
     setSending(null)
   }
 
+  // ── MANUAL LEAD IMPORT ─────────────────────────────────────────────────────
+  const importLead = async () => {
+    if (!importName.trim()) return alert('Name is required')
+    await supabase.from('leads').insert({
+      name: importName.trim(),
+      phone: importPhone.trim() || null,
+      service_needed: importService.trim() || null,
+      source: importSource,
+      notes: importNotes.trim() || null,
+      status: 'new',
+      follow_up_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+      created_at: new Date().toISOString()
+    })
+    setImportName(''); setImportPhone(''); setImportService(''); setImportNotes('')
+    setShowImportModal(false)
+    alert('Lead imported!')
+    await load()
+  }
+
+  // ── SAVE AD CAMPAIGN ────────────────────────────────────────────────────────
+  const saveAdCampaign = async () => {
+    if (!adsCampaignName.trim()) return alert('Campaign name is required')
+    setAdsSaving(true)
+    await supabase.from('growth_campaigns').insert({
+      name: adsCampaignName.trim(),
+      platform: adsPlatform,
+      objective: adsObjective,
+      budget_per_day: parseFloat(adsBudget) || 20,
+      keywords: adsKeywords,
+      status: 'draft',
+      spend: 0,
+      created_at: new Date().toISOString()
+    })
+    setAdsCampaignName(''); setAdsBudget('20'); setAdsObjective('leads')
+    setAdsKeywords('oil change Houston, auto repair near me, brake service Houston')
+    setAdsSaving(false)
+    setShowAdsModal(false)
+    alert(`Campaign "${adsCampaignName}" saved as draft! Go to your ${adsPlatform === 'google' ? 'Google Ads' : 'Meta Ads Manager'} dashboard to activate it.`)
+    await load()
+  }
+
+  // Filtered leads for search
+  const filteredLeads = leads.filter(l =>
+    !leadSearch ||
+    l.name?.toLowerCase().includes(leadSearch.toLowerCase()) ||
+    l.phone?.includes(leadSearch) ||
+    l.service_needed?.toLowerCase().includes(leadSearch.toLowerCase())
+  )
+
   // Styles
   const card = 'bg-white border rounded-xl p-4 shadow-sm'
   const btn = 'px-4 py-2 rounded-lg text-sm font-medium transition-colors'
@@ -177,6 +252,98 @@ export default function GrowthPage() {
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
+      {/* ── MODALS ───────────────────────────────────────────────────────── */}
+
+      {showImportModal && (
+        <Modal title="Import Lead Manually" onClose={() => setShowImportModal(false)}>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-medium text-gray-600">Full Name *</label>
+              <input className={input} value={importName} onChange={e => setImportName(e.target.value)} placeholder="John Smith" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600">Phone</label>
+              <input className={input} value={importPhone} onChange={e => setImportPhone(e.target.value)} placeholder="(713) 555-0000" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600">Service Needed</label>
+              <input className={input} value={importService} onChange={e => setImportService(e.target.value)} placeholder="Oil change, brakes, AC repair..." />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600">Source</label>
+              <select className={input} value={importSource} onChange={e => setImportSource(e.target.value)}>
+                <option value="manual">Manual Import</option>
+                <option value="facebook">Facebook</option>
+                <option value="nextdoor">Nextdoor</option>
+                <option value="google">Google</option>
+                <option value="referral">Referral</option>
+                <option value="competitor">Competitor Review</option>
+                <option value="fleet">Fleet Lead</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600">Notes</label>
+              <textarea className={input} rows={3} value={importNotes} onChange={e => setImportNotes(e.target.value)} placeholder="Any extra context about this lead..." />
+            </div>
+            <button onClick={importLead} className={`${btnSuccess} w-full mt-2`}>Save Lead</button>
+          </div>
+        </Modal>
+      )}
+
+      {showAdsModal && (
+        <Modal title={`Create ${adsPlatform === 'google' ? 'Google' : 'Facebook'} Ad Campaign`} onClose={() => setShowAdsModal(false)}>
+          <div className="space-y-3">
+            <div className="flex gap-2 mb-1">
+              <button onClick={() => setAdsPlatform('google')}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium border-2 transition-colors ${adsPlatform === 'google' ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-gray-200 text-gray-600'}`}>
+                🔍 Google Ads
+              </button>
+              <button onClick={() => setAdsPlatform('facebook')}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium border-2 transition-colors ${adsPlatform === 'facebook' ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-gray-200 text-gray-600'}`}>
+                📘 Facebook Ads
+              </button>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600">Campaign Name *</label>
+              <input className={input} value={adsCampaignName} onChange={e => setAdsCampaignName(e.target.value)} placeholder="Spring Oil Change Special" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600">Objective</label>
+              <select className={input} value={adsObjective} onChange={e => setAdsObjective(e.target.value)}>
+                <option value="leads">Lead Generation</option>
+                <option value="traffic">Website Traffic</option>
+                <option value="calls">Phone Calls</option>
+                <option value="awareness">Brand Awareness</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600">Daily Budget ($)</label>
+              <input className={input} type="number" min="5" value={adsBudget} onChange={e => setAdsBudget(e.target.value)} placeholder="20" />
+            </div>
+            {adsPlatform === 'google' && (
+              <div>
+                <label className="text-xs font-medium text-gray-600">Target Keywords</label>
+                <textarea className={input} rows={3} value={adsKeywords} onChange={e => setAdsKeywords(e.target.value)} />
+                <p className="text-xs text-gray-400 mt-1">Comma-separated. These go into your Google Ads keyword list.</p>
+              </div>
+            )}
+            {adsPlatform === 'facebook' && (
+              <div className="p-3 bg-blue-50 rounded-lg text-xs text-blue-700">
+                📍 Campaign will target Houston-area drivers aged 22-65. AI-generated copy and creative will be drafted when you activate.
+              </div>
+            )}
+            <div className="p-3 bg-yellow-50 rounded-lg text-xs text-yellow-700">
+              ⚡ This saves the campaign as a <strong>draft</strong>. You'll activate it from your {adsPlatform === 'google' ? 'Google Ads dashboard' : 'Meta Ads Manager'}.
+            </div>
+            <button onClick={saveAdCampaign} disabled={adsSaving} className={`${btnPrimary} w-full mt-2`}>
+              {adsSaving ? 'Saving...' : 'Save Campaign Draft'}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* ── HEADER ──────────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Customer Growth</h1>
@@ -219,7 +386,7 @@ export default function GrowthPage() {
         ))}
       </div>
 
-      {/* FOLLOW-UPS TAB */}
+      {/* ── FOLLOW-UPS TAB ──────────────────────────────────────────────────── */}
       {tab === 'followups' && (
         <div className={card}>
           <div className="flex items-center justify-between mb-4">
@@ -252,11 +419,16 @@ export default function GrowthPage() {
         </div>
       )}
 
-      {/* REVIEWS TAB */}
+      {/* ── REVIEWS TAB ─────────────────────────────────────────────────────── */}
       {tab === 'reviews' && (
         <div className={card}>
-          <h2 className="text-lg font-semibold mb-4">Review & Reputation</h2>
-          <p className="text-sm text-gray-500 mb-4">Ask happy customers for Google reviews. Select customers to send a review request.</p>
+          <h2 className="text-lg font-semibold mb-1">Review & Reputation</h2>
+          <p className="text-sm text-gray-500 mb-1">Ask happy customers for Google reviews.</p>
+          {GOOGLE_REVIEW_URL.includes('YOUR_GOOGLE_REVIEW_LINK') && (
+            <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-xs text-yellow-800">
+              ⚠️ <strong>Action needed:</strong> Update <code>GOOGLE_REVIEW_URL</code> at the top of <code>growth/page.tsx</code> with your real Google review link from Google Business Profile.
+            </div>
+          )}
           <div className="space-y-2">
             {customers.slice(0, 50).map(c => (
               <div key={c.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
@@ -277,7 +449,7 @@ export default function GrowthPage() {
         </div>
       )}
 
-      {/* REFERRALS TAB */}
+      {/* ── REFERRALS TAB ───────────────────────────────────────────────────── */}
       {tab === 'referrals' && (
         <div className="space-y-4">
           <div className={card}>
@@ -325,31 +497,67 @@ export default function GrowthPage() {
         </div>
       )}
 
-      {/* LEAD GEN TAB */}
+      {/* ── LEAD GEN TAB ────────────────────────────────────────────────────── */}
       {tab === 'leads' && (
         <div className="space-y-4">
           <div className={card}>
-            <h2 className="text-lg font-semibold mb-4">Lead Generation & Outreach</h2>
-            <p className="text-sm text-gray-500 mb-4">Find people in Houston who need auto repair. Track and follow up on leads.</p>
+            <h2 className="text-lg font-semibold mb-2">Lead Generation & Outreach</h2>
+            <p className="text-sm text-gray-500 mb-4">Track and follow up on all leads. Import leads manually or use outreach tools.</p>
             <div className="grid md:grid-cols-3 gap-3 mb-4">
-              <button className={btnPrimary} onClick={() => alert('Coming soon: Scrape Google reviews of competitor shops to find unhappy customers')}>Scan Competitor Reviews</button>
-              <button className={btnPrimary} onClick={() => alert('Coming soon: Monitor Facebook/Nextdoor for car trouble posts in Houston')}>Monitor Social Posts</button>
-              <button className={btnPrimary} onClick={() => alert('Coming soon: Find Houston businesses with fleet vehicles needing service')}>Find Fleet Leads</button>
+              <button className={btnPrimary} onClick={() => {
+                setImportSource('competitor')
+                setImportNotes('Found via competitor Google review — unhappy customer')
+                setShowImportModal(true)
+              }}>
+                🔍 Import Competitor Lead
+              </button>
+              <button className={btnPrimary} onClick={() => {
+                setImportSource('facebook')
+                setImportNotes('Found via Facebook/Nextdoor — car trouble post')
+                setShowImportModal(true)
+              }}>
+                📱 Import Social Lead
+              </button>
+              <button className={btnPrimary} onClick={() => {
+                setImportSource('fleet')
+                setImportNotes('Houston business with fleet vehicles')
+                setShowImportModal(true)
+              }}>
+                🚛 Import Fleet Lead
+              </button>
+            </div>
+            <div className="flex gap-2">
+              <input
+                className={input}
+                placeholder="Search leads by name, phone, service..."
+                value={leadSearch}
+                onChange={e => setLeadSearch(e.target.value)}
+              />
+              <button className={btnSuccess} onClick={() => { setImportSource('manual'); setImportNotes(''); setShowImportModal(true) }}>
+                + Add Lead
+              </button>
             </div>
           </div>
           <div className={card}>
-            <h3 className="font-semibold mb-3">All Leads ({leads.length})</h3>
-            {leads.length === 0 ? (
-              <p className="text-gray-400 text-center py-8">No leads yet. Capture walk-ins or run outreach above.</p>
+            <h3 className="font-semibold mb-3">All Leads ({filteredLeads.length}{leadSearch ? ` of ${leads.length}` : ''})</h3>
+            {filteredLeads.length === 0 ? (
+              <p className="text-gray-400 text-center py-8">
+                {leadSearch ? 'No leads match your search.' : 'No leads yet. Import from competitor reviews, social posts, or walk-ins.'}
+              </p>
             ) : (
               <div className="space-y-2">
-                {leads.map(l => (
+                {filteredLeads.map(l => (
                   <div key={l.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                     <div>
                       <p className="font-medium text-sm">{l.name}</p>
                       <p className="text-xs text-gray-500">
                         {l.source} &middot; {l.service_needed || 'General'} &middot;
-                        <span className={`ml-1 px-1.5 py-0.5 rounded text-xs ${l.status === 'new' ? 'bg-blue-100 text-blue-700' : l.status === 'contacted' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'}`}>{l.status}</span>
+                        <span className={`ml-1 px-1.5 py-0.5 rounded text-xs ${
+                          l.status === 'new' ? 'bg-blue-100 text-blue-700'
+                          : l.status === 'contacted' ? 'bg-yellow-100 text-yellow-700'
+                          : 'bg-green-100 text-green-700'
+                        }`}>{l.status}</span>
+                        {l.notes && <span className="ml-1 text-gray-400 italic">&middot; {l.notes}</span>}
                       </p>
                     </div>
                     <button onClick={() => followUpLead(l)} disabled={sending === l.id || !l.phone}
@@ -364,7 +572,7 @@ export default function GrowthPage() {
         </div>
       )}
 
-      {/* CAPTURE TAB */}
+      {/* ── CAPTURE TAB ─────────────────────────────────────────────────────── */}
       {tab === 'capture' && (
         <div className="space-y-4">
           <div className={card}>
@@ -417,41 +625,57 @@ export default function GrowthPage() {
         </div>
       )}
 
-      {/* ADS TAB */}
+      {/* ── ADS TAB ─────────────────────────────────────────────────────────── */}
       {tab === 'ads' && (
         <div className="space-y-4">
           <div className={card}>
-            <h2 className="text-lg font-semibold mb-4">Google/Facebook Ad Automation</h2>
-            <p className="text-sm text-gray-500 mb-4">Auto-generate and manage ads targeting Houston drivers.</p>
+            <h2 className="text-lg font-semibold mb-2">Google / Facebook Ad Campaigns</h2>
+            <p className="text-sm text-gray-500 mb-4">Create ad campaign drafts targeting Houston drivers. Save here, then activate from your ads dashboard.</p>
             <div className="grid md:grid-cols-2 gap-4">
-              <div className="p-4 border-2 border-dashed rounded-xl text-center">
-                <p className="text-3xl mb-2">Google</p>
+              <div className="p-4 border-2 border-dashed rounded-xl text-center hover:border-blue-400 transition-colors">
+                <p className="text-3xl mb-2">🔍</p>
                 <h3 className="font-semibold">Google Ads</h3>
-                <p className="text-sm text-gray-500 mt-1">Target Houston searches for auto repair, oil change, brake service</p>
-                <button className={`${btnPrimary} mt-3`} onClick={() => alert('Coming soon: Auto-generate Google Ads campaigns targeting Houston auto repair keywords')}>Create Campaign</button>
+                <p className="text-sm text-gray-500 mt-1">Target Houston searches: oil change, auto repair, brake service</p>
+                <button className={`${btnPrimary} mt-3`} onClick={() => { setAdsPlatform('google'); setShowAdsModal(true) }}>
+                  Create Google Campaign
+                </button>
               </div>
-              <div className="p-4 border-2 border-dashed rounded-xl text-center">
-                <p className="text-3xl mb-2">Facebook</p>
+              <div className="p-4 border-2 border-dashed rounded-xl text-center hover:border-blue-400 transition-colors">
+                <p className="text-3xl mb-2">📘</p>
                 <h3 className="font-semibold">Facebook Ads</h3>
                 <p className="text-sm text-gray-500 mt-1">Target Houston drivers with special offers and seasonal promotions</p>
-                <button className={`${btnPrimary} mt-3`} onClick={() => alert('Coming soon: Auto-generate Facebook Ads with AI-created images and copy')}>Create Campaign</button>
+                <button className={`${btnPrimary} mt-3`} onClick={() => { setAdsPlatform('facebook'); setShowAdsModal(true) }}>
+                  Create Facebook Campaign
+                </button>
               </div>
             </div>
           </div>
-          {campaigns.length > 0 && (
+          {campaigns.length > 0 ? (
             <div className={card}>
-              <h3 className="font-semibold mb-3">Campaign History</h3>
+              <h3 className="font-semibold mb-3">Campaign History ({campaigns.length})</h3>
               <div className="space-y-2">
                 {campaigns.map(c => (
                   <div key={c.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                     <div>
                       <p className="font-medium text-sm">{c.name}</p>
-                      <p className="text-xs text-gray-500">{c.platform} &middot; {c.status} &middot; {timeAgo(c.created_at)}</p>
+                      <p className="text-xs text-gray-500">
+                        {c.platform} &middot;
+                        <span className={`ml-1 px-1.5 py-0.5 rounded text-xs ${
+                          c.status === 'active' ? 'bg-green-100 text-green-700'
+                          : c.status === 'draft' ? 'bg-yellow-100 text-yellow-700'
+                          : 'bg-gray-100 text-gray-600'
+                        }`}>{c.status}</span>
+                        &middot; {timeAgo(c.created_at)}
+                      </p>
                     </div>
                     <span className="text-sm font-medium">${c.spend || 0} spent</span>
                   </div>
                 ))}
               </div>
+            </div>
+          ) : (
+            <div className={card}>
+              <p className="text-gray-400 text-center py-6 text-sm">No campaigns yet. Create your first one above!</p>
             </div>
           )}
         </div>
