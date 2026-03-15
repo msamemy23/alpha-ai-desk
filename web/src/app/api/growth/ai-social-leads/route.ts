@@ -1,44 +1,43 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
 
-const GOOGLE_API_KEY = process.env.GOOGLE_PLACES_API_KEY || process.env.NEXT_PUBLIC_GOOGLE_API_KEY || ''
-const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID || ''
-const OPENAI_KEY = process.env.OPENAI_API_KEY || ''
+const SERPER_KEY = process.env.SERPER_API_KEY || ''
+const AI_KEY = process.env.OPENROUTER_API_KEY || ''
+const AI_URL = 'https://openrouter.ai/api/v1/chat/completions'
+const AI_MODEL = process.env.AI_MODEL || 'google/gemini-2.0-flash-001'
 
-async function searchGoogle(query: string) {
+async function searchSerper(query: string) {
+  if (!SERPER_KEY) return []
   try {
-    if (GOOGLE_API_KEY && GOOGLE_CSE_ID) {
-      const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${GOOGLE_CSE_ID}&q=${encodeURIComponent(query)}&num=10`
-      const res = await fetch(url)
-      const data = await res.json()
-      return (data.items || []).map((item: any) => ({
-        title: item.title,
-        snippet: item.snippet,
-        url: item.link,
-        source: new URL(item.link).hostname
-      }))
-    }
-    return []
+    const res = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: { 'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: query, num: 10 })
+    })
+    const data = await res.json()
+    return (data.organic || []).map((r: any) => ({
+      title: r.title, snippet: r.snippet, url: r.link,
+      source: r.link ? new URL(r.link).hostname : 'unknown'
+    }))
   } catch { return [] }
 }
 
 async function aiAnalyzeSocialPosts(posts: any[], city: string) {
-  if (!OPENAI_KEY) return []
+  if (!AI_KEY) return []
   try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    const res = await fetch(AI_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_KEY}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AI_KEY}` },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: AI_MODEL,
         messages: [{
           role: 'system',
-          content: `You are a lead generation AI for Alpha International Auto Center in Houston TX. Analyze social media search results and extract potential leads - people who need auto repair services. For each lead found, return JSON array: [{ "name": "", "platform": "", "post_snippet": "", "service_needed": "", "urgency": "high|medium|low", "likely_phone": "", "social_profile": "", "suggested_message": "", "confidence": "high|medium|low", "how_to_find": "" }]. The suggested_message should be friendly and offer help. how_to_find should explain steps to locate their contact info (e.g. check their Facebook profile, search Whitepages for their name + Houston). Return up to 10 leads.`
+          content: `You are a lead generation AI for Alpha International Auto Center in Houston TX. Analyze social media search results and extract potential leads - people who need auto repair services. For each lead found, return JSON array: [{ "name": "", "platform": "", "post_snippet": "", "service_needed": "", "urgency": "high|medium|low", "likely_phone": "", "social_profile": "", "suggested_message": "", "confidence": "high|medium|low", "how_to_find": "" }]. The suggested_message should be friendly and offer help. how_to_find should explain steps to locate their contact info. Return up to 10 leads.`
         }, {
           role: 'user',
           content: `Analyze these social media search results from ${city} area and find people who need auto repair. Extract their info and suggest outreach:\n\n${JSON.stringify(posts.slice(0, 15))}`
         }],
-        temperature: 0.3,
-        max_tokens: 2000
+        temperature: 0.3, max_tokens: 2000
       })
     })
     const data = await res.json()
@@ -53,7 +52,6 @@ export async function POST(req: NextRequest) {
     const { city = 'Houston TX' } = await req.json()
     const db = getServiceClient()
 
-    // Step 1: Search for people asking for auto repair help on social media
     const queries = [
       `"need a mechanic" ${city} site:facebook.com OR site:reddit.com OR site:nextdoor.com`,
       `"looking for auto repair" ${city} site:facebook.com OR site:reddit.com`,
@@ -64,11 +62,10 @@ export async function POST(req: NextRequest) {
 
     let allResults: any[] = []
     for (const query of queries) {
-      const results = await searchGoogle(query)
+      const results = await searchSerper(query)
       allResults = [...allResults, ...results]
     }
 
-    // Remove duplicates by URL
     const seen = new Set()
     allResults = allResults.filter(r => {
       if (seen.has(r.url)) return false
@@ -76,10 +73,8 @@ export async function POST(req: NextRequest) {
       return true
     })
 
-    // Step 2: AI analyzes results and extracts leads
     const leads = await aiAnalyzeSocialPosts(allResults, city)
 
-    // Step 3: Save leads to database
     for (const lead of leads) {
       await db.from('leads').insert({
         name: lead.name || 'Social Lead',
@@ -102,19 +97,14 @@ export async function POST(req: NextRequest) {
     }
 
     await db.from('growth_activity').insert({
-      action: 'ai_social_scan',
-      target: city,
+      action: 'ai_social_scan', target: city,
       details: `Found ${leads.length} social media leads from ${allResults.length} posts`,
-      status: 'complete',
-      created_at: new Date().toISOString()
+      status: 'complete', created_at: new Date().toISOString()
     })
 
     return NextResponse.json({
-      success: true,
-      total_posts_scanned: allResults.length,
-      total_leads: leads.length,
-      leads,
-      raw_results_count: allResults.length
+      success: true, total_posts_scanned: allResults.length,
+      total_leads: leads.length, leads
     })
   } catch (e) {
     console.error('AI social leads error:', e)

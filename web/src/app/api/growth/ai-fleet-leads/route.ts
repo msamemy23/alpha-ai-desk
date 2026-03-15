@@ -1,35 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
 
-const GOOGLE_API_KEY = process.env.GOOGLE_PLACES_API_KEY || process.env.NEXT_PUBLIC_GOOGLE_API_KEY || ''
-const OPENAI_KEY = process.env.OPENAI_API_KEY || ''
+const SERPER_KEY = process.env.SERPER_API_KEY || ''
+const AI_KEY = process.env.OPENROUTER_API_KEY || ''
+const AI_URL = 'https://openrouter.ai/api/v1/chat/completions'
+const AI_MODEL = process.env.AI_MODEL || 'google/gemini-2.0-flash-001'
 
-async function searchGooglePlaces(query: string, location: string) {
+async function searchSerperPlaces(query: string) {
+  if (!SERPER_KEY) return []
   try {
-    const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query + ' ' + location)}&key=${GOOGLE_API_KEY}`
-    const res = await fetch(url)
+    const res = await fetch('https://google.serper.dev/places', {
+      method: 'POST',
+      headers: { 'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: query, num: 10 })
+    })
     const data = await res.json()
-    return data.results || []
+    return (data.places || []).map((p: any) => ({
+      name: p.title, address: p.address, phone: p.phoneNumber || null,
+      rating: p.rating, reviews: p.reviews, website: p.website || null,
+      category: p.category || ''
+    }))
   } catch { return [] }
 }
 
-async function getPlaceDetails(placeId: string) {
-  try {
-    const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_phone_number,website,formatted_address,types,business_status,opening_hours&key=${GOOGLE_API_KEY}`
-    const res = await fetch(url)
-    const data = await res.json()
-    return data.result || {}
-  } catch { return {} }
-}
-
 async function aiAnalyzeFleetBusinesses(businesses: any[], city: string) {
-  if (!OPENAI_KEY) return businesses.map(b => ({ ...b, fleet_score: 5, estimated_vehicles: 'Unknown', outreach_pitch: 'Contact for fleet services' }))
+  if (!AI_KEY) return businesses.map(b => ({ ...b, fleet_score: 5, estimated_vehicles: 'Unknown', outreach_pitch: 'Contact for fleet services' }))
   try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    const res = await fetch(AI_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_KEY}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AI_KEY}` },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: AI_MODEL,
         messages: [{
           role: 'system',
           content: `You are a fleet sales AI for Alpha International Auto Center in Houston TX. Analyze these local businesses and estimate their fleet size, vehicle types, and create a personalized outreach pitch. Return JSON array: [{ "name": "", "phone": "", "address": "", "website": "", "business_type": "", "estimated_vehicles": "", "vehicle_types": "", "fleet_score": 1-10, "decision_maker_title": "", "outreach_pitch": "", "best_services": [], "annual_value_estimate": "" }]. fleet_score is 1-10 where 10 = most likely to need fleet auto services. outreach_pitch should be personalized to their business type. best_services are what they'd likely need (oil changes, brake service, fleet inspections, etc).`
@@ -37,8 +38,7 @@ async function aiAnalyzeFleetBusinesses(businesses: any[], city: string) {
           role: 'user',
           content: `Analyze these ${city} businesses for fleet auto service potential:\n\n${JSON.stringify(businesses.slice(0, 20))}`
         }],
-        temperature: 0.3,
-        max_tokens: 2000
+        temperature: 0.3, max_tokens: 2000
       })
     })
     const data = await res.json()
@@ -53,38 +53,18 @@ export async function POST(req: NextRequest) {
     const { city = 'Houston TX' } = await req.json()
     const db = getServiceClient()
 
-    // Step 1: Search for businesses that likely have vehicle fleets
     const fleetQueries = [
-      'plumbing company',
-      'electrical contractor',
-      'HVAC company',
-      'landscaping company',
-      'delivery service',
-      'pest control',
-      'roofing company',
-      'cleaning service',
-      'construction company',
-      'towing company'
+      'plumbing company', 'electrical contractor', 'HVAC company',
+      'landscaping company', 'delivery service', 'pest control',
+      'roofing company', 'cleaning service', 'construction company', 'towing company'
     ]
 
     let allBusinesses: any[] = []
     for (const query of fleetQueries.slice(0, 6)) {
-      const places = await searchGooglePlaces(query, city)
-      for (const place of places.slice(0, 3)) {
-        const details = await getPlaceDetails(place.place_id)
-        allBusinesses.push({
-          name: details.name || place.name,
-          phone: details.formatted_phone_number || null,
-          address: details.formatted_address || place.formatted_address,
-          website: details.website || null,
-          rating: place.rating,
-          business_type: query,
-          place_id: place.place_id
-        })
-      }
+      const places = await searchSerperPlaces(`${query} ${city}`)
+      allBusinesses.push(...places.slice(0, 5).map(p => ({ ...p, business_type: query })))
     }
 
-    // Remove duplicates
     const seen = new Set()
     allBusinesses = allBusinesses.filter(b => {
       const key = b.name + b.address
@@ -93,13 +73,9 @@ export async function POST(req: NextRequest) {
       return true
     })
 
-    // Step 2: AI analyzes and scores fleet potential
     const analyzedLeads = await aiAnalyzeFleetBusinesses(allBusinesses, city)
-
-    // Sort by fleet score (highest first)
     const sortedLeads = analyzedLeads.sort((a: any, b: any) => (b.fleet_score || 0) - (a.fleet_score || 0))
 
-    // Step 3: Save top leads to database
     for (const lead of sortedLeads.slice(0, 15)) {
       await db.from('leads').insert({
         name: lead.name,
@@ -116,8 +92,7 @@ export async function POST(req: NextRequest) {
           outreach_pitch: lead.outreach_pitch,
           best_services: lead.best_services,
           annual_value_estimate: lead.annual_value_estimate,
-          website: lead.website,
-          address: lead.address
+          website: lead.website, address: lead.address
         }),
         follow_up_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
         created_at: new Date().toISOString()
@@ -125,16 +100,13 @@ export async function POST(req: NextRequest) {
     }
 
     await db.from('growth_activity').insert({
-      action: 'ai_fleet_scan',
-      target: city,
+      action: 'ai_fleet_scan', target: city,
       details: `Found ${sortedLeads.length} fleet leads from ${allBusinesses.length} businesses`,
-      status: 'complete',
-      created_at: new Date().toISOString()
+      status: 'complete', created_at: new Date().toISOString()
     })
 
     return NextResponse.json({
-      success: true,
-      total_businesses_scanned: allBusinesses.length,
+      success: true, total_businesses_scanned: allBusinesses.length,
       total_leads: sortedLeads.length,
       leads: sortedLeads.slice(0, 15)
     })

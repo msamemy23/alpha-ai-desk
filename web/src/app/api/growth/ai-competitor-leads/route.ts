@@ -1,139 +1,117 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
 
-const GOOGLE_API_KEY = process.env.GOOGLE_PLACES_API_KEY || process.env.NEXT_PUBLIC_GOOGLE_API_KEY || ''
-const OPENAI_KEY = process.env.OPENAI_API_KEY || ''
+const SERPER_KEY = process.env.SERPER_API_KEY || ''
+const AI_KEY = process.env.OPENROUTER_API_KEY || ''
+const AI_URL = 'https://openrouter.ai/api/v1/chat/completions'
+const AI_MODEL = process.env.AI_MODEL || 'google/gemini-2.0-flash-001'
 
-async function searchGooglePlaces(query: string, location: string) {
+async function searchSerper(query: string) {
+  if (!SERPER_KEY) return []
   try {
-    const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query + ' ' + location)}&key=${GOOGLE_API_KEY}`
-    const res = await fetch(url)
+    const res = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: { 'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: query, num: 10 })
+    })
     const data = await res.json()
-    return data.results || []
+    return (data.organic || []).map((r: any) => ({
+      title: r.title, snippet: r.snippet, url: r.link
+    }))
   } catch { return [] }
 }
 
-async function getPlaceReviews(placeId: string) {
+async function searchSerperPlaces(query: string) {
+  if (!SERPER_KEY) return []
   try {
-    const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,rating,reviews,formatted_phone_number,website,formatted_address&key=${GOOGLE_API_KEY}`
-    const res = await fetch(url)
+    const res = await fetch('https://google.serper.dev/places', {
+      method: 'POST',
+      headers: { 'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: query, num: 10 })
+    })
     const data = await res.json()
-    return data.result || {}
-  } catch { return {} }
+    return (data.places || []).map((p: any) => ({
+      name: p.title, address: p.address, phone: p.phoneNumber || null,
+      rating: p.rating, reviews: p.reviews, website: p.website || null,
+      cid: p.cid || null
+    }))
+  } catch { return [] }
 }
 
-async function investigatePerson(name: string, city: string) {
-  if (!OPENAI_KEY) return { name, phone: null, social: null, email: null, confidence: 'low', notes: 'No AI key configured' }
+async function getCompetitorReviews(shopName: string, city: string) {
+  const results = await searchSerper(`"${shopName}" ${city} reviews bad experience 1 star`)
+  return results.slice(0, 5)
+}
+
+async function aiAnalyzeReviews(competitors: any[], reviewData: any[], city: string) {
+  if (!AI_KEY) return []
   try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    const res = await fetch(AI_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_KEY}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AI_KEY}` },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: AI_MODEL,
         messages: [{
           role: 'system',
-          content: `You are a lead research assistant for an auto repair shop. Given a person's name and city, search your knowledge to find likely contact info. Return JSON only: { "name": "", "likely_phone": "", "likely_email": "", "social_profiles": [], "business_connection": "", "confidence": "high|medium|low", "outreach_angle": "", "notes": "" }. The outreach_angle should be a personalized reason to reach out based on their bad review. If you can't find real info, make reasonable suggestions for how to find them (e.g. search Facebook for name+city, check Whitepages, etc).`
+          content: `You are a lead generation AI for Alpha International Auto Center in Houston TX. Analyze these competitor auto shops and their bad review snippets. Extract names of unhappy customers and create outreach strategies. Return JSON array: [{ "reviewer_name": "", "competitor_name": "", "review_snippet": "", "service_issue": "", "urgency": "high|medium|low", "outreach_angle": "", "suggested_message": "", "how_to_find": "", "confidence": "high|medium|low" }]. suggested_message should be friendly and mention Alpha International. how_to_find should suggest ways to locate their contact info. Return up to 10 leads.`
         }, {
           role: 'user',
-          content: `Research this person who left a bad review at an auto shop competitor in ${city}: Name: ${name}. Find any public contact info, social media profiles, or business connections. Suggest the best way to reach out and offer better service.`
+          content: `Analyze these ${city} competitor shops and their bad reviews. Find unhappy customers we can reach out to:\n\nCompetitors: ${JSON.stringify(competitors.slice(0, 8))}\n\nReview snippets: ${JSON.stringify(reviewData.slice(0, 20))}`
         }],
-        temperature: 0.3,
-        max_tokens: 500
+        temperature: 0.3, max_tokens: 2000
       })
     })
     const data = await res.json()
-    const content = data.choices?.[0]?.message?.content || '{}'
+    const content = data.choices?.[0]?.message?.content || '[]'
     const cleaned = content.replace(/```json?\n?/g, '').replace(/```/g, '').trim()
     return JSON.parse(cleaned)
-  } catch (e) {
-    return { name, phone: null, social: null, confidence: 'low', notes: 'Investigation failed' }
-  }
+  } catch { return [] }
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const { city = 'Houston TX', radius = 15000 } = await req.json()
+    const { city = 'Houston TX' } = await req.json()
     const db = getServiceClient()
 
-    // Step 1: Find competitor auto repair shops
-    const places = await searchGooglePlaces('auto repair shop', city)
-    const competitors = places.slice(0, 8)
+    const competitors = await searchSerperPlaces(`auto repair shop ${city}`)
 
-    // Step 2: Get reviews for each competitor, find unhappy customers
-    const unhappyReviewers: any[] = []
-    for (const place of competitors) {
-      const details = await getPlaceReviews(place.place_id)
-      const reviews = details.reviews || []
-      const badReviews = reviews.filter((r: any) => r.rating <= 3)
-      for (const review of badReviews.slice(0, 3)) {
-        unhappyReviewers.push({
-          reviewer_name: review.author_name,
-          review_text: review.text,
-          review_rating: review.rating,
-          review_time: review.relative_time_description,
-          competitor_name: details.name || place.name,
-          competitor_address: details.formatted_address || place.formatted_address,
-          competitor_rating: details.rating || place.rating,
-          profile_url: review.author_url || null,
-        })
-      }
+    let allReviewData: any[] = []
+    for (const comp of competitors.slice(0, 6)) {
+      const reviews = await getCompetitorReviews(comp.name, city)
+      allReviewData.push(...reviews.map((r: any) => ({ ...r, competitor: comp.name })))
     }
 
-    // Step 3: AI investigates each unhappy reviewer to find contact info
-    const leads: any[] = []
-    for (const reviewer of unhappyReviewers.slice(0, 10)) {
-      const investigation = await investigatePerson(reviewer.reviewer_name, city)
-      leads.push({
-        ...reviewer,
-        investigation,
-        suggested_message: `Hi ${reviewer.reviewer_name.split(' ')[0]}! We noticed you had a rough experience at ${reviewer.competitor_name}. At Alpha International Auto Center, we pride ourselves on honest, quality work. We'd love to earn your trust — mention this message for 15% off your first visit! Call us at (713) 663-6979.`
-      })
-    }
+    const leads = await aiAnalyzeReviews(competitors, allReviewData, city)
 
-    // Step 4: Save leads to database
     for (const lead of leads) {
       await db.from('leads').insert({
-        name: lead.reviewer_name,
-        phone: lead.investigation?.likely_phone || null,
-        service_needed: 'Competitor unhappy customer',
+        name: lead.reviewer_name || 'Competitor Lead',
+        phone: null,
+        service_needed: `Competitor unhappy - ${lead.service_issue || 'General'}`,
         source: 'ai-competitor-scan',
         status: 'new',
         notes: JSON.stringify({
-          review_text: lead.review_text,
-          review_rating: lead.review_rating,
           competitor: lead.competitor_name,
-          investigation: lead.investigation,
+          review_snippet: lead.review_snippet,
+          outreach_angle: lead.outreach_angle,
           suggested_message: lead.suggested_message,
-          profile_url: lead.profile_url
+          how_to_find: lead.how_to_find,
+          confidence: lead.confidence
         }),
-        source_detail: JSON.stringify({ competitor: lead.competitor_name, rating: lead.review_rating }),
         follow_up_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
         created_at: new Date().toISOString()
       })
     }
 
     await db.from('growth_activity').insert({
-      action: 'ai_competitor_scan',
-      target: city,
+      action: 'ai_competitor_scan', target: city,
       details: `Found ${leads.length} unhappy customers from ${competitors.length} competitors`,
-      status: 'complete',
-      created_at: new Date().toISOString()
+      status: 'complete', created_at: new Date().toISOString()
     })
 
     return NextResponse.json({
-      success: true,
-      total_competitors: competitors.length,
-      total_leads: leads.length,
-      leads: leads.map(l => ({
-        name: l.reviewer_name,
-        review_rating: l.review_rating,
-        review_snippet: l.review_text?.slice(0, 120),
-        competitor: l.competitor_name,
-        competitor_address: l.competitor_address,
-        profile_url: l.profile_url,
-        investigation: l.investigation,
-        suggested_message: l.suggested_message
-      }))
+      success: true, total_competitors: competitors.length,
+      total_leads: leads.length, leads
     })
   } catch (e) {
     console.error('AI competitor leads error:', e)
