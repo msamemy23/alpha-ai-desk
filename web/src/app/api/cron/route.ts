@@ -9,11 +9,17 @@ const supabase = createClient(
 )
 
 const CRON_SECRET = process.env.CRON_SECRET || ''
-const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000'
+
+function getBaseUrl(): string {
+  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`
+  return 'https://alpha-ai-desk.vercel.app'
+}
 
 async function callApi(path: string, body?: Record<string, unknown>) {
+  const baseUrl = getBaseUrl()
   try {
-    const res = await fetch(`${BASE_URL}${path}`, {
+    const res = await fetch(`${baseUrl}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: body ? JSON.stringify(body) : '{}',
@@ -25,36 +31,28 @@ async function callApi(path: string, body?: Record<string, unknown>) {
   }
 }
 
-// GET handler for Vercel Cron
 export async function GET(req: NextRequest) {
-  // Verify cron secret if set
   if (CRON_SECRET && req.headers.get('authorization') !== `Bearer ${CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
   const results: Record<string, unknown> = {}
 
-  // 1. Auto-scan competitors for unhappy reviews -> leads
   results.scan_competitors = await callApi('/api/growth/scan-competitors', {
     query: 'auto repair shop Houston TX',
     radius: 15000
   })
 
-  // 2. Auto-scan social media for car trouble posts -> leads  
   results.scan_social = await callApi('/api/growth/scan-social', {})
 
-  // 3. Follow up on pending leads (auto-SMS)
   results.follow_ups = await callApi('/api/growth/capture', {
     action: 'follow_up_pending'
   })
 
-  // 4. Run scheduled automations
   results.automations = await callApi('/api/automations', {})
 
-  // 5. Send review requests to recent customers who haven't been asked
   results.reviews = await callApi('/api/growth/reviews', {})
 
-  // Log the cron run
   await supabase.from('growth_scans').upsert({
     id: 'last_cron_run',
     type: 'cron',
