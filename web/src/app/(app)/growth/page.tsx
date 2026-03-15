@@ -1,9 +1,9 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
+import { supabase } from '@/lib/supabase'
 
 type Rec = Record<string, any>
-const supabase = createClientComponentClient()
+// supabase imported from @/lib/supabase
 
 function timeAgo(d: string) {
   if (!d) return 'Never'
