@@ -14,7 +14,8 @@ export default function VehiclesPage() {
 
   const vehicleMap: Record<string, any> = {}
   customers.forEach(c => {
-    const veh = c.vehicles?.[0] || {}
+    // FIX: Use flat columns instead of c.vehicles?.[0]
+    const veh = { year: c.vehicle_year, make: c.vehicle_make, model: c.vehicle_model, vin: c.vehicle_vin, plate: c.vehicle_plate, mileage: c.vehicle_mileage }
     if (!veh.make && !veh.model) return
     const key = `${veh.vin || ''}_${veh.year || ''}_${veh.make || ''}_${veh.model || ''}`
     vehicleMap[key] = { year: veh.year, make: veh.make, model: veh.model, vin: veh.vin, plate: veh.plate, mileage: veh.mileage, owner: c.name, ownerId: c.id }
@@ -44,38 +45,39 @@ export default function VehiclesPage() {
         </div>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search vehicles..." className="form-input w-full sm:w-64" />
       </div>
-      <div className="card overflow-x-auto">
-        {all.length === 0 ? (
-          <div className="text-center py-16 text-text-muted">
-            <div className="text-4xl mb-3">🚗</div>
-            <h3 className="font-semibold text-text-primary mb-1">{search ? 'No results' : 'No vehicles yet'}</h3>
-            <p className="text-sm">{search ? 'Try a different search' : 'Vehicles appear here when you add customers or jobs with vehicle info'}</p>
-          </div>
-        ) : (
-          <table className="w-full text-sm min-w-[640px]">
+
+      {all.length === 0 ? (
+        <div className="text-center py-16">
+          <div className="text-4xl mb-3">\uD83D\uDE97</div>
+          <h3 className="font-semibold text-text-primary">{search ? 'No results' : 'No vehicles yet'}</h3>
+          <p className="text-text-muted text-sm mt-1">{search ? 'Try a different search' : 'Vehicles appear here when you add customers or jobs with vehicle info'}</p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border">
                 {['Year','Make','Model','VIN','Plate','Mileage','Owner'].map(h => (
-                  <th key={h} className="text-left py-3 px-4 text-text-muted font-medium text-xs uppercase tracking-wide">{h}</th>
+                  <th key={h} className="text-left py-3 px-3 text-text-muted font-medium">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {all.map((v, i) => (
-                <tr key={i} className="border-b border-border hover:bg-bg-card/50 transition-colors">
-                  <td className="py-3 px-4 font-medium">{v.year || '—'}</td>
-                  <td className="py-3 px-4">{v.make || '—'}</td>
-                  <td className="py-3 px-4">{v.model || '—'}</td>
-                  <td className="py-3 px-4 text-xs text-text-muted font-mono">{v.vin || '—'}</td>
-                  <td className="py-3 px-4">{v.plate || '—'}</td>
-                  <td className="py-3 px-4">{v.mileage ? Number(v.mileage).toLocaleString() : '—'}</td>
-                  <td className="py-3 px-4 text-blue font-medium">{v.owner || 'Unknown'}</td>
+                <tr key={i} className="border-b border-border hover:bg-surface-hover">
+                  <td className="py-3 px-3">{v.year || '\u2014'}</td>
+                  <td className="py-3 px-3">{v.make || '\u2014'}</td>
+                  <td className="py-3 px-3">{v.model || '\u2014'}</td>
+                  <td className="py-3 px-3 font-mono text-xs">{v.vin || '\u2014'}</td>
+                  <td className="py-3 px-3">{v.plate || '\u2014'}</td>
+                  <td className="py-3 px-3">{v.mileage ? Number(v.mileage).toLocaleString() : '\u2014'}</td>
+                  <td className="py-3 px-3">{v.owner || 'Unknown'}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   )
 }
