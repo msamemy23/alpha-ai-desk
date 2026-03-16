@@ -16,6 +16,10 @@ function Modal({ title, onClose, children, wide }: { title: string; onClose: () 
 function DeepResearchModal({ title, leads, onClose, onOutreach, sending }: { title: string; leads: any[]; onClose: () => void; onOutreach: (id: string, method: string) => void; sending: string | null }) {
   const [filter, setFilter] = useState({ size: 'all', industry: 'all', sort: 'score' })
   const [search, setSearch] = useState('')
+    const [enriching, setEnriching] = useState<string | null>(null)
+  const [bulkEnriching, setBulkEnriching] = useState(false)
+  const [enrichedCount, setEnrichedCount] = useState(0)
+  const [expandedApollo, setExpandedApollo] = useState<string | null>(null)
   const industries = useMemo(() => Array.from(new Set(leads.map(l => l.industry || l.business_type || 'Unknown').filter(Boolean))), [leads])
   const filtered = useMemo(() => {
     let r = leads.filter(l => {
@@ -32,6 +36,9 @@ function DeepResearchModal({ title, leads, onClose, onOutreach, sending }: { tit
   }, [leads, filter, search])
   const n = (l: any) => { try { return typeof l.notes === 'string' ? JSON.parse(l.notes) : (l.notes || {}) } catch { return {} } }
   const dr = (l: any) => (typeof l.deep_research === 'string' ? JSON.parse(l.deep_research) : l.deep_research) || {}
+    const ap = (l: any) => { try { return typeof l.apollo_data === 'string' ? JSON.parse(l.apollo_data) : (l.apollo_data || null) } catch { return null } }
+  const enrichLead = async (leadId: string) => { setEnriching(leadId); try { const res = await fetch('/api/growth/apollo-enrich', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lead_id: leadId }) }); const data = await res.json(); if (data.success) { setEnrichedCount(c => c + 1); window.location.reload() } } catch {} setEnriching(null) }
+  const enrichAll = async () => { setBulkEnriching(true); setEnrichedCount(0); const ids = filtered.filter(l => !l.apollo_enriched_at).map(l => l.id).filter(Boolean); if (!ids.length) { setBulkEnriching(false); return }; try { const res = await fetch('/api/growth/apollo-enrich', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bulk_lead_ids: ids }) }); const data = await res.json(); if (data.success) { setEnrichedCount(data.enriched || 0); setTimeout(() => window.location.reload(), 1500) } } catch {} setBulkEnriching(false) }
   return (<div className="fixed inset-0 z-50 bg-black/80" onClick={onClose}><div className="h-full w-full flex flex-col bg-[#0f1923]" onClick={e => e.stopPropagation()}>
     <div className="flex items-center justify-between p-4 border-b border-white/10 bg-[#1a2332]">
       <div><h2 className="text-xl font-bold text-white">{title}</h2><p className="text-xs text-gray-400">{filtered.length} of {leads.length} results</p></div>
@@ -40,6 +47,7 @@ function DeepResearchModal({ title, leads, onClose, onOutreach, sending }: { tit
         <select className="bg-[#0f1923] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300" value={filter.industry} onChange={e => setFilter(p => ({...p, industry: e.target.value}))}><option value="all">All Industries</option>{industries.map(i => <option key={i} value={i}>{i}</option>)}</select>
         <select className="bg-[#0f1923] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300" value={filter.size} onChange={e => setFilter(p => ({...p, size: e.target.value}))}><option value="all">All Sizes</option><option value="small">Small (1-10)</option><option value="large">Large (10+)</option></select>
         <select className="bg-[#0f1923] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300" value={filter.sort} onChange={e => setFilter(p => ({...p, sort: e.target.value}))}><option value="score">Sort: Score</option><option value="rating">Sort: Rating</option><option value="name">Sort: Name</option></select>
+              <button onClick={enrichAll} disabled={bulkEnriching} className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${bulkEnriching ? 'bg-yellow-600 text-white animate-pulse' : 'bg-gradient-to-r from-orange-500 to-pink-500 text-white hover:from-orange-400 hover:to-pink-400'}`}>{bulkEnriching ? `Enriching ${enrichedCount}...` : 'Enrich All (Apollo)'}</button>
         <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl ml-2">x</button>
       </div>
     </div>
@@ -72,6 +80,7 @@ function DeepResearchModal({ title, leads, onClose, onOutreach, sending }: { tit
           </div>
           {l.pain_points && <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-2 mb-2 text-xs"><span className="text-red-400 font-semibold">Pain Points:</span> <span className="text-red-300">{l.pain_points}</span></div>}
           {(d.outreach_pitch || nd.outreach_pitch) && <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-2 mb-2 text-xs"><span className="text-blue-400 font-semibold">Pitch:</span> <span className="text-blue-300">{d.outreach_pitch || nd.outreach_pitch}</span></div>}
+                          {(() => { const apollo = ap(l); return apollo ? (<div className="mt-3 p-3 bg-gradient-to-r from-orange-500/10 to-pink-500/10 border border-orange-500/20 rounded-xl"><div className="flex items-center justify-between mb-2"><span className="text-xs font-bold text-orange-400">Apollo Intel ({apollo.people_found} contacts)</span><button onClick={() => setExpandedApollo(expandedApollo === l.id ? null : l.id)} className="text-[10px] text-orange-300 hover:text-white">{expandedApollo === l.id ? 'Collapse' : 'Expand'}</button></div>{expandedApollo === l.id && apollo.contacts?.map((c: any, ci: number) => (<div key={ci} className="p-2 bg-black/20 rounded-lg mb-1.5 text-xs"><div className="flex items-center justify-between"><span className="text-white font-semibold">{c.name}</span><span className="text-orange-300">{c.title}</span></div>{c.email && <p className="text-blue-400 mt-0.5">{c.email}</p>}{c.phone && <p className="text-emerald-400 mt-0.5">{c.phone}</p>}{c.linkedin && <a href={c.linkedin} target="_blank" className="text-purple-400 hover:text-purple-300 mt-0.5 block">LinkedIn Profile</a>}</div>))}</div>) : (<button onClick={() => enrichLead(l.id)} disabled={enriching === l.id} className={`mt-3 w-full py-2 rounded-xl text-xs font-semibold ${enriching === l.id ? 'bg-yellow-600/20 text-yellow-400 animate-pulse' : 'bg-gradient-to-r from-orange-500/20 to-pink-500/20 text-orange-400 hover:from-orange-500/30 hover:to-pink-500/30 border border-orange-500/20'}`}>{enriching === l.id ? 'Enriching via Apollo...' : 'Enrich with Apollo (Find Contacts)'}</button>) })()}
           <div className="flex gap-2 mt-2">
             {l.facebook_url && <a href={l.facebook_url} target="_blank" className="text-[10px] px-2 py-1 rounded bg-blue-500/10 text-blue-400">Facebook</a>}
             {l.linkedin_url && <a href={l.linkedin_url} target="_blank" className="text-[10px] px-2 py-1 rounded bg-blue-500/10 text-blue-400">LinkedIn</a>}
