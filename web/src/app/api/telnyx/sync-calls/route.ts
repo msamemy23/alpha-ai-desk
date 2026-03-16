@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
 
-export const maxDuration = 60
+export const maxDuration = 300
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
@@ -36,22 +36,32 @@ async function syncFromActivities(db: any) {
 async function syncFromRecordings(db: any) {
     if (!TELNYX_API_KEY) return { synced: 0, error: 'No API key' }
     let allRecordings: any[] = []
+    let pageNum = 1
+    let hasMore = true
     let cursor: string | null = null
-    let pages = 0
-    do {
+
+    // Paginate through ALL recordings (up to 100 pages = 25,000 max)
+    while (hasMore && pageNum <= 100) {
         const params = new URLSearchParams({ 'page[size]': '250' })
         if (cursor) params.set('page[after]', cursor)
         const res = await fetch(`${TELNYX_BASE}/recordings?${params}`, {
             headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` },
             cache: 'no-store',
         })
-        if (!res.ok) return { synced: 0, error: `Telnyx API error: ${res.status}` }
+        if (!res.ok) return { synced: 0, error: `Telnyx API error: ${res.status}`, pages_fetched: pageNum - 1, raw_total: allRecordings.length }
         const data = await res.json()
         const pageRecs = data.data || []
         allRecordings.push(...pageRecs)
-        cursor = data.meta?.cursors?.after || null
-        pages++
-    } while (cursor && pages < 10)
+        
+        // Check for next page cursor
+        const nextCursor = data.meta?.cursors?.after || null
+        if (!nextCursor || pageRecs.length < 250) {
+            hasMore = false
+        } else {
+            cursor = nextCursor
+        }
+        pageNum++
+    }
 
     // Deduplicate by call_session_id, keep longest
     const sessionMap: Record<string, any> = {}
@@ -101,6 +111,7 @@ async function syncFromRecordings(db: any) {
             },
         }
     })
+
     let inserted = 0
     for (let i = 0; i < rows.length; i += 100) {
         const batch = rows.slice(i, i + 100)
@@ -108,7 +119,7 @@ async function syncFromRecordings(db: any) {
         if (!error) inserted += batch.length
         else console.error('Recording upsert error:', error)
     }
-    return { synced: inserted, total: recordings.length, raw_total: allRecordings.length }
+    return { synced: inserted, total: recordings.length, raw_total: allRecordings.length, pages_fetched: pageNum - 1 }
 }
 
 async function syncFromAiCalls(db: any) {
