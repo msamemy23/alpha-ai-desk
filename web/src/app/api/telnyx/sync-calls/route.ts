@@ -5,150 +5,129 @@ export const maxDuration = 60
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
+const SHOP_NUMBER = '+17136636979'
 
-async function fetchCallRecords(startDate: string, endDate: string, pageNum: number) {
-    const params = new URLSearchParams({
-        'filter[record_type]': 'call',
-        'filter[date_range][start_date]': startDate.split('T')[0],
-        'filter[date_range][end_date]': endDate.split('T')[0],
-        'page[number]': String(pageNum),
-        'page[size]': '250',
-    })
-    const res = await fetch(`${TELNYX_BASE}/detail_records?${params}`, {
-        headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, 'Content-Type': 'application/json' }
-    })
-    if (!res.ok) {
-        console.error('Telnyx detail_records error:', res.status, await res.text())
-        return { data: [], meta: { total_pages: 0, total_results: 0 } }
+// Sync call_history from local activities table
+async function syncFromActivities(db: any) {
+    const { data: activities, error } = await db
+        .from('activities')
+        .select('*')
+        .eq('type', 'call')
+        .order('created_at', { ascending: false })
+    if (error || !activities?.length) return { synced: 0, error: error?.message }
+    const rows = activities.map((a: any) => ({
+        call_id: a.id,
+        direction: a.direction || 'unknown',
+        from_number: a.direction === 'outbound' ? SHOP_NUMBER : (a.phone || ''),
+        to_number: a.direction === 'inbound' ? SHOP_NUMBER : (a.phone || ''),
+        duration_secs: a.duration || 0,
+        status: 'completed',
+        start_time: a.created_at,
+        customer_id: a.customer_id || null,
+        matched_customer_name: a.customer_name || null,
+        raw_data: { source: 'activities', activity_id: a.id, notes: a.notes, has_recording: a.has_recording, recording_url: a.recording_url },
+    }))
+    let inserted = 0
+    for (let i = 0; i < rows.length; i += 100) {
+        const batch = rows.slice(i, i + 100)
+        const { error: uErr } = await db.from('call_history').upsert(batch, { onConflict: 'call_id' })
+        if (!uErr) inserted += batch.length
+        else console.error('Activities upsert error:', uErr)
     }
-    return res.json()
+    return { synced: inserted, total: activities.length }
 }
 
-// Fallback: use /v2/calls endpoint (retains data for 30 days)
-async function fetchCallsAPI(startDate: string, endDate: string, pageNum: number) {
-    const params = new URLSearchParams({
-        'filter[start_time][gte]': startDate,
-        'filter[start_time][lte]': endDate,
-        'page[number]': String(pageNum),
-        'page[size]': '250',
-    })
-    const res = await fetch(`${TELNYX_BASE}/calls?${params}`, {
-        headers: { Authorization: `Bearer ${TELNYX_API_KEY}` }
-    })
-    if (!res.ok) {
-        const txt = await res.text()
-        console.error('Telnyx /v2/calls error:', res.status, txt)
-        return { data: [], meta: { total_pages: 0, total_results: 0 }, _error: txt }
+// Request a CDR batch report from Telnyx (async, returns report ID)
+async function requestCDRReport(startDate: string, endDate: string) {
+    if (!TELNYX_API_KEY) return null
+    try {
+        const res = await fetch(`${TELNYX_BASE}/legacy_reporting/batch_detail_records/voice`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                start_time: startDate,
+                end_time: endDate,
+                source: 'call-control',
+                record_types: [1, 2],
+                call_types: [1, 2],
+            }),
+        })
+        if (!res.ok) {
+            const txt = await res.text()
+            console.error('CDR report request error:', res.status, txt)
+            return { error: txt, status: res.status }
+        }
+        return await res.json()
+    } catch (e: any) {
+        return { error: e.message }
     }
-    return res.json()
+}
+
+// Check CDR report status and download if ready
+async function checkCDRReport(reportId: string) {
+    if (!TELNYX_API_KEY) return null
+    try {
+        const res = await fetch(`${TELNYX_BASE}/legacy_reporting/batch_detail_records/voice/${reportId}`, {
+            headers: { Authorization: `Bearer ${TELNYX_API_KEY}` },
+        })
+        if (!res.ok) return { error: `Status ${res.status}` }
+        return await res.json()
+    } catch (e: any) {
+        return { error: e.message }
+    }
 }
 
 export async function POST(req: NextRequest) {
-    if (!TELNYX_API_KEY) return NextResponse.json({ error: 'No API key' }, { status: 500 })
     try {
         const url = new URL(req.url)
-        let body: any = {}; try { body = await req.json() } catch {}
-        if (url.searchParams.get('start')) body.start_date = url.searchParams.get('start')
-        if (url.searchParams.get('end')) body.end_date = url.searchParams.get('end')
-        const debug = url.searchParams.get('debug') === '1'
+        const action = url.searchParams.get('action') || 'sync'
         const db = getServiceClient()
-        const now = new Date()
-        let startD = body.start_date || '2024-01-01'
-        let endD = body.end_date || now.toISOString().split('T')[0]
-        if (!body.end_date) {
-            const s = new Date(startD)
-            const e = new Date(s)
-            e.setMonth(e.getMonth() + 1)
-            if (e < now) endD = e.toISOString().split('T')[0]
+
+        // Action: sync from activities table
+        if (action === 'sync') {
+            const result = await syncFromActivities(db)
+            return NextResponse.json({ success: true, ...result })
         }
 
-        // Try detail_records first
-        let allRecords: any[] = []
-        let page = 1
-        const MAX_PAGES = 20
-        while (page <= MAX_PAGES) {
-            const result = await fetchCallRecords(startD, endD, page)
-            const records = result.data || []
-            if (debug && page === 1) {
-                // Return raw first page for debugging
-                return NextResponse.json({ source: 'detail_records', startD, endD, page, result })
+        // Action: request a CDR batch report from Telnyx
+        if (action === 'cdr-request') {
+            const start = url.searchParams.get('start') || '2026-01-01T00:00:00Z'
+            const end = url.searchParams.get('end') || new Date().toISOString()
+            const result = await requestCDRReport(start, end)
+            return NextResponse.json({ success: true, result })
+        }
+
+        // Action: check CDR report status
+        if (action === 'cdr-check') {
+            const reportId = url.searchParams.get('report_id')
+            if (!reportId) return NextResponse.json({ error: 'report_id required' }, { status: 400 })
+            const result = await checkCDRReport(reportId)
+            return NextResponse.json({ success: true, result })
+        }
+
+        // Action: match phone numbers to customers
+        if (action === 'match') {
+            const { data: calls } = await db.from('call_history').select('id, from_number, to_number').is('customer_id', null)
+            const { data: customers } = await db.from('customers').select('id, name, phone')
+            if (!calls?.length || !customers?.length) return NextResponse.json({ matched: 0 })
+            const phoneMap = new Map()
+            for (const c of customers) {
+                if (c.phone) phoneMap.set(c.phone.replace(/\D/g, '').slice(-10), { id: c.id, name: c.name })
             }
-            if (!records.length) break
-            allRecords = allRecords.concat(records)
-            const tp = result.meta?.total_pages || 1
-            if (page >= tp) break
-            page++
-            await new Promise(r => setTimeout(r, 100))
-        }
-
-        // If detail_records returned nothing, try /v2/calls
-        if (allRecords.length === 0) {
-            page = 1
-            while (page <= MAX_PAGES) {
-                const result = await fetchCallsAPI(
-                    `${startD}T00:00:00Z`,
-                    `${endD}T23:59:59Z`,
-                    page
-                )
-                const records = result.data || []
-                if (debug && page === 1) {
-                    return NextResponse.json({ source: 'calls_api', startD, endD, page, result })
+            let matched = 0
+            for (const call of calls) {
+                const fc = (call.from_number || '').replace(/\D/g, '').slice(-10)
+                const tc = (call.to_number || '').replace(/\D/g, '').slice(-10)
+                const m = phoneMap.get(fc) || phoneMap.get(tc)
+                if (m) {
+                    await db.from('call_history').update({ customer_id: m.id, matched_customer_name: m.name }).eq('id', call.id)
+                    matched++
                 }
-                if (!records.length) break
-                allRecords = allRecords.concat(records)
-                const tp = result.meta?.total_pages || 1
-                if (page >= tp) break
-                page++
-                await new Promise(r => setTimeout(r, 100))
             }
+            return NextResponse.json({ success: true, matched, total: calls.length })
         }
 
-        const { data: customers } = await db.from('customers').select('id, name, phone')
-        const phoneMap = new Map()
-        for (const c of (customers || [])) {
-            if (c.phone) phoneMap.set(c.phone.replace(/\D/g, '').slice(-10), { id: c.id, name: c.name })
-        }
-        const rows = allRecords.map((r: any) => {
-            const from = r.cli || r.from || r.origination_number || r.from_number || ''
-            const to = r.cld || r.to || r.terminating_number || r.to_number || ''
-            const fc = from.replace(/\D/g, '').slice(-10)
-            const tc = to.replace(/\D/g, '').slice(-10)
-            const m = phoneMap.get(fc) || phoneMap.get(tc) || null
-            return {
-                call_id: r.uuid || r.id || r.call_session_id || r.call_leg_id || `${from}-${to}-${r.created_at || r.start_time}`,
-                direction: r.direction || 'unknown',
-                from_number: from, to_number: to,
-                duration_secs: parseFloat(r.call_duration || r.duration || r.duration_secs || '0') || 0,
-                billable_secs: parseFloat(r.billable_time || r.billable_duration || '0') || 0,
-                status: r.hangup_cause || r.status || 'completed',
-                start_time: r.start_timestamp || r.start_time || r.created_at || null,
-                end_time: r.end_timestamp || r.end_time || r.completed_at || null,
-                answer_time: r.answer_timestamp || r.answer_time || null,
-                from_city: r.origination_city || null,
-                from_state: r.origination_state || null,
-                cost: r.cost || r.rate || null,
-                hangup_cause: r.hangup_cause || null,
-                connection_id: r.connection_id || null,
-                customer_id: m?.id || null,
-                matched_customer_name: m?.name || null,
-                raw_data: r,
-            }
-        })
-        let inserted = 0
-        for (let i = 0; i < rows.length; i += 100) {
-            const batch = rows.slice(i, i + 100)
-            const { error } = await db.from('call_history').upsert(batch, { onConflict: 'call_id' })
-            if (!error) inserted += batch.length
-            else console.error('Upsert error:', error)
-        }
-        const nextStart = endD
-        const hasMore = new Date(endD) < now
-        return NextResponse.json({
-            success: true, fetched: allRecords.length, inserted,
-            range: { start: startD, end: endD },
-            hasMore, nextStart: hasMore ? nextStart : null,
-            totalPages: page - 1
-        })
+        return NextResponse.json({ error: 'Unknown action. Use: sync, cdr-request, cdr-check, match' }, { status: 400 })
     } catch (e: any) {
         console.error('Telnyx sync error:', e)
         return NextResponse.json({ error: e.message || 'Sync failed' }, { status: 500 })
