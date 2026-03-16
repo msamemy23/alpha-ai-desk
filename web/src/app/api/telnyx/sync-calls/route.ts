@@ -68,7 +68,7 @@ async function searchDetailRecords(startDate: string, endDate: string, cursor?: 
 export async function POST(req: NextRequest) {
   if (!TELNYX_API_KEY) return NextResponse.json({ error: 'No Telnyx API key' }, { status: 500 })
   try {
-    const { start_date, end_date, mode = 'incremental' } = await req.json()
+    let body: any = {}; try { body = await req.json() } catch {} const { start_date, end_date, mode = 'incremental' } = body
     const db = getServiceClient()
     const now = new Date().toISOString()
     let startD = start_date || '2024-01-01T00:00:00Z'
