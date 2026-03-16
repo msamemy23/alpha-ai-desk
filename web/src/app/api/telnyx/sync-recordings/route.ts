@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
 
     if (action === 'stats') {
       const { count: total } = await db.from('call_history').select('id', { count: 'exact', head: true })
-      const { data: sample } = await db.from('call_history').select('call_id, raw_data').limit(2)
+      const { data: sample } = await db.from('call_history').select('call_id').limit(5)
       return NextResponse.json({ total_calls: total, sample_call_ids: sample?.map(s => s.call_id) })
     }
 
@@ -42,14 +42,16 @@ export async function POST(req: NextRequest) {
       const recordings = await fetchAllTelnyxRecordings()
       if (!recordings.length) return NextResponse.json({ error: 'No recordings returned from Telnyx', synced: 0 })
 
-      // Sample first recording to see structure
-      const sample = recordings[0]
+      // Show sample for debugging
+      const sampleRec = recordings[0]
       const sampleInfo = {
-        id: sample?.id,
-        call_leg_id: sample?.call_leg_id,
-        call_session_id: sample?.call_session_id,
-        has_mp3: !!sample?.download_urls?.mp3,
-        mp3_prefix: sample?.download_urls?.mp3?.substring(0, 60),
+        id: sampleRec?.id,
+        call_leg_id: sampleRec?.call_leg_id,
+        call_session_id: sampleRec?.call_session_id,
+        has_mp3: !!sampleRec?.download_urls?.mp3,
+        // DB call_ids look like: rec-{call_session_id} or activity-{call_leg_id}
+        // Try: rec-{call_session_id}
+        predicted_call_id: sampleRec?.call_session_id ? `rec-${sampleRec.call_session_id}` : null,
       }
 
       let matched = 0
@@ -57,7 +59,7 @@ export async function POST(req: NextRequest) {
 
       for (const rec of recordings) {
         const recId = rec.id
-        const callLegId = rec.call_leg_id  // Raw UUID like "abc123-..."
+        const callLegId = rec.call_leg_id
         const callSessionId = rec.call_session_id
         const downloadMp3 = rec.download_urls?.mp3
         const downloadWav = rec.download_urls?.wav
@@ -66,17 +68,25 @@ export async function POST(req: NextRequest) {
 
         let callRow: any = null
 
-        // call_history stores call_id as "activity-{UUID}" format from Telnyx detail records
-        // Try matching with "activity-" prefix
-        if (callLegId) {
+        // Primary match: DB call_id = "rec-{call_session_id}"
+        if (callSessionId) {
           const { data } = await db.from('call_history')
             .select('id, raw_data')
-            .eq('call_id', `activity-${callLegId}`)
+            .eq('call_id', `rec-${callSessionId}`)
             .maybeSingle()
           callRow = data
         }
 
-        // Try without prefix (exact UUID match)
+        // Try: DB call_id = "rec-{call_leg_id}"
+        if (!callRow && callLegId) {
+          const { data } = await db.from('call_history')
+            .select('id, raw_data')
+            .eq('call_id', `rec-${callLegId}`)
+            .maybeSingle()
+          callRow = data
+        }
+
+        // Try: exact UUID match (no prefix)
         if (!callRow && callLegId) {
           const { data } = await db.from('call_history')
             .select('id, raw_data')
@@ -85,20 +95,11 @@ export async function POST(req: NextRequest) {
           callRow = data
         }
 
-        // Try with call_session_id prefixed
-        if (!callRow && callSessionId) {
-          const { data } = await db.from('call_history')
-            .select('id, raw_data')
-            .eq('call_id', `activity-${callSessionId}`)
-            .maybeSingle()
-          callRow = data
-        }
-
-        // Try ends-with match (UUID suffix)
+        // Try: activity- prefix
         if (!callRow && callLegId) {
           const { data } = await db.from('call_history')
             .select('id, raw_data')
-            .ilike('call_id', `%${callLegId}`)
+            .eq('call_id', `activity-${callLegId}`)
             .maybeSingle()
           callRow = data
         }
