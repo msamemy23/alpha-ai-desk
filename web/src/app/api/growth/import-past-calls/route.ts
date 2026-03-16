@@ -175,7 +175,7 @@ export async function POST(req: NextRequest) {
           .limit(1)
           .single()
 
-        const callerName = aiCall?.customer_name || aiCall?.caller_name || 'Past Caller'
+        // Also check call_history for CNAM data         const { data: historyCall } = await supabase           .from('call_history')           .select('matched_customer_name')           .eq('from_number', phone)           .not('matched_customer_name', 'is', null)           .order('start_time', { ascending: false })           .limit(1)           .single()         const historyName = historyCall?.matched_customer_name         const isPhoneNumber = historyName && /^\+?[0-9]+$/.test(historyName)         const callerName = aiCall?.customer_name || aiCall?.caller_name || (!isPhoneNumber && historyName) || 'Past Caller'
         const vehicle = aiCall?.vehicle_info || ''
         const service = aiCall?.service_needed || aiCall?.reason || ''
         const callDate = rec.recording_started_at || rec.created_at
