@@ -392,7 +392,7 @@ export default function MessagesPage() {
                 <div className="mb-5">
                   <div className="text-sm font-semibold mb-2">Transcript</div>
                   <div className="bg-black/30 rounded-lg p-4 text-sm text-gray-500 italic">
-                    {selectedCall.transcript === '[transcription_failed]' ? 'Transcription failed - will retry' : 'Pending transcription...'}
+                    {selectedCall.transcript === '[transcription_failed]' ? 'Recording expired — transcription unavailable' : 'Pending transcription...'}
                   </div>
                 </div>
               )}
