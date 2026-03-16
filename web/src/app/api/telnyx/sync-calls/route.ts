@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
 
+export const maxDuration = 60
+
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
 
