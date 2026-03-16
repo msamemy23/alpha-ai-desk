@@ -192,24 +192,28 @@ export async function POST(req: NextRequest) {
       for (const call of calls) {
         const rd = call.raw_data as any
         const recordingId = rd?.recording_id
-        if (!recordingId) {
-          results.push({ id: call.id, status: 'no_recording_id' })
-          continue
-        }
+              // Try download URL first via OpenRouter (most reliable)
+        const wavUrl = rd?.download_urls?.wav || rd?.download_urls?.mp3
         let transcript: string | null = null
         let transcriptError: string | undefined
-        const { text, error: telErr } = await getTelnyxTranscription(recordingId)
-        if (text) {
-          transcript = text
-        } else {
-          const wavUrl = rd?.download_urls?.wav || rd?.download_urls?.mp3
-          if (wavUrl) {
-            transcript = await transcribeViaOpenRouter(wavUrl)
-          }
-          if (!transcript) {
-            await requestTelnyxTranscription(recordingId)
-            transcriptError = telErr
-          }
+        if (wavUrl) {
+          transcript = await transcribeViaOpenRouter(wavUrl)
+        }
+        // Fallback: try Telnyx native transcription
+        if (!transcript && recordingId) {
+          const { text, error: telErr } = await getTelnyxTranscription(recordingId)
+          if (text) transcript = text
+          else transcriptError = telErr
+        }
+        if (!transcript && !wavUrl && !recordingId) {
+          results.push({ id: call.id, status: 'no_audio_source' })
+          continue
+        }
+                if (!transcript) {
+          if (recordingId) await requestTelnyxTranscription(recordingId)
+          results.push({ id: call.id, status: 'transcription_pending', error: transcriptError })
+          continue
+        }
         }
         if (transcript) {
           const scoring = await scoreLeadFromTranscript(transcript)
