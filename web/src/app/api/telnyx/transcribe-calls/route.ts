@@ -8,28 +8,52 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
 const AI_MODEL = process.env.AI_MODEL || 'deepseek/deepseek-r1'
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ''
-async function transcribeViaWhisper(downloadUrl: string): Promise<string | null> {
+
+// Transcribe audio via OpenRouter (audio-capable model)
+async function transcribeViaOpenRouter(downloadUrl: string): Promise<string | null> {
   try {
-    if (!OPENAI_API_KEY) return null
+    if (!OPENROUTER_API_KEY) return null
     let audioRes = await fetch(downloadUrl)
     if (!audioRes.ok) audioRes = await fetch(downloadUrl, { headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` } })
     if (!audioRes.ok) return null
     const buf = await audioRes.arrayBuffer()
-    const blob = new Blob([buf], { type: 'audio/wav' })
-    const fd = new FormData()
-    fd.append('file', blob, 'recording.wav')
-    fd.append('model', 'whisper-1')
-    fd.append('language', 'en')
-    const wr = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST', headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}` }, body: fd,
+    const base64Audio = Buffer.from(buf).toString('base64')
+    const dataUrl = `data:audio/wav;base64,${base64Audio}`
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://alpha-ai-desk.vercel.app',
+        'X-Title': 'Alpha AI Desk',
+      },
+      body: JSON.stringify({
+        model: 'openai/gpt-4o-mini-audio-preview',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'input_audio', input_audio: { data: base64Audio, format: 'wav' } },
+            { type: 'text', text: 'Transcribe this audio recording word for word. Return ONLY the transcription text, nothing else.' }
+          ]
+        }],
+        max_tokens: 4000,
+      }),
     })
-    if (!wr.ok) return null
-    const d = await wr.json()
-    return d.text || null
-  } catch { return null }
+    if (!res.ok) {
+      const errText = await res.text()
+      console.error('OpenRouter transcription error:', res.status, errText)
+      return null
+    }
+    const data = await res.json()
+    const text = data.choices?.[0]?.message?.content?.trim()
+    return text && text.length > 5 ? text : null
+  } catch (e: any) {
+    console.error('transcribeViaOpenRouter error:', e.message)
+    return null
+  }
 }
-// Score lead using OpenRouter DeepSeek (your existing AI model)
+
+// Score lead using OpenRouter DeepSeek
 async function scoreLeadFromTranscript(transcript: string): Promise<{
   lead_score: string; lead_reasoning: string; service_needed: string;
   caller_sentiment: string; key_quotes: string;
@@ -59,13 +83,9 @@ async function scoreLeadFromTranscript(transcript: string): Promise<{
         response_format: { type: 'json_object' },
       }),
     })
-    if (!res.ok) {
-      const err = await res.text()
-      return { ...empty, lead_reasoning: `AI error: ${res.status}` }
-    }
+    if (!res.ok) return { ...empty, lead_reasoning: `AI error: ${res.status}` }
     const data = await res.json()
     const content = data.choices?.[0]?.message?.content || '{}'
-    // Strip thinking tags if present (DeepSeek R1)
     const jsonStr = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
     const parsed = JSON.parse(jsonStr || '{}')
     return {
@@ -78,7 +98,7 @@ async function scoreLeadFromTranscript(transcript: string): Promise<{
   } catch (e: any) { return { ...empty, lead_reasoning: e.message } }
 }
 
-// Fetch transcription from Telnyx (they do it natively)
+// Fetch transcription from Telnyx
 async function getTelnyxTranscription(recordingId: string): Promise<{ text: string | null; error?: string }> {
   try {
     const res = await fetch(`${TELNYX_BASE}/recordings/${recordingId}/transcriptions`, {
@@ -103,7 +123,7 @@ async function requestTelnyxTranscription(recordingId: string): Promise<boolean>
       headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ language_code: 'en-US' }),
     })
-    return res.ok || res.status === 409 // 409 = already requested
+    return res.ok || res.status === 409
   } catch { return false }
 }
 
@@ -114,7 +134,6 @@ export async function POST(req: NextRequest) {
     const limit = parseInt(url.searchParams.get('limit') || '10')
     const db = getServiceClient()
 
-    // DEBUG: show env vars and test one call
     if (action === 'debug') {
       const { data: calls } = await db.from('call_history')
         .select('id, call_id, raw_data').is('transcript', null)
@@ -122,7 +141,7 @@ export async function POST(req: NextRequest) {
       if (!calls?.length) return NextResponse.json({ error: 'No calls to debug' })
       const call = calls[0]
       const rd = call.raw_data as any
-      const info: any = {
+      return NextResponse.json({
         id: call.id,
         has_recording_id: !!rd?.recording_id,
         recording_id: rd?.recording_id,
@@ -133,11 +152,9 @@ export async function POST(req: NextRequest) {
         ai_model: AI_MODEL,
         has_telnyx_key: !!TELNYX_API_KEY,
         raw_data_keys: rd ? Object.keys(rd) : [],
-      }
-      return NextResponse.json(info)
+      })
     }
 
-    // SCORE ONLY: re-score calls that have transcript but no lead score
     if (action === 'score') {
       const { data: calls } = await db.from('call_history')
         .select('id, transcript')
@@ -162,7 +179,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, scored })
     }
 
-    // BATCH: process calls that have recording_id in raw_data
     if (action === 'batch') {
       const { data: calls, error } = await db.from('call_history')
         .select('id, call_id, raw_data, transcript')
@@ -171,38 +187,30 @@ export async function POST(req: NextRequest) {
         .order('start_time', { ascending: false })
         .limit(limit)
       if (error || !calls?.length) return NextResponse.json({ success: true, processed: 0, remaining: 0, error: error?.message })
-
       let transcribed = 0, scored = 0
       const results: any[] = []
-
       for (const call of calls) {
         const rd = call.raw_data as any
         const recordingId = rd?.recording_id
-
         if (!recordingId) {
           results.push({ id: call.id, status: 'no_recording_id' })
           continue
         }
-
-        // Try to get existing Telnyx transcription
         let transcript: string | null = null
         let transcriptError: string | undefined
-
         const { text, error: telErr } = await getTelnyxTranscription(recordingId)
         if (text) {
           transcript = text
         } else {
-          // Telnyx transcription failed - try Whisper fallback
           const wavUrl = rd?.download_urls?.wav || rd?.download_urls?.mp3
           if (wavUrl) {
-            transcript = await transcribeViaWhisper(wavUrl)
+            transcript = await transcribeViaOpenRouter(wavUrl)
           }
           if (!transcript) {
             await requestTelnyxTranscription(recordingId)
             transcriptError = telErr
           }
-                  }
-
+        }
         if (transcript) {
           const scoring = await scoreLeadFromTranscript(transcript)
           await db.from('call_history').update({
@@ -220,7 +228,6 @@ export async function POST(req: NextRequest) {
           results.push({ id: call.id, status: 'transcription_pending', error: transcriptError })
         }
       }
-
       const { count } = await db.from('call_history').select('id', { count: 'exact', head: true }).is('transcript', null).not('raw_data', 'is', null)
       return NextResponse.json({ success: true, processed: calls.length, transcribed, scored, remaining: count || 0, results })
     }
