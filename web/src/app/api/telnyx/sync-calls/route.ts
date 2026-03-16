@@ -6,20 +6,16 @@ export const maxDuration = 60
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
 const SHOP_NUMBER = '+17136636979'
+const INBOUND_CONNECTION = '2786787533428623349'
 
-// Sync call_history from local activities table
 async function syncFromActivities(db: any) {
-    const { data: activities, error } = await db
-        .from('activities')
-        .select('*')
-        .eq('type', 'call')
-        .order('created_at', { ascending: false })
+    const { data: activities, error } = await db.from('activities').select('*').eq('type', 'call').order('created_at', { ascending: false })
     if (error || !activities?.length) return { synced: 0, error: error?.message }
     const rows = activities.map((a: any) => ({
-        call_id: a.id,
+        call_id: `activity-${a.id}`,
         direction: a.direction || 'unknown',
-        from_number: a.direction === 'outbound' ? SHOP_NUMBER : (a.phone || ''),
-        to_number: a.direction === 'inbound' ? SHOP_NUMBER : (a.phone || ''),
+        from_number: a.direction === 'outbound' ? SHOP_NUMBER : (a.phone || a.customer_name || ''),
+        to_number: a.direction === 'inbound' ? SHOP_NUMBER : (a.phone || a.customer_name || ''),
         duration_secs: a.duration || 0,
         status: 'completed',
         start_time: a.created_at,
@@ -37,75 +33,135 @@ async function syncFromActivities(db: any) {
     return { synced: inserted, total: activities.length }
 }
 
-// Request a CDR batch report from Telnyx (async, returns report ID)
-async function requestCDRReport(startDate: string, endDate: string) {
-    if (!TELNYX_API_KEY) return null
-    try {
-        const res = await fetch(`${TELNYX_BASE}/legacy_reporting/batch_detail_records/voice`, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                start_time: startDate,
-                end_time: endDate,
-                source: 'call-control',
-                record_types: [1, 2],
-                call_types: [1, 2],
-            }),
+async function syncFromRecordings(db: any) {
+    if (!TELNYX_API_KEY) return { synced: 0, error: 'No API key' }
+    let allRecordings: any[] = []
+    let cursor: string | null = null
+    let pages = 0
+    do {
+        const params = new URLSearchParams({ 'page[size]': '250' })
+        if (cursor) params.set('page[after]', cursor)
+        const res = await fetch(`${TELNYX_BASE}/recordings?${params}`, {
+            headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` },
+            cache: 'no-store',
         })
-        if (!res.ok) {
-            const txt = await res.text()
-            console.error('CDR report request error:', res.status, txt)
-            return { error: txt, status: res.status }
+        if (!res.ok) return { synced: 0, error: `Telnyx API error: ${res.status}` }
+        const data = await res.json()
+        const pageRecs = data.data || []
+        allRecordings.push(...pageRecs)
+        cursor = data.meta?.cursors?.after || null
+        pages++
+    } while (cursor && pages < 10)
+
+    // Deduplicate by call_session_id, keep longest
+    const sessionMap: Record<string, any> = {}
+    for (const rec of allRecordings) {
+        const sid = rec.call_session_id || rec.id
+        const existing = sessionMap[sid]
+        if (!existing || (rec.duration_millis || 0) > (existing.duration_millis || 0)) {
+            sessionMap[sid] = rec
         }
-        return await res.json()
-    } catch (e: any) {
-        return { error: e.message }
     }
+    const recordings = Object.values(sessionMap).filter((r: any) => (r.duration_millis || 0) > 2000)
+
+    // Get customer phone map
+    const { data: customers } = await db.from('customers').select('id, name, phone')
+    const phoneMap = new Map()
+    for (const c of (customers || [])) {
+        if (c.phone) phoneMap.set(c.phone.replace(/\D/g, '').slice(-10), { id: c.id, name: c.name })
+    }
+
+    const rows = recordings.map((r: any) => {
+        const isInbound = r.connection_id === INBOUND_CONNECTION
+        const from = isInbound ? (r.from || '') : SHOP_NUMBER
+        const to = isInbound ? SHOP_NUMBER : (r.to || '')
+        const callerPhone = isInbound ? from : to
+        const clean = callerPhone.replace(/\D/g, '').slice(-10)
+        const match = phoneMap.get(clean)
+        const durSec = Math.round((r.duration_millis || 0) / 1000)
+        return {
+            call_id: `rec-${r.call_session_id || r.id}`,
+            direction: isInbound ? 'inbound' : 'outbound',
+            from_number: from,
+            to_number: to,
+            duration_secs: durSec,
+            status: 'completed',
+            start_time: r.recording_started_at || r.created_at,
+            end_time: r.recording_ended_at || null,
+            customer_id: match?.id || null,
+            matched_customer_name: match?.name || null,
+            raw_data: {
+                source: 'telnyx_recording',
+                recording_id: r.id,
+                call_leg_id: r.call_leg_id,
+                call_session_id: r.call_session_id,
+                channels: r.channels,
+                download_urls: r.download_urls,
+                connection_id: r.connection_id,
+            },
+        }
+    })
+    let inserted = 0
+    for (let i = 0; i < rows.length; i += 100) {
+        const batch = rows.slice(i, i + 100)
+        const { error } = await db.from('call_history').upsert(batch, { onConflict: 'call_id' })
+        if (!error) inserted += batch.length
+        else console.error('Recording upsert error:', error)
+    }
+    return { synced: inserted, total: recordings.length, raw_total: allRecordings.length }
 }
 
-// Check CDR report status and download if ready
-async function checkCDRReport(reportId: string) {
-    if (!TELNYX_API_KEY) return null
-    try {
-        const res = await fetch(`${TELNYX_BASE}/legacy_reporting/batch_detail_records/voice/${reportId}`, {
-            headers: { Authorization: `Bearer ${TELNYX_API_KEY}` },
-        })
-        if (!res.ok) return { error: `Status ${res.status}` }
-        return await res.json()
-    } catch (e: any) {
-        return { error: e.message }
+async function syncFromAiCalls(db: any) {
+    const { data: aiCalls, error } = await db.from('ai_calls').select('*').order('started_at', { ascending: false })
+    if (error || !aiCalls?.length) return { synced: 0, error: error?.message }
+    const rows = aiCalls.filter((a: any) => a.started_at).map((a: any) => {
+        const ts = new Date(typeof a.started_at === 'number' ? a.started_at : parseInt(a.started_at))
+        return {
+            call_id: `ai-${a.id}`,
+            direction: 'outbound',
+            from_number: SHOP_NUMBER,
+            to_number: '',
+            duration_secs: 0,
+            status: a.status || 'unknown',
+            start_time: ts.toISOString(),
+            customer_id: null,
+            matched_customer_name: null,
+            raw_data: { source: 'ai_calls', ai_call_id: a.id, task: a.task, status: a.status, transcript: a.transcript, summary: a.summary },
+        }
+    })
+    let inserted = 0
+    for (let i = 0; i < rows.length; i += 100) {
+        const batch = rows.slice(i, i + 100)
+        const { error: uErr } = await db.from('call_history').upsert(batch, { onConflict: 'call_id' })
+        if (!uErr) inserted += batch.length
+        else console.error('AI calls upsert error:', uErr)
     }
+    return { synced: inserted, total: aiCalls.length }
 }
 
 export async function POST(req: NextRequest) {
     try {
         const url = new URL(req.url)
-        const action = url.searchParams.get('action') || 'sync'
+        const action = url.searchParams.get('action') || 'sync-all'
         const db = getServiceClient()
 
-        // Action: sync from activities table
         if (action === 'sync') {
-            const result = await syncFromActivities(db)
-            return NextResponse.json({ success: true, ...result })
+            return NextResponse.json({ success: true, activities: await syncFromActivities(db) })
         }
-
-        // Action: request a CDR batch report from Telnyx
-        if (action === 'cdr-request') {
-            const start = url.searchParams.get('start') || '2026-01-01T00:00:00Z'
-            const end = url.searchParams.get('end') || new Date().toISOString()
-            const result = await requestCDRReport(start, end)
-            return NextResponse.json({ success: true, result })
+        if (action === 'sync-recordings') {
+            return NextResponse.json({ success: true, recordings: await syncFromRecordings(db) })
         }
-
-        // Action: check CDR report status
-        if (action === 'cdr-check') {
-            const reportId = url.searchParams.get('report_id')
-            if (!reportId) return NextResponse.json({ error: 'report_id required' }, { status: 400 })
-            const result = await checkCDRReport(reportId)
-            return NextResponse.json({ success: true, result })
+        if (action === 'sync-ai') {
+            return NextResponse.json({ success: true, aiCalls: await syncFromAiCalls(db) })
         }
-
-        // Action: match phone numbers to customers
+        if (action === 'sync-all') {
+            const [activities, recordings, aiCalls] = await Promise.all([
+                syncFromActivities(db),
+                syncFromRecordings(db),
+                syncFromAiCalls(db),
+            ])
+            return NextResponse.json({ success: true, activities, recordings, aiCalls })
+        }
         if (action === 'match') {
             const { data: calls } = await db.from('call_history').select('id, from_number, to_number').is('customer_id', null)
             const { data: customers } = await db.from('customers').select('id, name, phone')
@@ -126,10 +182,9 @@ export async function POST(req: NextRequest) {
             }
             return NextResponse.json({ success: true, matched, total: calls.length })
         }
-
-        return NextResponse.json({ error: 'Unknown action. Use: sync, cdr-request, cdr-check, match' }, { status: 400 })
+        return NextResponse.json({ error: 'Unknown action. Use: sync-all, sync, sync-recordings, sync-ai, match' }, { status: 400 })
     } catch (e: any) {
-        console.error('Telnyx sync error:', e)
+        console.error('Sync error:', e)
         return NextResponse.json({ error: e.message || 'Sync failed' }, { status: 500 })
     }
 }
