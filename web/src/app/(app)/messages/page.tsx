@@ -104,7 +104,7 @@ export default function MessagesPage() {
       .from('call_history')
       .select('id, call_id, direction, from_number, to_number, duration_secs, status, start_time, end_time, matched_customer_name, transcript, lead_score, lead_reasoning, service_needed, caller_sentiment, key_quotes, call_count_from_number, raw_data')
       .order('start_time', { ascending: false })
-      .limit(200)
+      .limit(1500)
     if (data) setCalls(data)
   }, [])
 
