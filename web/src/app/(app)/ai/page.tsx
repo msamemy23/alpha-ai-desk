@@ -1366,6 +1366,7 @@ Continue silently.` }); continue } // Unknown — treat as final response
           <div className="relative ml-auto w-80 bg-bg-card border-l border-border h-full overflow-y-auto p-4">
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-bold text-lg">Chat History</h2>
+                                <button onClick={() => { if (confirm('Delete ALL chat history?')) { setHistory([]); localStorage.removeItem('ai_history'); showToast('All history deleted') }}} className="btn btn-sm text-xs text-red-400 hover:bg-red-400/10 border border-red-400/30">Delete All</button>
               <button onClick={() => setShowHistory(false)} className="btn btn-secondary btn-sm">✕</button>
             </div>
             {history.length === 0 && <p className="text-sm text-text-muted">No conversations yet.</p>}
