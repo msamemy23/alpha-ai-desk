@@ -55,6 +55,9 @@ export async function POST(req: NextRequest) {
           type: docType, doc_number, status: 'Draft',
           doc_date: new Date().toISOString().split('T')[0],
           customer_name: (payload.customer_name as string) || 'Customer',
+          customer_id: payload.customer_id || null,
+          customer_phone: payload.customer_phone || null,
+          customer_email: payload.customer_email || null,
           vehicle_year: payload.vehicle_year || '', vehicle_make: payload.vehicle_make || '',
           vehicle_model: payload.vehicle_model || '',
           parts: payload.parts || [], labors: payload.labors || [],
@@ -315,6 +318,31 @@ export async function POST(req: NextRequest) {
         return ok({ sent: true, to: toEmail, doc_number: doc.doc_number, type: doc.type })
       }
 
+
+            // ── Convert Estimate to Invoice ────────────────────────
+        case 'convertEstimateToInvoice': {
+          const { id: estId } = payload
+          if (!estId) return fail('Estimate id is required')
+          const { data: est, error: estErr } = await sb.from('documents').select('*').eq('id', estId).single()
+          if (estErr || !est) return fail('Estimate not found')
+          const invPrefix = 'INV'
+          const invYear = new Date().getFullYear()
+          const { data: invExisting } = await sb.from('documents').select('doc_number').eq('type', 'Invoice').like('doc_number', `${invPrefix}-${invYear}-%`)
+          const invNums = (invExisting || []).map((d: Record<string, string>) => parseInt(d.doc_number.split('-').pop() || '0'))
+          const invNext = Math.max(0, ...invNums) + 1
+          const invDocNumber = `${invPrefix}-${invYear}-${String(invNext).padStart(4, '0')}`
+          const { id: _rmId, doc_number: _rmDn, type: _rmType, created_at: _rmCa, ...estFields } = est
+          const { data: invData, error: invErr } = await sb.from('documents').insert({
+            ...estFields,
+            type: 'Invoice',
+            doc_number: invDocNumber,
+            status: 'Draft',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }).select().single()
+          if (invErr) return fail(invErr.message, 500)
+          return ok(invData)
+        }
       default:
         return fail(`Unknown action: ${action}`)
     }

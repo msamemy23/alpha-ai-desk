@@ -219,7 +219,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
       return
     }
     const c = customers.find(c => c.id === id)
-    if (c) setForm(f => ({ ...f, customer_id: c.id, customer_name: c.name, vehicle_year: c.vehicle_year, vehicle_make: c.vehicle_make, vehicle_model: c.vehicle_model, vehicle_vin: c.vehicle_vin, vehicle_plate: c.vehicle_plate, vehicle_mileage: c.vehicle_mileage }))
+    if (c) setForm(f => ({ ...f, customer_id: c.id, customer_name: c.name, customer_phone: c.phone, customer_email: c.email, vehicle_year: c.vehicle_year, vehicle_make: c.vehicle_make, vehicle_model: c.vehicle_model, vehicle_vin: c.vehicle_vin, vehicle_plate: c.vehicle_plate, vehicle_mileage: c.vehicle_mileage }))
   }
 
   const createInlineCustomer = async () => {
@@ -325,6 +325,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                 <button className="btn btn-primary" onClick={save}>Save {type}</button>
                 {editing !== 'new' && <button className="btn btn-danger" onClick={del}>Delete</button>}
                 {editing !== 'new' && <button className="btn btn-secondary" onClick={() => setSendModal(form as Doc)}>Send</button>}
+              {editing !== 'new' && type === 'Estimate' && <button className="btn btn-primary btn-sm" onClick={async () => { if (!confirm('Convert this estimate to an invoice?')) return; const prefix = 'INV'; const year = new Date().getFullYear(); const { data: existing } = await supabase.from('documents').select('doc_number').eq('type','Invoice').like('doc_number',`${prefix}-${year}-%`); const nums = (existing||[]).map((d:Record<string,string>) => parseInt(d.doc_number.split('-').pop()||'0')); const next = Math.max(0,...nums)+1; const doc_number = `${prefix}-${year}-${String(next).padStart(4,'0')}`; const invoiceData = {...form, type:'Invoice', doc_number, status:'Draft', created_at: new Date().toISOString(), updated_at: new Date().toISOString()}; delete (invoiceData as Record<string,unknown>).id; await supabase.from('documents').insert(invoiceData); setEditing(null); setForm({}); window.location.href='/invoices'; }}>Convert to Invoice</button>}
                 {editing !== 'new' && type === 'Invoice' && <button className="btn btn-secondary" onClick={() => setPlanModal(form as Doc)}>Payment Plan</button>}
               </div>
             </div>
@@ -345,7 +346,16 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                   {customers.map(c=><option key={c.id} value={c.id}>{c.name}{c.email ? ` (${c.email})` : ''}</option>)}
                 </select>
               </div>
-              <div><label className="form-label">Tax Rate %</label><input className="form-input" type="number" step="0.01" value={form.tax_rate||8.25} onChange={sf('tax_rate')} /></div>
+              <div><label className="form-label">Tax Rate %</label><input className="form-input" type="number" step="0.01" value={form.tax_rate||8.25} onChange={sf('tax_rate')} />
+              </div>
+              <div>
+                <label className="form-label flex items-center gap-2"><input type="checkbox" checked={form.apply_tax !== false} onChange={e => setForm(f => ({...f, apply_tax: e.target.checked}))} /> Apply Tax</label></div>
+            </div>
+
+            {/* Contact Info */}
+            <div className="card grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div><label className="form-label">Phone</label><input className="form-input" value={(form as Record<string,string>).customer_phone||''} onChange={sf('customer_phone')} placeholder="(555) 123-4567" /></div>
+              <div><label className="form-label">Email</label><input className="form-input" type="email" value={(form as Record<string,string>).customer_email||''} onChange={sf('customer_email')} placeholder="customer@email.com" /></div>
             </div>
 
             {/* Vehicle */}
@@ -543,6 +553,8 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                 <div>
                   <div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'#999',marginBottom:'2px'}}>Customer</div>
                   <div style={{fontWeight:600,color:'#111'}}>{form.customer_name || '—'}</div>
+                                  {(form as Record<string,string>).customer_phone && <div style={{color:'#666',fontSize:'11px'}}>{(form as Record<string,string>).customer_phone}</div>}
+                {(form as Record<string,string>).customer_email && <div style={{color:'#666',fontSize:'11px'}}>{(form as Record<string,string>).customer_email}</div>}
                 </div>
                 <div style={{textAlign:'right'}}>
                   <div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'#999',marginBottom:'2px'}}>Vehicle</div>
