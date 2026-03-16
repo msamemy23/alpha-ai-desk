@@ -28,7 +28,8 @@ async function transcribeViaOpenRouter(url: string): Promise<string|null> {
     return t&&t.length>5?t:null
   } catch{return null}
 }
-async function scoreLeadFromTranscript(t: string): Promise<{lead_score:string;lead_reasoning:string;service_needed:string;caller_sentiment:string;key_quotes:string}> {
+async function scoreLeadFromTranscript(t: string):
+  Promise<{lead_score:string;lead_reasoning:string;service_needed:string;caller_sentiment:string;key_quotes:string}> {
   const e = {lead_score:'unknown',lead_reasoning:'',service_needed:'',caller_sentiment:'',key_quotes:''}
   if (!OPENROUTER_API_KEY||!t||t.length<20) return {...e,lead_reasoning:'Transcript too short'}
   try {
@@ -63,14 +64,16 @@ export async function POST(req: NextRequest) {
     const action = url.searchParams.get('action')||'batch'
     const limit = parseInt(url.searchParams.get('limit')||'10')
     const db = getServiceClient()
+
     if (action==='debug') {
       const {data:calls} = await db.from('call_history').select('id,call_id,raw_data').is('transcript',null).not('raw_data','is',null).limit(1)
       if (!calls?.length) return NextResponse.json({error:'No calls'})
       const rd = calls[0].raw_data as any
       return NextResponse.json({id:calls[0].id,has_rid:!!rd?.recording_id,rid:rd?.recording_id,has_wav:!!rd?.download_urls?.wav,has_openrouter:!!OPENROUTER_API_KEY,model:AI_MODEL,keys:rd?Object.keys(rd):[]})
     }
+
     if (action==='score') {
-      const {data:calls} = await db.from('call_history').select('id,transcript').not('transcript','is',null).neq('transcript','[transcription_failed]').neq('transcript','[no_recording]').is('lead_score',null).limit(limit)
+      const {data:calls} = await db.from('call_history').select('id,transcript').not('transcript','is',null).neq('transcript','[transcription_failed]').neq('transcript','[no_recording]').neq('transcript','[recording_expired]').is('lead_score',null).limit(limit)
       if (!calls?.length) return NextResponse.json({success:true,scored:0})
       let scored=0
       for (const c of calls) {
@@ -81,55 +84,80 @@ export async function POST(req: NextRequest) {
       }
       return NextResponse.json({success:true,scored})
     }
+
     if (action==='batch') {
       const {data:calls,error} = await db.from('call_history').select('id,call_id,raw_data,transcript').is('transcript',null).not('raw_data','is',null).order('start_time',{ascending:false}).limit(limit)
       if (error||!calls?.length) return NextResponse.json({success:true,processed:0,remaining:0,error:error?.message})
-      let transcribed=0,scored=0
-      const results:any[]=[]
+      let transcribed=0,scored=0,expired=0
+      const results:any[]=[] 
       for (const call of calls) {
         const rd = call.raw_data as any
         const rid = rd?.recording_id
         const storedUrl = rd?.download_urls?.wav||rd?.download_urls?.mp3
         let transcript:string|null=null
         let transcriptError:string|undefined
+
         const freshUrl = rid ? await getFreshWavUrl(rid) : null
         const audioUrl = freshUrl||storedUrl
-        if (audioUrl) { transcript = await transcribeViaOpenRouter(audioUrl) }
+
+        if (audioUrl) {
+          transcript = await transcribeViaOpenRouter(audioUrl)
+        }
+
         if (!transcript&&rid) {
           const {text,error:te} = await getTelnyxTranscription(rid)
           if (text) transcript=text; else transcriptError=te
         }
-        if (!transcript&&!audioUrl&&!rid) { results.push({id:call.id,status:'no_audio_source'}); continue }
+
+        if (!transcript&&!audioUrl&&!rid) {
+          await db.from('call_history').update({transcript:'[no_recording]'}).eq('id',call.id)
+          results.push({id:call.id,status:'no_audio_source'}); continue
+        }
+
+        // KEY FIX: If Telnyx returns 404, the recording has expired - mark it permanently
+        if (!transcript && transcriptError && (transcriptError.includes('404') || transcriptError.includes('TELNYX_404'))) {
+          await db.from('call_history').update({transcript:'[recording_expired]',transcribed_at:new Date().toISOString()}).eq('id',call.id)
+          expired++
+          results.push({id:call.id,status:'recording_expired'}); continue
+        }
+
         if (!transcript) {
           if (rid) await requestTelnyxTranscription(rid)
           results.push({id:call.id,status:'transcription_pending',error:transcriptError}); continue
         }
+
         const s = await scoreLeadFromTranscript(transcript)
         await db.from('call_history').update({transcript,lead_score:s.lead_score,lead_reasoning:s.lead_reasoning,service_needed:s.service_needed,caller_sentiment:s.caller_sentiment,key_quotes:s.key_quotes,transcribed_at:new Date().toISOString()}).eq('id',call.id)
         transcribed++;scored++
         results.push({id:call.id,lead_score:s.lead_score,service:s.service_needed})
       }
       const {count} = await db.from('call_history').select('id',{count:'exact',head:true}).is('transcript',null).not('raw_data','is',null)
-      return NextResponse.json({success:true,processed:calls.length,transcribed,scored,remaining:count||0,results})
+      return NextResponse.json({success:true,processed:calls.length,transcribed,scored,expired,remaining:count||0,results})
     }
+
     if (action==='retry-failed') {
       const {data,error} = await db.from('call_history').update({transcript:null,transcribed_at:null}).eq('transcript','[transcription_failed]').select('id')
       return NextResponse.json({success:!error,reset:data?.length||0})
     }
+
     if (action==='stats') {
       const {count:total} = await db.from('call_history').select('id',{count:'exact',head:true})
-      const {count:withTranscript} = await db.from('call_history').select('id',{count:'exact',head:true}).not('transcript','is',null).neq('transcript','[transcription_failed]').neq('transcript','[no_recording]')
+      const {count:withTranscript} = await db.from('call_history').select('id',{count:'exact',head:true}).not('transcript','is',null).neq('transcript','[transcription_failed]').neq('transcript','[no_recording]').neq('transcript','[recording_expired]')
       const {count:withScore} = await db.from('call_history').select('id',{count:'exact',head:true}).not('lead_score','is',null).neq('lead_score','unknown')
       const {count:hot} = await db.from('call_history').select('id',{count:'exact',head:true}).eq('lead_score','hot')
       const {count:warm} = await db.from('call_history').select('id',{count:'exact',head:true}).eq('lead_score','warm')
       const {count:cold} = await db.from('call_history').select('id',{count:'exact',head:true}).eq('lead_score','cold')
       const {count:pending} = await db.from('call_history').select('id',{count:'exact',head:true}).is('transcript',null).not('raw_data','is',null)
       const {count:failed} = await db.from('call_history').select('id',{count:'exact',head:true}).eq('transcript','[transcription_failed]')
-      return NextResponse.json({total,withTranscript,withScore,hot,warm,cold,pending,failed})
+      const {count:expiredCount} = await db.from('call_history').select('id',{count:'exact',head:true}).eq('transcript','[recording_expired]')
+      return NextResponse.json({total,withTranscript,withScore,hot,warm,cold,pending,failed,expired:expiredCount})
     }
+
     return NextResponse.json({error:'Use: batch, score, debug, retry-failed, stats'},{status:400})
   } catch(e:any) {
     return NextResponse.json({error:e.message},{status:500})
   }
 }
-export async function GET(req: NextRequest) { return POST(req) }
+export async function GET(req: NextRequest) {
+  return POST(req)
+}
