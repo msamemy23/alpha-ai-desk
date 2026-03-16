@@ -36,7 +36,7 @@ async function fetchPage(startDate: string, endDate: string, pageNum: number) {
 export async function POST(req: NextRequest) {
   if (!TELNYX_API_KEY) return NextResponse.json({ error: 'No API key' }, { status: 500 })
   try {
-    let body: any = {}; try { body = await req.json() } catch {}
+    const url = new URL(req.url); let body: any = {}; try { body = await req.json() } catch {} if (url.searchParams.get('start')) body.start_date = url.searchParams.get('start'); if (url.searchParams.get('end')) body.end_date = url.searchParams.get('end')
     const db = getServiceClient()
     const now = new Date()
     // Default: sync 1 month chunks starting from 2024-01-01
