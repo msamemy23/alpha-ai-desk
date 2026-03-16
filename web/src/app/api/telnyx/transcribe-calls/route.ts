@@ -7,6 +7,21 @@ const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ''
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
 
+// Get fresh download URL from Telnyx API (stored S3 URLs expire)
+async function getFreshDownloadUrl(recordingId: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${TELNYX_BASE}/recordings/${recordingId}`, {
+      headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` },
+    })
+    if (!res.ok) return null
+    const data = await res.json()
+    return data.data?.download_urls?.mp3 || data.data?.download_urls?.wav || null
+  } catch (e) {
+    console.error('Failed to get fresh download URL:', e)
+    return null
+  }
+}
+
 async function getRecordingTranscription(recordingId: string): Promise<string | null> {
   try {
     const res = await fetch(`${TELNYX_BASE}/recordings/${recordingId}/transcriptions`, {
@@ -21,14 +36,10 @@ async function getRecordingTranscription(recordingId: string): Promise<string | 
     // Request new transcription
     const createRes = await fetch(`${TELNYX_BASE}/recordings/${recordingId}/transcriptions`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${TELNYX_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ language: 'en' }),
     })
     if (!createRes.ok) return null
-    // Poll for result
     for (let i = 0; i < 6; i++) {
       await new Promise(r => setTimeout(r, 5000))
       const pollRes = await fetch(`${TELNYX_BASE}/recordings/${recordingId}/transcriptions`, {
@@ -36,9 +47,7 @@ async function getRecordingTranscription(recordingId: string): Promise<string | 
       })
       if (pollRes.ok) {
         const pollData = await pollRes.json()
-        if (pollData.data?.length > 0 && pollData.data[0].text) {
-          return pollData.data[0].text
-        }
+        if (pollData.data?.length > 0 && pollData.data[0].text) return pollData.data[0].text
       }
     }
     return null
@@ -51,22 +60,25 @@ async function getRecordingTranscription(recordingId: string): Promise<string | 
 async function transcribeViaWhisper(downloadUrl: string): Promise<string | null> {
   try {
     if (!OPENAI_API_KEY) return null
-    // S3 pre-signed URLs don't need auth headers - try without first
+    // Try without auth first (fresh URLs), then with Telnyx auth
     let audioRes = await fetch(downloadUrl)
-    // If that fails, try with Telnyx auth
     if (!audioRes.ok) {
       audioRes = await fetch(downloadUrl, {
         headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` },
       })
     }
     if (!audioRes.ok) {
-      console.error('Failed to download recording:', audioRes.status, downloadUrl.substring(0, 80))
+      console.error('Download failed:', audioRes.status, downloadUrl.substring(0, 80))
       return null
     }
     const audioBuffer = await audioRes.arrayBuffer()
-    const audioBlob = new Blob([audioBuffer], { type: 'audio/wav' })
+    if (audioBuffer.byteLength < 1000) {
+      console.error('Audio too small:', audioBuffer.byteLength)
+      return null
+    }
+    const audioBlob = new Blob([audioBuffer], { type: 'audio/mp3' })
     const formData = new FormData()
-    formData.append('file', audioBlob, 'recording.wav')
+    formData.append('file', audioBlob, 'recording.mp3')
     formData.append('model', 'whisper-1')
     formData.append('language', 'en')
     const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
@@ -75,58 +87,41 @@ async function transcribeViaWhisper(downloadUrl: string): Promise<string | null>
       body: formData,
     })
     if (!whisperRes.ok) {
-      const errText = await whisperRes.text()
-      console.error('Whisper error:', whisperRes.status, errText)
+      console.error('Whisper error:', whisperRes.status, await whisperRes.text())
       return null
     }
     const whisperData = await whisperRes.json()
     return whisperData.text || null
   } catch (e) {
-    console.error('Whisper transcription error:', e)
+    console.error('Whisper error:', e)
     return null
   }
 }
 
 async function scoreLeadFromTranscript(transcript: string): Promise<{
-  lead_score: string
-  lead_reasoning: string
-  service_needed: string
-  caller_sentiment: string
-  key_quotes: string
+  lead_score: string; lead_reasoning: string; service_needed: string;
+  caller_sentiment: string; key_quotes: string;
 }> {
-  if (!OPENAI_API_KEY || !transcript || transcript.length < 20) {
-    return { lead_score: 'unknown', lead_reasoning: 'Transcript too short', service_needed: '', caller_sentiment: '', key_quotes: '' }
-  }
+  const empty = { lead_score: 'unknown', lead_reasoning: '', service_needed: '', caller_sentiment: '', key_quotes: '' }
+  if (!OPENAI_API_KEY || !transcript || transcript.length < 20) return { ...empty, lead_reasoning: 'Transcript too short' }
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'gpt-4o-mini',
         messages: [{
           role: 'system',
-          content: `You are an AI assistant for Alpha International Auto Center, an auto repair shop in Houston TX. Analyze call transcripts and score leads. Respond in JSON only with these fields:
-- lead_score: "hot" (ready to book/bring car in/asked about availability), "warm" (interested but shopping around/asking prices), or "cold" (spam/wrong number/existing customer checking status/robocall)
-- lead_reasoning: Brief explanation (1-2 sentences)
-- service_needed: What auto service they need (e.g., "brake pads", "oil change", "transmission repair", "unknown")
-- caller_sentiment: "positive", "neutral", "frustrated", or "spam"
-- key_quotes: 1-2 important quotes from the caller (max 50 words total)`
+          content: `You are an AI assistant for Alpha International Auto Center, an auto repair shop in Houston TX. Analyze call transcripts and score leads. Respond in JSON only:\n- lead_score: "hot" (ready to book/bring car in), "warm" (interested/asking prices), "cold" (spam/wrong number/robocall)\n- lead_reasoning: Brief explanation (1-2 sentences)\n- service_needed: What service they need\n- caller_sentiment: "positive", "neutral", "frustrated", or "spam"\n- key_quotes: 1-2 important caller quotes (max 50 words)`
         }, {
-          role: 'user',
-          content: `Analyze this auto repair shop call transcript:\n\n${transcript.substring(0, 3000)}`
+          role: 'user', content: `Analyze this call transcript:\n\n${transcript.substring(0, 3000)}`
         }],
-        temperature: 0.3,
-        max_tokens: 500,
-        response_format: { type: 'json_object' },
+        temperature: 0.3, max_tokens: 500, response_format: { type: 'json_object' },
       }),
     })
-    if (!res.ok) return { lead_score: 'unknown', lead_reasoning: 'AI scoring failed', service_needed: '', caller_sentiment: '', key_quotes: '' }
+    if (!res.ok) return { ...empty, lead_reasoning: 'AI scoring failed' }
     const data = await res.json()
-    const content = data.choices?.[0]?.message?.content || '{}'
-    const parsed = JSON.parse(content)
+    const parsed = JSON.parse(data.choices?.[0]?.message?.content || '{}')
     return {
       lead_score: parsed.lead_score || 'unknown',
       lead_reasoning: parsed.lead_reasoning || '',
@@ -135,7 +130,7 @@ async function scoreLeadFromTranscript(transcript: string): Promise<{
       key_quotes: parsed.key_quotes || '',
     }
   } catch (e: any) {
-    return { lead_score: 'unknown', lead_reasoning: e.message, service_needed: '', caller_sentiment: '', key_quotes: '' }
+    return { ...empty, lead_reasoning: e.message }
   }
 }
 
@@ -159,30 +154,28 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ success: true, processed: 0, remaining: 0, error: error?.message })
       }
 
-      let transcribed = 0
-      let scored = 0
+      let transcribed = 0, scored = 0
       const results: any[] = []
 
       for (const call of calls) {
         const rawData = call.raw_data as any
-        if (!rawData?.recording_id && !rawData?.download_urls) {
-          results.push({ id: call.id, status: 'no_recording_data' })
+        const recordingId = rawData?.recording_id
+        if (!recordingId) {
+          results.push({ id: call.id, status: 'no_recording_id' })
           continue
         }
 
         let transcript: string | null = null
 
-        // Try Telnyx transcription first
-        if (rawData.recording_id) {
-          transcript = await getRecordingTranscription(rawData.recording_id)
-        }
+        // Try Telnyx native transcription first
+        transcript = await getRecordingTranscription(recordingId)
 
-        // Fallback to Whisper via direct download
-        if (!transcript && rawData.download_urls?.wav) {
-          transcript = await transcribeViaWhisper(rawData.download_urls.wav)
-        }
-        if (!transcript && rawData.download_urls?.mp3) {
-          transcript = await transcribeViaWhisper(rawData.download_urls.mp3)
+        // Fallback: get FRESH download URL from Telnyx API then Whisper
+        if (!transcript) {
+          const freshUrl = await getFreshDownloadUrl(recordingId)
+          if (freshUrl) {
+            transcript = await transcribeViaWhisper(freshUrl)
+          }
         }
 
         if (transcript) {
@@ -196,11 +189,8 @@ export async function POST(req: NextRequest) {
             key_quotes: scoring.key_quotes,
             transcribed_at: new Date().toISOString(),
           }).eq('id', call.id)
-          if (!updateErr) {
-            transcribed++
-            scored++
-            results.push({ id: call.id, lead_score: scoring.lead_score, service: scoring.service_needed })
-          }
+          if (!updateErr) { transcribed++; scored++ }
+          results.push({ id: call.id, lead_score: scoring.lead_score, service: scoring.service_needed })
         } else {
           await db.from('call_history').update({
             transcript: '[transcription_failed]',
@@ -211,48 +201,16 @@ export async function POST(req: NextRequest) {
       }
 
       const { count } = await db.from('call_history').select('id', { count: 'exact', head: true }).is('transcript', null).not('raw_data', 'is', null)
-      return NextResponse.json({
-        success: true,
-        processed: calls.length,
-        transcribed,
-        scored,
-        remaining: count || 0,
-        results,
-      })
+      return NextResponse.json({ success: true, processed: calls.length, transcribed, scored, remaining: count || 0, results })
     }
 
     if (action === 'retry-failed') {
-      // Reset failed transcriptions so they can be retried
       const { data: updated, error } = await db
         .from('call_history')
         .update({ transcript: null, transcribed_at: null })
         .eq('transcript', '[transcription_failed]')
         .select('id')
-      return NextResponse.json({ success: !error, reset: updated?.length || 0, error: error?.message })
-    }
-
-    if (action === 'score-only') {
-      const { data: calls } = await db
-        .from('call_history')
-        .select('id, transcript')
-        .is('lead_score', null)
-        .not('transcript', 'is', null)
-        .neq('transcript', '[transcription_failed]')
-        .limit(limit)
-      if (!calls?.length) return NextResponse.json({ success: true, scored: 0 })
-      let scored = 0
-      for (const call of calls) {
-        const scoring = await scoreLeadFromTranscript(call.transcript)
-        await db.from('call_history').update({
-          lead_score: scoring.lead_score,
-          lead_reasoning: scoring.lead_reasoning,
-          service_needed: scoring.service_needed,
-          caller_sentiment: scoring.caller_sentiment,
-          key_quotes: scoring.key_quotes,
-        }).eq('id', call.id)
-        scored++
-      }
-      return NextResponse.json({ success: true, scored })
+      return NextResponse.json({ success: !error, reset: updated?.length || 0 })
     }
 
     if (action === 'stats') {
@@ -267,10 +225,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ total, withTranscript, withScore, hot, warm, cold, pending, failed })
     }
 
-    return NextResponse.json({ error: 'Unknown action. Use: batch, retry-failed, score-only, stats' }, { status: 400 })
+    return NextResponse.json({ error: 'Use: batch, retry-failed, stats' }, { status: 400 })
   } catch (e: any) {
     console.error('Transcribe error:', e)
-    return NextResponse.json({ error: e.message || 'Transcription failed' }, { status: 500 })
+    return NextResponse.json({ error: e.message }, { status: 500 })
   }
 }
 
