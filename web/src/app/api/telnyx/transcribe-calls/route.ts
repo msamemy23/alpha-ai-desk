@@ -8,6 +8,27 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
 const AI_MODEL = process.env.AI_MODEL || 'deepseek/deepseek-r1'
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
 
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ''
+async function transcribeViaWhisper(downloadUrl: string): Promise<string | null> {
+  try {
+    if (!OPENAI_API_KEY) return null
+    let audioRes = await fetch(downloadUrl)
+    if (!audioRes.ok) audioRes = await fetch(downloadUrl, { headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` } })
+    if (!audioRes.ok) return null
+    const buf = await audioRes.arrayBuffer()
+    const blob = new Blob([buf], { type: 'audio/wav' })
+    const fd = new FormData()
+    fd.append('file', blob, 'recording.wav')
+    fd.append('model', 'whisper-1')
+    fd.append('language', 'en')
+    const wr = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST', headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}` }, body: fd,
+    })
+    if (!wr.ok) return null
+    const d = await wr.json()
+    return d.text || null
+  } catch { return null }
+}
 // Score lead using OpenRouter DeepSeek (your existing AI model)
 async function scoreLeadFromTranscript(transcript: string): Promise<{
   lead_score: string; lead_reasoning: string; service_needed: string;
@@ -171,10 +192,16 @@ export async function POST(req: NextRequest) {
         if (text) {
           transcript = text
         } else {
-          // Request transcription and mark as pending
-          await requestTelnyxTranscription(recordingId)
-          transcriptError = telErr
-        }
+          // Telnyx transcription failed - try Whisper fallback
+          const wavUrl = rd?.download_urls?.wav || rd?.download_urls?.mp3
+          if (wavUrl) {
+            transcript = await transcribeViaWhisper(wavUrl)
+          }
+          if (!transcript) {
+            await requestTelnyxTranscription(recordingId)
+            transcriptError = telErr
+          }
+                  }
 
         if (transcript) {
           const scoring = await scoreLeadFromTranscript(transcript)
