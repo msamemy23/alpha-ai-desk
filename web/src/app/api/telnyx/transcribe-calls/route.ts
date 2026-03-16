@@ -1,3 +1,4 @@
+// OpenRouter transcription v2
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
 
