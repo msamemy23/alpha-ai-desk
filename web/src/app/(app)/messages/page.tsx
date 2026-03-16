@@ -398,6 +398,31 @@ export default function MessagesPage() {
               )}
 
               {/* Action Buttons */}
+
+                      {/* AI Lead Insights */}
+                {selectedCall.lead_score && selectedCall.lead_score !== 'unknown' && (
+                  <div className="space-y-3">
+                    <div className="text-sm font-semibold mb-2">AI Lead Insights</div>
+                    <div className="bg-black/30 rounded-lg p-4 space-y-2 border border-white/10">
+                      <div className="flex items-center gap-2">
+                        <span className="text-gray-400 text-xs">Lead Score:</span>
+                        <LeadBadge score={selectedCall.lead_score} />
+                      </div>
+                      {selectedCall.lead_reasoning && (
+                        <div><span className="text-gray-400 text-xs">Reasoning:</span><p className="text-sm text-gray-200 mt-0.5">{selectedCall.lead_reasoning}</p></div>
+                      )}
+                      {selectedCall.service_needed && (
+                        <div><span className="text-gray-400 text-xs">Service Needed:</span><p className="text-sm text-white mt-0.5">{selectedCall.service_needed}</p></div>
+                      )}
+                      {selectedCall.caller_sentiment && (
+                        <div><span className="text-gray-400 text-xs">Sentiment:</span><span className="ml-1 text-sm capitalize">{selectedCall.caller_sentiment}</span></div>
+                      )}
+                      {selectedCall.key_quotes && (
+                        <div><span className="text-gray-400 text-xs">Key Quotes:</span><p className="text-sm text-gray-300 mt-0.5 italic">"{selectedCall.key_quotes}"</p></div>
+                      )}
+                    </div>
+                  </div>
+                )}
               <div className="flex gap-2">
                 <button onClick={() => makeCall(selectedCall.direction === 'inbound' ? selectedCall.from_number : selectedCall.to_number)}
                   className="btn btn-primary px-4 py-2 rounded-lg text-sm">Call Back</button>
