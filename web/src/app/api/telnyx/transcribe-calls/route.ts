@@ -5,6 +5,7 @@ const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
 const AI_MODEL = process.env.AI_MODEL || 'deepseek/deepseek-r1'
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
+
 async function getFreshWavUrl(rid: string): Promise<string|null> {
   try {
     const r = await fetch(`${TELNYX_BASE}/recordings/${rid}`,{headers:{'Authorization':`Bearer ${TELNYX_API_KEY}`}})
@@ -13,6 +14,7 @@ async function getFreshWavUrl(rid: string): Promise<string|null> {
     return d.data?.download_urls?.wav||d.data?.download_urls?.mp3||null
   } catch{return null}
 }
+
 async function transcribeViaOpenRouter(url: string): Promise<string|null> {
   try {
     if (!OPENROUTER_API_KEY) return null
@@ -28,8 +30,8 @@ async function transcribeViaOpenRouter(url: string): Promise<string|null> {
     return t&&t.length>5?t:null
   } catch{return null}
 }
-async function scoreLeadFromTranscript(t: string):
-  Promise<{lead_score:string;lead_reasoning:string;service_needed:string;caller_sentiment:string;key_quotes:string}> {
+
+async function scoreLeadFromTranscript(t: string): Promise<{lead_score:string;lead_reasoning:string;service_needed:string;caller_sentiment:string;key_quotes:string}> {
   const e = {lead_score:'unknown',lead_reasoning:'',service_needed:'',caller_sentiment:'',key_quotes:''}
   if (!OPENROUTER_API_KEY||!t||t.length<20) return {...e,lead_reasoning:'Transcript too short'}
   try {
@@ -41,6 +43,7 @@ async function scoreLeadFromTranscript(t: string):
     return {lead_score:p.lead_score||'unknown',lead_reasoning:p.lead_reasoning||'',service_needed:p.service_needed||'',caller_sentiment:p.caller_sentiment||'',key_quotes:p.key_quotes||''}
   } catch(x:any){return {...e,lead_reasoning:x.message}}
 }
+
 async function getTelnyxTranscription(rid: string): Promise<{text:string|null;error?:string}> {
   try {
     const r = await fetch(`${TELNYX_BASE}/recordings/${rid}/transcriptions`,{headers:{'Authorization':`Bearer ${TELNYX_API_KEY}`}})
@@ -52,12 +55,14 @@ async function getTelnyxTranscription(rid: string): Promise<{text:string|null;er
     return {text:tr.transcription_text||null}
   } catch(x:any){return {text:null,error:x.message}}
 }
+
 async function requestTelnyxTranscription(rid: string): Promise<boolean> {
   try {
     const r = await fetch(`${TELNYX_BASE}/recordings/${rid}/transcriptions`,{method:'POST',headers:{'Authorization':`Bearer ${TELNYX_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({language_code:'en-US'})})
     return r.ok||r.status===409
   } catch{return false}
 }
+
 export async function POST(req: NextRequest) {
   try {
     const url = new URL(req.url)
@@ -89,7 +94,7 @@ export async function POST(req: NextRequest) {
       const {data:calls,error} = await db.from('call_history').select('id,call_id,raw_data,transcript').is('transcript',null).not('raw_data','is',null).order('start_time',{ascending:false}).limit(limit)
       if (error||!calls?.length) return NextResponse.json({success:true,processed:0,remaining:0,error:error?.message})
       let transcribed=0,scored=0,expired=0
-      const results:any[]=[] 
+      const results:any[]=[]      
       for (const call of calls) {
         const rd = call.raw_data as any
         const rid = rd?.recording_id
@@ -97,28 +102,45 @@ export async function POST(req: NextRequest) {
         let transcript:string|null=null
         let transcriptError:string|undefined
 
+        // Step 1: Try to get a fresh URL from Telnyx API
         const freshUrl = rid ? await getFreshWavUrl(rid) : null
-        const audioUrl = freshUrl||storedUrl
+        
+        // Step 2: Use freshUrl if available, otherwise fall back to storedUrl
+        const audioUrl = freshUrl || storedUrl
 
+        // Step 3: Try OpenRouter transcription with whatever URL we have
         if (audioUrl) {
           transcript = await transcribeViaOpenRouter(audioUrl)
         }
 
-        if (!transcript&&rid) {
+        // Step 4: If OpenRouter failed but we have storedUrl and didn't try it yet, try storedUrl directly
+        if (!transcript && storedUrl && freshUrl && storedUrl !== freshUrl) {
+          transcript = await transcribeViaOpenRouter(storedUrl)
+        }
+
+        // Step 5: Try Telnyx native transcription as last resort
+        if (!transcript && rid) {
           const {text,error:te} = await getTelnyxTranscription(rid)
           if (text) transcript=text; else transcriptError=te
         }
 
-        if (!transcript&&!audioUrl&&!rid) {
+        // No recording ID and no stored URL = truly no audio
+        if (!transcript && !audioUrl && !rid) {
           await db.from('call_history').update({transcript:'[no_recording]'}).eq('id',call.id)
           results.push({id:call.id,status:'no_audio_source'}); continue
         }
 
-        // KEY FIX: If Telnyx returns 404, the recording has expired - mark it permanently
-        if (!transcript && transcriptError && (transcriptError.includes('404') || transcriptError.includes('TELNYX_404'))) {
+        // Only mark as expired if BOTH fresh URL and stored URL are unavailable
+        if (!transcript && !freshUrl && !storedUrl) {
           await db.from('call_history').update({transcript:'[recording_expired]',transcribed_at:new Date().toISOString()}).eq('id',call.id)
           expired++
           results.push({id:call.id,status:'recording_expired'}); continue
+        }
+
+        // We had a URL but transcription failed - mark as failed, not expired
+        if (!transcript && audioUrl) {
+          await db.from('call_history').update({transcript:'[transcription_failed]',transcribed_at:new Date().toISOString()}).eq('id',call.id)
+          results.push({id:call.id,status:'transcription_failed',error:transcriptError,had_url:true}); continue
         }
 
         if (!transcript) {
@@ -136,7 +158,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (action==='retry-failed') {
-      const {data,error} = await db.from('call_history').update({transcript:null,transcribed_at:null}).eq('transcript','[transcription_failed]').select('id')
+      const {data,error} = await db.from('call_history').update({transcript:null,transcribed_at:null}).in('transcript',['[transcription_failed]','[recording_expired]']).select('id')
       return NextResponse.json({success:!error,reset:data?.length||0})
     }
 
