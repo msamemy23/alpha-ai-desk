@@ -2,565 +2,479 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { supabase, markMessageRead } from '@/lib/supabase'
 
-interface Message { id: string; direction: string; channel: string; from_address: string; to_address: string; body: string; status: string; read: boolean; created_at: string; customer?: { name: string; phone: string; email: string }; subject?: string }
-interface Thread { contact: string; messages: Message[]; unread: number; lastMsg: Message }
-interface Activity { id: string; type: string; customer_name?: string; notes?: string; phone?: string; created_at: string }
-interface AiCall { id: string; task: string; status: string; transcript: Array<{speaker: string; text: string}>; summary: string; recording_url: string; started_at: number }
-interface Customer { id: string; name: string; phone: string; email: string }
-interface TelnyxRecording {
+interface CallRecord {
   id: string
-  from: string
-  to: string
-  connection_id: string
-  recording_started_at: string
-  recording_ended_at: string
-  duration_millis: number
-  download_urls: { mp3?: string; wav?: string }
+  call_id: string
+  direction: string
+  from_number: string
+  to_number: string
+  duration_secs: number
   status: string
-  initiated_by: string
-  call_session_id: string
+  start_time: string
+  end_time: string
+  matched_customer_name: string | null
+  transcript: string | null
+  lead_score: string | null
+  lead_reasoning: string | null
+  service_needed: string | null
+  caller_sentiment: string | null
+  key_quotes: string | null
+  call_count_from_number: number | null
+  raw_data: any
+}
+
+interface Message {
+  id: string; direction: string; channel: string; from_address: string; to_address: string;
+  body: string; status: string; read: boolean; created_at: string;
+  customer?: { name: string; phone: string; email: string }; subject?: string
+}
+interface Thread { contact: string; messages: Message[]; unread: number; lastMsg: Message }
+interface Customer { id: string; name: string; phone: string; email: string }
+
+const SHOP_NUM = '+17136636979'
+
+function formatPhone(p: string) {
+  if (!p) return ''
+  const d = p.replace(/\D/g, '')
+  if (d.length === 11 && d[0] === '1') return `(${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`
+  if (d.length === 10) return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`
+  return p
+}
+
+function formatDuration(s: number) {
+  if (!s || s <= 0) return '0:00'
+  const m = Math.floor(s / 60)
+  const sec = Math.floor(s % 60)
+  return `${m}:${sec.toString().padStart(2, '0')}`
+}
+
+function formatDate(d: string) {
+  if (!d) return ''
+  const dt = new Date(d)
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' +
+    dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+}
+
+function LeadBadge({ score }: { score: string | null }) {
+  if (!score || score === 'unknown') return null
+  const colors: Record<string, string> = {
+    hot: 'bg-red-500/20 text-red-400 border-red-500/30',
+    warm: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+    cold: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  }
+  return (
+    <span className={`text-xs px-2 py-0.5 rounded-full border font-medium uppercase ${colors[score] || 'bg-gray-500/20 text-gray-400'}`}>
+      {score}
+    </span>
+  )
+}
+
+function DirectionBadge({ dir }: { dir: string }) {
+  const isIn = dir === 'inbound' || dir === 'in'
+  return (
+    <span className={`text-xs px-2 py-0.5 rounded font-medium ${
+      isIn ? 'bg-green-500/20 text-green-400' : 'bg-purple-500/20 text-purple-400'
+    }`}>
+      {isIn ? 'Inbound' : 'Outbound'}
+    </span>
+  )
 }
 
 export default function MessagesPage() {
+  const [tab, setTab] = useState<'calls'|'sms'>('calls')
+  const [calls, setCalls] = useState<CallRecord[]>([])
   const [messages, setMessages] = useState<Message[]>([])
-  const [activities, setActivities] = useState<Activity[]>([])
-  const [aiCalls, setAiCalls] = useState<AiCall[]>([])
-  const [expandedCall, setExpandedCall] = useState<string | null>(null)
   const [customers, setCustomers] = useState<Customer[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
+  const [selectedCall, setSelectedCall] = useState<CallRecord | null>(null)
+  const [selectedThread, setSelectedThread] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [callFilter, setCallFilter] = useState<'all'|'inbound'|'outbound'>('all')
+  const [searchTerm, setSearchTerm] = useState('')
   const [compose, setCompose] = useState(false)
-  const [sendTo, setSendTo] = useState(''); const [sendBody, setSendBody] = useState('')
+  const [sendTo, setSendTo] = useState('')
+  const [sendBody, setSendBody] = useState('')
   const [sendChannel, setSendChannel] = useState<'sms'|'email'>('sms')
   const [sending, setSending] = useState(false)
-  const [tab, setTab] = useState<'sms'|'calls'|'recordings'>('sms')
   const [dialerNum, setDialerNum] = useState('')
-  const [calling, setCalling] = useState(false)
-  const [deletingCall, setDeletingCall] = useState<string | null>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
-  // Telnyx Recordings
-  const [recordings, setRecordings] = useState<TelnyxRecording[]>([])
-  const [recordingsLoading, setRecordingsLoading] = useState(false)
-  const [expandedRecording, setExpandedRecording] = useState<string | null>(null)
-  const [recordingSummaries, setRecordingSummaries] = useState<Record<string, { summary: string; transcript: string }>>({})
-  const [summarizingRecording, setSummarizingRecording] = useState<string | null>(null)
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const [playing, setPlaying] = useState(false)
 
-  const load = useCallback(async () => {
-    const [{ data: msgs }, { data: acts }, { data: custs }, { data: aiCallData }] = await Promise.all([
-      supabase.from('messages').select('*, customer:customers(name,phone,email)').order('created_at', { ascending: false }).limit(200),
-      supabase.from('activities').select('*').eq('type','call').order('created_at', { ascending: false }).limit(50),
-      supabase.from('customers').select('id,name,phone,email').not('phone','is',null).limit(50),
-      supabase.from('ai_calls').select('*').order('started_at', { ascending: false }).limit(50)
-    ])
-    setMessages((msgs || []) as Message[])
-    setActivities((acts || []) as Activity[])
-    setCustomers((custs || []) as Customer[])
-    setAiCalls((aiCallData || []) as AiCall[])
+  const loadCalls = useCallback(async () => {
+    const { data } = await supabase
+      .from('call_history')
+      .select('id, call_id, direction, from_number, to_number, duration_secs, status, start_time, end_time, matched_customer_name, transcript, lead_score, lead_reasoning, service_needed, caller_sentiment, key_quotes, call_count_from_number, raw_data')
+      .order('start_time', { ascending: false })
+      .limit(200)
+    if (data) setCalls(data)
+  }, [])
+
+  const loadMessages = useCallback(async () => {
+    const { data } = await supabase
+      .from('messages')
+      .select('*, customer:customers(name, phone, email)')
+      .order('created_at', { ascending: false })
+      .limit(500)
+    if (data) setMessages(data as any)
+  }, [])
+
+  const loadCustomers = useCallback(async () => {
+    const { data } = await supabase.from('customers').select('id, name, phone, email').limit(100)
+    if (data) setCustomers(data)
   }, [])
 
   useEffect(() => {
-    load()
-    const ch = supabase.channel('messages_page')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, load)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'activities' }, load)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'ai_calls' }, load)
-      .subscribe()
-    return () => { supabase.removeChannel(ch) }
-  }, [load])
-
-  const threadMap: Record<string, Thread> = {}
-  messages.forEach(m => {
-    const contact = m.direction === 'inbound' ? m.from_address : m.to_address
-    if (!contact) return
-    if (!threadMap[contact]) threadMap[contact] = { contact, messages: [], unread: 0, lastMsg: m }
-    threadMap[contact].messages.push(m)
-    if (!m.read && m.direction === 'inbound') threadMap[contact].unread++
-  })
-  const threads = Object.values(threadMap).sort((a, b) => new Date(b.lastMsg.created_at).getTime() - new Date(a.lastMsg.created_at).getTime())
-  const activeThread = selected ? threadMap[selected] : null
-
-  const openThread = async (contact: string) => {
-    setSelected(contact)
-    const unreadIds = (threadMap[contact]?.messages || []).filter(m => !m.read && m.direction === 'inbound').map(m => m.id)
-    for (const id of unreadIds) await markMessageRead(id)
-    load(); setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
-  }
-  const sendMessage = async () => {
-    if (!sendTo || !sendBody) return; setSending(true)
-    try {
-      const res = await fetch('/api/send-message', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: sendTo, body: sendBody, channel: sendChannel }) })
-      const data = await res.json(); if (!res.ok) throw new Error(data.error || 'Send failed')
-      setSendTo(''); setSendBody(''); setCompose(false); load()
-    } catch (e: unknown) { alert((e as Error).message) } finally { setSending(false) }
-  }
-  const sendReply = async () => {
-    if (!selected || !sendBody) return; setSending(true)
-    try {
-      const channel = activeThread?.messages[0]?.channel || 'sms'
-      const res = await fetch('/api/send-message', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: selected, body: sendBody, channel }) })
-      if (!res.ok) throw new Error('Send failed'); setSendBody(''); load()
-      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 200)
-    } finally { setSending(false) }
-  }
-  const makeCall = async (to: string, name?: string) => {
-    if (!to) return; setCalling(true)
-    try {
-      const res = await fetch('/api/make-call', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to, name }) })
-      const data = await res.json(); if (!res.ok) throw new Error(data.error || 'Call failed')
-      alert('Calling ' + (name || to) + ' from (713) 663-6979...'); load()
-    } catch (e: unknown) { alert('Call failed: ' + (e as Error).message) } finally { setCalling(false) }
-  }
-  const deleteAiCall = async (id: string) => {
-    if (!confirm('Delete this call recording and summary?')) return
-    setDeletingCall(id)
-    try {
-      const res = await fetch('/api/delete-call', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id }),
-      })
-      if (!res.ok) throw new Error('Delete failed')
-      setAiCalls(prev => prev.filter(c => c.id !== id))
-      if (expandedCall === id) setExpandedCall(null)
-    } catch (e: unknown) {
-      alert('Could not delete: ' + (e as Error).message)
-    } finally {
-      setDeletingCall(null)
-    }
-  }
-
-  const fmt = (d: string) => new Date(d).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-  const getContactName = (phone: string) => customers.find(c => c.phone?.replace(/\D/g,'') === phone.replace(/\D/g,''))?.name || phone
-
-  const fmtPhone = (phone: string) => {
-    const d = phone.replace(/\D/g, '')
-    if (d.length === 11 && d.startsWith('1')) {
-      return `(${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`
-    }
-    if (d.length === 10) {
-      return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`
-    }
-    return phone
-  }
-
-  const fmtDuration = (ms: number) => {
-    const totalSec = Math.round(ms / 1000)
-    const min = Math.floor(totalSec / 60)
-    const sec = totalSec % 60
-    return `${min}:${sec.toString().padStart(2, '0')}`
-  }
-
-  const fetchRecordings = useCallback(async () => {
-    setRecordingsLoading(true)
-    try {
-      const res = await fetch('/api/telnyx-recordings')
-      const data = await res.json()
-      setRecordings((data.recordings || []) as TelnyxRecording[])
-    } catch { setRecordings([]) }
-    finally { setRecordingsLoading(false) }
+    setLoading(true)
+    Promise.all([loadCalls(), loadMessages(), loadCustomers()]).finally(() => setLoading(false))
   }, [])
 
-  useEffect(() => { if (tab === 'recordings') fetchRecordings() }, [tab, fetchRecordings])
+  // Group messages into threads
+  const threads: Thread[] = (() => {
+    const map: Record<string, Message[]> = {}
+    messages.filter(m => m.channel === 'sms').forEach(m => {
+      const contact = m.direction === 'inbound' ? m.from_address : m.to_address
+      if (!map[contact]) map[contact] = []
+      map[contact].push(m)
+    })
+    return Object.entries(map).map(([contact, msgs]) => ({
+      contact,
+      messages: msgs.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
+      unread: msgs.filter(m => !m.read && m.direction === 'inbound').length,
+      lastMsg: msgs[msgs.length - 1],
+    })).sort((a, b) => new Date(b.lastMsg.created_at).getTime() - new Date(a.lastMsg.created_at).getTime())
+  })()
 
-  const generateSummary = async (recordingId: string) => {
-    setSummarizingRecording(recordingId)
-    try {
-      const res = await fetch('/api/recording-summary', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recording_id: recordingId }),
-      })
-      const data = await res.json()
-      setRecordingSummaries(prev => ({
-        ...prev,
-        [recordingId]: { summary: data.summary || 'No summary available.', transcript: data.transcript || '' }
-      }))
-    } catch {
-      setRecordingSummaries(prev => ({
-        ...prev,
-        [recordingId]: { summary: 'Failed to generate summary.', transcript: '' }
-      }))
+  const filteredCalls = calls.filter(c => {
+    if (callFilter === 'inbound' && c.direction !== 'inbound') return false
+    if (callFilter === 'outbound' && c.direction !== 'outbound') return false
+    if (searchTerm) {
+      const s = searchTerm.toLowerCase()
+      return c.from_number?.includes(s) || c.to_number?.includes(s) ||
+        c.matched_customer_name?.toLowerCase().includes(s) ||
+        c.service_needed?.toLowerCase().includes(s) ||
+        c.lead_score?.toLowerCase().includes(s)
     }
-    finally { setSummarizingRecording(null) }
+    return true
+  })
+
+  const getRecordingUrl = (call: CallRecord) => {
+    const rd = call.raw_data
+    if (!rd) return null
+    if (rd.download_urls?.mp3) return `/api/recording-proxy?url=${encodeURIComponent(rd.download_urls.mp3)}`
+    if (rd.download_urls?.wav) return `/api/recording-proxy?url=${encodeURIComponent(rd.download_urls.wav)}`
+    if (rd.recording_id) return `/api/recording-proxy?id=${rd.recording_id}`
+    return null
   }
 
+  const playRecording = (call: CallRecord) => {
+    const url = getRecordingUrl(call)
+    if (!url || !audioRef.current) return
+    audioRef.current.src = url
+    audioRef.current.play()
+    setPlaying(true)
+  }
+
+  const sendMessage = async () => {
+    if (!sendTo || !sendBody || sending) return
+    setSending(true)
+    try {
+      await fetch('/api/send-message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: sendTo, body: sendBody, channel: sendChannel }),
+      })
+      setSendBody('')
+      setCompose(false)
+      loadMessages()
+    } finally { setSending(false) }
+  }
+
+  const makeCall = async (num: string) => {
+    if (!num) return
+    await fetch('/api/make-call', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: num }),
+    })
+  }
+
+  // ─── RENDER ───
   return (
-    <div className="flex flex-col h-[calc(100vh-48px)] overflow-hidden">
+    <div className="p-6 max-w-[1400px] mx-auto">
+      <audio ref={audioRef} onEnded={() => setPlaying(false)} className="hidden" />
+
       {/* Header */}
-      <div className="px-4 sm:px-6 py-3 border-b border-border flex items-center justify-between shrink-0">
-        <h1 className="text-lg sm:text-xl font-bold">Calls &amp; Messages</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold">Communications</h1>
         <div className="flex gap-2">
-          <button className="btn btn-secondary btn-sm" onClick={() => setTab('calls')}>Calls</button>
-          <button className="btn btn-primary btn-sm" onClick={() => { setTab('sms'); setCompose(true) }}>+ New SMS</button>
+          <button className="btn btn-secondary" onClick={() => makeCall(dialerNum)}>Call</button>
+          <input className="form-input w-48" placeholder="Phone number..." value={dialerNum} onChange={e => setDialerNum(e.target.value)} />
+          <button className="btn btn-primary" onClick={() => setCompose(true)}>+ New Message</button>
         </div>
       </div>
 
-      {/* Tab bar */}
-      <div className="flex border-b border-border shrink-0">
-        {(['sms', 'calls', 'recordings'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`flex-1 py-3 text-sm font-semibold border-b-2 bg-transparent cursor-pointer transition-colors ${
-              tab === t ? 'border-blue text-blue' : 'border-transparent text-text-muted hover:text-text-primary'
-            }`}
-          >
-            {t === 'sms' ? 'SMS' : t === 'calls' ? 'Calls' : 'Recordings'}
+      {/* Tabs */}
+      <div className="flex gap-1 mb-4 border-b border-white/10">
+        {(['calls', 'sms'] as const).map(t => (
+          <button key={t} onClick={() => { setTab(t); setSelectedCall(null); setSelectedThread(null) }}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              tab === t ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-white'
+            }`}>
+            {t === 'calls' ? `Calls (${calls.length})` : `SMS (${threads.length})`}
           </button>
         ))}
       </div>
 
-      {/* Recordings Tab */}
-      {tab === 'recordings' && (
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-          <div className="max-w-[720px] mx-auto">
-            <div className="flex items-center justify-between mb-5">
-              <p className="text-sm text-text-muted">Inbound call recordings.</p>
-              <button className="btn btn-secondary btn-sm" onClick={fetchRecordings} disabled={recordingsLoading}>
-                {recordingsLoading ? 'Loading…' : 'Refresh'}
-              </button>
-            </div>
-            {recordingsLoading && recordings.length === 0 && (
-              <div className="flex justify-center py-12">
-                <div className="w-6 h-6 border-2 border-blue border-t-transparent rounded-full animate-spin" />
-              </div>
-            )}
-            {!recordingsLoading && recordings.length === 0 && (
-              <p className="text-text-muted text-center py-8">No recordings found.</p>
-            )}
-            <div className="flex flex-col gap-3">
-              {recordings.map(rec => {
-                const audioUrl = rec.download_urls?.mp3 || rec.download_urls?.wav || ''
-                const isExpanded = expandedRecording === rec.id
-                const summaryData = recordingSummaries[rec.id]
-                const isSummarizing = summarizingRecording === rec.id
-                return (
-                  <div key={rec.id} className="bg-bg-card border border-border rounded-xl p-4">
-                    {/* Clickable header */}
-                    <div
-                      className="cursor-pointer"
-                      onClick={() => setExpandedRecording(isExpanded ? null : rec.id)}
-                    >
-                      <div className="flex flex-wrap items-center gap-2 mb-2">
-                        <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-green/10 text-green">
-                          Inbound
-                        </span>
-                        <span className="text-sm font-medium">
-                          From: {fmtPhone(rec.from || '')}
-                        </span>
-                        <span className="text-xs text-text-muted">
-                          {new Date(rec.recording_started_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-                        </span>
-                        {rec.duration_millis > 0 && (
-                          <span className="text-xs text-text-muted">{fmtDuration(rec.duration_millis)}</span>
-                        )}
-                        <span className="ml-auto text-xs text-text-muted">{isExpanded ? '▲' : '▼'}</span>
-                      </div>
-                    </div>
-                    {/* Audio player always visible */}
-                    {audioUrl && (
-                      <audio controls className="w-full h-9" src={audioUrl} preload="none" />
-                    )}
-                    {/* Expanded section */}
-                    {isExpanded && (
-                      <div className="mt-3 pt-3 border-t border-border">
-                        {!summaryData && !isSummarizing && (
-                          <button
-                            className="btn btn-primary btn-sm"
-                            onClick={(e) => { e.stopPropagation(); generateSummary(rec.id) }}
-                          >
-                            Generate Summary
-                          </button>
-                        )}
-                        {isSummarizing && (
-                          <div className="flex items-center gap-2 text-sm text-text-muted">
-                            <div className="w-4 h-4 border-2 border-blue border-t-transparent rounded-full animate-spin" />
-                            Generating summary…
-                          </div>
-                        )}
-                        {summaryData && (
-                          <div className="flex flex-col gap-3">
-                            <div className="bg-bg-hover rounded-lg p-3">
-                              <div className="text-xs font-bold text-text-muted mb-1.5">SUMMARY</div>
-                              <div className="text-sm leading-relaxed whitespace-pre-wrap">{summaryData.summary}</div>
-                            </div>
-                            {summaryData.transcript && summaryData.transcript !== '[Audio recording - transcription unavailable]' && (
-                              <div className="bg-bg-hover rounded-lg p-3">
-                                <div className="text-xs font-bold text-text-muted mb-1.5">TRANSCRIPT</div>
-                                <div className="text-sm leading-relaxed whitespace-pre-wrap">{summaryData.transcript}</div>
-                              </div>
-                            )}
-                            <button
-                              className="btn btn-secondary btn-sm self-start"
-                              onClick={(e) => { e.stopPropagation(); generateSummary(rec.id) }}
-                              disabled={isSummarizing}
-                            >
-                              Re-generate
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        </div>
-      )}
+      {loading ? <div className="text-center py-20 text-gray-400">Loading...</div> : (
+        <div className="flex gap-4" style={{ minHeight: '70vh' }}>
 
-      {tab === 'sms' && (
-        <div className="flex flex-1 overflow-hidden">
-          {/* Thread sidebar - full width on mobile when no thread selected, hidden when thread open */}
-          <div className={`${selected ? 'hidden lg:flex' : 'flex'} w-full lg:w-[280px] border-r border-border flex-col shrink-0`}>
-            <div className="p-3 border-b border-border">
-              <button className="btn btn-primary btn-sm w-full" onClick={() => setCompose(true)}>+ New Message</button>
-            </div>
-            <div className="flex-1 overflow-y-auto">
-              {threads.length === 0 && <p className="p-6 text-center text-text-muted text-sm">No messages yet. Texts from (713) 663-6979 appear here.</p>}
-              {threads.map(t => (
-                <button key={t.contact} onClick={() => openThread(t.contact)}
-                  className={`w-full text-left px-4 py-3 border-b border-border cursor-pointer block transition-colors ${selected === t.contact ? 'bg-bg-hover' : 'bg-transparent hover:bg-bg-hover'}`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs">{t.lastMsg.channel === 'sms' ? 'SMS' : 'Email'}</span>
-                    <span className="font-semibold flex-1 truncate text-sm">{getContactName(t.contact)}</span>
-                    {t.unread > 0 && <span className="bg-red text-white text-[10px] rounded-full px-1.5 py-0.5 font-bold">{t.unread}</span>}
-                  </div>
-                  <p className="text-xs text-text-muted mt-1 truncate">{t.lastMsg.body}</p>
-                  <p className="text-[11px] text-text-muted mt-0.5">{fmt(t.lastMsg.created_at)}</p>
-                </button>
-              ))}
-            </div>
-          </div>
+          {/* ─── LEFT: List ─── */}
+          <div className={`${selectedCall || selectedThread ? 'w-1/2' : 'w-full'} transition-all`}>
 
-          {/* Chat area - full width on mobile when thread selected, hidden when no thread */}
-          <div className={`${selected ? 'flex' : 'hidden lg:flex'} flex-1 flex-col overflow-hidden`}>
-            {!selected ? (
-              <div className="flex-1 flex items-center justify-center text-text-muted">
-                <div className="text-center">
-                  <div className="text-5xl mb-4">💬</div>
-                  <p className="font-semibold">Select a conversation</p>
-                  <p className="text-sm mt-2">or click + New Message to start one</p>
-                </div>
-              </div>
-            ) : (
+            {tab === 'calls' && (
               <>
-                <div className="px-4 py-3 border-b border-border flex items-center justify-between shrink-0 gap-2">
-                  <div className="min-w-0">
-                    <div className="font-semibold truncate">{getContactName(selected)}</div>
-                    <div className="text-xs text-text-muted truncate">{selected}</div>
-                  </div>
-                  <div className="flex gap-2 shrink-0">
-                    <button className="btn btn-secondary btn-sm lg:hidden" onClick={() => setSelected(null)}>←</button>
-                    <button className="btn btn-secondary btn-sm" onClick={() => makeCall(selected, getContactName(selected))} disabled={calling}>Call</button>
-                    <button className="btn btn-secondary btn-sm hidden lg:inline-flex" onClick={() => setSelected(null)}>X</button>
-                  </div>
-                </div>
-                <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
-                  {[...(activeThread?.messages||[]).slice().reverse()].map(m => (
-                    <div key={m.id} className={`flex ${m.direction === 'outbound' ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-[85%] sm:max-w-[70%] rounded-xl px-3.5 py-2.5 text-sm ${
-                        m.direction === 'outbound'
-                          ? 'bg-blue text-white'
-                          : 'bg-bg-card text-text-primary border border-border'
+                {/* Filters */}
+                <div className="flex gap-2 mb-3">
+                  <input className="form-input flex-1" placeholder="Search calls by name, phone, service..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+                  {(['all','inbound','outbound'] as const).map(f => (
+                    <button key={f} onClick={() => setCallFilter(f)}
+                      className={`px-3 py-1.5 text-xs rounded font-medium ${
+                        callFilter === f ? 'bg-blue-600 text-white' : 'bg-white/5 text-gray-400 hover:bg-white/10'
                       }`}>
-                        <p className="m-0">{m.body}</p>
-                        <p className="text-[11px] mt-1 opacity-70">{fmt(m.created_at)}</p>
+                      {f.charAt(0).toUpperCase() + f.slice(1)}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Call List */}
+                <div className="space-y-1 max-h-[70vh] overflow-y-auto">
+                  {filteredCalls.map(call => (
+                    <div key={call.id}
+                      onClick={() => setSelectedCall(call)}
+                      className={`p-3 rounded-lg cursor-pointer transition-colors ${
+                        selectedCall?.id === call.id ? 'bg-blue-600/20 border border-blue-500/30' : 'bg-white/5 hover:bg-white/10'
+                      }`}>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <DirectionBadge dir={call.direction} />
+                          <span className="font-medium">
+                            {call.matched_customer_name || formatPhone(call.direction === 'inbound' ? call.from_number : call.to_number)}
+                          </span>
+                          <LeadBadge score={call.lead_score} />
+                        </div>
+                        <div className="flex items-center gap-3 text-sm text-gray-400">
+                          <span>{formatDuration(call.duration_secs)}</span>
+                          <span>{formatDate(call.start_time)}</span>
+                        </div>
                       </div>
+                      {call.service_needed && call.service_needed !== 'unknown' && (
+                        <div className="text-xs text-gray-500 mt-1 ml-16">
+                          Service: {call.service_needed}
+                        </div>
+                      )}
                     </div>
                   ))}
-                  <div ref={bottomRef} />
-                </div>
-                <div className="px-3 sm:px-4 py-3 border-t border-border flex gap-2 shrink-0">
-                  <textarea className="form-input flex-1 resize-none text-sm" rows={2} placeholder="Type a message..." value={sendBody} onChange={e => setSendBody(e.target.value)} onKeyDown={e => { if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendReply()}}} />
-                  <button className="btn btn-primary self-end" onClick={sendReply} disabled={sending||!sendBody}>{sending?'...':'Send'}</button>
+                  {filteredCalls.length === 0 && <div className="text-center py-10 text-gray-500">No calls found</div>}
                 </div>
               </>
             )}
-          </div>
-        </div>
-      )}
 
-      {tab === 'calls' && (
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-          <div className="max-w-[640px] mx-auto flex flex-col gap-8">
-            {/* Make a Call */}
-            <div>
-              <h2 className="text-base font-bold mb-3">Make a Call</h2>
-              <div className="flex gap-2.5">
-                <input className="form-input flex-1" placeholder="Enter phone number..." value={dialerNum} onChange={e => setDialerNum(e.target.value)} onKeyDown={e => { if(e.key==='Enter'&&dialerNum) makeCall(dialerNum) }} />
-                <button className="btn btn-primary" onClick={() => makeCall(dialerNum)} disabled={calling||!dialerNum}>{calling?'Calling...':'Call'}</button>
-              </div>
-              <p className="text-xs text-text-muted mt-1.5">Calls go out from your shop number (713) 663-6979.</p>
-            </div>
-
-            {/* Quick Dial */}
-            {customers.filter(c => c.phone).length > 0 && (
-              <div>
-                <h2 className="text-base font-bold mb-3">Customer Quick Dial</h2>
-                <div className="flex flex-wrap gap-2">
-                  {customers.filter(c => c.phone).slice(0,20).map(c => (
-                    <button key={c.id} className="btn btn-secondary btn-sm text-xs" onClick={() => makeCall(c.phone, c.name)} disabled={calling}>{c.name}</button>
-                  ))}
-                </div>
+            {tab === 'sms' && (
+              <div className="space-y-1 max-h-[70vh] overflow-y-auto">
+                {threads.map(thread => {
+                  const name = thread.lastMsg.customer?.name || formatPhone(thread.contact)
+                  return (
+                    <div key={thread.contact}
+                      onClick={() => setSelectedThread(thread.contact)}
+                      className={`p-3 rounded-lg cursor-pointer transition-colors ${
+                        selectedThread === thread.contact ? 'bg-blue-600/20 border border-blue-500/30' : 'bg-white/5 hover:bg-white/10'
+                      }`}>
+                      <div className="flex justify-between items-center">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-400">SMS</span>
+                          <span className="font-medium">{name}</span>
+                          {thread.unread > 0 && <span className="bg-red-500 text-white text-xs rounded-full px-1.5">{thread.unread}</span>}
+                        </div>
+                        <span className="text-xs text-gray-500">{formatDate(thread.lastMsg.created_at)}</span>
+                      </div>
+                      <div className="text-sm text-gray-400 mt-1 truncate">{thread.lastMsg.body}</div>
+                    </div>
+                  )
+                })}
+                {threads.length === 0 && <div className="text-center py-10 text-gray-500">No messages</div>}
               </div>
             )}
 
-            {/* Call Log */}
-            <div>
-              <h2 className="text-base font-bold mb-3">Call Log</h2>
-              {activities.length === 0 ? <p className="text-text-muted text-sm">No call history yet. Make your first call above!</p> : (
-                <div className="flex flex-col gap-2">
-                  {activities.map(a => (
-                    <div key={a.id} className="flex items-center gap-3 p-3 sm:p-4 bg-bg-card border border-border rounded-lg">
-                      <span>📞</span>
-                      <div className="flex-1 min-w-0">
-                        <div className="font-medium text-sm truncate">{a.customer_name || a.notes || 'Call'}</div>
-                        <div className="text-xs text-text-muted">{fmt(a.created_at)}</div>
-                      </div>
-                      {a.phone && <button className="btn btn-secondary btn-sm text-xs shrink-0" onClick={() => makeCall(a.phone!, a.customer_name)} disabled={calling}>Call Back</button>}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* AI Calls Section */}
-            <div>
-              <h2 className="text-base font-bold mb-3">🤖 AI Call Recordings</h2>
-              {aiCalls.length === 0 ? (
-                <p className="text-text-muted text-sm">No AI calls yet. Use the AI page to make an AI-powered call.</p>
-              ) : (
-                <div className="flex flex-col gap-3">
-                  {aiCalls.map(call => (
-                    <div key={call.id} className="bg-bg-card border border-border rounded-xl p-4">
-                      {/* Header row */}
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex-1 min-w-0">
-                          <div className="font-semibold text-sm truncate">{call.task || 'AI Call'}</div>
-                          <div className="text-xs text-text-muted mt-0.5">
-                            {call.started_at ? new Date(call.started_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : 'Unknown time'}
-                            {' · '}
-                            <span className={`font-semibold ${call.status==='ended'?'text-green': call.status==='active'?'text-blue':'text-amber'}`}>
-                              {call.status}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="flex gap-1.5 shrink-0">
-                          <button
-                            className="btn btn-secondary btn-sm text-xs"
-                            onClick={() => setExpandedCall(expandedCall === call.id ? null : call.id)}
-                          >
-                            {expandedCall === call.id ? 'Hide' : 'Details'}
-                          </button>
-                          <button
-                            className="btn btn-sm text-xs bg-red/10 text-red border border-red/25 rounded-md px-2.5 py-1 cursor-pointer"
-                            onClick={() => deleteAiCall(call.id)}
-                            disabled={deletingCall === call.id}
-                            title="Delete this call"
-                          >
-                            {deletingCall === call.id ? '…' : 'Delete'}
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Recording player */}
-                      {call.recording_url && (
-                        <div className="mt-3">
-                          <div className="text-xs text-text-muted mb-1 font-semibold">Recording</div>
-                          <audio
-                            controls
-                            className="w-full h-9"
-                            src={`/api/recording-proxy?url=${encodeURIComponent(call.recording_url)}`}
-                          />
-                        </div>
-                      )}
-
-                      {/* Expanded details */}
-                      {expandedCall === call.id && (
-                        <div className="mt-3 flex flex-col gap-3">
-                          {call.summary && (
-                            <div className="bg-bg-hover rounded-lg p-3">
-                              <div className="text-xs font-bold text-text-muted mb-1.5">SUMMARY</div>
-                              <div className="text-sm leading-relaxed">{call.summary}</div>
-                            </div>
-                          )}
-                          {call.transcript && call.transcript.length > 0 && (
-                            <div>
-                              <div className="text-xs font-bold text-text-muted mb-2">TRANSCRIPT</div>
-                              <div className="flex flex-col gap-1.5">
-                                {call.transcript.map((t, i) => (
-                                  <div key={i} className="flex gap-2 items-start">
-                                    <span className={`text-[11px] font-bold px-1.5 py-0.5 rounded shrink-0 mt-0.5 ${
-                                      t.speaker === 'ai' ? 'bg-blue/10 text-blue' : 'bg-green/10 text-green'
-                                    }`}>
-                                      {t.speaker === 'ai' ? 'AI' : 'Them'}
-                                    </span>
-                                    <span className="text-sm leading-relaxed">{t.text}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
           </div>
+
+          {/* ─── RIGHT: Detail Panel ─── */}
+          {selectedCall && (
+            <div className="w-1/2 bg-white/5 rounded-xl p-5 overflow-y-auto max-h-[80vh] border border-white/10">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-bold">Call Details</h2>
+                <button onClick={() => setSelectedCall(null)} className="text-gray-400 hover:text-white text-xl">&times;</button>
+              </div>
+
+              {/* Call Info Grid */}
+              <div className="grid grid-cols-2 gap-3 mb-5">
+                <div className="bg-white/5 rounded-lg p-3">
+                  <div className="text-xs text-gray-500 mb-1">Direction</div>
+                  <DirectionBadge dir={selectedCall.direction} />
+                </div>
+                <div className="bg-white/5 rounded-lg p-3">
+                  <div className="text-xs text-gray-500 mb-1">Duration</div>
+                  <div className="font-medium">{formatDuration(selectedCall.duration_secs)}</div>
+                </div>
+                <div className="bg-white/5 rounded-lg p-3">
+                  <div className="text-xs text-gray-500 mb-1">From</div>
+                  <div className="font-medium text-sm">{selectedCall.matched_customer_name || formatPhone(selectedCall.from_number)}</div>
+                  <div className="text-xs text-gray-500">{formatPhone(selectedCall.from_number)}</div>
+                </div>
+                <div className="bg-white/5 rounded-lg p-3">
+                  <div className="text-xs text-gray-500 mb-1">To</div>
+                  <div className="font-medium text-sm">{formatPhone(selectedCall.to_number)}</div>
+                </div>
+                <div className="bg-white/5 rounded-lg p-3">
+                  <div className="text-xs text-gray-500 mb-1">Date</div>
+                  <div className="text-sm">{formatDate(selectedCall.start_time)}</div>
+                </div>
+                <div className="bg-white/5 rounded-lg p-3">
+                  <div className="text-xs text-gray-500 mb-1">Times Called</div>
+                  <div className="font-medium text-lg">{selectedCall.call_count_from_number || 1}</div>
+                </div>
+              </div>
+
+              {/* Lead Score Section */}
+              {selectedCall.lead_score && selectedCall.lead_score !== 'unknown' && (
+                <div className="mb-5 bg-white/5 rounded-lg p-4 border border-white/10">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-sm font-semibold">Lead Score</span>
+                    <LeadBadge score={selectedCall.lead_score} />
+                    {selectedCall.caller_sentiment && (
+                      <span className="text-xs text-gray-400">Sentiment: {selectedCall.caller_sentiment}</span>
+                    )}
+                  </div>
+                  {selectedCall.lead_reasoning && (
+                    <div className="text-sm text-gray-300 mb-2">{selectedCall.lead_reasoning}</div>
+                  )}
+                  {selectedCall.service_needed && selectedCall.service_needed !== 'unknown' && (
+                    <div className="text-sm"><span className="text-gray-500">Service Needed:</span> <span className="text-blue-400">{selectedCall.service_needed}</span></div>
+                  )}
+                  {selectedCall.key_quotes && (
+                    <div className="text-sm mt-2 italic text-gray-400">"{selectedCall.key_quotes}"</div>
+                  )}
+                </div>
+              )}
+
+              {/* Recording Player */}
+              {getRecordingUrl(selectedCall) && (
+                <div className="mb-5">
+                  <div className="text-sm font-semibold mb-2">Recording</div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => playRecording(selectedCall)}
+                      className="btn btn-sm bg-green-600 hover:bg-green-500 text-white px-4 py-1.5 rounded-lg text-sm">
+                      {playing ? 'Playing...' : 'Play Recording'}
+                    </button>
+                  </div>
+                  <audio ref={audioRef} controls className="w-full mt-2" onEnded={() => setPlaying(false)} />
+                </div>
+              )}
+
+              {/* Transcript */}
+              {selectedCall.transcript && selectedCall.transcript !== '[transcription_failed]' ? (
+                <div className="mb-5">
+                  <div className="text-sm font-semibold mb-2">Transcript</div>
+                  <div className="bg-black/30 rounded-lg p-4 text-sm text-gray-300 max-h-60 overflow-y-auto whitespace-pre-wrap">
+                    {selectedCall.transcript}
+                  </div>
+                </div>
+              ) : (
+                <div className="mb-5">
+                  <div className="text-sm font-semibold mb-2">Transcript</div>
+                  <div className="bg-black/30 rounded-lg p-4 text-sm text-gray-500 italic">
+                    {selectedCall.transcript === '[transcription_failed]' ? 'Transcription failed - will retry' : 'Pending transcription...'}
+                  </div>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex gap-2">
+                <button onClick={() => makeCall(selectedCall.direction === 'inbound' ? selectedCall.from_number : selectedCall.to_number)}
+                  className="btn btn-primary px-4 py-2 rounded-lg text-sm">Call Back</button>
+                <button onClick={() => { setSendTo(selectedCall.direction === 'inbound' ? selectedCall.from_number : selectedCall.to_number); setCompose(true) }}
+                  className="btn btn-secondary px-4 py-2 rounded-lg text-sm">Send SMS</button>
+              </div>
+            </div>
+          )}
+
+          {/* SMS Thread Detail */}
+          {selectedThread && (() => {
+            const thread = threads.find(t => t.contact === selectedThread)
+            if (!thread) return null
+            const name = thread.lastMsg.customer?.name || formatPhone(thread.contact)
+            return (
+              <div className="w-1/2 bg-white/5 rounded-xl border border-white/10 flex flex-col max-h-[80vh]">
+                <div className="flex items-center justify-between p-4 border-b border-white/10">
+                  <div>
+                    <div className="font-bold">{name}</div>
+                    <div className="text-xs text-gray-500">{formatPhone(thread.contact)}</div>
+                  </div>
+                  <button onClick={() => setSelectedThread(null)} className="text-gray-400 hover:text-white text-xl">&times;</button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                  {thread.messages.map(msg => (
+                    <div key={msg.id} className={`flex ${msg.direction === 'inbound' ? 'justify-start' : 'justify-end'}`}>
+                      <div className={`max-w-[80%] rounded-xl px-3 py-2 text-sm ${
+                        msg.direction === 'inbound' ? 'bg-white/10' : 'bg-blue-600'
+                      }`}>
+                        <div>{msg.body}</div>
+                        <div className="text-xs opacity-60 mt-1">{formatDate(msg.created_at)}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="p-3 border-t border-white/10 flex gap-2">
+                  <input className="form-input flex-1" placeholder="Type a message..."
+                    value={sendBody} onChange={e => setSendBody(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') { setSendTo(thread.contact); sendMessage() } }} />
+                  <button onClick={() => { setSendTo(thread.contact); sendMessage() }}
+                    className="btn btn-primary px-4">Send</button>
+                </div>
+              </div>
+            )
+          })()}
+
         </div>
       )}
 
-      {/* Compose modal */}
+      {/* Compose Modal */}
       {compose && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-bg-card border border-border rounded-xl w-full max-w-[500px] p-4 sm:p-6">
-            <div className="flex items-center justify-between mb-5">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-gray-900 rounded-xl p-6 w-full max-w-md border border-white/10">
+            <div className="flex justify-between mb-4">
               <h2 className="text-lg font-bold">New Message</h2>
-              <button className="btn btn-secondary btn-sm" onClick={() => setCompose(false)}>X</button>
+              <button onClick={() => setCompose(false)} className="text-gray-400 hover:text-white">&times;</button>
             </div>
-            <div className="flex flex-col gap-4">
-              <div className="flex gap-2">
-                <button onClick={() => setSendChannel('sms')} className={sendChannel==='sms'?'btn btn-primary btn-sm':'btn btn-secondary btn-sm'}>SMS</button>
-                <button onClick={() => setSendChannel('email')} className={sendChannel==='email'?'btn btn-primary btn-sm':'btn btn-secondary btn-sm'}>Email</button>
-              </div>
-              {sendChannel==='sms' && customers.filter(c=>c.phone).length>0 && (
-                <div>
-                  <label className="form-label">Quick Pick</label>
-                  <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto">
-                    {customers.filter(c=>c.phone).slice(0,15).map(c => (
-                      <button key={c.id} type="button"
-                        className={`text-xs px-2.5 py-1 rounded-full border border-border cursor-pointer transition-colors ${sendTo===c.phone ? 'bg-blue text-white border-blue' : 'bg-transparent text-text-primary hover:bg-bg-hover'}`}
-                        onClick={()=>setSendTo(c.phone)}>{c.name}</button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {sendChannel==='email' && customers.filter(c=>c.email).length>0 && (
-                <div>
-                  <label className="form-label">Quick Pick</label>
-                  <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto">
-                    {customers.filter(c=>c.email).slice(0,15).map(c => (
-                      <button key={c.id} type="button"
-                        className={`text-xs px-2.5 py-1 rounded-full border border-border cursor-pointer transition-colors ${sendTo===c.email ? 'bg-blue text-white border-blue' : 'bg-transparent text-text-primary hover:bg-bg-hover'}`}
-                        onClick={()=>setSendTo(c.email)}>{c.name}</button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              <div>
-                <label className="form-label">To ({sendChannel==='sms'?'Phone':'Email'})</label>
-                <input className="form-input" value={sendTo} onChange={e=>setSendTo(e.target.value)} placeholder={sendChannel==='sms'?'+1 (713) 555-0000':'customer@email.com'} />
-              </div>
-              <div>
-                <label className="form-label">Message</label>
-                <textarea className="form-textarea" rows={4} value={sendBody} onChange={e=>setSendBody(e.target.value)} placeholder="Type your message..." />
-              </div>
-              <div className="flex gap-3">
-                <button className="btn btn-primary flex-1" onClick={sendMessage} disabled={sending||!sendTo||!sendBody}>{sending?'Sending...':'Send Message'}</button>
-                <button className="btn btn-secondary" onClick={() => setCompose(false)}>Cancel</button>
-              </div>
+            <div className="flex gap-2 mb-3">
+              <button onClick={() => setSendChannel('sms')}
+                className={`px-3 py-1 rounded text-sm ${sendChannel === 'sms' ? 'bg-blue-600 text-white' : 'bg-white/10 text-gray-400'}`}>SMS</button>
+              <button onClick={() => setSendChannel('email')}
+                className={`px-3 py-1 rounded text-sm ${sendChannel === 'email' ? 'bg-blue-600 text-white' : 'bg-white/10 text-gray-400'}`}>Email</button>
             </div>
+            <input className="form-input w-full mb-3" placeholder={sendChannel === 'sms' ? 'Phone number' : 'Email address'}
+              value={sendTo} onChange={e => setSendTo(e.target.value)} />
+            {customers.length > 0 && (
+              <div className="flex flex-wrap gap-1 mb-3">
+                {customers.slice(0, 8).map(c => (
+                  <button key={c.id} onClick={() => setSendTo(sendChannel === 'sms' ? c.phone : c.email)}
+                    className="text-xs bg-white/10 px-2 py-1 rounded hover:bg-white/20">{c.name}</button>
+                ))}
+              </div>
+            )}
+            <textarea className="form-input w-full h-32 mb-3" placeholder="Message..."
+              value={sendBody} onChange={e => setSendBody(e.target.value)} />
+            <button onClick={sendMessage} disabled={sending}
+              className="btn btn-primary w-full">{sending ? 'Sending...' : 'Send'}</button>
           </div>
         </div>
       )}
