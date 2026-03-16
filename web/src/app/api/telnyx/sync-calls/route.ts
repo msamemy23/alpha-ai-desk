@@ -37,13 +37,13 @@ async function syncFromRecordings(db: any) {
     if (!TELNYX_API_KEY) return { synced: 0, error: 'No API key' }
     let allRecordings: any[] = []
     let pageNum = 1
-    let hasMore = true
-    let cursor: string | null = null
 
-    // Paginate through ALL recordings (up to 100 pages = 25,000 max)
-    while (hasMore && pageNum <= 100) {
-        const params = new URLSearchParams({ 'page[size]': '250' })
-        if (cursor) params.set('page[after]', cursor)
+    // Use page[number] pagination - Telnyx uses page numbers not cursors
+    while (pageNum <= 200) {
+        const params = new URLSearchParams({
+            'page[size]': '250',
+            'page[number]': String(pageNum)
+        })
         const res = await fetch(`${TELNYX_BASE}/recordings?${params}`, {
             headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` },
             cache: 'no-store',
@@ -53,13 +53,8 @@ async function syncFromRecordings(db: any) {
         const pageRecs = data.data || []
         allRecordings.push(...pageRecs)
         
-        // Check for next page cursor
-        const nextCursor = data.meta?.cursors?.after || null
-        if (!nextCursor || pageRecs.length < 250) {
-            hasMore = false
-        } else {
-            cursor = nextCursor
-        }
+        // Stop if we got fewer than requested (last page)
+        if (pageRecs.length < 250) break
         pageNum++
     }
 
@@ -119,7 +114,7 @@ async function syncFromRecordings(db: any) {
         if (!error) inserted += batch.length
         else console.error('Recording upsert error:', error)
     }
-    return { synced: inserted, total: recordings.length, raw_total: allRecordings.length, pages_fetched: pageNum - 1 }
+    return { synced: inserted, total: recordings.length, raw_total: allRecordings.length, pages_fetched: pageNum, unique_sessions: Object.keys(sessionMap).length }
 }
 
 async function syncFromAiCalls(db: any) {
