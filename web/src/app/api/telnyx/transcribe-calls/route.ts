@@ -7,78 +7,24 @@ const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ''
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
 
-// Get fresh download URL from Telnyx API (stored S3 URLs expire)
-async function getFreshDownloadUrl(recordingId: string): Promise<string | null> {
+async function transcribeViaWhisper(downloadUrl: string): Promise<{ text: string | null; error?: string }> {
   try {
-    const res = await fetch(`${TELNYX_BASE}/recordings/${recordingId}`, {
-      headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` },
-    })
-    if (!res.ok) return null
-    const data = await res.json()
-    return data.data?.download_urls?.mp3 || data.data?.download_urls?.wav || null
-  } catch (e) {
-    console.error('Failed to get fresh download URL:', e)
-    return null
-  }
-}
-
-async function getRecordingTranscription(recordingId: string): Promise<string | null> {
-  try {
-    const res = await fetch(`${TELNYX_BASE}/recordings/${recordingId}/transcriptions`, {
-      headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` },
-    })
-    if (res.ok) {
-      const data = await res.json()
-      if (data.data?.length > 0 && data.data[0].text) {
-        return data.data[0].text
-      }
-    }
-    // Request new transcription
-    const createRes = await fetch(`${TELNYX_BASE}/recordings/${recordingId}/transcriptions`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ language: 'en' }),
-    })
-    if (!createRes.ok) return null
-    for (let i = 0; i < 6; i++) {
-      await new Promise(r => setTimeout(r, 5000))
-      const pollRes = await fetch(`${TELNYX_BASE}/recordings/${recordingId}/transcriptions`, {
-        headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` },
-      })
-      if (pollRes.ok) {
-        const pollData = await pollRes.json()
-        if (pollData.data?.length > 0 && pollData.data[0].text) return pollData.data[0].text
-      }
-    }
-    return null
-  } catch (e) {
-    console.error('Telnyx transcription error:', e)
-    return null
-  }
-}
-
-async function transcribeViaWhisper(downloadUrl: string): Promise<string | null> {
-  try {
-    if (!OPENAI_API_KEY) return null
-    // Try without auth first (fresh URLs), then with Telnyx auth
+    if (!OPENAI_API_KEY) return { text: null, error: 'NO_OPENAI_KEY' }
+    // Download audio - try without auth (S3 public), then with Telnyx auth
     let audioRes = await fetch(downloadUrl)
     if (!audioRes.ok) {
       audioRes = await fetch(downloadUrl, {
         headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` },
       })
     }
-    if (!audioRes.ok) {
-      console.error('Download failed:', audioRes.status, downloadUrl.substring(0, 80))
-      return null
-    }
+    if (!audioRes.ok) return { text: null, error: `DOWNLOAD_FAILED_${audioRes.status}` }
     const audioBuffer = await audioRes.arrayBuffer()
-    if (audioBuffer.byteLength < 1000) {
-      console.error('Audio too small:', audioBuffer.byteLength)
-      return null
-    }
-    const audioBlob = new Blob([audioBuffer], { type: 'audio/mp3' })
+    if (audioBuffer.byteLength < 1000) return { text: null, error: `AUDIO_TOO_SMALL_${audioBuffer.byteLength}` }
+    const ext = downloadUrl.includes('.wav') ? 'wav' : 'mp3'
+    const mime = ext === 'wav' ? 'audio/wav' : 'audio/mpeg'
+    const audioBlob = new Blob([audioBuffer], { type: mime })
     const formData = new FormData()
-    formData.append('file', audioBlob, 'recording.mp3')
+    formData.append('file', audioBlob, `recording.${ext}`)
     formData.append('model', 'whisper-1')
     formData.append('language', 'en')
     const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
@@ -87,14 +33,13 @@ async function transcribeViaWhisper(downloadUrl: string): Promise<string | null>
       body: formData,
     })
     if (!whisperRes.ok) {
-      console.error('Whisper error:', whisperRes.status, await whisperRes.text())
-      return null
+      const errText = await whisperRes.text()
+      return { text: null, error: `WHISPER_${whisperRes.status}_${errText.substring(0, 100)}` }
     }
-    const whisperData = await whisperRes.json()
-    return whisperData.text || null
-  } catch (e) {
-    console.error('Whisper error:', e)
-    return null
+    const data = await whisperRes.json()
+    return { text: data.text || null }
+  } catch (e: any) {
+    return { text: null, error: `EXCEPTION_${e.message}` }
   }
 }
 
@@ -112,9 +57,9 @@ async function scoreLeadFromTranscript(transcript: string): Promise<{
         model: 'gpt-4o-mini',
         messages: [{
           role: 'system',
-          content: `You are an AI assistant for Alpha International Auto Center, an auto repair shop in Houston TX. Analyze call transcripts and score leads. Respond in JSON only:\n- lead_score: "hot" (ready to book/bring car in), "warm" (interested/asking prices), "cold" (spam/wrong number/robocall)\n- lead_reasoning: Brief explanation (1-2 sentences)\n- service_needed: What service they need\n- caller_sentiment: "positive", "neutral", "frustrated", or "spam"\n- key_quotes: 1-2 important caller quotes (max 50 words)`
+          content: 'You are an AI for Alpha International Auto Center (Houston TX auto shop). Analyze call transcripts. Respond JSON only: lead_score (hot/warm/cold), lead_reasoning, service_needed, caller_sentiment (positive/neutral/frustrated/spam), key_quotes'
         }, {
-          role: 'user', content: `Analyze this call transcript:\n\n${transcript.substring(0, 3000)}`
+          role: 'user', content: `Analyze:\n\n${transcript.substring(0, 3000)}`
         }],
         temperature: 0.3, max_tokens: 500, response_format: { type: 'json_object' },
       }),
@@ -123,15 +68,11 @@ async function scoreLeadFromTranscript(transcript: string): Promise<{
     const data = await res.json()
     const parsed = JSON.parse(data.choices?.[0]?.message?.content || '{}')
     return {
-      lead_score: parsed.lead_score || 'unknown',
-      lead_reasoning: parsed.lead_reasoning || '',
-      service_needed: parsed.service_needed || '',
-      caller_sentiment: parsed.caller_sentiment || '',
+      lead_score: parsed.lead_score || 'unknown', lead_reasoning: parsed.lead_reasoning || '',
+      service_needed: parsed.service_needed || '', caller_sentiment: parsed.caller_sentiment || '',
       key_quotes: parsed.key_quotes || '',
     }
-  } catch (e: any) {
-    return { ...empty, lead_reasoning: e.message }
-  }
+  } catch (e: any) { return { ...empty, lead_reasoning: e.message } }
 }
 
 export async function POST(req: NextRequest) {
@@ -141,62 +82,94 @@ export async function POST(req: NextRequest) {
     const limit = parseInt(url.searchParams.get('limit') || '10')
     const db = getServiceClient()
 
-    if (action === 'batch') {
-      const { data: calls, error } = await db
-        .from('call_history')
-        .select('id, call_id, raw_data, transcript')
-        .is('transcript', null)
-        .not('raw_data', 'is', null)
-        .order('start_time', { ascending: false })
-        .limit(limit)
-
-      if (error || !calls?.length) {
-        return NextResponse.json({ success: true, processed: 0, remaining: 0, error: error?.message })
+    if (action === 'debug') {
+      // Debug: try one call and return full error chain
+      const { data: calls } = await db.from('call_history')
+        .select('id, raw_data').is('transcript', null)
+        .not('raw_data', 'is', null).limit(1)
+      if (!calls?.length) return NextResponse.json({ error: 'No calls to debug' })
+      const call = calls[0]
+      const rd = call.raw_data as any
+      const info: any = {
+        id: call.id,
+        has_recording_id: !!rd?.recording_id,
+        recording_id: rd?.recording_id,
+        has_mp3: !!rd?.download_urls?.mp3,
+        has_wav: !!rd?.download_urls?.wav,
+        mp3_url_prefix: rd?.download_urls?.mp3?.substring(0, 60),
+        wav_url_prefix: rd?.download_urls?.wav?.substring(0, 60),
+        has_openai_key: !!OPENAI_API_KEY,
+        openai_key_prefix: OPENAI_API_KEY?.substring(0, 8),
+        has_telnyx_key: !!TELNYX_API_KEY,
       }
+      // Try download
+      const dlUrl = rd?.download_urls?.mp3 || rd?.download_urls?.wav
+      if (dlUrl) {
+        try {
+          const dlRes = await fetch(dlUrl)
+          info.download_status = dlRes.status
+          info.download_ok = dlRes.ok
+          if (dlRes.ok) {
+            const buf = await dlRes.arrayBuffer()
+            info.download_size = buf.byteLength
+          }
+        } catch (e: any) { info.download_error = e.message }
+      }
+      // Try Whisper
+      if (dlUrl) {
+        const whisperResult = await transcribeViaWhisper(dlUrl)
+        info.whisper_result = whisperResult
+      }
+      // Try fresh URL from Telnyx
+      if (rd?.recording_id) {
+        try {
+          const tRes = await fetch(`${TELNYX_BASE}/recordings/${rd.recording_id}`, {
+            headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` },
+          })
+          info.telnyx_api_status = tRes.status
+          if (tRes.ok) {
+            const tData = await tRes.json()
+            info.telnyx_fresh_mp3 = tData.data?.download_urls?.mp3?.substring(0, 60)
+          } else {
+            info.telnyx_api_error = await tRes.text()
+          }
+        } catch (e: any) { info.telnyx_api_error = e.message }
+      }
+      return NextResponse.json(info)
+    }
+
+    if (action === 'batch') {
+      const { data: calls, error } = await db.from('call_history')
+        .select('id, call_id, raw_data, transcript')
+        .is('transcript', null).not('raw_data', 'is', null)
+        .order('start_time', { ascending: false }).limit(limit)
+      if (error || !calls?.length) return NextResponse.json({ success: true, processed: 0, remaining: 0, error: error?.message })
 
       let transcribed = 0, scored = 0
       const results: any[] = []
 
       for (const call of calls) {
-        const rawData = call.raw_data as any
-        const recordingId = rawData?.recording_id
-        if (!recordingId) {
-          results.push({ id: call.id, status: 'no_recording_id' })
-          continue
-        }
+        const rd = call.raw_data as any
+        const dlUrl = rd?.download_urls?.mp3 || rd?.download_urls?.wav
+        if (!dlUrl) { results.push({ id: call.id, status: 'no_download_url' }); continue }
 
-        let transcript: string | null = null
-
-        // Try Telnyx native transcription first
-        transcript = await getRecordingTranscription(recordingId)
-
-        // Fallback: get FRESH download URL from Telnyx API then Whisper
-        if (!transcript) {
-          const freshUrl = await getFreshDownloadUrl(recordingId)
-          if (freshUrl) {
-            transcript = await transcribeViaWhisper(freshUrl)
-          }
-        }
+        // Go straight to Whisper with stored URL
+        const { text: transcript, error: whisperErr } = await transcribeViaWhisper(dlUrl)
 
         if (transcript) {
           const scoring = await scoreLeadFromTranscript(transcript)
-          const { error: updateErr } = await db.from('call_history').update({
-            transcript,
-            lead_score: scoring.lead_score,
-            lead_reasoning: scoring.lead_reasoning,
-            service_needed: scoring.service_needed,
-            caller_sentiment: scoring.caller_sentiment,
-            key_quotes: scoring.key_quotes,
-            transcribed_at: new Date().toISOString(),
+          await db.from('call_history').update({
+            transcript, lead_score: scoring.lead_score, lead_reasoning: scoring.lead_reasoning,
+            service_needed: scoring.service_needed, caller_sentiment: scoring.caller_sentiment,
+            key_quotes: scoring.key_quotes, transcribed_at: new Date().toISOString(),
           }).eq('id', call.id)
-          if (!updateErr) { transcribed++; scored++ }
+          transcribed++; scored++
           results.push({ id: call.id, lead_score: scoring.lead_score, service: scoring.service_needed })
         } else {
           await db.from('call_history').update({
-            transcript: '[transcription_failed]',
-            transcribed_at: new Date().toISOString(),
+            transcript: '[transcription_failed]', transcribed_at: new Date().toISOString(),
           }).eq('id', call.id)
-          results.push({ id: call.id, status: 'transcription_failed' })
+          results.push({ id: call.id, status: 'failed', error: whisperErr })
         }
       }
 
@@ -205,12 +178,10 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === 'retry-failed') {
-      const { data: updated, error } = await db
-        .from('call_history')
+      const { data, error } = await db.from('call_history')
         .update({ transcript: null, transcribed_at: null })
-        .eq('transcript', '[transcription_failed]')
-        .select('id')
-      return NextResponse.json({ success: !error, reset: updated?.length || 0 })
+        .eq('transcript', '[transcription_failed]').select('id')
+      return NextResponse.json({ success: !error, reset: data?.length || 0 })
     }
 
     if (action === 'stats') {
@@ -225,9 +196,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ total, withTranscript, withScore, hot, warm, cold, pending, failed })
     }
 
-    return NextResponse.json({ error: 'Use: batch, retry-failed, stats' }, { status: 400 })
+    return NextResponse.json({ error: 'Use: batch, debug, retry-failed, stats' }, { status: 400 })
   } catch (e: any) {
-    console.error('Transcribe error:', e)
     return NextResponse.json({ error: e.message }, { status: 500 })
   }
 }
