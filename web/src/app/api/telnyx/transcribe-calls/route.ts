@@ -48,6 +48,8 @@ async function transcribeViaOpenRouter(url: string): Promise<{text:string|null,e
     const d = await r.json()
     const t = (d.choices?.[0]?.message?.content || '').trim()
     return {text: t.length > 5 ? t : null, error: t ? undefined : `EMPTY: ${JSON.stringify(d).substring(0,100)}`}
+      } catch(x:any){return {text:null,error:x.message}}
+}
 async function scoreLeadFromTranscript(t: string): Promise<{lead_score:string;lead_reasoning:string;service_needed:string;caller_sentiment:string;key_quotes:string}> {
   const e = {lead_score:'unknown',lead_reasoning:'',service_needed:'',caller_sentiment:'',key_quotes:''}
   if (!OPENROUTER_API_KEY||!t||t.length<20) return {...e,lead_reasoning:'Transcript too short'}
