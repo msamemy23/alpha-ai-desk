@@ -16,6 +16,8 @@ export default function SettingsPage() {
   const [reviewText, setReviewText] = useState('')
   const [reviewStars, setReviewStars] = useState(5)
   const [reviewDraft, setReviewDraft] = useState('')
+  const [migrateResult, setMigrateResult] = useState<string>('')
+  const [migrating, setMigrating] = useState(false)
   const [reviewLoading, setReviewLoading] = useState(false)
 
   const load = useCallback(async () => {
@@ -254,6 +256,51 @@ export default function SettingsPage() {
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {tab === 'system' && (
+        <div className="space-y-4">
+          <div className="card">
+            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-4">Database Schema</div>
+            <p className="text-sm text-text-muted mb-4">Run this once to add missing columns (sentiment, vehicle_color, engine, plate, time_clock table). Safe to run multiple times.</p>
+            <div className="flex items-center gap-3">
+              <button className="btn btn-primary" disabled={migrating} onClick={async () => {
+                setMigrating(true); setMigrateResult('')
+                try {
+                  const r = await fetch('/api/migrate')
+                  const d = await r.json()
+                  if (d.ok) setMigrateResult('✅ Schema updated! ' + Object.entries(d.results as Record<string,string>).filter(([,v])=>v==='ok').length + ' changes applied.')
+                  else setMigrateResult('❌ Error: ' + JSON.stringify(d))
+                } catch(e) { setMigrateResult('❌ Failed: ' + String(e)) }
+                setMigrating(false)
+              }}>
+                {migrating ? '⏳ Running...' : '🔧 Run Schema Migration'}
+              </button>
+            </div>
+            {migrateResult && <div className={mt-3 text-sm p-3 rounded-lg }>{migrateResult}</div>}
+          </div>
+
+          <div className="card">
+            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-4">System Info</div>
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div className="text-text-muted">App Version</div><div className="font-medium">Alpha Desktop AI v7</div>
+              <div className="text-text-muted">Shop</div><div className="font-medium">Alpha International Auto Center</div>
+              <div className="text-text-muted">Database</div><div className="font-medium">Supabase PostgreSQL</div>
+              <div className="text-text-muted">Calls Processed</div><div className="font-medium">1,000+</div>
+              <div className="text-text-muted">SMS Provider</div><div className="font-medium">Telnyx (+17136636979)</div>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-4">Quick Links</div>
+            <div className="flex flex-wrap gap-2">
+              <a href="https://supabase.com/dashboard" target="_blank" className="btn btn-secondary btn-sm">🗄️ Supabase</a>
+              <a href="https://vercel.com" target="_blank" className="btn btn-secondary btn-sm">▲ Vercel</a>
+              <a href="https://portal.telnyx.com" target="_blank" className="btn btn-secondary btn-sm">📞 Telnyx</a>
+              <a href="https://github.com/msamemy23/alpha-ai-desk" target="_blank" className="btn btn-secondary btn-sm">💻 GitHub</a>
+            </div>
+          </div>
         </div>
       )}
     </div>
