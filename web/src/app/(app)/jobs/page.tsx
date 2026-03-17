@@ -2,7 +2,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { supabase, formatCurrency } from '@/lib/supabase'
 
-interface Job { id: string; customer_name: string; concern: string; status: string; tech: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; priority: string; promise_date: string; created_at: string }
+interface Job { id: string; customer_name: string; concern: string; status: string; tech: string; priority: string; vehicle_year: string; vehicle_color: string; vehicle_engine: string; vehicle_plate: string; vehicle_make: string; vehicle_model: string; priority: string; promise_date: string; created_at: string }
 interface Customer { id: string; name: string; phone: string; vehicle_year: string; vehicle_make: string; vehicle_model: string }
 
 const STATUSES = ['New','Waiting on Parts','Waiting on Customer','Approved','In Progress','Completed','Ready for Pickup','Paid','Closed']
@@ -23,7 +23,7 @@ export default function JobsPage() {
   const load = useCallback(async () => {
     const [{ data: j }, { data: c }] = await Promise.all([
       supabase.from('jobs').select('*').order('created_at', { ascending: false }),
-      supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model').order('name')
+      supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model,vehicle_color,vehicle_engine,vehicle_plate').order('name')
     ])
     setJobs((j || []) as Job[]); setCustomers((c || []) as Customer[])
   }, [])
@@ -52,7 +52,7 @@ export default function JobsPage() {
   const openEdit = (j: Job) => { setForm(j as unknown as Record<string, unknown>); setEditing(j.id) }
   const selectCustomer = (id: string) => {
     const c = customers.find(c => c.id === id)
-    if (c) setForm(f => ({ ...f, customer_id: c.id, customer_name: c.name, vehicle_year: c.vehicle_year, vehicle_make: c.vehicle_make, vehicle_model: c.vehicle_model }))
+    if (c) setForm(f => ({ ...f, customer_id: c.id, customer_name: c.name, vehicle_year: c.vehicle_year||'', vehicle_make: c.vehicle_make||'', vehicle_model: c.vehicle_model||'', vehicle_color: c.vehicle_color||'', vehicle_engine: c.vehicle_engine||'', vehicle_plate: c.vehicle_plate||'' }))
     else setForm(f => ({ ...f, customer_id: id }))
   }
 
@@ -171,7 +171,7 @@ export default function JobsPage() {
             <div className="card p-0 overflow-x-auto">
               <table className="data-table w-full min-w-[640px]">
                 <thead><tr>
-                  <th>Customer</th><th>Vehicle</th><th>Concern</th><th>Tech</th><th>Status</th><th>Due</th>
+                  <th>Customer</th><th>Vehicle</th><th>Concern</th><th>Tech</th><th>Status</th><th>Due</th><th></th>
                 </tr></thead>
                 <tbody>
                   {filtered.length === 0 && <tr><td colSpan={6} className="text-center text-text-muted py-8">No jobs found</td></tr>}
@@ -222,3 +222,4 @@ export default function JobsPage() {
     </div>
   )
 }
+
