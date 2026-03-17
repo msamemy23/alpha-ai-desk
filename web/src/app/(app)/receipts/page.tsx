@@ -15,7 +15,7 @@ interface Receipt {
 export default function ReceiptsPage() {
   const [receipts, setReceipts] = useState<Receipt[]>([])
   const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
+  const [search, setSearch] = useState(')
   const [filter, setFilter] = useState<'all'|'Paid'|'Draft'>('all')
   const [selected, setSelected] = useState<Receipt | null>(null)
 
@@ -32,20 +32,20 @@ export default function ReceiptsPage() {
   useEffect(() => { load() }, [load])
 
   const filtered = receipts.filter(r => {
-    const name = r.customer_snapshot?.name || ''
-    const doc = r.doc_number || ''
+    const name = r.customer_snapshot?.name || '
+    const doc = r.doc_number || '
     const matchSearch = !search || [name, doc].some(v => v.toLowerCase().includes(search.toLowerCase()))
     const matchFilter = filter === 'all' || r.status === filter
     return matchSearch && matchFilter
   })
 
   const totalPaid = receipts.filter(r => r.status === 'Paid').reduce((s, r) => s + calcTotals(r).total, 0)
-  const fmtDate = (d: string) => d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''
+  const fmtDate = (d: string) => d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '
 
   const printReceipt = (r: Receipt) => {
     const totals = calcTotals(r)
     const vehicle = [r.vehicle_snapshot?.year, r.vehicle_snapshot?.make, r.vehicle_snapshot?.model].filter(Boolean).join(' ')
-    const win = window.open('', '_blank')
+    const win = window.open(', '_blank')
     if (!win) return
     win.document.write(`<!DOCTYPE html><html><head><title>Receipt ${r.doc_number}</title>
     <style>body{font-family:Arial,sans-serif;max-width:600px;margin:40px auto;padding:20px}
@@ -54,17 +54,17 @@ export default function ReceiptsPage() {
     .total{font-weight:bold;font-size:1.1rem}@media print{body{margin:0}}</style></head><body>
     <div style="font-size:1.2rem;font-weight:bold">Alpha International Auto Center</div>
     <div style="color:#666;font-size:0.85rem">10710 S Main St, Houston TX 77025 | (713) 663-6979</div>
-    <hr><h1>RECEIPT ${r.doc_number || ''}</h1>
-    <table><tr><td><b>Customer:</b> ${r.customer_snapshot?.name || ''}</td>
+    <hr><h1>RECEIPT ${r.doc_number || '}</h1>
+    <table><tr><td><b>Customer:</b> ${r.customer_snapshot?.name || '}</td>
     <td><b>Date:</b> ${fmtDate(r.document_date || r.created_at)}</td></tr>
-    ${vehicle ? `<tr><td colspan="2"><b>Vehicle:</b> ${vehicle}</td></tr>` : ''}</table><br>
+    ${vehicle ? `<tr><td colspan="2"><b>Vehicle:</b> ${vehicle}</td></tr>` : '}</table><br>
     <table><tr><th>Description</th><th class="right">Amount</th></tr>
-    ${(r.labor_lines||[]).map((l: Record<string,unknown>) => `<tr><td>${l.operation||'Labor'}</td><td class="right">${formatCurrency(Number(l.hours||0)*Number(l.rate||0))}</td></tr>`).join('')}
-    ${(r.parts_lines||[]).map((p: Record<string,unknown>) => `<tr><td>${p.name||'Part'}</td><td class="right">${formatCurrency(Number(p.qty||1)*Number(p.unitPrice||0))}</td></tr>`).join('')}
-    ${totals.taxAmount>0?`<tr><td>Tax (${r.tax_rate}%)</td><td class="right">${formatCurrency(totals.taxAmount)}</td></tr>`:''}
-    ${totals.deposit>0?`<tr><td>Deposit</td><td class="right">-${formatCurrency(totals.deposit)}</td></tr>`:''}
+    ${(r.labor_lines||[]).map((l: Record<string,unknown>) => `<tr><td>${l.operation||'Labor'}</td><td class="right">${formatCurrency(Number(l.hours||0)*Number(l.rate||0))}</td></tr>`).join(')}
+    ${(r.parts_lines||[]).map((p: Record<string,unknown>) => `<tr><td>${p.name||'Part'}</td><td class="right">${formatCurrency(Number(p.qty||1)*Number(p.unitPrice||0))}</td></tr>`).join(')}
+    ${totals.taxAmount>0?`<tr><td>Tax (${r.tax_rate}%)</td><td class="right">${formatCurrency(totals.taxAmount)}</td></tr>`:'}
+    ${totals.deposit>0?`<tr><td>Deposit</td><td class="right">-${formatCurrency(totals.deposit)}</td></tr>`:'}
     <tr class="total"><td>TOTAL</td><td class="right">${formatCurrency(totals.balanceDue)}</td></tr></table>
-    ${r.notes?`<p style="color:#666;font-size:0.85rem;margin-top:16px">${r.notes}</p>`:''}
+    ${r.notes?`<p style="color:#666;font-size:0.85rem;margin-top:16px">${r.notes}</p>`:'}
     <p style="text-align:center;color:#888;font-size:0.8rem;margin-top:24px">Thank you for your business!</p>
     <script>window.onload=()=>window.print()</script></body></html>`)
     win.document.close()
@@ -108,7 +108,7 @@ export default function ReceiptsPage() {
                 const totals = calcTotals(r)
                 const vehicle = [r.vehicle_snapshot?.year,r.vehicle_snapshot?.make,r.vehicle_snapshot?.model].filter(Boolean).join(' ')
                 return (
-                  <tr key={r.id} className={`cursor-pointer hover:bg-bg-hover ${selected?.id===r.id?'bg-bg-hover':''}`} onClick={() => setSelected(selected?.id===r.id?null:r)}>
+                  <tr key={r.id} className={`cursor-pointer hover:bg-bg-hover ${selected?.id===r.id?'bg-bg-hover':'}`} onClick={() => setSelected(selected?.id===r.id?null:r)}>
                     <td className="font-mono text-sm font-medium text-blue">{r.doc_number||'—'}</td>
                     <td className="font-medium">{r.customer_snapshot?.name||'—'}</td>
                     <td className="text-text-secondary text-sm">{vehicle||'—'}</td>
