@@ -17,7 +17,7 @@ export default function JobsPage() {
   const [view, setView] = useState<'list'|'kanban'>('list')
   const [editing, setEditing] = useState<string | null | 'new'>(null)
   const [form, setForm] = useState<Partial<Job & {internal_notes: string; customer_notes: string; is_insurance: boolean}>>({})
-  const [search, setSearch] = useState(')
+  const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('active')
 
   const load = useCallback(async () => {
@@ -52,7 +52,7 @@ export default function JobsPage() {
   const openEdit = (j: Job) => { setForm(j as unknown as Record<string, unknown>); setEditing(j.id) }
   const selectCustomer = (id: string) => {
     const c = customers.find(c => c.id === id)
-    if (c) setForm(f => ({ ...f, customer_id: c.id, customer_name: c.name, vehicle_year: c.vehicle_year||', vehicle_make: c.vehicle_make||', vehicle_model: c.vehicle_model||', vehicle_color: c.vehicle_color||', vehicle_engine: c.vehicle_engine||', vehicle_plate: c.vehicle_plate||' }))
+    if (c) setForm(f => ({ ...f, customer_id: c.id, customer_name: c.name, vehicle_year: c.vehicle_year||'', vehicle_make: c.vehicle_make||'', vehicle_model: c.vehicle_model||'', vehicle_color: c.vehicle_color||'', vehicle_engine: c.vehicle_engine||'', vehicle_plate: c.vehicle_plate||'' }))
     else setForm(f => ({ ...f, customer_id: id }))
   }
 
@@ -60,9 +60,9 @@ export default function JobsPage() {
     if (statusFilter === 'active') return !['Paid','Closed'].includes(j.status)
     if (statusFilter !== 'all') return j.status === statusFilter
     return true
-  }).filter(j => !search || [j.customer_name, j.concern, j.status, j.vehicle_make, j.vehicle_model].some(v => (v||').toLowerCase().includes(search.toLowerCase())))
+  }).filter(j => !search || [j.customer_name, j.concern, j.status, j.vehicle_make, j.vehicle_model].some(v => (v||'').toLowerCase().includes(search.toLowerCase())))
 
-  const fmt = (d: string) => d ? new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '
+  const fmt = (d: string) => d ? new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : ''
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
@@ -83,7 +83,7 @@ export default function JobsPage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="form-label">Customer</label>
-                  <select className="form-select" value={(form as Record<string,unknown>).customer_id as string || '} onChange={e => selectCustomer(e.target.value)}>
+                  <select className="form-select" value={(form as Record<string,unknown>).customer_id as string || ''} onChange={e => selectCustomer(e.target.value)}>
                     <option value="">Select customer...</option>
                     {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
@@ -99,18 +99,18 @@ export default function JobsPage() {
                 {['vehicle_year','vehicle_make','vehicle_model'].map(k => (
                   <div key={k}>
                     <label className="form-label">{k.split('_').slice(1).join(' ').replace(/^\w/,c=>c.toUpperCase())}</label>
-                    <input className="form-input" value={(form as Record<string,string>)[k]||'} onChange={e => setForm(f => ({...f,[k]:e.target.value}))} />
+                    <input className="form-input" value={(form as Record<string,string>)[k]||''} onChange={e => setForm(f => ({...f,[k]:e.target.value}))} />
                   </div>
                 ))}
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="form-label">VIN</label>
-                  <input className="form-input" value={(form as Record<string,string>).vehicle_vin||'} onChange={e => setForm(f=>({...f,vehicle_vin:e.target.value}))} />
+                  <input className="form-input" value={(form as Record<string,string>).vehicle_vin||''} onChange={e => setForm(f=>({...f,vehicle_vin:e.target.value}))} />
                 </div>
                 <div>
                   <label className="form-label">Mileage</label>
-                  <input className="form-input" value={(form as Record<string,string>).vehicle_mileage||'} onChange={e => setForm(f=>({...f,vehicle_mileage:e.target.value}))} />
+                  <input className="form-input" value={(form as Record<string,string>).vehicle_mileage||''} onChange={e => setForm(f=>({...f,vehicle_mileage:e.target.value}))} />
                 </div>
               </div>
             </div>
@@ -119,12 +119,12 @@ export default function JobsPage() {
               <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Job Details</div>
               <div>
                 <label className="form-label">Customer Concern</label>
-                <textarea className="form-textarea" rows={3} value={(form as Record<string,string>).concern||'} onChange={e => setForm(f=>({...f,concern:e.target.value}))} placeholder="What does the customer complain about?" />
+                <textarea className="form-textarea" rows={3} value={(form as Record<string,string>).concern||''} onChange={e => setForm(f=>({...f,concern:e.target.value}))} placeholder="What does the customer complain about?" />
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                   <label className="form-label">Tech</label>
-                  <select className="form-select" value={(form as Record<string,string>).tech||'} onChange={e => setForm(f=>({...f,tech:e.target.value}))}>
+                  <select className="form-select" value={(form as Record<string,string>).tech||''} onChange={e => setForm(f=>({...f,tech:e.target.value}))}>
                     <option value="">Unassigned</option>
                     {['Paul','Devin','Luis','Louie'].map(t => <option key={t}>{t}</option>)}
                   </select>
@@ -137,12 +137,12 @@ export default function JobsPage() {
                 </div>
                 <div>
                   <label className="form-label">Promise Date</label>
-                  <input className="form-input" type="date" value={(form as Record<string,string>).promise_date||'} onChange={e => setForm(f=>({...f,promise_date:e.target.value}))} />
+                  <input className="form-input" type="date" value={(form as Record<string,string>).promise_date||''} onChange={e => setForm(f=>({...f,promise_date:e.target.value}))} />
                 </div>
               </div>
               <div>
                 <label className="form-label">Internal Notes</label>
-                <textarea className="form-textarea" rows={2} value={(form as Record<string,string>).internal_notes||'} onChange={e => setForm(f=>({...f,internal_notes:e.target.value}))} />
+                <textarea className="form-textarea" rows={2} value={(form as Record<string,string>).internal_notes||''} onChange={e => setForm(f=>({...f,internal_notes:e.target.value}))} />
               </div>
             </div>
           </div>
@@ -222,4 +222,3 @@ export default function JobsPage() {
     </div>
   )
 }
-
