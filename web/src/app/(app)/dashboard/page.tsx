@@ -54,6 +54,18 @@ export default function DashboardPage() {
     const monthDocs = (docs || []).filter((d: Record<string,unknown>) => (d.type === 'Receipt' || d.type === 'Invoice') && d.status === 'Paid' && (d.created_at as string) >= monthStart)
     const monthRevenue = monthDocs.reduce((s: number, d: Record<string,unknown>) => s + calcTotals(d).total, 0)
 
+    // Build 7-day revenue sparkline
+    const chartDays: { label: string; revenue: number }[] = []
+    for (let i = 6; i >= 0; i--) {
+      const day = new Date(); day.setDate(day.getDate() - i); day.setHours(0,0,0,0)
+      const next = new Date(day); next.setDate(next.getDate() + 1)
+      const dayRevenue = (docs || []).filter((d: Record<string,unknown>) =>
+        (d.type === 'Receipt' || d.type === 'Invoice') && d.status === 'Paid' &&
+        (d.created_at as string) >= day.toISOString() && (d.created_at as string) < next.toISOString()
+      ).reduce((s: number, d: Record<string,unknown>) => s + calcTotals(d).total, 0)
+      chartDays.push({ label: day.toLocaleDateString('en-US',{weekday:'short'}), revenue: dayRevenue })
+    }
+
     const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString()
     const staleJobs = (jobs || []).filter((j: Record<string,unknown>) =>
       !['Paid','Closed','Completed','Ready for Pickup'].includes(j.status as string) &&
@@ -75,6 +87,7 @@ export default function DashboardPage() {
       allDocs: (docs || []) as Record<string,unknown>[],
       staleJobs,
       overdueInvoices,
+      chartDays,
     })
     setLoading(false)
   }, [])
