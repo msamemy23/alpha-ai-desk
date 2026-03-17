@@ -805,7 +805,26 @@ export default function AIPage() {
         (accumulated.length ? `\n\nCompleted steps so far:\n${accumulated.join('\n')}` : '') + +
           `\n\nCRITICAL INSTRUCTIONS:\n1. NEW RECEIPT vs REPRINT: When user says "new receipt" or "I need a receipt for [item]", CREATE a NEW document using proposeDocument. Do NOT reprint or lookup old receipts. A "new receipt" means build a fresh one from scratch.\n2. UNDERSTAND SIMPLE REQUESTS: If the user gives you a customer name and says they need something, DO IT. Don't ask them to repeat. Example: "I need a new receipt for thermostat, $280 flat for Asheanna" = immediately create a receipt with those details, no tax, flat total.\n3. CUSTOMER SEARCH: When the user mentions a customer name, phone, or asks about a customer, ALWAYS use searchCustomers first (NOT createCustomer). Show matching results with name, phone, email, jobs. If no match, say so and ask before creating.\n4. NEVER LOOP: Give ONE clear response per turn. If you're unsure, ask ONE clarifying question. Never repeat yourself.\n5. FLAT RATE: When user says "flat" or "no tax", set tax to 0 and use the exact total they gave.\n6. customer search results: when searchcustomers returns results, always show all matching customers with their full details (name, phone, email, vehicles). the search now includes vehicle info from jobs. never show just one customer if multiple matches exist. present each customer clearly so the user can identify the right one.
 7. RECEIPT TYPE: When user asks for a receipt, use proposeDocument with type Receipt not Invoice. When user asks for an invoice, use type Invoice. Receipt = proof of payment received. Invoice = bill for work done. Estimate = quote before work. The type field in proposeDocument MUST match exactly what the user asked for.` +
-                    `\n\nFEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' : 'OFF'}\n- Social Media: ${activeFeatures.socialMedia ? 'ON' : 'OFF'}\n- Deep Thinking: ${activeFeatures.thinking ? 'ON' : 'OFF'}\nIf a feature is OFF and the user tries to use it, tell them to enable the toggle at the bottom of the chat input.`
+                    `\n\nNATURAL LANGUAGE INTELLIGENCE — YOU ARE SMART, ACT LIKE IT:
+- The user is a busy mechanic. They speak casually with typos, slang, abbreviations. FIGURE IT OUT.
+- "receipt 280 flat thermostat asheanna" = create receipt, thermostat, $280, Asheanna, no tax
+- "brakes civic" = search brake parts for the Civic in context
+- "send it" = send whatever you just made to whoever is in context
+- "how much we made" = getShopStats, revenue
+- "whats rufina owe" = searchCustomers Rufina, check unpaid
+- "call him" = call the customer from this conversation
+- "280 flat" = $280 total, zero tax, one line item
+- "yo check on johns car" = searchCustomers John, show job status
+- "add labor 2 hrs" = add 2 hours at $120/hr
+- "est" = estimate, "inv" = invoice, "rcpt" = receipt, "cust" = customer
+- Pronouns: "his car", "her estimate", "that job" = reference from conversation
+- NEVER ask for info you can infer. NEVER repeat back what user said. Just DO IT.
+- If user gives a price, USE IT. Dont search. Dont question.
+- "flat" or a raw total = no breakdown, no tax, one line.
+- "new receipt" = NEW document, not lookup old ones.
+- User should NEVER have to repeat themselves.
+
+FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' : 'OFF'}\n- Social Media: ${activeFeatures.socialMedia ? 'ON' : 'OFF'}\n- Deep Thinking: ${activeFeatures.thinking ? 'ON' : 'OFF'}\nIf a feature is OFF and the user tries to use it, tell them to enable the toggle at the bottom of the chat input.`
 
       setStatus(step === 0 ? 'Thinking...' : 'Working...')
 
