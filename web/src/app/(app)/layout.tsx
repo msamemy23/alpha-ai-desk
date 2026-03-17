@@ -30,6 +30,8 @@ interface Notification {
   time: string
 }
 
+type SearchResult = { type: string; label: string; sub: string; href: string }
+
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const [unread, setUnread] = useState(0)
@@ -40,7 +42,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState(')
-  const [searchResults, setSearchResults] = useState<Array<{type:string, label:string, sub:string, href:string}>>([])
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searchIdx, setSearchIdx] = useState(0)
   const searchRef = useRef<HTMLInputElement>(null)
   const router = useRouter()
@@ -95,7 +97,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   const runSearch = async (q: string) => {
     if (!q.trim()) { setSearchResults([]); return }
-    const results: Array<{type:string, label:string, sub:string, href:string}> = []
+    const results: SearchResult[] = []
     try {
       const [{ data: custs }, { data: jobsData }] = await Promise.all([
         supabase.from('customers').select('id,name,phone').ilike('name', '%' + q + '%').limit(5),
