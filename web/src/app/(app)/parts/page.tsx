@@ -13,8 +13,8 @@ interface PartResult {
 }
 
 export default function PartsLookupPage() {
-  const [query, setQuery] = useState('')
-  const [vehicle, setVehicle] = useState({ year: '', make: '', model: '' })
+  const [query, setQuery] = useState(')
+  const [vehicle, setVehicle] = useState({ year: ', make: ', model: ' })
   const [results, setResults] = useState<PartResult[]>([])
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(false)
@@ -24,13 +24,13 @@ export default function PartsLookupPage() {
     // Load recent vehicles from recent customers
     import('@/lib/supabase').then(({ supabase }) => {
       supabase.from('customers').select('vehicle_year,vehicle_make,vehicle_model')
-        .not('vehicle_make', 'is', null).neq('vehicle_make', '').order('updated_at', { ascending: false }).limit(5)
+        .not('vehicle_make', 'is', null).neq('vehicle_make', ').order('updated_at', { ascending: false }).limit(5)
         .then(({ data }) => {
           const seen = new Set<string>()
           const vehicles: {year:string;make:string;model:string}[] = []
           for (const c of data||[]) {
             const key = [c.vehicle_year,c.vehicle_make,c.vehicle_model].join('|')
-            if (!seen.has(key) && c.vehicle_make) { seen.add(key); vehicles.push({ year:c.vehicle_year||'', make:c.vehicle_make||'', model:c.vehicle_model||'' }) }
+            if (!seen.has(key) && c.vehicle_make) { seen.add(key); vehicles.push({ year:c.vehicle_year||', make:c.vehicle_make||', model:c.vehicle_model||' }) }
           }
           setRecentVehicles(vehicles)
         })
@@ -42,7 +42,7 @@ export default function PartsLookupPage() {
     setLoading(true); setSearched(true)
     try {
       const { data: settings } = await (await import('@/lib/supabase')).supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
-      const apiKey = (settings?.ai_api_key as string) || ''
+      const apiKey = (settings?.ai_api_key as string) || '
       const model = (settings?.ai_model as string) || 'meta-llama/llama-3.3-70b-instruct:free'
       const baseUrl = (settings?.ai_base_url as string) || 'https://openrouter.ai/api/v1'
 
@@ -53,7 +53,7 @@ export default function PartsLookupPage() {
       }
 
       const vehicleStr = [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ')
-      const prompt = `You are a parts lookup assistant for an auto repair shop. The user is looking for: "${query}"${vehicleStr ? ` for a ${vehicleStr}` : ''}.
+      const prompt = `You are a parts lookup assistant for an auto repair shop. The user is looking for: "${query}"${vehicleStr ? ` for a ${vehicleStr}` : '}.
 
 Return a JSON array of 3-5 common part options with realistic pricing. Each object should have: name, brand, partNumber, price (number), source (e.g. "AutoZone", "O'Reilly", "RockAuto", "Dealer"), inStock (boolean), notes (brief). Return ONLY the JSON array, no markdown.`
 
