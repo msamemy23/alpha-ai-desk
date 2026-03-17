@@ -261,9 +261,14 @@ export default function MessagesPage() {
                           </span>
                           <LeadBadge score={call.lead_score} />
                         </div>
-                        <div className="flex items-center gap-3 text-sm text-gray-400">
+                        <div className="flex items-center gap-3 text-sm text-gray-400" onClick={e => e.stopPropagation()}>
                           <span>{formatDuration(call.duration_secs)}</span>
                           <span>{formatDate(call.start_time)}</span>
+                          <button
+                            onClick={e => { e.stopPropagation(); makeCall(call.direction === "inbound" ? call.from_number : call.to_number) }}
+                            className="px-2 py-1 text-xs bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded hover:bg-blue-600/40 transition-colors font-medium"
+                            title="Call Back"
+                          >📞 Call</button>
                         </div>
                       </div>
                       {call.service_needed && call.service_needed !== 'unknown' && (
@@ -506,3 +511,4 @@ export default function MessagesPage() {
     </div>
   )
 }
+
