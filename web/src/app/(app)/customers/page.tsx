@@ -217,7 +217,7 @@ export default function CustomersPage() {
                 )}
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-text-muted">{jobCounts[c.id] || 0} jobs · Added {fmtDate(c.created_at)}</span>
-                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
+                  <div className="flex gap-1 transition-opacity opacity-100 sm:opacity-0 sm:group-hover:opacity-100" onClick={e => e.stopPropagation()}>
                     {c.phone && (
                       <button className="btn btn-sm btn-secondary" title="Call" onClick={async (e) => { e.stopPropagation(); try { await fetch('/api/make-call', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: c.phone, name: c.name }) }) } catch {} }}>📞</button>
                     )}
