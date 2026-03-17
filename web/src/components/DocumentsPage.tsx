@@ -371,7 +371,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Parts</div>
               <div className="space-y-2 min-w-[600px]">
                 {((form.parts||[]) as Record<string,unknown>[]).map((p,i) => (
-                  <div key={i} className="grid grid-cols-12 gap-2 items-center">
+                  <div key={i} className="grid grid-cols-12 gap-2 items-center min-w-[600px]">
                     <input className="form-input col-span-4" placeholder="Part name" value={p.name as string||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],name:e.target.value}; setForm(f=>({...f,parts:p2})) }} />
                     <input className="form-input col-span-2" placeholder="Brand" value={p.brand as string||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],brand:e.target.value}; setForm(f=>({...f,parts:p2})) }} />
                     <input className="form-input col-span-1" type="number" placeholder="Qty" value={p.qty as number||1} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],qty:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
@@ -390,7 +390,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Labor</div>
               <div className="space-y-2 min-w-[600px]">
                 {((form.labors||[]) as Record<string,unknown>[]).map((l,i) => (
-                  <div key={i} className="grid grid-cols-12 gap-2 items-center">
+                  <div key={i} className="grid grid-cols-12 gap-2 items-center min-w-[600px]">
                     <input className="form-input col-span-5" placeholder="Operation" value={l.operation as string||''} onChange={e => { const l2=[...((form.labors||[]) as Record<string,unknown>[])]; l2[i]={...l2[i],operation:e.target.value}; setForm(f=>({...f,labors:l2})) }} />
                     <select className="form-select col-span-2" value={l.tech as string||''} onChange={e => { const l2=[...((form.labors||[]) as Record<string,unknown>[])]; l2[i]={...l2[i],tech:e.target.value}; setForm(f=>({...f,labors:l2})) }}>
                       <option value="">—</option>{['Paul','Devin','Luis','Louie'].map(t=><option key={t}>{t}</option>)}
