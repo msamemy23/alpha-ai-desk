@@ -939,6 +939,43 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       // Web Search — execute silently, feed result back to AI
       if (parsed.tool === 'webSearch') {
         setStatus('Searching...')
+
+          // Smart parts detection: if query looks like a parts search, use parts-lookup API
+      const partsQuery = (parsed.query as string || '').toLowerCase()
+      const isPartsSearch = /(?:brake|rotor|pad|control arm|strut|shock|bearing|hub|alternator|starter|water pump|thermostat|timing belt|ac compressor|tie rod|ball joint|axle|caliper|muffler|catalytic|spark plug|coil|fuel pump|radiator|belt|hose|filter|battery).*(?:price|cost|how much|\d{4})/i.test(parsed.query as string) || /\d{4}\s+\w+\s+\w+.*(?:brake|rotor|pad|control arm|strut|shock|part)/i.test(parsed.query as string)
+      if (isPartsSearch) {
+        setStatus('Looking up parts...')
+        try {
+          const pr = await fetch('/api/parts-lookup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: parsed.query })
+          })
+          const pd = await pr.json()
+          if (pd.ok && pd.data) {
+            const d = pd.data
+            let partsResult = `SMART PARTS LOOKUP RESULTS for ${d.vehicle}:\n`
+            partsResult += `Positions: ${(d.positions || []).join(', ')}\n\n`
+            for (const opt of (d.options || [])) {
+              partsResult += `**Option: ${opt.brand} (${opt.tier})**\n`
+              for (const p of (opt.parts || [])) {
+                partsResult += `- ${p.position}: ${p.name}${p.partNumber ? ' #' + p.partNumber : ''} - $${p.price?.toFixed(2)} x${p.quantity || 1}${p.store ? ' [' + p.store + ']' : ''}${p.url ? ' ' + p.url : ''}${p.inStock === true ? ' (In Stock)' : p.inStock === false ? ' (Out of Stock)' : ''}\n`
+              }
+              partsResult += `Parts Total: $${opt.partsTotal?.toFixed(2)}\n\n`
+            }
+            for (const kit of (d.kits || [])) {
+              partsResult += `**KIT OPTION: ${kit.name}** - $${kit.price?.toFixed(2)} (${kit.includes}) [${kit.store}]${kit.url ? ' ' + kit.url : ''}\n`
+            }
+            if (d.laborHours) partsResult += `\nLabor: ${d.laborHours} hrs x $${d.laborRate}/hr = $${(d.laborHours * d.laborRate).toFixed(2)}\n`
+            partsResult += `Tax Rate: ${d.taxRate}% (on parts)\n`
+            if (d.searchUrls?.length) partsResult += `\nSource links:\n` + d.searchUrls.map((s: {store:string;url:string}) => `- ${s.store}: ${s.url}`).join('\n')
+            accumulated.push(`[Parts Lookup: "${parsed.query}"]\n${partsResult}`)
+            agentMessages.push({ role: 'assistant', content: raw })
+            agentMessages.push({ role: 'user', content: `Parts lookup results for "${parsed.query}":\n${partsResult}\n\nPresent these results to the user in a clean formatted way. Use the EXACT prices and URLs from above. Continue to the next step silently.` })
+            continue
+          }
+        } catch { /* fall through to regular search */ }
+      }
         let searchResult = 'No results'
         try {
           const r = await fetch(`/api/ai-search?q=${encodeURIComponent(parsed.query as string)}`)
