@@ -269,9 +269,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 <div className="text-center text-text-muted text-sm py-6">Start typing to search customers, jobs, and pages…</div>
               )}
               {searchResults.map((r, i) => (
-                <button key={i} className={w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-bg-hover transition-colors border-b border-border last:border-0 }
+                <button key={i} className="w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-bg-hover transition-colors border-b border-border last:border-0"
                   onClick={() => { router.push(r.href); setSearchOpen(false) }}>
-                  <span className={	ag text-xs shrink-0 }>{r.type}</span>
+                                  <span className="text-xs shrink-0 px-2 py-0.5 rounded bg-bg-hover">{r.type}</span>
                   <div className="flex-1 min-w-0">
                     <div className="font-medium text-sm truncate">{r.label}</div>
                     {r.sub && <div className="text-xs text-text-muted truncate">{r.sub}</div>}
