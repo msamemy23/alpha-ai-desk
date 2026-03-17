@@ -54,6 +54,12 @@ export async function GET(req: NextRequest) {
 
   results.automations = await callApi('/api/automations', {})
 
+      // Batch transcribe calls and score leads (processes 10 at a time)
+      results.transcribe_calls = await callApi('/api/telnyx/transcribe-calls?action=batch&limit=10', {})
+
+      // Score any transcribed calls that don't have lead scores yet
+      results.score_leads = await callApi('/api/telnyx/transcribe-calls?action=score&limit=20', {})
+
   await supabase.from('growth_scans').upsert({
     id: 'last_cron_run',
     type: 'cron',
