@@ -258,38 +258,6 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      {/* Revenue Goal Progress Bar */}
-      {stats!.monthRevenue > 0 && (
-        <div className="card">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-bold">Monthly Revenue Goal <span className="text-text-muted font-normal ml-1">,000</span></span>
-            <span className="text-sm font-bold text-green">{((stats!.monthRevenue / 100000) * 100).toFixed(1)}%</span>
-          </div>
-          <div className="w-full bg-bg-hover rounded-full h-3 overflow-hidden">
-            <div className="h-3 rounded-full transition-all duration-500"
-              style={{ width: ${Math.min((stats!.monthRevenue / 100000) * 100, 100)}%, background: stats!.monthRevenue >= 100000 ? '#22c55e' : stats!.monthRevenue >= 75000 ? '#f59e0b' : '#3b82f6' }} />
-          </div>
-          <div className="flex justify-between mt-1">
-            <span className="text-xs text-text-muted">{formatCurrency(stats!.monthRevenue)} collected</span>
-            <span className="text-xs text-text-muted">{formatCurrency(Math.max(0, 100000 - stats!.monthRevenue))} to go</span>
-          </div>
-        </div>
-      )}
-
-      {/* Quick Actions */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[
-          { label: 'New Job', icon: '🔧', href: '/jobs', color: 'border-blue/40 hover:border-blue' },
-          { label: 'New Customer', icon: '👤', href: '/customers', color: 'border-green/40 hover:border-green' },
-          { label: 'New Estimate', icon: '📄', href: '/estimates', color: 'border-amber/40 hover:border-amber' },
-          { label: 'Messages', icon: '💬', href: '/messages', color: 'border-purple/40 hover:border-purple' },
-        ].map(a => (
-          <a key={a.label} href={a.href} className={card text-center p-4 cursor-pointer transition-all border  hover:scale-[1.02]}>
-            <div className="text-2xl mb-1">{a.icon}</div>
-            <div className="text-xs font-medium">{a.label}</div>
-          </a>
-        ))}
-      </div>
       {/* AI Alert Card */}
       {aiAlerts.length > 0 && (
         <div className="card border-amber/30 bg-amber/5">
@@ -422,4 +390,3 @@ export default function DashboardPage() {
     </div>
   )
 }
-
