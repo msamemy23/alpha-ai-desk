@@ -100,13 +100,21 @@ export default function MessagesPage() {
   const audioRef = useRef<HTMLAudioElement>(null)
   const [playing, setPlaying] = useState(false)
 
-  const loadCalls = useCallback(async () => {
-    const { data } = await supabase
-      .from('call_history')
-      .select('id, call_id, direction, from_number, to_number, duration_secs, status, start_time, end_time, matched_customer_name, transcript, lead_score, lead_reasoning, service_needed, caller_sentiment, key_quotes, call_count_from_number, raw_data')
-      .order('start_time', { ascending: false })
-      .limit(5000)
-    if (data) setCalls(data)
+const loadCalls = useCallback(async () => {
+    let allCalls: CallRecord[] = []
+    let from = 0
+    const batchSize = 1000
+    while (true) {
+      const { data } = await supabase
+        .from('call_history')
+        .select('id, call_id, direction, from_number, to_number, duration_secs, status, start_time, end_time, matched_customer_name, transcript, lead_score, lead_reasoning, service_needed, caller_sentiment, key_quotes, call_count_from_number, raw_data')
+        .order('start_time', { ascending: false })
+        .range(from, from + batchSize - 1)
+      if (data) allCalls = [...allCalls, ...data]
+      if (!data || data.length < batchSize) break
+      from += batchSize
+    }
+    setCalls(allCalls)
   }, [])
 
   const loadMessages = useCallback(async () => {
