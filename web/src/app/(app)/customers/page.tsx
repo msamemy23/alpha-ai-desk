@@ -49,9 +49,34 @@ export default function CustomersPage() {
 
   const save = async () => {
     if (!form.name) return alert('Name required')
-    const data = { ...form, updated_at: new Date().toISOString() }
-    if (editing === 'new') await supabase.from('customers').insert({ ...data, created_at: new Date().toISOString() })
-    else if (editing) await supabase.from('customers').update(data).eq('id', editing)
+    // Only include columns that exist in the schema
+    const safeFields = ['name','phone','email','address','notes','preferred_contact',
+      'vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage']
+    const data: Record<string,unknown> = { updated_at: new Date().toISOString() }
+    for (const k of safeFields) { if ((form as Record<string,string>)[k] !== undefined) data[k] = (form as Record<string,string>)[k] }
+    // Try to include extended fields - ignore errors if columns don't exist yet
+    const extended = ['sentiment','vehicle_color','vehicle_engine','last_contact','review_requested']
+    for (const k of extended) { if ((form as Record<string,string>)[k] !== undefined) data[k] = (form as Record<string,string>)[k] }
+    if (editing === 'new') {
+      const { error } = await supabase.from('customers').insert({ ...data, created_at: new Date().toISOString() })
+      if (error) {
+        // Retry without extended fields if schema error
+        if (error.message.includes('column')) {
+          const safeData: Record<string,unknown> = {}
+          for (const k of safeFields) { if ((form as Record<string,string>)[k] !== undefined) safeData[k] = (form as Record<string,string>)[k] }
+          safeData.updated_at = new Date().toISOString(); safeData.created_at = new Date().toISOString()
+          await supabase.from('customers').insert(safeData)
+        } else { alert('Save failed: ' + error.message); return }
+      }
+    } else if (editing) {
+      const { error } = await supabase.from('customers').update(data).eq('id', editing)
+      if (error && error.message.includes('column')) {
+        // Retry without extended fields
+        const safeData: Record<string,unknown> = { updated_at: new Date().toISOString() }
+        for (const k of safeFields) { if ((form as Record<string,string>)[k] !== undefined) safeData[k] = (form as Record<string,string>)[k] }
+        await supabase.from('customers').update(safeData).eq('id', editing)
+      }
+    }
     setEditing(null); setForm({}); load()
   }
 
