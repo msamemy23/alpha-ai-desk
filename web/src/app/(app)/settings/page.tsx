@@ -17,9 +17,6 @@ export default function SettingsPage() {
   const [reviewStars, setReviewStars] = useState(5)
   const [reviewDraft, setReviewDraft] = useState('')
   const [reviewLoading, setReviewLoading] = useState(false)
-  const [migrateResult, setMigrateResult] = useState<string>('')
-  const [migrating, setMigrating] = useState(false)
-
 
   const load = useCallback(async () => {
     const { data } = await supabase.from('settings').select('*').limit(1).single()
@@ -257,37 +254,6 @@ export default function SettingsPage() {
               </button>
             </div>
           )}
-        </div>
-      )}
-      {tab === 'system' && (
-        <div className="space-y-4">
-          <div className="card">
-            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-4">Database Schema</div>
-            <p className="text-sm text-text-muted mb-4">Run once to add missing columns (sentiment, vehicle fields, time_clock table). Safe to re-run.</p>
-            <div className="flex items-center gap-3">
-              <button className="btn btn-primary" disabled={migrating} onClick={async () => {
-                setMigrating(true); setMigrateResult('')
-                try {
-                  const r = await fetch('/api/migrate')
-                  const d = await r.json()
-                  setMigrateResult(d.ok ? '? Schema updated!' : '? Error: ' + JSON.stringify(d))
-                } catch(e) { setMigrateResult('? Failed: ' + String(e)) }
-                setMigrating(false)
-              }}>
-                {migrating ? '? Running...' : '?? Run Schema Migration'}
-              </button>
-            </div>
-            {migrateResult && <div className={`mt-3 text-sm p-3 rounded-lg ${migrateResult.startsWith('?') ? 'bg-green/10 text-green' : 'bg-red/10 text-red'}`}>{migrateResult}</div>}
-          </div>
-          <div className="card">
-            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-4">Quick Links</div>
-            <div className="flex flex-wrap gap-2">
-              <a href="https://supabase.com/dashboard" target="_blank" className="btn btn-secondary btn-sm">?? Supabase</a>
-              <a href="https://vercel.com" target="_blank" className="btn btn-secondary btn-sm">? Vercel</a>
-              <a href="https://portal.telnyx.com" target="_blank" className="btn btn-secondary btn-sm">?? Telnyx</a>
-              <a href="https://github.com/msamemy23/alpha-ai-desk" target="_blank" className="btn btn-secondary btn-sm">?? GitHub</a>
-            </div>
-          </div>
         </div>
       )}
     </div>
