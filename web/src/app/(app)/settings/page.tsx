@@ -278,7 +278,7 @@ export default function SettingsPage() {
                 {migrating ? '⏳ Running...' : '🔧 Run Schema Migration'}
               </button>
             </div>
-            {migrateResult && <div className={mt-3 text-sm p-3 rounded-lg }>{migrateResult}</div>}
+            {migrateResult && <div className="mt-3 text-sm p-3 rounded-lg">{migrateResult}</div>}
           </div>
 
           <div className="card">
