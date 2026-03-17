@@ -92,6 +92,7 @@ export default function MessagesPage() {
   const [searchTerm, setSearchTerm] = useState('')
   const [compose, setCompose] = useState(false)
   const [sendTo, setSendTo] = useState('')
+  const [smsSearch, setSmsSearch] = useState('')
   const [sendBody, setSendBody] = useState('')
   const [sendChannel, setSendChannel] = useState<'sms'|'email'>('sms')
   const [sending, setSending] = useState(false)
@@ -285,7 +286,7 @@ export default function MessagesPage() {
 
             {tab === 'sms' && (
               <div className="space-y-1 max-h-[70vh] overflow-y-auto">
-                {threads.map(thread => {
+                {threads.filter(t => !smsSearch || (t.lastMsg.customer?.name||t.contact||'').toLowerCase().includes(smsSearch.toLowerCase())).map(thread => {
                   const name = thread.lastMsg.customer?.name || formatPhone(thread.contact)
                   return (
                     <div key={thread.contact}
