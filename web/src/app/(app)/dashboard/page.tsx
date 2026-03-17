@@ -81,13 +81,15 @@ export default function DashboardPage() {
 
   useEffect(() => {
     load()
+    // FIXED: removed 'load' from deps to prevent infinite re-render loop
+    // Supabase realtime still updates UI, but won't create feedback cycle
     const channel = supabase.channel('dashboard')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs' }, load)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'documents' }, load)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, load)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs' }, () => load())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'documents' }, () => load())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, () => load())
       .subscribe()
     return () => { supabase.removeChannel(channel) }
-  }, [load])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const dismissBriefing = () => {
     setBriefingDismissed(true)
