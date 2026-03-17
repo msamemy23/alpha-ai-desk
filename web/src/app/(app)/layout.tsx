@@ -92,6 +92,31 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     localStorage.setItem('alpha_location', loc)
   }
 
+
+  const runSearch = async (q: string) => {
+    if (!q.trim()) { setSearchResults([]); return }
+    const results: {type:string;label:string;sub:string;href:string}[] = []
+    try {
+      const [{ data: custs }, { data: jobsData }] = await Promise.all([
+        supabase.from('customers').select('id,name,phone').ilike('name', '%' + q + '%').limit(5),
+        supabase.from('jobs').select('id,customer_name,concern,status').or('customer_name.ilike.%' + q + '%,concern.ilike.%' + q + '%').limit(5),
+      ])
+      for (const c of (custs||[])) results.push({ type:'Customer', label:c.name||'', sub:c.phone||'', href:'/customers' })
+      for (const j of (jobsData||[])) results.push({ type:'Job', label:j.customer_name||'Job', sub:(j.status||'') + ' - ' + (j.concern||'').substring(0,40), href:'/jobs' })
+    } catch {}
+    const pages = [{label:'Dashboard',href:'/dashboard'},{label:'Customers',href:'/customers'},{label:'Jobs',href:'/jobs'},{label:'Estimates',href:'/estimates'},{label:'Invoices',href:'/invoices'},{label:'Receipts',href:'/receipts'},{label:'Shop Board',href:'/shopboard'},{label:'Messages',href:'/messages'},{label:'Growth',href:'/growth'},{label:'Parts Lookup',href:'/parts'},{label:'Insurance',href:'/insurance'},{label:'Settings',href:'/settings'}]
+    for (const pg of pages) { if (pg.label.toLowerCase().includes(q.toLowerCase())) results.push({ type:'Page', label:pg.label, sub:'', href:pg.href }) }
+    setSearchResults(results); setSearchIdx(0)
+  }
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); setSearchOpen(true); setSearchQuery(''); setSearchResults([]); setTimeout(() => searchRef.current?.focus(), 50) }
+      if (e.key === 'Escape') setSearchOpen(false)
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [])
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Mobile overlay */}
