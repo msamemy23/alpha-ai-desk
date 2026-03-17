@@ -28,20 +28,25 @@ async function getFreshWavUrl(rid: string, callSessionId?: string): Promise<stri
     return null
   } catch{return null}
 }
-async function transcribeViaOpenRouter(url: string): Promise<string|null> {
+async function transcribeViaOpenRouter(url: string): Promise<{text:string|null,error?:string}> {
   try {
-    if (!OPENROUTER_API_KEY) return null
+    if (!OPENROUTER_API_KEY) return {text:null,error:'NO_OPENROUTER_KEY'}
+    // Download audio
     let ar = await fetch(url)
     if (!ar.ok) ar = await fetch(url,{headers:{'Authorization':`Bearer ${TELNYX_API_KEY}`}})
-    if (!ar.ok) return null
+    if (!ar.ok) return {text:null,error:`AUDIO_FETCH_${ar.status}`}
     const buf = await ar.arrayBuffer()
-    const b64 = Buffer.from(buf).toString('base64')
-    const r = await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',headers:{'Authorization':`Bearer ${OPENROUTER_API_KEY}`,'Content-Type':'application/json','HTTP-Referer':'https://alpha-ai-desk.vercel.app','X-Title':'Alpha AI Desk'},body:JSON.stringify({model:'openai/gpt-4o-mini-audio-preview',messages:[{role:'user',content:[{type:'input_audio',input_audio:{data:b64,format:'wav'}},{type:'text',text:'Transcribe this audio word for word. Return ONLY the text.'}]}],max_tokens:4000})})
-    if (!r.ok) return null
+    if (buf.byteLength < 500) return {text:null,error:'AUDIO_TOO_SMALL'}
+    // Use OpenRouter audio transcriptions endpoint (Whisper)
+    const formData = new FormData()
+    formData.append('file', new Blob([buf], {type:'audio/wav'}), 'audio.wav')
+    formData.append('model', 'openai/whisper-large-v3')
+    const r = await fetch('https://openrouter.ai/api/v1/audio/transcriptions',{method:'POST',headers:{'Authorization':`Bearer ${OPENROUTER_API_KEY}`,'HTTP-Referer':'https://alpha-ai-desk.vercel.app','X-Title':'Alpha AI Desk'},body:formData})
+    if (!r.ok) {const err=await r.text();return {text:null,error:`OPENROUTER_${r.status}: ${err.substring(0,200)}`}}
     const d = await r.json()
-    const t = d.choices?.[0]?.message?.content?.trim()
-    return t&&t.length>5?t:null
-  } catch{return null}
+    const t = (d.text||'').trim()
+    return {text:t.length>5?t:null,error:t?undefined:'EMPTY_RESPONSE'}
+  } catch(x:any){return {text:null,error:x.message}}
 }
 
 async function scoreLeadFromTranscript(t: string): Promise<{lead_score:string;lead_reasoning:string;service_needed:string;caller_sentiment:string;key_quotes:string}> {
@@ -121,14 +126,15 @@ export async function POST(req: NextRequest) {
         // Step 2: Use freshUrl if available, otherwise fall back to storedUrl
         const audioUrl = freshUrl || storedUrl
 
-        // Step 3: Try OpenRouter transcription with whatever URL we have
+                // Step 3: Try OpenRouter transcription with whatever URL we have
         if (audioUrl) {
-          transcript = await transcribeViaOpenRouter(audioUrl)
+          const tr = await transcribeViaOpenRouter(audioUrl)
+          transcript = tr.text
+          transcriptError = tr.error
         }
-
         // Step 4: If OpenRouter failed but we have storedUrl and didn't try it yet, try storedUrl directly
         if (!transcript && storedUrl && freshUrl && storedUrl !== freshUrl) {
-          transcript = await transcribeViaOpenRouter(storedUrl)
+          const tr2 = await transcribeViaOpenRouter(storedUrl); transcript = tr2.text; transcriptError = tr2.error
         }
 
         // Step 5: Try Telnyx native transcription as last resort
