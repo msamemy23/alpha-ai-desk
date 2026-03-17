@@ -1,7 +1,7 @@
 'use client'
 import Link from 'next/link'
-import { usePathname, useRouter } from 'next/navigation'
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { usePathname } from 'next/navigation'
+import { useEffect, useState } from 'react'
 import { supabase, getUnreadCount } from '@/lib/supabase'
 
 const NAV = [
@@ -30,8 +30,6 @@ interface Notification {
   time: string
 }
 
-type SearchResult = { type: string; label: string; sub: string; href: string }
-
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const [unread, setUnread] = useState(0)
@@ -40,12 +38,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [notifLoading, setNotifLoading] = useState(false)
   const [location, setLocation] = useState('main')
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [searchOpen, setSearchOpen] = useState(false)
-  const [searchQuery, setSearchQuery] = useState(')
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
-  const [searchIdx, setSearchIdx] = useState(0)
-  const searchRef = useRef<HTMLInputElement>(null)
-  const router = useRouter()
 
   useEffect(() => {
     getUnreadCount().then(setUnread)
@@ -74,7 +66,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       ])
       const items: Notification[] = []
       for (const m of (msgs||[])) {
-        items.push({ id: m.id, type:'sms', title:'New SMS from ' + (m.from_address||'Unknown'), body: (m.body||').slice(0,80), time: new Date(m.created_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) })
+        items.push({ id: m.id, type:'sms', title:'New SMS from ' + (m.from_address||'Unknown'), body: (m.body||'').slice(0,80), time: new Date(m.created_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) })
       }
       for (const c of (calls||[])) {
         items.push({ id: c.id, type:'call', title:'Missed call from ' + (c.from_number||'Unknown'), body: 'Short call — likely needs callback', time: new Date(c.start_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) })
@@ -94,31 +86,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     localStorage.setItem('alpha_location', loc)
   }
 
-
-  const runSearch = async (q: string) => {
-    if (!q.trim()) { setSearchResults([]); return }
-    const results: SearchResult[] = []
-    try {
-      const [{ data: custs }, { data: jobsData }] = await Promise.all([
-        supabase.from('customers').select('id,name,phone').ilike('name', '%' + q + '%').limit(5),
-        supabase.from('jobs').select('id,customer_name,concern,status').or('customer_name.ilike.%' + q + '%,concern.ilike.%' + q + '%').limit(5),
-      ])
-      for (const c of (custs||[])) results.push({ type:'Customer', label:c.name||', sub:c.phone||', href:'/customers' })
-      for (const j of (jobsData||[])) results.push({ type:'Job', label:j.customer_name||'Job', sub:(j.status||') + ' - ' + (j.concern||').substring(0,40), href:'/jobs' })
-    } catch {}
-    const pages = [{label:'Dashboard',href:'/dashboard'},{label:'Customers',href:'/customers'},{label:'Jobs',href:'/jobs'},{label:'Estimates',href:'/estimates'},{label:'Invoices',href:'/invoices'},{label:'Receipts',href:'/receipts'},{label:'Shop Board',href:'/shopboard'},{label:'Messages',href:'/messages'},{label:'Growth',href:'/growth'},{label:'Parts Lookup',href:'/parts'},{label:'Insurance',href:'/insurance'},{label:'Settings',href:'/settings'}]
-    for (const pg of pages) { if (pg.label.toLowerCase().includes(q.toLowerCase())) results.push({ type:'Page', label:pg.label, sub:', href:pg.href }) }
-    setSearchResults(results); setSearchIdx(0)
-  }
-
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); setSearchOpen(true); setSearchQuery('); setSearchResults([]); setTimeout(() => searchRef.current?.focus(), 50) }
-      if (e.key === 'Escape') setSearchOpen(false)
-    }
-    document.addEventListener('keydown', handleKey)
-    return () => document.removeEventListener('keydown', handleKey)
-  }, [])
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Mobile overlay */}
@@ -173,7 +140,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <Link
               key={item.href}
               href={item.href}
-              className={`nav-item ${pathname.startsWith(item.href) ? 'active' : '}`}
+              className={`nav-item ${pathname.startsWith(item.href) ? 'active' : ''}`}
             >
               <span>{item.icon}</span>
               <span className="flex-1">{item.label}</span>
@@ -246,53 +213,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             )}
           </div>
         </div>
-        {/* Global Ctrl+K Search Modal */}
-      {searchOpen && (
-        <div className="fixed inset-0 bg-black/70 z-[100] flex items-start justify-center pt-24 px-4" onClick={() => setSearchOpen(false)}>
-          <div className="bg-bg-card border border-border rounded-xl w-full max-w-lg shadow-2xl" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
-              <span className="text-text-muted">🔍</span>
-              <input ref={searchRef} className="flex-1 bg-transparent outline-none text-sm placeholder-text-muted"
-                placeholder="Search customers, jobs, pages..."
-                value={searchQuery}
-                onChange={e => { setSearchQuery(e.target.value); runSearch(e.target.value) }}
-                onKeyDown={e => {
-                  if (e.key === 'ArrowDown') { e.preventDefault(); setSearchIdx(i => Math.min(i+1,searchResults.length-1)) }
-                  if (e.key === 'ArrowUp') { e.preventDefault(); setSearchIdx(i => Math.max(i-1,0)) }
-                  if (e.key === 'Enter' && searchResults[searchIdx]) { router.push(searchResults[searchIdx].href); setSearchOpen(false) }
-                }} />
-              <span className="text-xs text-text-muted bg-bg-hover px-1.5 py-0.5 rounded border border-border">ESC</span>
-            </div>
-            <div className="max-h-72 overflow-y-auto">
-              {searchQuery && searchResults.length === 0 && (
-                <div className="text-center text-text-muted text-sm py-6">No results for &quot;{searchQuery}&quot;</div>
-              )}
-              {!searchQuery && (
-                <div className="text-center text-text-muted text-sm py-6">Start typing to search customers, jobs, and pages…</div>
-              )}
-              {searchResults.map((r, i) => (
-                <button key={i} className="w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-bg-hover transition-colors border-b border-border last:border-0"
-                  onClick={() => { router.push(r.href); setSearchOpen(false) }}>
-                                  <span className="text-xs shrink-0 px-2 py-0.5 rounded bg-bg-hover">{r.type}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium text-sm truncate">{r.label}</div>
-                    {r.sub && <div className="text-xs text-text-muted truncate">{r.sub}</div>}
-                  </div>
-                </button>
-              ))}
-            </div>
-            <div className="px-4 py-2 border-t border-border flex items-center justify-between">
-              <span className="text-xs text-text-muted">↑↓ navigate · Enter select · Esc close</span>
-              <span className="text-xs text-text-muted font-mono bg-bg-hover px-2 py-0.5 rounded">Ctrl+K</span>
-            </div>
-          </div>
-        </div>
-      )}
-      <main className="flex-1 overflow-y-auto bg-bg-base">
+        <main className="flex-1 overflow-y-auto bg-bg-base">
           {children}
         </main>
       </div>
     </div>
   )
 }
-
