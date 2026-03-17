@@ -24,7 +24,13 @@ export default function BriefingPage() {
 
     const now = new Date()
     const threeDaysAgo = new Date(now.getTime() - 3 * 86400000).toISOString()
-    const weekAgo = new Date(now.getTime() - 7 * 86400000).toISOString()
+    // Find last Monday 00:00:00 for true week start
+  const mondayDate = new Date(now)
+  const dayOfWeek = mondayDate.getDay()
+  const daysBack = dayOfWeek === 0 ? 6 : dayOfWeek - 1
+  mondayDate.setDate(mondayDate.getDate() - daysBack)
+  mondayDate.setHours(0, 0, 0, 0)
+  const weekAgo = mondayDate.toISOString()
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
 
     const openJobs = (jobs || []).filter((j: Record<string,unknown>) => !['Paid','Closed'].includes(j.status as string))
@@ -37,8 +43,8 @@ export default function BriefingPage() {
       d.type === 'Invoice' && ['Unpaid','Partial'].includes(d.status as string)
     )
 
-    const weekReceipts = (docs || []).filter((d: Record<string,unknown>) => d.type === 'Receipt' && (d.created_at as string) >= weekAgo)
-    const monthReceipts = (docs || []).filter((d: Record<string,unknown>) => d.type === 'Receipt' && (d.created_at as string) >= monthStart)
+    const weekReceipts = (docs || []).filter((d: Record<string,unknown>) => d.type === 'Receipt' && d.status === 'Paid' && (d.created_at as string) >= weekAgo)
+    const monthReceipts = (docs || []).filter((d: Record<string,unknown>) => d.type === 'Receipt' && d.status === 'Paid' && (d.created_at as string) >= monthStart)
 
     setData({
       openJobs,
@@ -90,7 +96,7 @@ export default function BriefingPage() {
       {/* Revenue */}
       <div className="grid grid-cols-2 gap-4 mb-6 sm:mb-8">
         <div className="card">
-          <div className="text-xs text-text-muted uppercase tracking-wider mb-1">This Week</div>
+          <div className="text-xs text-text-muted uppercase tracking-wider mb-1">THIS WEEK (Mon–Today)</div>
           <div className="text-xl font-bold text-green">{formatCurrency(data.weekRevenue)}</div>
         </div>
         <div className="card">
@@ -171,3 +177,4 @@ export default function BriefingPage() {
     </div>
   )
 }
+
