@@ -163,8 +163,33 @@ export default function CustomersPage() {
             </div>
             <div className="card">
               <label className="form-label">Notes</label>
-              <textarea className="form-textarea" rows={3} value={form.notes||''} onChange={f('notes')} />
+              <textarea className="form-textarea" rows={3} value={form.notes||''} onChange={f(''notes'')} />
             </div>
+
+            {/* Customer History */}
+            {editing !== ''new'' && (custJobs.length > 0 || custMsgs.length > 0) && (
+              <div className="card animate-fade-in">
+                <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Customer History</div>
+                <div className="flex gap-2 mb-3">
+                  <button onClick={() => setHistTab(''jobs'')} className={`btn btn-sm ${histTab===''jobs'' ? ''btn-primary'' : ''btn-secondary''}`}>🔧 Jobs ({custJobs.length})</button>
+                  <button onClick={() => setHistTab(''sms'')} className={`btn btn-sm ${histTab===''sms'' ? ''btn-primary'' : ''btn-secondary''}`}>💬 SMS ({custMsgs.length})</button>
+                </div>
+                {histTab === ''jobs'' && <div className="space-y-2">{custJobs.map((j: Record<string,unknown>) => (
+                  <div key={String(j.id)} className="flex items-center gap-3 p-3 bg-bg-base rounded-lg border border-border text-sm">
+                    <div className="flex-1"><div className="font-medium">{String(j.concern||''-'').substring(0,55)}</div><div className="text-xs text-text-muted mt-0.5">{[j.vehicle_year,j.vehicle_make,j.vehicle_model].filter(Boolean).join(''' '')||''—''}</div></div>
+                    <div className="text-right"><span className="tag tag-blue text-xs">{String(j.status||''-'')}</span></div>
+                  </div>
+                ))}</div>}
+                {histTab === ''sms'' && <div className="space-y-2 max-h-60 overflow-y-auto">{custMsgs.map((m: Record<string,unknown>) => (
+                  <div key={String(m.id)} className={`flex ${m.direction===''inbound'' ? ''justify-start'' : ''justify-end''}`}>
+                    <div className={`max-w-xs rounded-xl px-3 py-2 text-sm ${m.direction===''inbound'' ? ''bg-bg-base border border-border'' : ''bg-blue text-white''}`}>
+                      <div>{String(m.body||''-'').substring(0,100)}</div>
+                      <div className="text-xs opacity-50 mt-0.5">{m.created_at ? new Date(String(m.created_at)).toLocaleString(''en-US'',{month:''short'',day:''numeric'',hour:''numeric'',minute:''2-digit''}) : ''''}</div>
+                    </div>
+                  </div>
+                ))}</div>}
+              </div>
+            )}
           </div>
         </div>
       ) : (
@@ -199,7 +224,14 @@ export default function CustomersPage() {
               </div>
             )}
             {filtered.map(c => (
-              <div key={c.id} className="card hover:border-blue/40 transition-colors cursor-pointer group" onClick={() => { setForm(c); setEditing(c.id) }}>
+              <div key={c.id} className="card hover:border-blue/40 transition-colors cursor-pointer group" onClick={async () => {
+                  setForm(c); setEditing(c.id); setCustJobs([]); setCustMsgs([])
+                  const [{ data: jj }, { data: mm }] = await Promise.all([
+                    supabase.from(''jobs'').select(''id,concern,status,tech,created_at,vehicle_year,vehicle_make,vehicle_model'').eq(''customer_id'', c.id).order(''created_at'',{ascending:false}).limit(15),
+                    supabase.from(''messages'').select(''id,body,direction,created_at,channel'').eq(''customer_id'', c.id).order(''created_at'',{ascending:false}).limit(30)
+                  ])
+                  setCustJobs(jj||[]); setCustMsgs(mm||[])
+                }}>
                 <div className="flex items-start justify-between mb-3">
                   <div>
                     <div className="font-semibold text-text-primary flex items-center gap-2">
