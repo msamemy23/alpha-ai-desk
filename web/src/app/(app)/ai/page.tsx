@@ -949,7 +949,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           const pr = await fetch('/api/parts-lookup', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: parsed.query })
+            body: JSON.stringify({ query: parsed.query }),             signal: AbortSignal.timeout(12000),
           })
           const pd = await pr.json()
           if (pd.ok && pd.data) {
