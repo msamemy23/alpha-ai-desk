@@ -8,22 +8,22 @@ const TELNYX_BASE = 'https://api.telnyx.com/v2'
 
 async function getFreshWavUrl(rid: string, callSessionId?: string): Promise<string|null> {
   try {
-    // Try individual recording endpoint first
-    const r = await fetch(`${TELNYX_BASE}/recordings/${rid}`,{headers:{'Authorization':`Bearer ${TELNYX_API_KEY}`}})
-    if (r.ok) {
-      const d = await r.json()
-      const url = d.data?.download_urls?.wav||d.data?.download_urls?.mp3||null
-      if (url) return url
-    }
-    // Fallback: search recordings list by call_session_id to get fresh presigned URL
+    // Use recordings list API with call_session_id (individual endpoint returns 404)
     if (callSessionId) {
       const params = new URLSearchParams({'filter[call_session_id]': callSessionId, 'page[size]': '5'})
-      const r2 = await fetch(`${TELNYX_BASE}/recordings?${params}`,{headers:{'Authorization':`Bearer ${TELNYX_API_KEY}`}})
-      if (r2.ok) {
-        const d2 = await r2.json()
-        const rec = (d2.data||[]).find((x:any) => x.id === rid) || d2.data?.[0]
-        if (rec?.download_urls?.wav || rec?.download_urls?.mp3) return rec.download_urls.wav||rec.download_urls.mp3
+      const r = await fetch(`${TELNYX_BASE}/recordings?${params}`,{headers:{'Authorization':`Bearer ${TELNYX_API_KEY}`}})
+      if (r.ok) {
+        const d = await r.json()
+        const rec = (d.data||[]).find((x:any) => x.id === rid) || d.data?.[0]
+        const url = rec?.download_urls?.wav||rec?.download_urls?.mp3||null
+        if (url) return url
       }
+    }
+    // Fallback: try individual endpoint
+    const r2 = await fetch(`${TELNYX_BASE}/recordings/${rid}`,{headers:{'Authorization':`Bearer ${TELNYX_API_KEY}`}})
+    if (r2.ok) {
+      const d2 = await r2.json()
+      return d2.data?.download_urls?.wav||d2.data?.download_urls?.mp3||null
     }
     return null
   } catch{return null}
@@ -31,24 +31,23 @@ async function getFreshWavUrl(rid: string, callSessionId?: string): Promise<stri
 async function transcribeViaOpenRouter(url: string): Promise<{text:string|null,error?:string}> {
   try {
     if (!OPENROUTER_API_KEY) return {text:null,error:'NO_OPENROUTER_KEY'}
-    // Download audio
+        // Download audio from Telnyx S3 (try public first, then with auth)
     let ar = await fetch(url)
-    if (!ar.ok) ar = await fetch(url,{headers:{'Authorization':`Bearer ${TELNYX_API_KEY}`}})
-    if (!ar.ok) return {text:null,error:`AUDIO_FETCH_${ar.status}`}
+    if (!ar.ok) ar = await fetch(url, {headers: {'Authorization': `Bearer ${TELNYX_API_KEY}`}})
+    if (!ar.ok) return {text:null, error:`AUDIO_FETCH_${ar.status}`}
     const buf = await ar.arrayBuffer()
-    if (buf.byteLength < 500) return {text:null,error:'AUDIO_TOO_SMALL'}
-    // Use OpenRouter audio transcriptions endpoint (Whisper)
-    const formData = new FormData()
-    formData.append('file', new Blob([buf], {type:'audio/wav'}), 'audio.wav')
-    formData.append('model', 'openai/whisper-large-v3')
-    const r = await fetch('https://openrouter.ai/api/v1/audio/transcriptions',{method:'POST',headers:{'Authorization':`Bearer ${OPENROUTER_API_KEY}`,'HTTP-Referer':'https://alpha-ai-desk.vercel.app','X-Title':'Alpha AI Desk'},body:formData})
-    if (!r.ok) {const err=await r.text();return {text:null,error:`OPENROUTER_${r.status}: ${err.substring(0,200)}`}}
+    if (buf.byteLength < 500) return {text:null, error:'AUDIO_TOO_SMALL'}
+    const b64 = Buffer.from(buf).toString('base64')
+    // Use GPT-4o audio preview via OpenRouter for transcription
+    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {'Authorization': `Bearer ${OPENROUTER_API_KEY}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://alpha-ai-desk.vercel.app', 'X-Title': 'Alpha AI Desk'},
+      body: JSON.stringify({model: 'openai/gpt-4o-audio-preview', messages: [{role: 'user', content: [{type: 'input_audio', input_audio: {data: b64, format: 'wav'}}, {type: 'text', text: 'Transcribe this phone call audio word for word. Return ONLY the spoken text.'}]}], max_tokens: 2000})
+    })
+    if (!r.ok) {const err = await r.text(); return {text:null, error:`OPENROUTER_${r.status}: ${err.substring(0,150)}`}}
     const d = await r.json()
-    const t = (d.text||'').trim()
-    return {text:t.length>5?t:null,error:t?undefined:'EMPTY_RESPONSE'}
-  } catch(x:any){return {text:null,error:x.message}}
-}
-
+    const t = (d.choices?.[0]?.message?.content || '').trim()
+    return {text: t.length > 5 ? t : null, error: t ? undefined : `EMPTY: ${JSON.stringify(d).substring(0,100)}`}
 async function scoreLeadFromTranscript(t: string): Promise<{lead_score:string;lead_reasoning:string;service_needed:string;caller_sentiment:string;key_quotes:string}> {
   const e = {lead_score:'unknown',lead_reasoning:'',service_needed:'',caller_sentiment:'',key_quotes:''}
   if (!OPENROUTER_API_KEY||!t||t.length<20) return {...e,lead_reasoning:'Transcript too short'}
