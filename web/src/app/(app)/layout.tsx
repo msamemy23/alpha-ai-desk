@@ -39,7 +39,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [location, setLocation] = useState('main')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
+  const [searchQuery, setSearchQuery] = useState(')
   const [searchResults, setSearchResults] = useState<{type:string;label:string;sub:string;href:string}[]>([])
   const [searchIdx, setSearchIdx] = useState(0)
   const searchRef = useRef<HTMLInputElement>(null)
@@ -72,7 +72,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       ])
       const items: Notification[] = []
       for (const m of (msgs||[])) {
-        items.push({ id: m.id, type:'sms', title:'New SMS from ' + (m.from_address||'Unknown'), body: (m.body||'').slice(0,80), time: new Date(m.created_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) })
+        items.push({ id: m.id, type:'sms', title:'New SMS from ' + (m.from_address||'Unknown'), body: (m.body||').slice(0,80), time: new Date(m.created_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) })
       }
       for (const c of (calls||[])) {
         items.push({ id: c.id, type:'call', title:'Missed call from ' + (c.from_number||'Unknown'), body: 'Short call — likely needs callback', time: new Date(c.start_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) })
@@ -101,17 +101,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         supabase.from('customers').select('id,name,phone').ilike('name', '%' + q + '%').limit(5),
         supabase.from('jobs').select('id,customer_name,concern,status').or('customer_name.ilike.%' + q + '%,concern.ilike.%' + q + '%').limit(5),
       ])
-      for (const c of (custs||[])) results.push({ type:'Customer', label:c.name||'', sub:c.phone||'', href:'/customers' })
-      for (const j of (jobsData||[])) results.push({ type:'Job', label:j.customer_name||'Job', sub:(j.status||'') + ' - ' + (j.concern||'').substring(0,40), href:'/jobs' })
+      for (const c of (custs||[])) results.push({ type:'Customer', label:c.name||', sub:c.phone||', href:'/customers' })
+      for (const j of (jobsData||[])) results.push({ type:'Job', label:j.customer_name||'Job', sub:(j.status||') + ' - ' + (j.concern||').substring(0,40), href:'/jobs' })
     } catch {}
     const pages = [{label:'Dashboard',href:'/dashboard'},{label:'Customers',href:'/customers'},{label:'Jobs',href:'/jobs'},{label:'Estimates',href:'/estimates'},{label:'Invoices',href:'/invoices'},{label:'Receipts',href:'/receipts'},{label:'Shop Board',href:'/shopboard'},{label:'Messages',href:'/messages'},{label:'Growth',href:'/growth'},{label:'Parts Lookup',href:'/parts'},{label:'Insurance',href:'/insurance'},{label:'Settings',href:'/settings'}]
-    for (const pg of pages) { if (pg.label.toLowerCase().includes(q.toLowerCase())) results.push({ type:'Page', label:pg.label, sub:'', href:pg.href }) }
+    for (const pg of pages) { if (pg.label.toLowerCase().includes(q.toLowerCase())) results.push({ type:'Page', label:pg.label, sub:', href:pg.href }) }
     setSearchResults(results); setSearchIdx(0)
   }
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); setSearchOpen(true); setSearchQuery(''); setSearchResults([]); setTimeout(() => searchRef.current?.focus(), 50) }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); setSearchOpen(true); setSearchQuery('); setSearchResults([]); setTimeout(() => searchRef.current?.focus(), 50) }
       if (e.key === 'Escape') setSearchOpen(false)
     }
     document.addEventListener('keydown', handleKey)
@@ -171,7 +171,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <Link
               key={item.href}
               href={item.href}
-              className={`nav-item ${pathname.startsWith(item.href) ? 'active' : ''}`}
+              className={`nav-item ${pathname.startsWith(item.href) ? 'active' : '}`}
             >
               <span>{item.icon}</span>
               <span className="flex-1">{item.label}</span>
