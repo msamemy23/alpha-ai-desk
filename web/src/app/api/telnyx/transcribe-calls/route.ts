@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
 export const maxDuration = 300
-const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
+const TELNYX_API_KEY = process.env.TELNYX_API_KEY || '
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '
 const AI_MODEL = process.env.AI_MODEL || 'deepseek/deepseek-v3.2'
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
 
@@ -46,20 +46,20 @@ async function transcribeViaOpenRouter(url: string): Promise<{text:string|null,e
     })
     if (!r.ok) {const err = await r.text(); return {text:null, error:`OPENROUTER_${r.status}: ${err.substring(0,150)}`}}
     const d = await r.json()
-    const t = (d.choices?.[0]?.message?.content || '').trim()
+    const t = (d.choices?.[0]?.message?.content || ').trim()
     return {text: t.length > 5 ? t : null, error: t ? undefined : `EMPTY: ${JSON.stringify(d).substring(0,100)}`}
       } catch(x:any){return {text:null,error:x.message}}
 }
 async function scoreLeadFromTranscript(t: string): Promise<{lead_score:string;lead_reasoning:string;service_needed:string;caller_sentiment:string;key_quotes:string}> {
-  const e = {lead_score:'unknown',lead_reasoning:'',service_needed:'',caller_sentiment:'',key_quotes:''}
+  const e = {lead_score:'unknown',lead_reasoning:',service_needed:',caller_sentiment:',key_quotes:'}
   if (!OPENROUTER_API_KEY||!t||t.length<20) return {...e,lead_reasoning:'Transcript too short'}
   try {
     const r = await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',headers:{'Authorization':`Bearer ${OPENROUTER_API_KEY}`,'Content-Type':'application/json','HTTP-Referer':'https://alpha-ai-desk.vercel.app','X-Title':'Alpha AI Desk'},body:JSON.stringify({model:AI_MODEL,messages:[{role:'system',content:'You are an AI for Alpha International Auto Center (Houston TX). Analyze call transcripts. Return JSON: lead_score(hot/warm/cold), lead_reasoning, service_needed, caller_sentiment(positive/neutral/frustrated/spam), key_quotes.'},{role:'user',content:`Analyze and return JSON:\n\n${t.substring(0,3000)}`}],temperature:0.1,max_tokens:600,response_format:{type:'json_object'}})})
     if (!r.ok) return {...e,lead_reasoning:`AI error: ${r.status}`}
     const d = await r.json()
-    const c = (d.choices?.[0]?.message?.content||'{}').replace(/<think>[\s\S]*?<\/think>/g,'').trim()
+    const c = (d.choices?.[0]?.message?.content||'{}').replace(/<think>[\s\S]*?<\/think>/g,').trim()
     const p = JSON.parse(c||'{}')
-    return {lead_score:p.lead_score||'unknown',lead_reasoning:p.lead_reasoning||'',service_needed:p.service_needed||'',caller_sentiment:p.caller_sentiment||'',key_quotes:p.key_quotes||''}
+    return {lead_score:p.lead_score||'unknown',lead_reasoning:p.lead_reasoning||',service_needed:p.service_needed||',caller_sentiment:p.caller_sentiment||',key_quotes:p.key_quotes||'}
   } catch(x:any){return {...e,lead_reasoning:x.message}}
 }
 
