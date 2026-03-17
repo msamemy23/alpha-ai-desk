@@ -47,66 +47,17 @@ export default function ShopBoardPage() {
   const [clockEntries, setClockEntries] = useState<ClockEntry[]>([])
   const [clockQuote, setClockQuote] = useState<{ name: string; quote: string } | null>(null)
 
-  // Load clock entries from Supabase (fallback to localStorage)
+  // Load clock entries from localStorage
   useEffect(() => {
-    const loadClock = async () => {
-      try {
-        const today = new Date().toISOString().split('T')[0]
-        const { data } = await supabase
-          .from('time_clock')
-          .select('*')
-          .gte('date', today)
-          .order('clock_in', { ascending: false })
-        if (data && data.length > 0) {
-          const entries: ClockEntry[] = data.map((r: Record<string,unknown>) => ({
-            employee: String(r.employee),
-            clockIn: String(r.clock_in),
-            clockOut: r.clock_out ? String(r.clock_out) : undefined,
-            id: String(r.id)
-          }))
-          setClockEntries(entries)
-          return
-        }
-      } catch { /* table may not exist yet */ }
-      // Fallback to localStorage
-      try {
-        const stored = localStorage.getItem('time_clock')
-        if (stored) setClockEntries(JSON.parse(stored))
-      } catch { /* ignore */ }
-    }
-    loadClock()
+    try {
+      const stored = localStorage.getItem('time_clock')
+      if (stored) setClockEntries(JSON.parse(stored))
+    } catch { /* ignore */ }
   }, [])
 
-  const saveClockEntries = async (entries: ClockEntry[]) => {
+  const saveClockEntries = (entries: ClockEntry[]) => {
     setClockEntries(entries)
-    localStorage.setItem('time_clock', JSON.stringify(entries)) // keep as fallback
-  }
-
-  const clockInEmployee = async (empId: string) => {
-    const now = new Date().toISOString()
-    const today = new Date().toISOString().split('T')[0]
-    try {
-      await supabase.from('time_clock').insert({ employee: empId, clock_in: now, date: today })
-    } catch { /* table may not exist */ }
-    const newEntry: ClockEntry = { employee: empId, clockIn: now }
-    saveClockEntries([...clockEntries, newEntry])
-  }
-
-  const clockOutEmployee = async (empId: string) => {
-    const now = new Date().toISOString()
-    const today = new Date().toDateString()
-    try {
-      const { data } = await supabase.from('time_clock').select('id,clock_in').eq('employee', empId).is('clock_out', null).order('clock_in', { ascending: false }).limit(1)
-      if (data?.[0]) {
-        const hrs = (new Date(now).getTime() - new Date(data[0].clock_in).getTime()) / 3600000
-        await supabase.from('time_clock').update({ clock_out: now, hours: Math.round(hrs * 100) / 100 }).eq('id', data[0].id)
-      }
-    } catch { /* table may not exist */ }
-    const updated = clockEntries.map(e =>
-      e.employee === empId && !e.clockOut && new Date(e.clockIn).toDateString() === today
-        ? { ...e, clockOut: now } : e
-    )
-    saveClockEntries(updated)
+    localStorage.setItem('time_clock', JSON.stringify(entries))
   }
 
   const getEmployeeStatus = (empId: string) => {
