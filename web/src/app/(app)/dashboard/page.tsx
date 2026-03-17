@@ -193,7 +193,7 @@ export default function DashboardPage() {
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-3">
             <div className="flex items-center gap-2">
               <span className="text-xl">☀️</span>
-              <h2 className="text-sm font-bold uppercase tracking-wider text-blue">Good Morning — Daily Briefing</h2>
+              <h2 className="text-sm font-bold uppercase tracking-wider text-blue">{(() => { const h = new Date().getHours(); return h < 5 ? 'Good Night' : h < 12 ? 'Good Morning' : h < 17 ? 'Good Afternoon' : h < 21 ? 'Good Evening' : 'Good Night' })()} — Daily Briefing</h2>
             </div>
             <div className="flex gap-2">
               <button className="btn btn-secondary btn-sm" onClick={() => setBriefingExpanded(!briefingExpanded)}>
