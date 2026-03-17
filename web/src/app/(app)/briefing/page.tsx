@@ -13,6 +13,7 @@ export default function BriefingPage() {
     weekRevenue: number
     monthRevenue: number
     partsWaiting: Record<string,unknown>[]
+    hotLeads: Record<string,unknown>[]
   } | null>(null)
 
   const load = useCallback(async () => {
