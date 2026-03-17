@@ -6,15 +6,28 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
 const AI_MODEL = process.env.AI_MODEL || 'deepseek/deepseek-r1'
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
 
-async function getFreshWavUrl(rid: string): Promise<string|null> {
+async function getFreshWavUrl(rid: string, callSessionId?: string): Promise<string|null> {
   try {
+    // Try individual recording endpoint first
     const r = await fetch(`${TELNYX_BASE}/recordings/${rid}`,{headers:{'Authorization':`Bearer ${TELNYX_API_KEY}`}})
-    if (!r.ok) return null
-    const d = await r.json()
-    return d.data?.download_urls?.wav||d.data?.download_urls?.mp3||null
+    if (r.ok) {
+      const d = await r.json()
+      const url = d.data?.download_urls?.wav||d.data?.download_urls?.mp3||null
+      if (url) return url
+    }
+    // Fallback: search recordings list by call_session_id to get fresh presigned URL
+    if (callSessionId) {
+      const params = new URLSearchParams({'filter[call_session_id]': callSessionId, 'page[size]': '5'})
+      const r2 = await fetch(`${TELNYX_BASE}/recordings?${params}`,{headers:{'Authorization':`Bearer ${TELNYX_API_KEY}`}})
+      if (r2.ok) {
+        const d2 = await r2.json()
+        const rec = (d2.data||[]).find((x:any) => x.id === rid) || d2.data?.[0]
+        if (rec?.download_urls?.wav || rec?.download_urls?.mp3) return rec.download_urls.wav||rec.download_urls.mp3
+      }
+    }
+    return null
   } catch{return null}
 }
-
 async function transcribeViaOpenRouter(url: string): Promise<string|null> {
   try {
     if (!OPENROUTER_API_KEY) return null
@@ -103,7 +116,7 @@ export async function POST(req: NextRequest) {
         let transcriptError:string|undefined
 
         // Step 1: Try to get a fresh URL from Telnyx API
-        const freshUrl = rid ? await getFreshWavUrl(rid) : null
+                const freshUrl = rid ? await getFreshWavUrl(rid, rd?.call_session_id) : null
         
         // Step 2: Use freshUrl if available, otherwise fall back to storedUrl
         const audioUrl = freshUrl || storedUrl
