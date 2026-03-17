@@ -20,15 +20,15 @@ export default function AutomationsPage() {
   const [items, setItems] = useState<Automation[]>([])
   const [loading, setLoading] = useState(true)
   const [showNew, setShowNew] = useState(false)
-  const [newName, setNewName] = useState(')
-  const [newSchedule, setNewSchedule] = useState(')
-  const [newPrompt, setNewPrompt] = useState(')
-  const [newDesc, setNewDesc] = useState(')
+  const [newName, setNewName] = useState('')
+  const [newSchedule, setNewSchedule] = useState('')
+  const [newPrompt, setNewPrompt] = useState('')
+  const [newDesc, setNewDesc] = useState('')
   const [saving, setSaving] = useState(false)
   const [runningId, setRunningId] = useState<string | null>(null)
-  const [toast, setToast] = useState(')
+  const [toast, setToast] = useState('')
 
-  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast('), 3000) }
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 3000) }
 
   const loadAutomations = useCallback(async () => {
     try {
@@ -75,7 +75,7 @@ export default function AutomationsPage() {
       if (d.ok) {
         showToast('Automation created!')
         setShowNew(false)
-        setNewName('); setNewSchedule('); setNewPrompt('); setNewDesc(')
+        setNewName(''); setNewSchedule(''); setNewPrompt(''); setNewDesc('')
         loadAutomations()
       } else {
         showToast(`Error: ${d.error}`)
@@ -211,7 +211,7 @@ export default function AutomationsPage() {
       ) : (
         <div className="space-y-3">
           {items.map(item => (
-            <div key={item.id} className={`bg-bg-card border border-border rounded-xl p-4 ${!item.enabled ? 'opacity-60' : '}`}>
+            <div key={item.id} className={`bg-bg-card border border-border rounded-xl p-4 ${!item.enabled ? 'opacity-60' : ''}`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
