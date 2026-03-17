@@ -51,7 +51,7 @@ export default function DashboardPage() {
     const unpaidDocs = (docs || []).filter((d: Record<string,unknown>) => ['Unpaid','Partial','Draft'].includes(d.status as string))
     const unpaidTotal = unpaidDocs.reduce((s: number, d: Record<string,unknown>) => s + calcTotals(d).balanceDue, 0)
     const now = new Date(); const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
-    const monthDocs = (docs || []).filter((d: Record<string,unknown>) => d.type === 'Receipt' && (d.created_at as string) >= monthStart)
+    const monthDocs = (docs || []).filter((d: Record<string,unknown>) => (d.type === 'Receipt' || d.type === 'Invoice') && d.status === 'Paid' && (d.created_at as string) >= monthStart)
     const monthRevenue = monthDocs.reduce((s: number, d: Record<string,unknown>) => s + calcTotals(d).total, 0)
 
     const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString()
@@ -69,7 +69,7 @@ export default function DashboardPage() {
       unpaidTotal,
       customersCount: (customers || []).length,
       monthRevenue,
-      recentJobs: (jobs || []).slice(0, 6) as Record<string,unknown>[],
+      recentJobs: (jobs || []).filter((j: Record<string,unknown>) => !['Paid','Closed'].includes(j.status as string)).slice(0, 8) as Record<string,unknown>[],
       recentMessages: (messages || []) as Record<string,unknown>[],
       allJobs: (jobs || []) as Record<string,unknown>[],
       allDocs: (docs || []) as Record<string,unknown>[],
@@ -311,7 +311,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recent Jobs */}
         <div className="card">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary mb-4">Recent Jobs</h2>
+          <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary mb-4">Active Jobs</h2>
           <div className="space-y-3">
             {stats!.recentJobs.length === 0 && <p className="text-text-muted text-sm">No jobs yet</p>}
             {stats!.recentJobs.map((j: Record<string,unknown>) => (
@@ -375,3 +375,4 @@ export default function DashboardPage() {
     </div>
   )
 }
+
