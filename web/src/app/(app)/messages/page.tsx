@@ -34,8 +34,8 @@ interface Customer { id: string; name: string; phone: string; email: string }
 const SHOP_NUM = '+17136636979'
 
 function formatPhone(p: string) {
-  if (!p) return '
-  const d = p.replace(/\D/g, ')
+  if (!p) return ''
+  const d = p.replace(/\D/g, '')
   if (d.length === 11 && d[0] === '1') return `(${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`
   if (d.length === 10) return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`
   return p
@@ -49,7 +49,7 @@ function formatDuration(s: number) {
 }
 
 function formatDate(d: string) {
-  if (!d) return '
+  if (!d) return ''
   const dt = new Date(d)
   return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' +
     dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
@@ -89,32 +89,23 @@ export default function MessagesPage() {
   const [selectedThread, setSelectedThread] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [callFilter, setCallFilter] = useState<'all'|'inbound'|'outbound'>('all')
-  const [searchTerm, setSearchTerm] = useState(')
+  const [searchTerm, setSearchTerm] = useState('')
   const [compose, setCompose] = useState(false)
-  const [sendTo, setSendTo] = useState(')
-  const [smsSearch, setSmsSearch] = useState(')
-  const [sendBody, setSendBody] = useState(')
+  const [sendTo, setSendTo] = useState('')
+  const [sendBody, setSendBody] = useState('')
   const [sendChannel, setSendChannel] = useState<'sms'|'email'>('sms')
   const [sending, setSending] = useState(false)
-  const [dialerNum, setDialerNum] = useState(')
+  const [dialerNum, setDialerNum] = useState('')
   const audioRef = useRef<HTMLAudioElement>(null)
   const [playing, setPlaying] = useState(false)
 
-const loadCalls = useCallback(async () => {
-    let allCalls: CallRecord[] = []
-    let from = 0
-    const batchSize = 1000
-    while (true) {
-      const { data } = await supabase
-        .from('call_history')
-        .select('id, call_id, direction, from_number, to_number, duration_secs, status, start_time, end_time, matched_customer_name, transcript, lead_score, lead_reasoning, service_needed, caller_sentiment, key_quotes, call_count_from_number, raw_data')
-        .order('start_time', { ascending: false })
-        .range(from, from + batchSize - 1)
-      if (data) allCalls = [...allCalls, ...data]
-      if (!data || data.length < batchSize) break
-      from += batchSize
-    }
-    setCalls(allCalls)
+  const loadCalls = useCallback(async () => {
+    const { data } = await supabase
+      .from('call_history')
+      .select('id, call_id, direction, from_number, to_number, duration_secs, status, start_time, end_time, matched_customer_name, transcript, lead_score, lead_reasoning, service_needed, caller_sentiment, key_quotes, call_count_from_number, raw_data')
+      .order('start_time', { ascending: false })
+      .limit(5000)
+    if (data) setCalls(data)
   }, [])
 
   const loadMessages = useCallback(async () => {
@@ -191,7 +182,7 @@ const loadCalls = useCallback(async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ to: sendTo, body: sendBody, channel: sendChannel }),
       })
-      setSendBody(')
+      setSendBody('')
       setCompose(false)
       loadMessages()
     } finally { setSending(false) }
@@ -294,7 +285,7 @@ const loadCalls = useCallback(async () => {
 
             {tab === 'sms' && (
               <div className="space-y-1 max-h-[70vh] overflow-y-auto">
-                {threads.filter(t => !smsSearch || (t.lastMsg.customer?.name||t.contact||').toLowerCase().includes(smsSearch.toLowerCase())).map(thread => {
+                {threads.map(thread => {
                   const name = thread.lastMsg.customer?.name || formatPhone(thread.contact)
                   return (
                     <div key={thread.contact}
