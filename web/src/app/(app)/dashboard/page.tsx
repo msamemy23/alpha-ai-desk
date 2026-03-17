@@ -20,9 +20,9 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [briefingDismissed, setBriefingDismissed] = useState(false)
   const [briefingExpanded, setBriefingExpanded] = useState(true)
-  const [aiInsight, setAiInsight] = useState('')
+  const [aiInsight, setAiInsight] = useState(')
   const [insightLoading, setInsightLoading] = useState(false)
-  const [slowDayMsg, setSlowDayMsg] = useState('')
+  const [slowDayMsg, setSlowDayMsg] = useState(')
   const [slowDaySending, setSlowDaySending] = useState(false)
   const [slowDayResult, setSlowDayResult] = useState<{sent:number;total:number}|null>(null)
   const [aiAlerts, setAiAlerts] = useState<{id:string;title:string;body:string;priority?:string}[]>([])
@@ -114,7 +114,7 @@ export default function DashboardPage() {
     setInsightLoading(true)
     try {
       const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
-      const apiKey = (settings?.ai_api_key as string) || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || ''
+      const apiKey = (settings?.ai_api_key as string) || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || '
       const model = (settings?.ai_model as string) || 'meta-llama/llama-3.3-70b-instruct:free'
       const baseUrl = (settings?.ai_base_url as string) || 'https://openrouter.ai/api/v1'
       if (!apiKey) { setAiInsight('Configure your AI API key in Settings to use AI insights.'); return }
@@ -180,7 +180,7 @@ export default function DashboardPage() {
   stats!.allJobs.forEach(j => {
     const labors = (j.labors as Record<string,unknown>[]) || []
     labors.forEach(l => {
-      const tech = (l.tech as string) || ''
+      const tech = (l.tech as string) || '
       if (!tech) return
       if (!techMap[tech]) techMap[tech] = { jobs: 0, hours: 0, revenue: 0 }
       techMap[tech].jobs++
@@ -225,7 +225,7 @@ export default function DashboardPage() {
                 <div className="text-xs text-text-muted">Stale Jobs (&gt;3 days)</div>
                 <div className="text-lg font-bold text-amber">{stats!.staleJobs.length}</div>
                 {stats!.staleJobs.length > 0 && (
-                  <div className="text-xs text-text-muted mt-1 truncate">{(stats!.staleJobs[0].customer_name as string) || 'Unknown'}{stats!.staleJobs.length > 1 ? ` +${stats!.staleJobs.length - 1} more` : ''}</div>
+                  <div className="text-xs text-text-muted mt-1 truncate">{(stats!.staleJobs[0].customer_name as string) || 'Unknown'}{stats!.staleJobs.length > 1 ? ` +${stats!.staleJobs.length - 1} more` : '}</div>
                 )}
               </div>
               <div className="bg-bg-card border border-border rounded-lg p-3">
