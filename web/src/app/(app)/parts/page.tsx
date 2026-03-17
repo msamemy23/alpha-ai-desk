@@ -18,6 +18,24 @@ export default function PartsLookupPage() {
   const [results, setResults] = useState<PartResult[]>([])
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(false)
+  const [recentVehicles, setRecentVehicles] = useState<{year:string;make:string;model:string}[]>([])
+  
+  useEffect(() => {
+    // Load recent vehicles from recent customers
+    import('@/lib/supabase').then(({ supabase }) => {
+      supabase.from('customers').select('vehicle_year,vehicle_make,vehicle_model')
+        .not('vehicle_make', 'is', null).neq('vehicle_make', '').order('updated_at', { ascending: false }).limit(5)
+        .then(({ data }) => {
+          const seen = new Set<string>()
+          const vehicles: {year:string;make:string;model:string}[] = []
+          for (const c of data||[]) {
+            const key = [c.vehicle_year,c.vehicle_make,c.vehicle_model].join('|')
+            if (!seen.has(key) && c.vehicle_make) { seen.add(key); vehicles.push({ year:c.vehicle_year||'', make:c.vehicle_make||'', model:c.vehicle_model||'' }) }
+          }
+          setRecentVehicles(vehicles)
+        })
+    })
+  }, [])
 
   const search = async () => {
     if (!query) return
