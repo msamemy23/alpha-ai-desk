@@ -16,7 +16,7 @@ export default function BriefingPage() {
   } | null>(null)
 
   const load = useCallback(async () => {
-    const [{ data: jobs }, { data: docs }, { count: unread }] = await Promise.all([
+    const [{ data: jobs }, { data: docs }, { count: unread }, { data: hotCallsRaw }] = await Promise.all([
       supabase.from('jobs').select('*').order('created_at', { ascending: false }),
       supabase.from('documents').select('*').order('created_at', { ascending: false }),
       supabase.from('messages').select('*', { count: 'exact', head: true }).eq('read', false).eq('direction', 'inbound'),
