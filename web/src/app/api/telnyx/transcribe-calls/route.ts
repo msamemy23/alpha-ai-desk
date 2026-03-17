@@ -3,7 +3,7 @@ import { getServiceClient } from '@/lib/supabase-service'
 export const maxDuration = 300
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
-const AI_MODEL = process.env.AI_MODEL || 'deepseek/deepseek-r1'
+const AI_MODEL = process.env.AI_MODEL || 'deepseek/deepseek-v3.2'
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
 
 async function getFreshWavUrl(rid: string, callSessionId?: string): Promise<string|null> {
@@ -86,7 +86,7 @@ export async function POST(req: NextRequest) {
   try {
     const url = new URL(req.url)
     const action = url.searchParams.get('action')||'batch'
-    const limit = parseInt(url.searchParams.get('limit')||'10')
+    const limit = parseInt(url.searchParams.get('limit')||'50')
     const db = getServiceClient()
 
     if (action==='debug') {
