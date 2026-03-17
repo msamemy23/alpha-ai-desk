@@ -320,7 +320,7 @@ export default function MessagesPage() {
               </div>
 
               {/* Call Info Grid */}
-              <div className="grid grid-cols-2 gap-3 mb-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
                 <div className="bg-white/5 rounded-lg p-3">
                   <div className="text-xs text-gray-500 mb-1">Direction</div>
                   <DirectionBadge dir={selectedCall.direction} />
