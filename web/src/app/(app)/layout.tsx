@@ -286,7 +286,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       )}
-      <main className=""flex-1 overflow-y-auto bg-bg-base">
+      <main className="flex-1 overflow-y-auto bg-bg-base">
           {children}
         </main>
       </div>
