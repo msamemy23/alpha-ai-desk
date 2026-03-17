@@ -13,7 +13,8 @@ const NAV = [
   { href: '/shopboard', icon: '📋', label: 'Shop Board' },
   { href: '/estimates', icon: '📄', label: 'Estimates' },
   { href: '/invoices', icon: '🧾', label: 'Invoices' },
-    { href: '/insurance', icon: '🛡️', label: 'Insurance' },
+    { href: '/receipts', icon: '🧾', label: 'Receipts' },
+  { href: '/insurance', icon: '🛡️', label: 'Insurance' },
   { href: '/parts', icon: '🔩', label: 'Parts Lookup' },
   { href: '/messages', icon: '💬', label: 'Calls & Messages' },
   { href: '/ai', icon: '🤖', label: 'Alpha AI' },
@@ -59,9 +60,18 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const loadNotifications = async () => {
     setNotifLoading(true)
     try {
-      const res = await fetch('/api/notifications')
-      const data = await res.json()
-      setNotifications(data.notifications || [])
+      const [{ data: msgs }, { data: calls }] = await Promise.all([
+        supabase.from('messages').select('id,body,from_address,created_at').eq('direction','inbound').eq('read',false).order('created_at',{ascending:false}).limit(5),
+        supabase.from('calls').select('id,from_number,start_time').eq('direction','inbound').lt('duration_secs',15).order('start_time',{ascending:false}).limit(5)
+      ])
+      const items: Notification[] = []
+      for (const m of (msgs||[])) {
+        items.push({ id: m.id, type:'sms', title:'New SMS from ' + (m.from_address||'Unknown'), body: (m.body||'').slice(0,80), time: new Date(m.created_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) })
+      }
+      for (const c of (calls||[])) {
+        items.push({ id: c.id, type:'call', title:'Missed call from ' + (c.from_number||'Unknown'), body: 'Short call — likely needs callback', time: new Date(c.start_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) })
+      }
+      setNotifications(items)
     } catch { setNotifications([]) }
     finally { setNotifLoading(false) }
   }
@@ -210,3 +220,4 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     </div>
   )
 }
+
