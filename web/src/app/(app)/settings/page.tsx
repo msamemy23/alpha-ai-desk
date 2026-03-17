@@ -8,15 +8,15 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState(false)
   const [tab, setTab] = useState<'shop'|'ai'|'comms'|'outreach'|'reviews'>('shop')
   const [outreachFilter, setOutreachFilter] = useState({ days: 90, channel: 'sms' })
-  const [outreachTemplate, setOutreachTemplate] = useState('')
+  const [outreachTemplate, setOutreachTemplate] = useState(')
   const [launching, setLaunching] = useState(false)
   const [launchResult, setLaunchResult] = useState<{sent:number;total:number} | null>(null)
 
   // Feature 17: Google Review Response state
-  const [reviewText, setReviewText] = useState('')
+  const [reviewText, setReviewText] = useState(')
   const [reviewStars, setReviewStars] = useState(5)
-  const [reviewDraft, setReviewDraft] = useState('')
-  const [migrateResult, setMigrateResult] = useState<string>('')
+  const [reviewDraft, setReviewDraft] = useState(')
+  const [migrateResult, setMigrateResult] = useState<string>(')
   const [migrating, setMigrating] = useState(false)
   const [reviewLoading, setReviewLoading] = useState(false)
 
@@ -56,9 +56,9 @@ export default function SettingsPage() {
 
   const draftReviewResponse = async () => {
     if (!reviewText.trim()) return
-    setReviewLoading(true); setReviewDraft('')
+    setReviewLoading(true); setReviewDraft(')
     try {
-      const apiKey = (settings.ai_api_key as string) || ''
+      const apiKey = (settings.ai_api_key as string) || '
       const model = (settings.ai_model as string) || 'meta-llama/llama-3.3-70b-instruct:free'
       const baseUrl = (settings.ai_base_url as string) || 'https://openrouter.ai/api/v1'
       if (!apiKey) { setReviewDraft('Please configure your AI API key in the AI Config tab first.'); return }
@@ -117,15 +117,15 @@ export default function SettingsPage() {
             { k: 'shop_phone', label: 'Phone' },
             { k: 'shop_email', label: 'Email' },
           ].map(({ k, label }) => (
-            <div key={k}><label className="form-label">{label}</label><input className="form-input" value={settings[k] as string||''} onChange={sf(k)} /></div>
+            <div key={k}><label className="form-label">{label}</label><input className="form-input" value={settings[k] as string||'} onChange={sf(k)} /></div>
           ))}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div><label className="form-label">Labor Rate ($/hr)</label><input className="form-input" type="number" value={settings.labor_rate as number||120} onChange={sf('labor_rate')} /></div>
             <div><label className="form-label">Tax Rate (%)</label><input className="form-input" type="number" step="0.01" value={settings.tax_rate as number||8.25} onChange={sf('tax_rate')} /></div>
             <div><label className="form-label">Warranty (months)</label><input className="form-input" type="number" value={settings.warranty_months as number||12} onChange={sf('warranty_months')} /></div>
           </div>
-          <div><label className="form-label">Payment Methods</label><input className="form-input" value={settings.payment_methods as string||''} onChange={sf('payment_methods')} /></div>
-          <div><label className="form-label">Disclaimer</label><textarea className="form-textarea" rows={2} value={settings.disclaimer as string||''} onChange={sf('disclaimer')} /></div>
+          <div><label className="form-label">Payment Methods</label><input className="form-input" value={settings.payment_methods as string||'} onChange={sf('payment_methods')} /></div>
+          <div><label className="form-label">Disclaimer</label><textarea className="form-textarea" rows={2} value={settings.disclaimer as string||'} onChange={sf('disclaimer')} /></div>
         </div>
       )}
 
@@ -135,9 +135,9 @@ export default function SettingsPage() {
           <div className="bg-blue/10 border border-blue/30 rounded-lg p-3 text-sm text-blue">
             💡 Get a free API key at <strong>openrouter.ai</strong> — works with Llama, GPT-4, Claude, and more.
           </div>
-          <div><label className="form-label">OpenRouter API Key</label><input className="form-input font-mono" type="password" value={settings.ai_api_key as string||''} onChange={sf('ai_api_key')} placeholder="sk-or-v1-..." /></div>
+          <div><label className="form-label">OpenRouter API Key</label><input className="form-input font-mono" type="password" value={settings.ai_api_key as string||'} onChange={sf('ai_api_key')} placeholder="sk-or-v1-..." /></div>
           <div><label className="form-label">Model</label>
-            <select className="form-select" value={settings.ai_model as string||''} onChange={sf('ai_model')}>
+            <select className="form-select" value={settings.ai_model as string||'} onChange={sf('ai_model')}>
               <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B (Free)</option>
                             <option value="deepseek/deepseek-v3.2">DeepSeek V3.2</option>
               <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
@@ -157,17 +157,17 @@ export default function SettingsPage() {
             <div className="bg-amber/10 border border-amber/30 rounded-lg p-3 text-sm text-amber">
               After purchasing a Telnyx number, paste your credentials here. Webhook URL: <code className="bg-black/30 px-1 rounded">{typeof window !== 'undefined' ? window.location.origin : 'https://your-app.vercel.app'}/api/sms</code>
             </div>
-            <div><label className="form-label">Telnyx API Key</label><input className="form-input font-mono" type="password" value={settings.telnyx_api_key as string||''} onChange={sf('telnyx_api_key')} placeholder="KEY01..." /></div>
-            <div><label className="form-label">Your Telnyx Phone Number</label><input className="form-input" value={settings.telnyx_phone_number as string||''} onChange={sf('telnyx_phone_number')} placeholder="+17135550000" /></div>
-            <div><label className="form-label">Messaging Profile ID (optional)</label><input className="form-input font-mono" value={settings.telnyx_messaging_profile_id as string||''} onChange={sf('telnyx_messaging_profile_id')} /></div>
+            <div><label className="form-label">Telnyx API Key</label><input className="form-input font-mono" type="password" value={settings.telnyx_api_key as string||'} onChange={sf('telnyx_api_key')} placeholder="KEY01..." /></div>
+            <div><label className="form-label">Your Telnyx Phone Number</label><input className="form-input" value={settings.telnyx_phone_number as string||'} onChange={sf('telnyx_phone_number')} placeholder="+17135550000" /></div>
+            <div><label className="form-label">Messaging Profile ID (optional)</label><input className="form-input font-mono" value={settings.telnyx_messaging_profile_id as string||'} onChange={sf('telnyx_messaging_profile_id')} /></div>
           </div>
           <div className="card space-y-4">
             <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">📧 Email via Resend</div>
             <div className="bg-blue/10 border border-blue/30 rounded-lg p-3 text-sm text-blue">
               Get a free key at <strong>resend.com</strong> — 100 emails/day free. Add your domain there too.
             </div>
-            <div><label className="form-label">Resend API Key</label><input className="form-input font-mono" type="password" value={settings.resend_api_key as string||''} onChange={sf('resend_api_key')} placeholder="re_..." /></div>
-            <div><label className="form-label">From Email</label><input className="form-input" type="email" value={settings.from_email as string||''} onChange={sf('from_email')} placeholder="service@yourdomain.com" /></div>
+            <div><label className="form-label">Resend API Key</label><input className="form-input font-mono" type="password" value={settings.resend_api_key as string||'} onChange={sf('resend_api_key')} placeholder="re_..." /></div>
+            <div><label className="form-label">From Email</label><input className="form-input" type="email" value={settings.from_email as string||'} onChange={sf('from_email')} placeholder="service@yourdomain.com" /></div>
           </div>
         </div>
       )}
@@ -266,7 +266,7 @@ export default function SettingsPage() {
             <p className="text-sm text-text-muted mb-4">Run this once to add missing columns (sentiment, vehicle_color, engine, plate, time_clock table). Safe to run multiple times.</p>
             <div className="flex items-center gap-3">
               <button className="btn btn-primary" disabled={migrating} onClick={async () => {
-                setMigrating(true); setMigrateResult('')
+                setMigrating(true); setMigrateResult(')
                 try {
                   const r = await fetch('/api/migrate')
                   const d = await r.json()
