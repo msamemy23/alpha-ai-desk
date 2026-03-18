@@ -59,7 +59,7 @@ export async function POST(req: NextRequest) {
           is_speaking: false,
           script_stage: 0,
           objection_count: 0,
-          started_at: new Date().toISOString(),
+          started_at: Date.now(),
         }),
       }
     )

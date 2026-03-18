@@ -130,7 +130,7 @@ async function handleAnswered(callId: string, task: string) {
   try {
     console.log(`[handleAnswered] START callId=${callId.slice(0, 25)} task="${task.slice(0, 50)}"`)
     const isAlpha = task === 'Alpha Auto Center oil change call' || /oil.?change|auto.?center|brake|transmission|engine|state inspection/i.test(task)
-    await dbUpsert(callId, { status: 'active', task, greeted: false, processing: true, is_speaking: false, script_stage: 0, objection_count: 0, started_at: new Date().toISOString(), last_ai_text: '' })
+    await dbUpsert(callId, { status: 'active', task, greeted: false, processing: true, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' })
 
     // Start transcription — use 'both' to reliably capture remote party audio
     const txResult = await telnyxPost(`/calls/${callId}/actions/transcription_start`, {
@@ -270,7 +270,7 @@ export async function POST(req: NextRequest) {
     const cs = payload?.client_state as string
     if (cs) { try { task = JSON.parse(Buffer.from(cs, 'base64').toString()).task || task } catch { /* ok */ } }
     console.log(`[webhook] call.initiated — creating DB row, task="${task.slice(0, 50)}"`) 
-    waitUntil(dbUpsert(callId, { task, status: 'calling', greeted: false, processing: false, is_speaking: false, script_stage: 0, objection_count: 0, started_at: new Date().toISOString(), last_ai_text: '' }))
+    waitUntil(dbUpsert(callId, { task, status: 'calling', greeted: false, processing: false, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' }))
     return NextResponse.json('OK')
   }
 
