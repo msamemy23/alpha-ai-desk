@@ -46,7 +46,7 @@ async function createCredentialConnection(): Promise<string> {
     },
     body: JSON.stringify({
       active: true,
-      connection_name: 'Alpha AI Desk WebRTC',
+      connection_name: 'Alpha WebRTC ' + Date.now() + '',
       user_name: 'alphawebrtc' + Date.now(),
       password: 'P' + Math.random().toString(36).slice(2) + '!' + Date.now(),
     }),
