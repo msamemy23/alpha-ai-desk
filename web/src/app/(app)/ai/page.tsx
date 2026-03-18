@@ -670,19 +670,28 @@ export default function AIPage() {
     }
 
     // Direct call detection — bypass AI for explicit call commands
-    const callMatch = text.match(/^(?:call|dial|phone|ring)\s+([\d\s\-\(\)\+]+)/i)
+    // Matches: "call 2819008141" or "call 2819008141 and ask if he's going to church"
+    const callMatch = text.match(/^(?:call|dial|phone|ring)\s+([\d\s\-\(\)\+]+?)(?:\s+(?:and|to|then)\s+(.+))?$/i)
     if (callMatch) {
       const phone = callMatch[1].replace(/\s/g, '')
+      const instructions = callMatch[2]?.trim() || ''
+      // If user gave instructions ("call X and ask Y"), use them as the AI task
+      // If no instructions ("call X"), it's a personal call — no AI script
+      const callTask = instructions
+        ? instructions
+        : '' // empty = no AI script, just connect the call
       setStatus('Calling...')
       try {
         const r = await fetch('/api/make-call', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ to: phone, name: phone })
+          body: JSON.stringify({ to: phone, name: phone, task: callTask || undefined })
         })
         const d = await r.json()
         const msg: ChatMessage = d.ok
-          ? { role: 'assistant', content: `Call placed to ${phone}. Dialing now.` }
+          ? { role: 'assistant', content: instructions
+              ? `AI call placed to ${phone}. Task: ${instructions}`
+              : `Call placed to ${phone}. Dialing now.` }
           : { role: 'assistant', content: `Call failed: ${d.error}` }
         setMessages(prev => [...prev, msg])
       } catch (err) {

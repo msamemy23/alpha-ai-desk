@@ -1,13 +1,10 @@
 /**
- * Telnyx Voice Webhook — AI voice agent v6.1
- * - Returns 200 IMMEDIATELY to Telnyx, uses waitUntil() for async work
- * - FIXED: processing flag cleared immediately after speak() (no DB race)
- * - FIXED: removed echo guard entirely (inbound-only transcription = no echo)
- * - FIXED: transcription_tracks='both' for reliable remote party capture
- * - FIXED: comprehensive debug logging on every early return
- * - FIXED: Supabase env var fallback chain (SERVICE_ROLE_KEY -> SERVICE_KEY -> ANON)
- * - FIXED: voice model switched to DeepSeek V3.2 (Qwen free had 429 rate limits)
- * - FIXED: call.initiated handler to create DB row early
+ * Telnyx Voice Webhook — AI voice agent v7.0
+ * - Three call types: Alpha sales, custom AI task, personal call
+ * - Personal calls: silent connect, no AI greeting or script
+ * - Custom task calls: AI follows user's specific instructions
+ * - Alpha sales calls: uses Alpha Auto Center sales script
+ * - Echo filter, barge-in, transcription engine B, both tracks
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { waitUntil } from '@vercel/functions'
@@ -129,20 +126,25 @@ RULES:
 - Spoken words only. No markdown, no bullets, no stage directions.`
 
 // ── Handle call.answered ──
+// Three call types:
+// 1. Alpha sales call: task === 'Alpha Auto Center oil change call' or mentions auto services
+// 2. AI task call: task has custom instructions (e.g. "ask if he's going to church")
+// 3. Personal call: task is empty — user just wants to talk, no AI involvement
 async function handleAnswered(callId: string, task: string) {
   try {
-    console.log(`[handleAnswered] START callId=${callId.slice(0, 25)} task="${task.slice(0, 50)}"`)
-    // Only use the Alpha sales script if this is explicitly an Alpha sales task
-    // Do NOT match generic tasks that just mention the shop name
+    console.log(`[handleAnswered] START callId=${callId.slice(0, 25)} task="${task.slice(0, 80)}"`) 
     const isAlpha = task === 'Alpha Auto Center oil change call' || (
       /oil.?change|brake|transmission|engine|state inspection/i.test(task) &&
       !/calling.*hotline|calling.*chatgpt|have a conversation|test.*call/i.test(task)
     )
-    await dbUpsert(callId, { status: 'active', task, greeted: false, processing: true, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' })
+    const isPersonalCall = !task || task.trim() === '' || task === 'personal call'
+    const isCustomTask = !isAlpha && !isPersonalCall
+
+    console.log(`[handleAnswered] callType: isAlpha=${isAlpha} isPersonalCall=${isPersonalCall} isCustomTask=${isCustomTask}`)
+
+    await dbUpsert(callId, { status: 'active', task: task || 'personal call', greeted: false, processing: true, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' })
 
     // Start transcription — use 'both' since 'inbound'/'outbound' alone can miss audio
-    // Echo filtering is handled in handleTranscription by comparing against last AI text
-    // Engine 'B' (Telnyx engine) is more reliable for diverse audio sources
     const txResult = await telnyxPost(`/calls/${callId}/actions/transcription_start`, {
       language: 'en',
       transcription_engine: 'B',
@@ -153,11 +155,30 @@ async function handleAnswered(callId: string, task: string) {
 
     await telnyxPost(`/calls/${callId}/actions/record_start`, { format: 'mp3', channels: 'dual', play_beep: false })
 
-    const greetingPrompt = isAlpha
-      ? ALPHA_SYSTEM + '\n\nSay your opening line to a Houston customer. One punchy sentence.\nYOU called THEM. Never say Thanks for calling.'
-      : `You are making an outbound call. Task: "${task}"\nSay your opening line. 1-2 natural sentences. YOU called THEM. Never say Thanks for calling. No markdown.`
+    // Personal call: no AI greeting, just connect silently
+    if (isPersonalCall) {
+      console.log('[handleAnswered] Personal call — skipping AI greeting, just connecting')
+      await dbPatch(callId, { greeted: true, processing: false })
+      return
+    }
 
-    const greeting = await aiChat([{ role: 'system', content: greetingPrompt }], 60) || "Hey, this is Sam from Alpha International Auto Center. Quick question, when was your last oil change?"
+    // Build greeting based on call type
+    let greetingPrompt: string
+    let fallbackGreeting: string
+    if (isAlpha) {
+      greetingPrompt = ALPHA_SYSTEM + '\n\nSay your opening line to a Houston customer. One punchy sentence.\nYOU called THEM. Never say Thanks for calling.'
+      fallbackGreeting = 'Hey there, this is Sam from Alpha International Auto Center. How are you doing today?'
+    } else {
+      // Custom AI task — greeting should reflect the user's actual instructions
+      greetingPrompt = `You are making an outbound phone call on behalf of someone. Your specific task for this call is: "${task}"
+
+Say a natural opening line that starts working toward completing your task. 1-2 sentences max. Be friendly and direct.
+YOU called THEM. Never say Thanks for calling. No markdown, no stage directions.
+Spoken words only.`
+      fallbackGreeting = 'Hey, how are you doing today?'
+    }
+
+    const greeting = await aiChat([{ role: 'system', content: greetingPrompt }], 60) || fallbackGreeting
 
     const transcript = [{ speaker: 'ai', text: greeting }]
     const conversation = [{ role: 'assistant', content: greeting }]
@@ -259,9 +280,29 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
       return
     }
 
-    const systemPrompt = isAlpha
-      ? ALPHA_SYSTEM + `\n\nThe customer just said: "${text}"\nRespond naturally. 1-3 sentences max. Spoken words only.`
-      : `You are on a live phone call. Task: "${freshState.task}"\n\nRULES:\n- Answer their question if they asked one.\n- HOLD phrases: say Of course, take your time. and wait.\n- 1-3 sentences max. Natural spoken words. No markdown.`
+    // Determine call type from stored task
+    const storedTask = freshState.task || ''
+    const isPersonal = !storedTask || storedTask === 'personal call'
+    
+    let systemPrompt: string
+    if (isAlpha) {
+      systemPrompt = ALPHA_SYSTEM + `\n\nThe customer just said: "${text}"\nRespond naturally. 1-3 sentences max. Spoken words only.`
+    } else if (isPersonal) {
+      // Personal call — AI should just have a natural conversation, no script
+      systemPrompt = `You are on a live phone call. This is a personal call — just have a natural, friendly conversation. No sales pitch, no script.\n\nRULES:\n- Be conversational and friendly.\n- HOLD phrases: say Of course, take your time. and wait.\n- 1-3 sentences max. Natural spoken words. No markdown.`
+    } else {
+      // Custom AI task — AI must follow the user's specific instructions
+      systemPrompt = `You are on a live phone call. You were given a specific task for this call: "${storedTask}"
+
+CRITICAL: Stay focused on your task. Your job is to accomplish what you were asked to do.
+Do NOT go off-topic. Do NOT pitch oil changes or any other unrelated services.
+
+RULES:
+- Stay on task: "${storedTask}"
+- Answer their questions if they ask.
+- HOLD phrases: say Of course, take your time. and wait.
+- 1-3 sentences max. Natural spoken words. No markdown.`
+    }
 
     const messages = [{ role: 'system', content: systemPrompt }, ...conversation.slice(-10), { role: 'user', content: text }]
     console.log('[handleTranscription] calling AI for response...')
@@ -295,22 +336,22 @@ export async function POST(req: NextRequest) {
   const callId = payload?.call_control_id as string
   console.log(`[webhook] ${eventType} callId=${callId?.slice(0, 25) || 'n/a'}`)
 
-  if (eventType === 'version') return NextResponse.json({ v: 'v6.6-voice-fix' })
+  if (eventType === 'version') return NextResponse.json({ v: 'v7.0-call-types' })
 
   // call.initiated — create DB row early so state exists when other events arrive
   if (eventType === 'call.initiated') {
-    let task = 'Alpha Auto Center oil change call'
+    let task = ''
     const cs = payload?.client_state as string
-    if (cs) { try { task = JSON.parse(Buffer.from(cs, 'base64').toString()).task || task } catch { /* ok */ } }
+    if (cs) { try { task = JSON.parse(Buffer.from(cs, 'base64').toString()).task || '' } catch { /* ok */ } }
     console.log(`[webhook] call.initiated — creating DB row, task="${task.slice(0, 50)}"`) 
     waitUntil(dbUpsert(callId, { task, status: 'calling', greeted: false, processing: false, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' }))
     return NextResponse.json('OK')
   }
 
   if (eventType === 'call.answered') {
-    let task = 'Alpha Auto Center oil change call'
+    let task = ''
     const cs = payload?.client_state as string
-    if (cs) { try { task = JSON.parse(Buffer.from(cs, 'base64').toString()).task || task } catch { /* ok */ } }
+    if (cs) { try { task = JSON.parse(Buffer.from(cs, 'base64').toString()).task || '' } catch { /* ok */ } }
     waitUntil(handleAnswered(callId, task))
     return NextResponse.json('OK')
   }

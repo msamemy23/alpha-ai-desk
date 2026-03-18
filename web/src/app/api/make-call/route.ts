@@ -14,8 +14,10 @@ export async function POST(req: NextRequest) {
     const digits = to.replace(/\D/g, '')
     const e164 = digits.startsWith('1') ? '+' + digits : digits.length === 10 ? '+1' + digits : '+' + digits
 
-    // Build task — use passed task or default Alpha script
-    const callTask = task || 'Alpha Auto Center oil change call'
+    // Build task — use passed task as-is
+    // Empty/undefined task = personal call (user just wants to talk, no AI script)
+    // Non-empty task = AI call (AI follows these instructions)
+    const callTask = task || ''
 
     // Encode task in client_state so webhook knows what to do
     const clientState = Buffer.from(JSON.stringify({ task: callTask, name: name || e164 })).toString('base64')
