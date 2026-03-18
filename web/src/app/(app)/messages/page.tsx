@@ -159,9 +159,15 @@ export default function MessagesPage() {
   const getRecordingUrl = (call: CallRecord) => {
     const rd = call.raw_data
     if (!rd) return null
+    // Prioritize recording_id (gets fresh URL from Telnyx API, never expires)
+    if (rd.recording_id) {
+      const params = new URLSearchParams({ id: rd.recording_id })
+      if (rd.call_session_id) params.set('sessionId', rd.call_session_id)
+      return `/api/recording-proxy?${params}`
+    }
+    // Fallback to direct URL through proxy
     if (rd.download_urls?.mp3) return `/api/recording-proxy?url=${encodeURIComponent(rd.download_urls.mp3)}`
     if (rd.download_urls?.wav) return `/api/recording-proxy?url=${encodeURIComponent(rd.download_urls.wav)}`
-    if (rd.recording_id) return `/api/recording-proxy?id=${rd.recording_id}`
     return null
   }
 
@@ -397,7 +403,7 @@ export default function MessagesPage() {
                 <div className="mb-5">
                   <div className="text-sm font-semibold mb-2">Transcript</div>
                   <div className="bg-black/30 rounded-lg p-4 text-sm text-gray-500 italic">
-                    {selectedCall.transcript === '[transcription_failed]' ? 'Recording expired — transcription unavailable' : 'Pending transcription...'}
+                    {selectedCall.transcript === '[transcription_failed]' ? 'Recording expired — transcription unavailable' : 'Transcribing... check back soon...'}
                   </div>
                 </div>
               )}
