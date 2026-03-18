@@ -140,7 +140,8 @@ async function handleAnswered(callId: string, task: string) {
     )
     await dbUpsert(callId, { status: 'active', task, greeted: false, processing: true, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' })
 
-    // Start transcription — use 'both' to capture both sides of the conversation
+    // Start transcription — use 'both' since 'inbound'/'outbound' alone can miss audio
+    // Echo filtering is handled in handleTranscription by comparing against last AI text
     // Engine 'B' (Telnyx engine) is more reliable for diverse audio sources
     const txResult = await telnyxPost(`/calls/${callId}/actions/transcription_start`, {
       language: 'en',
@@ -183,7 +184,7 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     }
 
     // Ignore very short utterances (noise, "uh", etc.)
-    if (text.length < 2) {
+    if (text.length < 3) {
       console.log('[VOICE DEBUG] Dropped: text too short', { callId: callId.slice(0, 20), text })
       return
     }
@@ -192,6 +193,29 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     if (!state) {
       console.log('[VOICE DEBUG] Dropped: no state found in DB', { callId: callId.slice(0, 20) })
       return
+    }
+
+    // Echo filter — drop transcriptions that closely match the last thing the AI said
+    // This prevents TTS bleed (AI's own voice being picked up and re-processed)
+    const lastAiText = (state.last_ai_text || '').toLowerCase().trim()
+    if (lastAiText && lastAiText.length > 10) {
+      const incoming = text.toLowerCase().trim()
+      // Check if the incoming text is a substring of the AI's last utterance or vice versa
+      if (lastAiText.includes(incoming) || incoming.includes(lastAiText.slice(0, 50))) {
+        console.log('[VOICE DEBUG] Dropped: echo filter (matches last AI text)', { callId: callId.slice(0, 20), text: text.slice(0, 50), lastAi: lastAiText.slice(0, 50) })
+        return
+      }
+      // Also check similarity — if >60% of words match, it's likely echo
+      const aiWords = new Set(lastAiText.split(/\s+/))
+      const inWords = incoming.split(/\s+/)
+      if (inWords.length > 3) {
+        const matchCount = inWords.filter(w => aiWords.has(w)).length
+        const matchRatio = matchCount / inWords.length
+        if (matchRatio > 0.6) {
+          console.log('[VOICE DEBUG] Dropped: echo filter (word similarity)', { callId: callId.slice(0, 20), text: text.slice(0, 50), matchRatio: matchRatio.toFixed(2) })
+          return
+        }
+      }
     }
 
     // If AI is currently speaking and human says 2+ words, barge-in
@@ -271,7 +295,7 @@ export async function POST(req: NextRequest) {
   const callId = payload?.call_control_id as string
   console.log(`[webhook] ${eventType} callId=${callId?.slice(0, 25) || 'n/a'}`)
 
-  if (eventType === 'version') return NextResponse.json({ v: 'v6.5-voice-fix' })
+  if (eventType === 'version') return NextResponse.json({ v: 'v6.6-voice-fix' })
 
   // call.initiated — create DB row early so state exists when other events arrive
   if (eventType === 'call.initiated') {
