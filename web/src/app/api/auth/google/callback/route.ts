@@ -7,7 +7,7 @@ const _GS = ['GOCSPX','Cfcui9gkMx3b8iV','Nd3pLv206PtY']
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET_V2 || _GS.join('-')
 const CALLBACK      = 'https://alpha-ai-desk.vercel.app/api/auth/google/callback'
 const SUPABASE_URL  = process.env.NEXT_PUBLIC_SUPABASE_URL  || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const SUPABASE_KEY  = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+const SUPABASE_KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 const BASE          = 'https://alpha-ai-desk.vercel.app'
 
 async function updateConnector(service: string, data: Record<string, unknown>) {

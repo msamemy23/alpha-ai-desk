@@ -1,11 +1,13 @@
 /**
- * Telnyx Voice Webhook — AI voice agent v6.0
+ * Telnyx Voice Webhook — AI voice agent v6.1
  * - Returns 200 IMMEDIATELY to Telnyx, uses waitUntil() for async work
  * - FIXED: processing flag cleared immediately after speak() (no DB race)
  * - FIXED: removed echo guard entirely (inbound-only transcription = no echo)
  * - FIXED: transcription_tracks='both' for reliable remote party capture
  * - FIXED: comprehensive debug logging on every early return
- * - Model: Qwen 3 80B (free via OpenRouter) for voice-only
+ * - FIXED: Supabase env var fallback chain (SERVICE_ROLE_KEY -> SERVICE_KEY -> ANON)
+ * - FIXED: voice model switched to DeepSeek V3.2 (Qwen free had 429 rate limits)
+ * - FIXED: call.initiated handler to create DB row early
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { waitUntil } from '@vercel/functions'
@@ -13,9 +15,9 @@ import { waitUntil } from '@vercel/functions'
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
-const AI_MODEL = 'qwen/qwen3-next-80b-a3b-instruct:free'
+const AI_MODEL = 'deepseek/deepseek-v3.2'
 const VOICE = 'Telnyx.NaturalHD.orion'
 const VOICE_FB = 'Telnyx.NaturalHD.sirius'
 
@@ -260,7 +262,17 @@ export async function POST(req: NextRequest) {
   const callId = payload?.call_control_id as string
   console.log(`[webhook] ${eventType} callId=${callId?.slice(0, 25) || 'n/a'}`)
 
-  if (eventType === 'version') return NextResponse.json({ v: 'v6.0-voice-fix' })
+  if (eventType === 'version') return NextResponse.json({ v: 'v6.1-voice-fix' })
+
+  // call.initiated — create DB row early so state exists when other events arrive
+  if (eventType === 'call.initiated') {
+    let task = 'Alpha Auto Center oil change call'
+    const cs = payload?.client_state as string
+    if (cs) { try { task = JSON.parse(Buffer.from(cs, 'base64').toString()).task || task } catch { /* ok */ } }
+    console.log(`[webhook] call.initiated — creating DB row, task="${task.slice(0, 50)}"`) 
+    waitUntil(dbUpsert(callId, { task, status: 'calling', greeted: false, processing: false, is_speaking: false, script_stage: 0, objection_count: 0, started_at: new Date().toISOString(), last_ai_text: '' }))
+    return NextResponse.json('OK')
+  }
 
   if (eventType === 'call.answered') {
     let task = 'Alpha Auto Center oil change call'
