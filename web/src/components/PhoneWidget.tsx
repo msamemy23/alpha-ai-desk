@@ -1,7 +1,6 @@
 'use client'
 import { useEffect, useState, useRef, useCallback } from 'react'
 
-// Types for Telnyx WebRTC (loaded via CDN)
 interface TelnyxCall {
   hangup: () => void
   muteAudio: () => void
@@ -20,7 +19,7 @@ interface TelnyxClient {
   off: (event: string, handler: (...args: any[]) => void) => void
 }
 
-function formatTimer(secs: number) {
+function fmt(secs: number) {
   const m = Math.floor(secs / 60)
   const s = secs % 60
   return `${m}:${s.toString().padStart(2, '0')}`
@@ -28,302 +27,250 @@ function formatTimer(secs: number) {
 
 export default function PhoneWidget() {
   const [status, setStatus] = useState<'idle'|'connecting'|'ready'|'calling'|'ringing'|'active'|'error'>('idle')
-  const [callNumber, setCallNumber] = useState('')
-  const [dialInput, setDialInput] = useState('')
-  const [callName, setCallName] = useState('')
+  const [num, setNum] = useState('')
+  const [dialVal, setDialVal] = useState('')
+  const [name, setName] = useState('')
   const [muted, setMuted] = useState(false)
   const [timer, setTimer] = useState(0)
-  const [errorMsg, setErrorMsg] = useState('')
-  const [visible, setVisible] = useState(false)
+  const [err, setErr] = useState('')
+  const [show, setShow] = useState(false)
+  const client = useRef<TelnyxClient | null>(null)
+  const call = useRef<TelnyxCall | null>(null)
+  const tmr = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const clientRef = useRef<TelnyxClient | null>(null)
-  const callRef = useRef<TelnyxCall | null>(null)
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Clear error whenever status changes to non-error
+  useEffect(() => {
+    if (status !== 'error') setErr('')
+  }, [status])
 
-  const startTimer = useCallback(() => {
-    setTimer(0)
-    timerRef.current = setInterval(() => setTimer(t => t + 1), 1000)
+  const stopTmr = useCallback(() => {
+    if (tmr.current) { clearInterval(tmr.current); tmr.current = null }
   }, [])
 
-  const stopTimer = useCallback(() => {
-    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null }
-  }, [])
-
-  const endCall = useCallback(() => {
-    try { callRef.current?.hangup() } catch {}
-    callRef.current = null
-    stopTimer()
-    setStatus('ready')
+  const hangup = useCallback(() => {
+    try { call.current?.hangup() } catch {}
+    call.current = null
+    stopTmr()
+    setStatus(client.current ? 'ready' : 'idle')
     setMuted(false)
-    setCallNumber('')
-    setCallName('')
-  }, [stopTimer])
+    setNum('')
+    setName('')
+  }, [stopTmr])
 
-  const hideWidget = useCallback(() => {
-    if (callRef.current) endCall()
-    try { clientRef.current?.disconnect() } catch {}
-    clientRef.current = null
-    setVisible(false)
+  const close = useCallback(() => {
+    if (call.current) hangup()
+    try { client.current?.disconnect() } catch {}
+    client.current = null
+    setShow(false)
     setStatus('idle')
-    setDialInput('')
-    setErrorMsg('')
-  }, [endCall])
+    setDialVal('')
+    setErr('')
+  }, [hangup])
 
-  // Initialize Telnyx WebRTC client — only called on demand
-  const initClient = useCallback(async () => {
-    if (clientRef.current) return
+  const init = useCallback(async (): Promise<boolean> => {
+    if (client.current) return true
     setStatus('connecting')
+    setErr('')
     try {
       const res = await fetch('/api/webrtc-token')
       const data = await res.json()
-      if (!data.token) throw new Error(data.error || 'No token')
+      if (!data.token) throw new Error(data.error || 'No WebRTC token')
 
-      // Load SDK from CDN if not already loaded
       if (!(window as any).TelnyxWebRTC) {
-        await new Promise<void>((resolve, reject) => {
+        await new Promise<void>((ok, fail) => {
           const s = document.createElement('script')
           s.src = 'https://unpkg.com/@telnyx/webrtc@2/lib/bundle.js'
-          s.onload = () => resolve()
-          s.onerror = () => reject(new Error('Failed to load WebRTC SDK'))
+          s.onload = () => ok()
+          s.onerror = () => fail(new Error('SDK load failed'))
           document.head.appendChild(s)
         })
       }
 
       const w = window as any
-      const TelnyxRTC = w.TelnyxWebRTC?.TelnyxRTC || w.TelnyxWebRTC?.default || w.TelnyxWebRTC
-      const client = new TelnyxRTC({ login_token: data.token }) as TelnyxClient
+      const Ctor = w.TelnyxWebRTC?.TelnyxRTC || w.TelnyxWebRTC?.default || w.TelnyxWebRTC
+      if (!Ctor) throw new Error('TelnyxRTC not found on window')
 
-      client.on('telnyx.ready', () => {
-        console.log('[PhoneWidget] WebRTC ready')
-        setStatus('ready')
+      const c = new Ctor({ login_token: data.token }) as TelnyxClient
+
+      await new Promise<void>((ok, fail) => {
+        const timeout = setTimeout(() => fail(new Error('WebRTC connection timeout')), 15000)
+        c.on('telnyx.ready', () => { clearTimeout(timeout); ok() })
+        c.on('telnyx.error', (e: any) => { clearTimeout(timeout); fail(new Error(e?.message || 'WebRTC error')) })
+        c.connect()
       })
 
-      client.on('telnyx.error', (err: any) => {
-        console.error('[PhoneWidget] error:', err)
-        setErrorMsg(err?.message || 'Connection error')
-        setStatus('error')
-      })
-
-      client.on('telnyx.notification', (notification: any) => {
-        const call = notification.call as TelnyxCall
-        if (!call) return
-        console.log('[PhoneWidget] notification:', notification.type, call.state)
-
-        if (notification.type === 'callUpdate') {
-          if (call.state === 'ringing') {
-            callRef.current = call
-            setStatus('ringing')
-            setCallNumber(call.options?.destinationNumber || '')
-          } else if (call.state === 'active') {
-            callRef.current = call
-            setStatus('active')
-            startTimer()
-            // Attach remote audio
-            const remoteAudio = document.getElementById('telnyx-remote-audio') as HTMLAudioElement
-            if (remoteAudio && (call as any).remoteStream) {
-              remoteAudio.srcObject = (call as any).remoteStream
-              remoteAudio.play().catch(() => {})
-            }
-          } else if (call.state === 'hangup' || call.state === 'destroy') {
-            endCall()
+      // Attach notification handler for call state updates
+      c.on('telnyx.notification', (n: any) => {
+        const cl = n.call as TelnyxCall
+        if (!cl || n.type !== 'callUpdate') return
+        if (cl.state === 'ringing') {
+          call.current = cl
+          setStatus('ringing')
+          setNum(cl.options?.destinationNumber || '')
+        } else if (cl.state === 'active') {
+          call.current = cl
+          setStatus('active')
+          setTimer(0)
+          tmr.current = setInterval(() => setTimer(t => t + 1), 1000)
+          // Attach remote audio
+          const el = document.getElementById('telnyx-remote-audio') as HTMLAudioElement
+          if (el && (cl as any).remoteStream) {
+            el.srcObject = (cl as any).remoteStream
+            el.play().catch(() => {})
           }
+        } else if (cl.state === 'hangup' || cl.state === 'destroy') {
+          hangup()
         }
       })
 
-      client.connect()
-      clientRef.current = client
+      // Also listen for late errors
+      c.on('telnyx.error', (e: any) => {
+        console.error('[Phone] error:', e)
+        setErr(e?.message || 'Connection lost')
+        setStatus('error')
+      })
+
+      client.current = c
+      setStatus('ready')
+      console.log('[Phone] WebRTC ready')
+      return true
     } catch (e: any) {
-      console.error('[PhoneWidget] init error:', e)
-      setErrorMsg(e.message)
+      console.error('[Phone] init failed:', e)
+      setErr(e.message || 'Connection failed')
       setStatus('error')
+      return false
     }
-  }, [startTimer, endCall])
+  }, [hangup])
 
-  const makeCall = useCallback(async (number: string, name?: string) => {
-    // Show widget and init if needed
-    setVisible(true)
-    if (!clientRef.current) await initClient()
-
-    // Small delay to wait for ready
-    const waitForReady = () => new Promise<void>(resolve => {
-      if (clientRef.current) { resolve(); return }
-      setTimeout(resolve, 1500)
-    })
-    await waitForReady()
-
-    if (!clientRef.current) {
-      setErrorMsg('Phone not connected yet, try again')
-      setStatus('error')
-      return
-    }
+  const dial = useCallback(async (number: string, callerName?: string) => {
+    setShow(true)
+    setErr('')
+    const ok = await init()
+    if (!ok || !client.current) return
 
     const digits = number.replace(/\D/g, '')
     const dest = digits.length === 10 ? '+1' + digits : digits.startsWith('1') ? '+' + digits : '+' + digits
-
-    setCallNumber(number)
-    setCallName(name || '')
+    setNum(number)
+    setName(callerName || '')
     setStatus('calling')
 
     try {
-      const call = clientRef.current!.newCall({
+      // Request mic permission first
+      await navigator.mediaDevices.getUserMedia({ audio: true })
+      call.current = client.current.newCall({
         destinationNumber: dest,
         callerName: 'Alpha Auto Center',
         callerNumber: '+17136636979',
       })
-      callRef.current = call
     } catch (e: any) {
-      setErrorMsg(e.message)
+      setErr(e.message || 'Call failed')
       setStatus('error')
     }
-  }, [initClient])
+  }, [init])
 
   const toggleMute = useCallback(() => {
-    if (!callRef.current) return
-    if (muted) { callRef.current.unmuteAudio(); setMuted(false) }
-    else { callRef.current.muteAudio(); setMuted(true) }
+    if (!call.current) return
+    if (muted) { call.current.unmuteAudio(); setMuted(false) }
+    else { call.current.muteAudio(); setMuted(true) }
   }, [muted])
 
-  // Listen for phone:call custom events from AI chat
+  // Listen for phone:call events from AI
   useEffect(() => {
-    const handler = (e: CustomEvent) => {
+    const h = (e: CustomEvent) => {
       const { number, name } = e.detail || {}
-      if (number) makeCall(number, name)
+      if (number) dial(number, name)
     }
-    window.addEventListener('phone:call', handler as EventListener)
-    return () => window.removeEventListener('phone:call', handler as EventListener)
-  }, [makeCall])
+    window.addEventListener('phone:call', h as EventListener)
+    return () => window.removeEventListener('phone:call', h as EventListener)
+  }, [dial])
 
-  // NO auto-init — only init when phone:call event fires or user dials
+  // Cleanup
+  useEffect(() => () => {
+    stopTmr()
+    try { client.current?.disconnect() } catch {}
+  }, [stopTmr])
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      stopTimer()
-      try { clientRef.current?.disconnect() } catch {}
-    }
-  }, [stopTimer])
-
-  const handleDial = () => {
-    const num = dialInput.trim()
-    if (!num) return
-    makeCall(num)
-    setDialInput('')
+  const onDial = () => {
+    const v = dialVal.trim()
+    if (!v) return
+    dial(v)
+    setDialVal('')
   }
 
-  const isOnCall = status === 'calling' || status === 'ringing' || status === 'active'
+  const onCall = status === 'calling' || status === 'ringing' || status === 'active'
 
-  // Don't render anything if not visible
-  if (!visible) return <audio id="telnyx-remote-audio" autoPlay playsInline />
+  if (!show) return <audio id="telnyx-remote-audio" autoPlay playsInline />
+
+  const badge = {
+    active: { bg: '#10b981', text: 'Active' },
+    calling: { bg: '#f59e0b', text: 'Calling...' },
+    ringing: { bg: '#f59e0b', text: 'Ringing...' },
+    ready: { bg: '#3b82f6', text: 'Ready' },
+    connecting: { bg: '#6b7280', text: 'Connecting...' },
+    error: { bg: '#ef4444', text: 'Error' },
+    idle: { bg: '#6b7280', text: 'Idle' },
+  }[status]
 
   return (
     <>
       <audio id="telnyx-remote-audio" autoPlay playsInline />
-      {/* Square phone panel — bottom-left to not block AI button */}
       <div style={{
-        position: 'fixed',
-        bottom: 20,
-        left: 20,
-        width: 280,
-        background: '#1a1a2e',
-        border: '1px solid #333',
-        borderRadius: 12,
-        padding: 16,
-        zIndex: 9999,
-        color: '#fff',
+        position: 'fixed', bottom: 20, left: 20, width: 280,
+        background: '#1a1a2e', border: '1px solid #333', borderRadius: 12,
+        padding: 16, zIndex: 9999, color: '#fff',
         fontFamily: 'system-ui, sans-serif',
         boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
       }}>
-        {/* Header with close button */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 18 }}>📞</span>
             <span style={{ fontWeight: 600, fontSize: 14 }}>Phone</span>
-            <span style={{
-              fontSize: 10,
-              padding: '2px 8px',
-              borderRadius: 10,
-              background: status === 'active' ? '#10b981' : status === 'calling' || status === 'ringing' ? '#f59e0b' : status === 'ready' ? '#3b82f6' : status === 'error' ? '#ef4444' : '#666',
-              color: '#fff',
-            }}>
-              {status === 'active' ? 'Active' : status === 'calling' ? 'Calling...' : status === 'ringing' ? 'Ringing...' : status === 'ready' ? 'Ready' : status === 'connecting' ? 'Connecting...' : status === 'error' ? 'Error' : 'Idle'}
+            <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, background: badge.bg, color: '#fff' }}>
+              {badge.text}
             </span>
           </div>
-          <button onClick={hideWidget} style={{
-            background: 'none', border: 'none', color: '#999', cursor: 'pointer', fontSize: 18, padding: 0,
-          }}>&times;</button>
+          <button onClick={close} style={{ background: 'none', border: 'none', color: '#999', cursor: 'pointer', fontSize: 18, padding: 0 }}>&times;</button>
         </div>
 
-        {/* Error message */}
-        {errorMsg && <div style={{ fontSize: 11, color: '#ef4444', marginBottom: 8 }}>{errorMsg}</div>}
+        {err && <div style={{ fontSize: 11, color: '#ef4444', marginBottom: 8 }}>{err}</div>}
 
-        {/* Call info when on call */}
-        {isOnCall && (
+        {onCall && (
           <div style={{ marginBottom: 12, padding: 10, background: '#111', borderRadius: 8 }}>
-            <div style={{ fontSize: 13, fontWeight: 500 }}>{callName || callNumber}</div>
-            {callName && <div style={{ fontSize: 11, color: '#aaa' }}>{callNumber}</div>}
-            {status === 'active' && <div style={{ fontSize: 20, fontWeight: 700, marginTop: 4, color: '#10b981' }}>{formatTimer(timer)}</div>}
+            <div style={{ fontSize: 13, fontWeight: 500 }}>{name || num}</div>
+            {name && <div style={{ fontSize: 11, color: '#aaa' }}>{num}</div>}
+            {status === 'active' && <div style={{ fontSize: 20, fontWeight: 700, marginTop: 4, color: '#10b981' }}>{fmt(timer)}</div>}
           </div>
         )}
 
-        {/* Dialer input — show when not on call */}
-        {!isOnCall && (
+        {!onCall && (
           <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
-            <input
-              type="tel"
-              placeholder="Enter number..."
-              value={dialInput}
-              onChange={e => setDialInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleDial() }}
-              style={{
-                flex: 1,
-                background: '#111',
-                border: '1px solid #444',
-                borderRadius: 8,
-                padding: '8px 10px',
-                color: '#fff',
-                fontSize: 14,
-                outline: 'none',
-              }}
+            <input type="tel" placeholder="Enter number..." value={dialVal}
+              onChange={e => setDialVal(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') onDial() }}
+              style={{ flex: 1, background: '#111', border: '1px solid #444', borderRadius: 8, padding: '8px 10px', color: '#fff', fontSize: 14, outline: 'none' }}
             />
-            <button onClick={handleDial} style={{
-              background: '#3b82f6',
-              border: 'none',
-              borderRadius: 8,
-              padding: '8px 14px',
-              color: '#fff',
-              cursor: 'pointer',
-              fontWeight: 600,
-              fontSize: 13,
-            }}>Dial</button>
+            <button onClick={onDial} disabled={status === 'connecting'}
+              style={{ background: status === 'connecting' ? '#555' : '#3b82f6', border: 'none', borderRadius: 8, padding: '8px 14px', color: '#fff', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+              {status === 'connecting' ? '...' : 'Dial'}
+            </button>
           </div>
         )}
 
-        {/* Call controls when on call */}
-        {isOnCall && (
+        {onCall && (
           <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={toggleMute} style={{
-              flex: 1,
-              background: muted ? '#f59e0b' : '#333',
-              border: 'none',
-              borderRadius: 8,
-              padding: '10px 0',
-              color: '#fff',
-              cursor: 'pointer',
-              fontWeight: 500,
-              fontSize: 13,
-            }}>{muted ? '🔇 Unmute' : '🎙 Mute'}</button>
-            <button onClick={endCall} style={{
-              flex: 1,
-              background: '#ef4444',
-              border: 'none',
-              borderRadius: 8,
-              padding: '10px 0',
-              color: '#fff',
-              cursor: 'pointer',
-              fontWeight: 600,
-              fontSize: 13,
-            }}>End Call</button>
+            <button onClick={toggleMute} style={{ flex: 1, background: muted ? '#f59e0b' : '#333', border: 'none', borderRadius: 8, padding: '10px 0', color: '#fff', cursor: 'pointer', fontWeight: 500, fontSize: 13 }}>
+              {muted ? '🔇 Unmute' : '🎙 Mute'}
+            </button>
+            <button onClick={hangup} style={{ flex: 1, background: '#ef4444', border: 'none', borderRadius: 8, padding: '10px 0', color: '#fff', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+              End Call
+            </button>
           </div>
+        )}
+
+        {status === 'error' && (
+          <button onClick={() => { setErr(''); init() }} style={{ width: '100%', marginTop: 8, background: '#333', border: 'none', borderRadius: 8, padding: '8px 0', color: '#fff', cursor: 'pointer', fontSize: 12 }}>
+            Retry Connection
+          </button>
         )}
       </div>
     </>
