@@ -76,7 +76,7 @@ export default function PhoneWidget() {
           document.head.appendChild(s)
         })
       }
-      const TelnyxRTC = (window as any).TelnyxRTC
+            const w = window as any; const TelnyxRTC = w.TelnyxRTC?.TelnyxRTC || w.TelnyxRTC?.default || w.TelnyxRTC
       const client = new TelnyxRTC({ login_token: data.token }) as TelnyxClient
 
       client.on('telnyx.ready', () => {
