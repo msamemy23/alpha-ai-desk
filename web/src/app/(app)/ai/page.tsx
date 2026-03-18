@@ -170,11 +170,11 @@ CREATE CUSTOMER — Create a new customer record. Use when user mentions a new p
 CREATE JOB — Open a new work order for a customer's vehicle:
 {"tool":"action","action":"createJob","payload":{"customer_name":"John Doe","vehicle_year":"2019","vehicle_make":"Toyota","vehicle_model":"Camry","status":"Pending","notes":"Front brakes squeaking"}}
 
-CREATE ESTIMATE (visual card) — Show a formatted estimate card with parts and labor breakdown. Include customer_email and customer_phone if you have them:
+CREATE DOCUMENT (visual preview card) — ALWAYS use proposeDocument for ALL document types: Invoices, Estimates, AND Receipts. This shows a formatted preview card with parts and labor breakdown so the user can review before saving. Include customer_email and customer_phone if you have them. Set "type" to "Invoice", "Estimate", or "Receipt" as appropriate:
 {"tool":"proposeDocument","type":"Estimate","customer":"John Doe","customer_email":"john@example.com","customer_phone":"555-1234","vehicle":"2019 Toyota Camry","parts":[{"name":"Brake Pads Front","qty":1,"unitPrice":45.99},{"name":"Rotors Front Pair","qty":1,"unitPrice":89.99}],"labors":[{"operation":"Front brake replacement","hours":1.5,"rate":120}],"notes":"Standard brake job"}
-
-CREATE INVOICE — Save an invoice to the database. ALWAYS include customer_phone and customer_email if provided by the user:
-{"tool":"action","action":"createInvoice","payload":{"type":"Invoice","customer_name":"John Doe","customer_phone":"555-1234","customer_email":"john@example.com","vehicle_year":"2019","vehicle_make":"Toyota","vehicle_model":"Camry","parts":[{"name":"Brake Pads","qty":1,"unitPrice":45.99,"taxable":true}],"labors":[{"operation":"Brake replacement","hours":1.5,"rate":120}],"notes":""}}
+For invoices: {"tool":"proposeDocument","type":"Invoice","customer":"John Doe","customer_email":"john@example.com","customer_phone":"555-1234","vehicle":"2019 Toyota Camry","parts":[{"name":"Brake Pads","qty":1,"unitPrice":45.99}],"labors":[{"operation":"Brake replacement","hours":1.5,"rate":120}],"notes":""}
+For receipts: {"tool":"proposeDocument","type":"Receipt","customer":"John Doe","customer_email":"john@example.com","customer_phone":"555-1234","vehicle":"2019 Toyota Camry","parts":[{"name":"Thermostat","qty":1,"unitPrice":280}],"labors":[],"notes":"Flat rate","apply_tax":false,"tax_rate":0}
+IMPORTANT: NEVER use createInvoice directly. ALWAYS use proposeDocument so the user can preview, edit, or delete before saving.
 
 UPDATE JOB STATUS:
 {"tool":"action","action":"updateJobStatus","payload":{"customer_name":"John Doe","status":"Ready for Pickup"}}
@@ -1285,8 +1285,8 @@ Continue silently.` }); continue } // Unknown — treat as final response
     setPendingSms(null); setSendingSms(false)
   }
 
-  // Feature 4: Save as draft estimate
-  const saveEstimate = async (parsed: Record<string, unknown>) => {
+  // Feature 4: Save document from proposal card (uses create-estimate which handles all types)
+  const saveProposal = async (parsed: Record<string, unknown>) => {
     try {
       const res = await fetch('/api/create-estimate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1297,13 +1297,35 @@ Continue silently.` }); continue } // Unknown — treat as final response
           vehicle: parsed.vehicle,
           parts: parsed.parts,
           labors: parsed.labors,
-          notes: parsed.notes,             type: parsed.type || 'Estimate',
+          notes: parsed.notes,
+          type: parsed.type || 'Estimate',
+          apply_tax: parsed.apply_tax,
+          tax_rate: parsed.tax_rate,
         })
       })
       if (!res.ok) throw new Error('Failed')
-      showToast('Document saved')
-      setTimeout(() => { window.location.href = '/estimates' }, 1000)
-    } catch { showToast('Failed to save estimate') }
+      const data = await res.json()
+      const docType = (parsed.type as string) || 'Estimate'
+      const docNum = data.doc_number || ''
+      const email = parsed.customer_email as string || ''
+      const phone = parsed.customer_phone as string || ''
+      showToast(`${docType} ${docNum} saved!`)
+      // Offer to send via email/SMS
+      if (email || phone) {
+        const sendOptions: string[] = []
+        if (email) sendOptions.push('email')
+        if (phone) sendOptions.push('SMS')
+        const sendHtml = `<div class="proposal-card" style="margin-top:8px">
+          <div class="font-bold text-sm mb-2">${docType} ${docNum} saved! Send to ${parsed.customer || 'customer'}?</div>
+          <div class="flex gap-2">
+            ${email ? `<button onclick="window.__sendSavedDoc && window.__sendSavedDoc('${data.estimate?.id || ''}','email','${email.replace(/'/g, "\\'")}')" class="btn btn-primary btn-sm">Email to ${email}</button>` : ''}
+            ${phone ? `<button onclick="window.__sendSavedDoc && window.__sendSavedDoc('${data.estimate?.id || ''}','sms','${phone.replace(/'/g, "\\'")}')" class="btn btn-secondary btn-sm">SMS to ${phone}</button>` : ''}
+            <button onclick="this.closest('.proposal-card').style.display='none'" class="btn btn-sm" style="opacity:0.6">Skip</button>
+          </div>
+        </div>`
+        setMessages(prev => [...prev, { role: 'assistant', content: '', html: sendHtml }])
+      }
+    } catch { showToast('Failed to save document') }
   }
 
   // Render markdown links, images, and bold in chat messages
@@ -1330,35 +1352,81 @@ Continue silently.` }); continue } // Unknown — treat as final response
     const labors = (parsed.labors as Record<string,unknown>[]) || []
     const partsTotal = parts.reduce((s,p) => s + (Number(p.qty)||1)*(Number(p.unitPrice)||0), 0)
     const laborTotal = labors.reduce((s,l) => s + (Number(l.hours)||0)*(Number(l.rate)||120), 0)
-    const tax = partsTotal * 0.0825
+    const taxRate = parsed.tax_rate !== undefined ? Number(parsed.tax_rate) : 8.25
+    const applyTax = parsed.apply_tax !== undefined ? parsed.apply_tax !== false : true
+    const tax = applyTax ? partsTotal * (taxRate / 100) : 0
     const total = partsTotal + laborTotal + tax
     const fmt = (n: number) => '$' + n.toFixed(2)
+    const docType = (parsed.type as string) || 'Estimate'
     const encodedData = btoa(JSON.stringify(parsed))
-    return `<div class="proposal-card">
-      <div class="font-bold text-base mb-2">Proposed ${parsed.type || 'Estimate'} — ${parsed.customer || ''}</div>
+    return `<div class="proposal-card" id="proposal-${encodedData.slice(0, 8)}">
+      <div class="font-bold text-base mb-2">Proposed ${docType} — ${parsed.customer || ''}</div>
       ${parts.length ? `<table class="w-full text-xs mb-3"><thead><tr class="text-text-muted"><th class="text-left pb-1">Part</th><th class="text-right pb-1">Qty</th><th class="text-right pb-1">Price</th><th class="text-right pb-1">Total</th></tr></thead><tbody>${parts.map(p=>`<tr><td>${p.name}</td><td class="text-right">${p.qty||1}</td><td class="text-right">${fmt(Number(p.unitPrice)||0)}</td><td class="text-right">${fmt((Number(p.qty)||1)*(Number(p.unitPrice)||0))}</td></tr>`).join('')}</tbody></table>` : ''}
-      ${labors.length ? `<table class="w-full text-xs mb-3"><thead><tr class="text-text-muted"><th class="text-left pb-1">Labor</th><th class="text-right pb-1">Hrs</th><th class="text-right pb-1">Total</th></tr></thead><tbody>${labors.map(l=>`<tr><td>${l.operation}</td><td class="text-right">${l.hours}</td><td class="text-right">${fmt((Number(l.hours)||0)*120)}</td></tr>`).join('')}</tbody></table>` : ''}
+      ${labors.length ? `<table class="w-full text-xs mb-3"><thead><tr class="text-text-muted"><th class="text-left pb-1">Labor</th><th class="text-right pb-1">Hrs</th><th class="text-right pb-1">Total</th></tr></thead><tbody>${labors.map(l=>`<tr><td>${l.operation}</td><td class="text-right">${l.hours}</td><td class="text-right">${fmt((Number(l.hours)||0)*(Number(l.rate)||120))}</td></tr>`).join('')}</tbody></table>` : ''}
       <div class="border-t border-border pt-2 space-y-1 text-xs">
         <div class="flex justify-between"><span>Parts</span><span>${fmt(partsTotal)}</span></div>
         <div class="flex justify-between"><span>Labor</span><span>${fmt(laborTotal)}</span></div>
-        <div class="flex justify-between"><span>Tax</span><span>${fmt(tax)}</span></div>
+        <div class="flex justify-between"><span>Tax${applyTax ? ` (${taxRate}%)` : ''}</span><span>${fmt(tax)}</span></div>
         <div class="flex justify-between font-bold text-base mt-1 pt-1 border-t border-border"><span>Total</span><span class="text-green">${fmt(total)}</span></div>
       </div>
       <div class="flex gap-2 mt-3">
-        <button onclick="window.__saveEstimate && window.__saveEstimate('${encodedData}')" class="btn btn-success btn-sm">Save ${parsed.type || 'Estimate'}</button>
-        <button onclick="window.location.href='/estimates'" class="btn btn-secondary btn-sm">View Estimates</button>
+        <button onclick="window.__saveProposal && window.__saveProposal('${encodedData}')" class="btn btn-success btn-sm">Save ${docType}</button>
+        <button onclick="window.__editProposal && window.__editProposal('${encodedData}')" class="btn btn-secondary btn-sm">Edit</button>
+        <button onclick="window.__deleteProposal && window.__deleteProposal(this)" class="btn btn-sm" style="background:rgba(239,68,68,0.1);color:#ef4444;border:1px solid rgba(239,68,68,0.3)">Delete</button>
       </div>
     </div>`
   }
 
-  // Feature 4: Global handler for saving estimate from HTML
+  // Global handlers for proposal card buttons
   useEffect(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (window as any).__saveEstimate = (encodedData: string) => {
-      try { const parsed = JSON.parse(atob(encodedData)); saveEstimate(parsed) } catch { showToast('Failed to parse estimate data') }
+    const w = window as any
+    // Save: persist document to DB
+    w.__saveProposal = (encodedData: string) => {
+      try {
+        const parsed = JSON.parse(atob(encodedData))
+        saveProposal(parsed)
+      } catch { showToast('Failed to parse document data') }
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return () => { delete (window as any).__saveEstimate }
+    // Legacy alias
+    w.__saveEstimate = w.__saveProposal
+    // Edit: prompt user to tell AI what to change
+    w.__editProposal = (encodedData: string) => {
+      try {
+        const parsed = JSON.parse(atob(encodedData))
+        const docType = parsed.type || 'Estimate'
+        const editPrompt = prompt(`What would you like to change on this ${docType}?`)
+        if (editPrompt) {
+          sendRef.current?.(`Edit the ${docType} for ${parsed.customer || 'the customer'}: ${editPrompt}`)
+        }
+      } catch { showToast('Failed to parse document data') }
+    }
+    // Delete: dismiss the proposal card
+    w.__deleteProposal = (btn: HTMLElement) => {
+      const card = btn.closest('.proposal-card')
+      if (card) {
+        (card as HTMLElement).style.display = 'none'
+        showToast('Proposal dismissed')
+      }
+    }
+    // Send saved document via email or SMS
+    w.__sendSavedDoc = async (docId: string, channel: string, to: string) => {
+      try {
+        const res = await fetch('/api/send-document', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ documentId: docId, channel, [channel === 'sms' ? 'phone' : 'email']: to })
+        })
+        if (!res.ok) throw new Error('Send failed')
+        showToast(`${channel === 'email' ? 'Email' : 'SMS'} sent to ${to}`)
+      } catch { showToast(`Failed to send ${channel}`) }
+    }
+    return () => {
+      delete w.__saveProposal
+      delete w.__saveEstimate
+      delete w.__editProposal
+      delete w.__deleteProposal
+      delete w.__sendSavedDoc
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

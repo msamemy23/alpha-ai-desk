@@ -78,6 +78,8 @@ export async function POST(req: NextRequest) {
     doc_date: new Date().toISOString().split('T')[0],
     customer_id: customer_id,
     customer_name: customerName || 'Customer',
+    customer_phone: customerPhone || null,
+    customer_email: customerEmail || null,
     vehicle_year: vYear,
     vehicle_make: vMake,
     vehicle_model: vModel,

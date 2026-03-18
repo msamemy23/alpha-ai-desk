@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { supabase, calcTotals, formatCurrency } from '@/lib/supabase'
 
 interface Customer { id: string; name: string; phone: string; email: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin: string; vehicle_plate: string; vehicle_mileage: string }
-interface Doc { id: string; type: string; doc_number: string; status: string; doc_date: string; customer_name: string; customer_id: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; warranty_months: number | null; warranty_mileage: number | null; warranty_start: string | null; warranty_exclusions: string | null; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
+interface Doc { id: string; type: string; doc_number: string; status: string; doc_date: string; customer_name: string; customer_id: string; customer_phone?: string; customer_email?: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; warranty_months: number | null; warranty_mileage: number | null; warranty_start: string | null; warranty_exclusions: string | null; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
 
 const WARRANTY_PRESETS = [
   {
@@ -256,7 +256,9 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     if (!sendModal) return
     setSendError(''); setSendSuccess('')
     const customer = customers.find(c => c.id === sendModal.customer_id)
-    const to = channel === 'sms' ? customer?.phone : customer?.email
+    const to = channel === 'sms'
+      ? (customer?.phone || sendModal.customer_phone)
+      : (customer?.email || sendModal.customer_email)
     if (!to) {
       setSendError(channel === 'sms'
         ? 'No phone number on file for this customer. Edit the customer to add one.'
@@ -283,12 +285,13 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   // Feature 9: Quick email to customer from list
   const quickEmail = async (doc: Doc) => {
     const customer = customers.find(c => c.id === doc.customer_id)
-    if (!customer?.email) return alert('No email on file for this customer')
+    const email = customer?.email || doc.customer_email
+    if (!email) return alert('No email on file for this customer')
     setEmailSending(doc.id)
     try {
       await fetch('/api/send-document', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documentId: doc.id, channel: 'email', email: customer.email })
+        body: JSON.stringify({ documentId: doc.id, channel: 'email', email })
       })
     } catch { alert('Failed to send email') }
     finally { setEmailSending(null); load() }
@@ -750,12 +753,15 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
       {/* Send modal */}
       {sendModal && (() => {
         const cust = customers.find(c => c.id === sendModal.customer_id)
+        const displayEmail = cust?.email || sendModal.customer_email
+        const displayPhone = cust?.phone || sendModal.customer_phone
+        const displayName = cust?.name || sendModal.customer_name
         return (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
           <div className="bg-bg-card border border-border rounded-xl w-full max-w-sm p-6">
             <h2 className="text-lg font-bold mb-2">Send {sendModal.type} #{sendModal.doc_number}</h2>
-            {cust && <p className="text-sm text-text-muted mb-1">Customer: <strong>{cust.name}</strong></p>}
-            {cust && <p className="text-xs text-text-muted mb-4">{cust.email ? `Email: ${cust.email}` : 'No email on file'}{cust.phone ? ` · Phone: ${cust.phone}` : ''}</p>}
+            {displayName && <p className="text-sm text-text-muted mb-1">Customer: <strong>{displayName}</strong></p>}
+            <p className="text-xs text-text-muted mb-4">{displayEmail ? `Email: ${displayEmail}` : 'No email on file'}{displayPhone ? ` · Phone: ${displayPhone}` : ''}</p>
             {sendError && <div className="text-sm text-red-400 bg-red-400/10 border border-red-400/30 rounded-lg p-3 mb-3">{sendError}</div>}
             {sendSuccess && <div className="text-sm text-green-400 bg-green-400/10 border border-green-400/30 rounded-lg p-3 mb-3">{sendSuccess}</div>}
             <div className="space-y-3">

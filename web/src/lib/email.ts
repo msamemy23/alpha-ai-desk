@@ -61,10 +61,15 @@ export function estimateEmailHtml(doc: Record<string, unknown>, settings: Record
 
   const isPaid = doc.status === 'Paid'
 
+  const customerFirstName = ((doc.customer_name as string) || '').split(' ')[0] || 'Valued Customer'
+  const shopNameStr = (settings.shop_name as string) || 'Alpha International Auto Center'
+  const docTypeStr = (doc.type as string) || 'document'
+
   return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>
   body{font-family:Arial,Helvetica,sans-serif;background:#f5f5f5;padding:40px 20px;color:#111;margin:0}
   .card{background:#fff;border-radius:8px;max-width:680px;margin:0 auto;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1)}
+  .greeting{padding:24px 32px 0 32px;font-size:14px;color:#333;line-height:1.6}
   .header{background:#1a1a2e;padding:28px 32px;text-align:center;color:#fff}
   .header h1{margin:0;font-size:20px;font-weight:700;letter-spacing:0.5px}
   .header p{margin:4px 0 0;color:#9ca3af;font-size:12px}
@@ -92,6 +97,10 @@ export function estimateEmailHtml(doc: Record<string, unknown>, settings: Record
   <div class="header">
     <h1>${settings.shop_name || 'Alpha International Auto Center'}</h1>
     <p>${settings.shop_address || '10710 S Main St, Houston TX 77025'} &nbsp;·&nbsp; ${settings.shop_phone || '(713) 663-6979'}</p>
+  </div>
+  <div class="greeting">
+    <p>Hi ${customerFirstName},</p>
+    <p>Here is your ${docTypeStr.toLowerCase()} from ${shopNameStr}. Please review the details below. If you have any questions, don't hesitate to reach out to us.</p>
   </div>
   <div class="section" style="text-align:center;padding:16px 32px">
     <span class="badge">${doc.type}</span>
@@ -146,6 +155,7 @@ export function estimateEmailHtml(doc: Record<string, unknown>, settings: Record
     <div style="margin-top:10px;font-size:9px;color:#888;line-height:1.4;border-top:1px solid #bfdbfe;padding-top:8px">All warranty claims must be submitted to Alpha International Auto Center at 10710 S. Main St, Houston, TX 77025 during normal business hours. Contact (713) 663-6979 before beginning any warranty repair. Unauthorized repairs will void this warranty. This warranty is governed by the laws of the State of Texas.</div>
   </div>` : ''}
   <div class="footer">
+    <div style="font-size:13px;color:#333;margin-bottom:10px">Thank you for choosing ${shopNameStr}! We appreciate your business.</div>
     <div>${settings.payment_terms || 'Payment Terms: Due on receipt'} &nbsp;|&nbsp; Accepted: ${settings.payment_methods || 'Cash, Card, Zelle, Cash App'}</div>
     <div style="margin-top:4px">${settings.shop_phone || '(713) 663-6979'} &nbsp;·&nbsp; ${settings.shop_email || 'alphainternationalauto.com'}</div>
   </div>
