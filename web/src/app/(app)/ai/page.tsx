@@ -680,23 +680,30 @@ export default function AIPage() {
       const callTask = instructions
         ? instructions
         : '' // empty = no AI script, just connect the call
-      setStatus('Calling...')
-      try {
-        const r = await fetch('/api/make-call', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ to: phone, name: phone, task: callTask || undefined })
-        })
-        const d = await r.json()
-        const msg: ChatMessage = d.ok
-          ? { role: 'assistant', content: instructions
-              ? `AI call placed to ${phone}. Task: ${instructions}`
-              : `Call placed to ${phone}. Dialing now.` }
-          : { role: 'assistant', content: `Call failed: ${d.error}` }
-        setMessages(prev => [...prev, msg])
-      } catch (err) {
-        setMessages(prev => [...prev, { role: 'assistant', content: `Call error: ${err instanceof Error ? err.message : 'Unknown'}` }])
-      }
+        if (callTask) {
+          // AI voice call — has instructions, use make-call API
+          setStatus('AI Calling...')
+          try {
+            const r = await fetch('/api/make-call', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ to: phone, name: phone, task: callTask })
+            })
+            const d = await r.json()
+            const msg: ChatMessage = d.ok
+              ? { role: 'assistant', content: instructions
+                ? `AI call placed to ${phone}. Task: ${instructions}`
+                : `Call placed to ${phone}. Dialing now.` }
+              : { role: 'assistant', content: `Call failed: ${d.error}` }
+            setMessages(prev => [...prev, msg])
+          } catch (err) {
+            setMessages(prev => [...prev, { role: 'assistant', content: `Call error: ${err instanceof Error ? err.message : 'Unknown'}` }])
+          }
+        } else {
+          // Personal/browser call — user talks via WebRTC softphone
+          window.dispatchEvent(new CustomEvent('phone:call', { detail: { number: phone, name: phone } }))
+          setMessages(prev => [...prev, { role: 'assistant', content: `Connecting you to ${phone} via browser phone...` }])
+        }
       setLoading(false)
       setStatus('')
       return
@@ -1097,26 +1104,11 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
 
       // Place Phone Call — dials immediately via Telnyx
       if (parsed.tool === 'call') {
-        setStatus('Calling...')
-        try {
-          const r = await fetch('/api/make-call', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ to: parsed.to, name: parsed.name })
-          })
-          const d = await r.json()
-          if (d.ok) {
-            const assistantMsg: ChatMessage = { role: 'assistant', content: `Call placed to ${parsed.name || parsed.to}. Ringing now.` }
-            setMessages(prev => [...prev, assistantMsg])
-            saveToHistory([...history, assistantMsg])
-          } else {
-            const assistantMsg: ChatMessage = { role: 'assistant', content: `Call failed: ${d.error}` }
-            setMessages(prev => [...prev, assistantMsg])
-          }
-        } catch (err) {
-          const assistantMsg: ChatMessage = { role: 'assistant', content: `Call error: ${err instanceof Error ? err.message : 'Unknown'}` }
-          setMessages(prev => [...prev, assistantMsg])
-        }
+        // Browser call — dispatch phone:call event to PhoneWidget
+        window.dispatchEvent(new CustomEvent('phone:call', { detail: { number: parsed.to as string, name: (parsed.name as string) || '' } }))
+        const assistantMsg: ChatMessage = { role: 'assistant', content: `Connecting you to ${parsed.name || parsed.to} via browser phone...` }
+        setMessages(prev => [...prev, assistantMsg])
+        saveToHistory([...history, assistantMsg])
         return
       }
 
