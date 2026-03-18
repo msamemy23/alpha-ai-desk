@@ -67,7 +67,7 @@ export default function PhoneWidget() {
       const data = await res.json()
       if (!data.token) throw new Error(data.error || 'No token')
       // Load SDK from CDN if not already loaded
-      if (!(window as any).TelnyxRTC) {
+              if (!(window as any).TelnyxWebRTC) {
         await new Promise<void>((resolve, reject) => {
           const s = document.createElement('script')
           s.src = 'https://unpkg.com/@telnyx/webrtc@2/lib/bundle.js'
@@ -76,7 +76,7 @@ export default function PhoneWidget() {
           document.head.appendChild(s)
         })
       }
-            const w = window as any; const TelnyxRTC = w.TelnyxRTC?.TelnyxRTC || w.TelnyxRTC?.default || w.TelnyxRTC
+                    const TelnyxRTC = (window as any).TelnyxWebRTC?.TelnyxRTC || (window as any).TelnyxWebRTC
       const client = new TelnyxRTC({ login_token: data.token }) as TelnyxClient
 
       client.on('telnyx.ready', () => {
