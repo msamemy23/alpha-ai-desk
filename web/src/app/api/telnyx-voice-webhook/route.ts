@@ -182,11 +182,11 @@ Spoken words only.`
 
     const transcript = [{ speaker: 'ai', text: greeting }]
     const conversation = [{ role: 'assistant', content: greeting }]
-    await dbPatch(callId, { greeted: true, transcript, conversation })
+    await dbPatch(callId, { greeted: true, transcript, conversation, greeting_sent_at: Date.now() })
     await speak(callId, greeting)
-    // Immediately unlock processing so transcriptions are accepted
-    await dbPatch(callId, { processing: false })
-    console.log('[handleAnswered] DONE greeting sent, processing=false')
+    // Do NOT unlock processing here — let call.speak.ended clear both
+    // is_speaking and processing, so no echo transcription sneaks through
+    console.log('[handleAnswered] DONE greeting sent, waiting for speak.ended to unlock')
   } catch (e) {
     console.error('[handleAnswered] ERROR:', e)
     await dbPatch(callId, { processing: false, is_speaking: false })
@@ -216,18 +216,32 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
       return
     }
 
-    // Echo filter — drop transcriptions that closely match the last thing the AI said
+    // Greeting cooldown — drop any transcription within 5s of the greeting
+    // The greeting TTS gets picked up by 'both' tracks as a transcription echo
+    const greetingSentAt = state.greeting_sent_at as number | undefined
+    if (greetingSentAt && Date.now() - greetingSentAt < 5000) {
+      console.log('[VOICE DEBUG] Dropped: greeting cooldown (within 5s of greeting)', { callId: callId.slice(0, 20), text: text.slice(0, 50), elapsed: Date.now() - greetingSentAt })
+      return
+    }
+
+    // Echo filter — drop transcriptions that closely match ANY AI utterance in conversation
     // This prevents TTS bleed (AI's own voice being picked up and re-processed)
+    const incoming = text.toLowerCase().trim()
+    const conversation: Array<{ role: string; content: string }> = Array.isArray(state.conversation) ? state.conversation : []
+    const aiTexts = conversation.filter(m => m.role === 'assistant').map(m => m.content.toLowerCase().trim())
+    // Also include last_ai_text as a fallback
     const lastAiText = (state.last_ai_text || '').toLowerCase().trim()
-    if (lastAiText && lastAiText.length > 10) {
-      const incoming = text.toLowerCase().trim()
-      // Check if the incoming text is a substring of the AI's last utterance or vice versa
-      if (lastAiText.includes(incoming) || incoming.includes(lastAiText.slice(0, 50))) {
-        console.log('[VOICE DEBUG] Dropped: echo filter (matches last AI text)', { callId: callId.slice(0, 20), text: text.slice(0, 50), lastAi: lastAiText.slice(0, 50) })
+    if (lastAiText && !aiTexts.includes(lastAiText)) aiTexts.push(lastAiText)
+
+    for (const aiText of aiTexts) {
+      if (aiText.length < 10) continue
+      // Check if the incoming text is a substring of any AI utterance or vice versa
+      if (aiText.includes(incoming) || incoming.includes(aiText.slice(0, 50))) {
+        console.log('[VOICE DEBUG] Dropped: echo filter (matches AI text)', { callId: callId.slice(0, 20), text: text.slice(0, 50), matchedAi: aiText.slice(0, 50) })
         return
       }
       // Also check similarity — if >60% of words match, it's likely echo
-      const aiWords = new Set(lastAiText.split(/\s+/))
+      const aiWords = new Set(aiText.split(/\s+/))
       const inWords = incoming.split(/\s+/)
       if (inWords.length > 3) {
         const matchCount = inWords.filter(w => aiWords.has(w)).length
@@ -356,10 +370,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json('OK')
   }
 
-  // call.speak.ended — clear is_speaking flag (safety net)
+  // call.speak.ended — clear is_speaking AND processing flags
+  // This is the authoritative unlock point: no transcription should be
+  // processed while TTS is still playing (prevents echo re-processing).
   if (eventType === 'call.speak.ended') {
-    console.log('[webhook] call.speak.ended — clearing is_speaking')
-    waitUntil(dbPatch(callId, { is_speaking: false }))
+    console.log('[webhook] call.speak.ended — clearing is_speaking + processing')
+    waitUntil(dbPatch(callId, { is_speaking: false, processing: false }))
     return NextResponse.json('OK')
   }
 

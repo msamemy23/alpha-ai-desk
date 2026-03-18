@@ -173,8 +173,8 @@ CREATE JOB — Open a new work order for a customer's vehicle:
 CREATE ESTIMATE (visual card) — Show a formatted estimate card with parts and labor breakdown. Include customer_email and customer_phone if you have them:
 {"tool":"proposeDocument","type":"Estimate","customer":"John Doe","customer_email":"john@example.com","customer_phone":"555-1234","vehicle":"2019 Toyota Camry","parts":[{"name":"Brake Pads Front","qty":1,"unitPrice":45.99},{"name":"Rotors Front Pair","qty":1,"unitPrice":89.99}],"labors":[{"operation":"Front brake replacement","hours":1.5,"rate":120}],"notes":"Standard brake job"}
 
-CREATE INVOICE — Save an invoice to the database:
-{"tool":"action","action":"createInvoice","payload":{"type":"Invoice","customer_name":"John Doe","vehicle_year":"2019","vehicle_make":"Toyota","vehicle_model":"Camry","parts":[{"name":"Brake Pads","qty":1,"unitPrice":45.99,"taxable":true}],"labors":[{"operation":"Brake replacement","hours":1.5,"rate":120}],"notes":""}}
+CREATE INVOICE — Save an invoice to the database. ALWAYS include customer_phone and customer_email if provided by the user:
+{"tool":"action","action":"createInvoice","payload":{"type":"Invoice","customer_name":"John Doe","customer_phone":"555-1234","customer_email":"john@example.com","vehicle_year":"2019","vehicle_make":"Toyota","vehicle_model":"Camry","parts":[{"name":"Brake Pads","qty":1,"unitPrice":45.99,"taxable":true}],"labors":[{"operation":"Brake replacement","hours":1.5,"rate":120}],"notes":""}}
 
 UPDATE JOB STATUS:
 {"tool":"action","action":"updateJobStatus","payload":{"customer_name":"John Doe","status":"Ready for Pickup"}}
@@ -225,11 +225,11 @@ NAVIGATE:
 {"tool":"navigate","view":"jobs"}
 
 CUSTOMER INFORMATION:
-- When the user mentions a customer name for an estimate, ask for their email and phone number if not already provided.
+- When the user mentions a customer name for an estimate or invoice, ask for their email and phone number if not already provided.
 - Keep it natural: "Got it — Paul Jones. What's his email and phone so I can add it to the estimate?"
-- If the user provides email/phone during conversation, include them when creating the estimate using customer_email and customer_phone fields.
-- If the user says they don't have it or to skip it, that's fine — create the estimate without it.
-- When proposing an estimate with a customer, always pass customer_email and customer_phone if you have them.
+- If the user provides email/phone during conversation, ALWAYS include them when creating estimates AND invoices using customer_email and customer_phone fields.
+- If the user says they don't have it or to skip it, that's fine — create the document without it.
+- When proposing an estimate or creating an invoice, always pass customer_email and customer_phone if you have them. This is critical — never drop phone or email that the user provided.
 
 EXECUTION RULES:
 1. Think through the full plan before starting
