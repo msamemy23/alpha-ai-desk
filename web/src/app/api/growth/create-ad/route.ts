@@ -12,7 +12,7 @@ export async function POST(req: NextRequest) {
     const { data: settings } = await db.from('settings').select('*').limit(1).single()
 
     const aiKey = (settings?.ai_api_key as string) || ''
-    const aiModel = (settings?.ai_model as string) || 'deepseek/deepseek-chat-v3-0324:free'
+    const aiModel = (settings?.ai_model as string) || 'deepseek/deepseek-v3.2'
     const aiBase = (settings?.ai_base_url as string) || 'https://openrouter.ai/api/v1'
 
     if (!aiKey) {

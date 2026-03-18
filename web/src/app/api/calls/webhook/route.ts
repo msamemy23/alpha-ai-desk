@@ -9,7 +9,7 @@ import { NextRequest, NextResponse } from 'next/server'
 
 const TELNYX_API_KEY     = process.env.TELNYX_API_KEY     || ''
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
-const AI_MODEL           = process.env.AI_MODEL           || 'deepseek/deepseek-chat-v3-0324'
+const AI_MODEL           = process.env.AI_MODEL           || 'deepseek/deepseek-v3.2'
 const SUPABASE_URL       = process.env.NEXT_PUBLIC_SUPABASE_URL  || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
 const SUPABASE_KEY       = process.env.SUPABASE_SERVICE_KEY      || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 const TELNYX_BASE        = 'https://api.telnyx.com/v2'
@@ -122,11 +122,12 @@ export async function POST(req: NextRequest) {
       processing: true,
     })
 
-    // Start transcription
+    // Start transcription — 'both' for reliable caller audio capture
     await telnyxPost(`/calls/${callId}/actions/transcription_start`, {
       language:             'en',
       transcription_engine: 'B',
-      transcription_tracks: 'inbound',
+      transcription_tracks: 'both',
+      interim_results:      false,
     })
 
     // Start recording
@@ -161,10 +162,15 @@ A customer is calling. Write a SHORT warm greeting (1-2 sentences). Plain conver
     const td      = payload?.transcription_data as Record<string, unknown>
     const text    = (td?.transcript as string || '').trim()
     const isFinal = td?.is_final as boolean
-    if (!text || !isFinal) return NextResponse.json('OK')
+    console.log(`[inbound-webhook] transcription: final=${isFinal} text="${text?.slice(0, 50)}"`)
+    if (!text || !isFinal) {
+      console.log('[inbound-webhook] SKIP: empty or non-final', { text: text?.slice(0, 30), isFinal })
+      return NextResponse.json('OK')
+    }
 
     const state = await dbGet(callId)
-    if (!state || state.processing) return NextResponse.json('OK')
+    if (!state) { console.log('[inbound-webhook] SKIP: no state'); return NextResponse.json('OK') }
+    if (state.processing) { console.log('[inbound-webhook] SKIP: processing=true'); return NextResponse.json('OK') }
 
     // Lock immediately
     await dbUpdate(callId, { processing: true })
