@@ -227,8 +227,8 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     // Echo filter — drop transcriptions that closely match ANY AI utterance in conversation
     // This prevents TTS bleed (AI's own voice being picked up and re-processed)
     const incoming = text.toLowerCase().trim()
-    const conversation: Array<{ role: string; content: string }> = Array.isArray(state.conversation) ? state.conversation : []
-    const aiTexts = conversation.filter(m => m.role === 'assistant').map(m => m.content.toLowerCase().trim())
+    const echoConvo: Array<{ role: string; content: string }> = Array.isArray(state.conversation) ? state.conversation : []
+    const aiTexts = echoConvo.filter(m => m.role === 'assistant').map(m => m.content.toLowerCase().trim())
     // Also include last_ai_text as a fallback
     const lastAiText = (state.last_ai_text || '').toLowerCase().trim()
     if (lastAiText && !aiTexts.includes(lastAiText)) aiTexts.push(lastAiText)
