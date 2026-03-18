@@ -19,7 +19,7 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABA
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
 // Voice needs a FAST model — free models 429 too often, DeepSeek V3.2 thinking mode too slow
 // Google Gemini Flash Lite is ultra-fast (lowest latency) and very cheap ($0.25/M in)
-const AI_MODEL = 'google/gemini-3.1-flash-lite'
+const AI_MODEL = 'google/gemini-2.5-flash-lite'
 const VOICE = 'Telnyx.NaturalHD.orion'
 const VOICE_FB = 'Telnyx.NaturalHD.sirius'
 
@@ -78,7 +78,8 @@ async function aiChat(messages: Array<{ role: string; content: string }>, maxTok
       body: JSON.stringify({ model: AI_MODEL, messages, max_tokens: maxTokens, temperature: 0.7 }),
     })
     const d = await r.json()
-    if (d?.error) { console.error('[aiChat] API error:', d.error); return '' }
+    if (!r.ok) { console.error('[aiChat] HTTP error:', r.status, r.statusText, JSON.stringify(d)); return '' }
+    if (d?.error) { console.error('[aiChat] API error:', JSON.stringify(d.error)); return '' }
     let text: string = d?.choices?.[0]?.message?.content?.trim() || ''
     // Strip thinking tags if model returns them
     text = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
@@ -270,7 +271,7 @@ export async function POST(req: NextRequest) {
   const callId = payload?.call_control_id as string
   console.log(`[webhook] ${eventType} callId=${callId?.slice(0, 25) || 'n/a'}`)
 
-  if (eventType === 'version') return NextResponse.json({ v: 'v6.4-voice-fix' })
+  if (eventType === 'version') return NextResponse.json({ v: 'v6.5-voice-fix' })
 
   // call.initiated — create DB row early so state exists when other events arrive
   if (eventType === 'call.initiated') {
