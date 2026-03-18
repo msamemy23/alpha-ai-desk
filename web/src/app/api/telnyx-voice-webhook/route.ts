@@ -129,13 +129,19 @@ RULES:
 async function handleAnswered(callId: string, task: string) {
   try {
     console.log(`[handleAnswered] START callId=${callId.slice(0, 25)} task="${task.slice(0, 50)}"`)
-    const isAlpha = task === 'Alpha Auto Center oil change call' || /oil.?change|auto.?center|brake|transmission|engine|state inspection/i.test(task)
+    // Only use the Alpha sales script if this is explicitly an Alpha sales task
+    // Do NOT match generic tasks that just mention the shop name
+    const isAlpha = task === 'Alpha Auto Center oil change call' || (
+      /oil.?change|brake|transmission|engine|state inspection/i.test(task) &&
+      !/calling.*hotline|calling.*chatgpt|have a conversation|test.*call/i.test(task)
+    )
     await dbUpsert(callId, { status: 'active', task, greeted: false, processing: true, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' })
 
-    // Start transcription — use 'both' to reliably capture remote party audio
+    // Start transcription — use 'both' to capture both sides of the conversation
+    // Engine 'B' (Telnyx engine) is more reliable for diverse audio sources
     const txResult = await telnyxPost(`/calls/${callId}/actions/transcription_start`, {
       language: 'en',
-      transcription_engine: 'A',
+      transcription_engine: 'B',
       transcription_tracks: 'both',
       interim_results: false,
     })
@@ -262,7 +268,7 @@ export async function POST(req: NextRequest) {
   const callId = payload?.call_control_id as string
   console.log(`[webhook] ${eventType} callId=${callId?.slice(0, 25) || 'n/a'}`)
 
-  if (eventType === 'version') return NextResponse.json({ v: 'v6.1-voice-fix' })
+  if (eventType === 'version') return NextResponse.json({ v: 'v6.2-voice-fix' })
 
   // call.initiated — create DB row early so state exists when other events arrive
   if (eventType === 'call.initiated') {
