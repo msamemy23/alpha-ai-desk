@@ -6,7 +6,7 @@ import { sendSMS, formatPhone } from '@/lib/telnyx'
 
 export async function POST(req: NextRequest) {
   try {
-    const { documentId, channel, email, phone } = await req.json()
+    const { documentId, channel, email: reqEmail, phone: reqPhone } = await req.json()
 
     const db = getServiceClient()
     const [{ data: doc }, { data: settings }] = await Promise.all([
@@ -16,10 +16,23 @@ export async function POST(req: NextRequest) {
 
     if (!doc) return NextResponse.json({ error: 'Document not found' }, { status: 404 })
 
+    // Fall back to document's own contact fields, then try customer table
+    let custEmail = reqEmail || doc.customer_email || ''
+    let custPhone = reqPhone || doc.customer_phone || ''
+    if ((!custEmail || !custPhone) && doc.customer_id) {
+      const { data: cust } = await db.from('customers').select('email,phone').eq('id', doc.customer_id).single()
+      if (cust) {
+        if (!custEmail) custEmail = cust.email || ''
+        if (!custPhone) custPhone = cust.phone || ''
+      }
+    }
+
     const shopName = settings?.shop_name || 'Alpha International Auto Center'
     const docType = doc.type as string
 
-    if (channel === 'email' && email) {
+    if (channel === 'email') {
+      const email = custEmail
+      if (!email) return NextResponse.json({ error: 'No email on file for this customer' }, { status: 400 })
       const html = estimateEmailHtml(doc, settings || {})
       const fromEmail = settings?.from_email || 'Alpha Auto <onboarding@resend.dev>'
       await sendEmail({
@@ -45,7 +58,9 @@ export async function POST(req: NextRequest) {
       await db.from('documents').update({ sent_at: new Date().toISOString() }).eq('id', documentId)
     }
 
-    if (channel === 'sms' && phone) {
+    if (channel === 'sms') {
+      const phone = custPhone
+      if (!phone) return NextResponse.json({ error: 'No phone number on file for this customer' }, { status: 400 })
       const formatted = formatPhone(phone)
       const smsBody = `Hi! Your ${docType} #${doc.doc_number} from ${shopName} is ready. Total: $${calcTotal(doc).toFixed(2)}. Call us at ${settings?.shop_phone || ''} with any questions.`
       await sendSMS(formatted, smsBody)

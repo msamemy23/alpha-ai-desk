@@ -256,20 +256,16 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     if (!sendModal) return
     setSendError(''); setSendSuccess('')
     const customer = customers.find(c => c.id === sendModal.customer_id)
-    const to = channel === 'sms'
-      ? (customer?.phone || sendModal.customer_phone)
-      : (customer?.email || sendModal.customer_email)
-    if (!to) {
-      setSendError(channel === 'sms'
-        ? 'No phone number on file for this customer. Edit the customer to add one.'
-        : 'No email on file for this customer. Edit the customer to add one, or go to Customers page.')
-      return
-    }
+    // Try all sources: customer table, document fields, form phone/email fields
+    const emailAddr = customer?.email || sendModal.customer_email || (sendModal as Record<string,unknown>).customer_email || ''
+    const phoneAddr = customer?.phone || sendModal.customer_phone || (sendModal as Record<string,unknown>).customer_phone || ''
+    const to = channel === 'sms' ? phoneAddr : emailAddr
     setSendingDoc(true)
     try {
+      // Send with whatever we have — API will also look up from document/customer as fallback
       const res = await fetch('/api/send-document', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documentId: sendModal.id, channel, [channel === 'sms' ? 'phone' : 'email']: to })
+        body: JSON.stringify({ documentId: sendModal.id, channel, ...(emailAddr ? { email: emailAddr } : {}), ...(phoneAddr ? { phone: phoneAddr } : {}) })
       })
       if (!res.ok) {
         const d = await res.json().catch(() => ({}))
