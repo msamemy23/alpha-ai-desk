@@ -17,9 +17,9 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
-// Voice needs a FAST model — DeepSeek V3.2 with thinking takes 60s+ and times out on Vercel
-// Llama 3.3 70B is fast, free, and great for natural conversation
-const AI_MODEL = 'meta-llama/llama-3.3-70b-instruct:free'
+// Voice needs a FAST model — free models 429 too often, DeepSeek V3.2 thinking mode too slow
+// Google Gemini Flash Lite is ultra-fast (lowest latency) and very cheap ($0.25/M in)
+const AI_MODEL = 'google/gemini-3.1-flash-lite'
 const VOICE = 'Telnyx.NaturalHD.orion'
 const VOICE_FB = 'Telnyx.NaturalHD.sirius'
 
@@ -270,7 +270,7 @@ export async function POST(req: NextRequest) {
   const callId = payload?.call_control_id as string
   console.log(`[webhook] ${eventType} callId=${callId?.slice(0, 25) || 'n/a'}`)
 
-  if (eventType === 'version') return NextResponse.json({ v: 'v6.3-voice-fix' })
+  if (eventType === 'version') return NextResponse.json({ v: 'v6.4-voice-fix' })
 
   // call.initiated — create DB row early so state exists when other events arrive
   if (eventType === 'call.initiated') {
