@@ -252,7 +252,7 @@ export async function POST(req: NextRequest) {
     const aiKey = settings?.ai_api_key
     if (!aiKey) return NextResponse.json({ ok: false, error: 'No AI API key configured' }, { status: 400 })
     const aiBase = settings?.ai_base_url || 'https://openrouter.ai/api/v1'
-    const aiModel = settings?.ai_model || 'deepseek/deepseek-chat'
+    const aiModel = settings?.ai_model || 'deepseek/deepseek-v3.2'
 
     // Step 1: Decompose the request
     const decomposed = await decomposeRequest(query, aiKey, aiBase, aiModel)

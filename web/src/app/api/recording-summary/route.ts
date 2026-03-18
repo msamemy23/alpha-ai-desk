@@ -61,7 +61,7 @@ export async function POST(req: NextRequest) {
         'HTTP-Referer': 'https://alpha-ai-desk.vercel.app',
       },
       body: JSON.stringify({
-        model: 'openai/gpt-4o',
+        model: 'deepseek/deepseek-v3.2',
         messages: [
           {
             role: 'system',

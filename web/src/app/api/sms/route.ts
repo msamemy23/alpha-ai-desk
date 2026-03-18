@@ -142,7 +142,7 @@ Reply in 1-2 sentences under 160 characters. Warm, professional, brief.`
         method: 'POST',
         headers: { 'Authorization': `Bearer ${settings.ai_api_key}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: settings.ai_model || 'meta-llama/llama-3.3-70b-instruct:free',
+          model: settings.ai_model || 'deepseek/deepseek-v3.2',
           messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: message }],
           max_tokens: 80,
           temperature: 0.4

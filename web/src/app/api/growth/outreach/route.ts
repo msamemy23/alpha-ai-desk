@@ -6,7 +6,7 @@ const TELNYX_PHONE = process.env.TELNYX_PHONE_NUMBER || ''
 const RESEND_KEY = process.env.RESEND_API_KEY || ''
 const AI_KEY = process.env.OPENROUTER_API_KEY || ''
 const AI_URL = 'https://openrouter.ai/api/v1/chat/completions'
-const AI_MODEL = process.env.AI_MODEL || 'google/gemini-2.0-flash-001'
+const AI_MODEL = process.env.AI_MODEL || 'deepseek/deepseek-v3.2'
 
 function fetchT(url: string, opts: RequestInit, ms = 15000) {
   const ctrl = new AbortController()
