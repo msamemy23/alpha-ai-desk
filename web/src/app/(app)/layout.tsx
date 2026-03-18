@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { supabase, getUnreadCount } from '@/lib/supabase'
+import PhoneWidget from '@/components/PhoneWidget'
 
 const NAV = [
   { href: '/dashboard', icon: '📊', label: 'Dashboard' },
@@ -215,6 +216,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </div>
         <main className="flex-1 overflow-y-auto bg-bg-base">
           {children}
+                    <PhoneWidget />
         </main>
       </div>
     </div>
