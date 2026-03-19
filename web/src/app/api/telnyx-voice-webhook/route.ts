@@ -300,6 +300,7 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     const transcript: Array<{ speaker: string; text: string }> = Array.isArray(currentState.transcript) ? [...currentState.transcript] : []
     const conversation: Array<{ role: string; content: string }> = Array.isArray(currentState.conversation) ? [...currentState.conversation] : []
     transcript.push({ speaker: 'customer', text })
+    conversation.push({ role: 'user', content: text })  // keep customer turns in history so AI has full context
     await dbPatch(callId, { processing: true, transcript })
 
     const objectionCount = (currentState.objection_count as number) || 0
@@ -342,7 +343,7 @@ HOW TO HANDLE THE CONVERSATION:
 RULES: 1-2 sentences per reply. Spoken words only. No markdown. No stage directions.`
     }
 
-    const messages = [{ role: 'system', content: systemPrompt }, ...conversation.slice(-10), { role: 'user', content: text }]
+    const messages = [{ role: 'system', content: systemPrompt }, ...conversation.slice(-12)]  // conversation already includes current user turn
     console.log('[handleTranscription] calling AI for response...')
     const reply = await streamAndSpeak(callId, messages, 60)
 
