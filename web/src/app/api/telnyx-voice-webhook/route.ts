@@ -1,8 +1,9 @@
-/**
- * Telnyx Voice Webhook — AI voice agent v8.0
- * - Two call types: Task (AI follows your prompt), Personal (silent connect)
+﻿/**
+ * Telnyx Voice Webhook — AI voice agent v7.0
+ * - Three call types: Alpha sales, custom AI task, personal call
  * - Personal calls: silent connect, no AI greeting or script
- * - Task calls: AI follows whatever prompt you gave for that call
+ * - Custom task calls: AI follows user's specific instructions
+ * - Alpha sales calls: uses Alpha Auto Center sales script
  * - Echo filter, barge-in, transcription engine B, both tracks
  */
 import { NextRequest, NextResponse } from 'next/server'
@@ -77,14 +78,24 @@ async function aiChat(messages: Array<{ role: string; content: string }>, maxTok
     if (!r.ok) { console.error('[aiChat] HTTP error:', r.status, r.statusText, JSON.stringify(d)); return '' }
     if (d?.error) { console.error('[aiChat] API error:', JSON.stringify(d.error)); return '' }
     let text: string = d?.choices?.[0]?.message?.content?.trim() || ''
-    text = cleanAiText(text)
-    return text
-  } catch (e) {
-    console.error('[aiChat] error:', e); return ''
-  }
+    // Strip thinking tags if model returns them
+    text = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+    text = text.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\*([^*]+)\*/g, '$1')
+    text = text.replace(/^["']|["']$/g, '').trim()
+    text = text.replace(/\([^)]*\)/g, '').replace(/\[[^\]]*\]/g, '').trim()
+    text = text.replace(/\b(laughs|chuckles|pauses|sighs|warmly|cheerfully|gently|softly|nodding|click)\b/gi, '').trim()
+    text = text.replace(/^[-*#]+\s*/gm, '').trim()
+    text = text.replace(/ +/g, ' ').trim()
+    const lines = text.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0)
+    if (lines.length > 1) {
+      const leak = lines[1].startsWith('-') || lines[1].length < 20 || /^(speak|note|after|end|call|task|stage|step|next|if)/i.test(lines[1])
+      text = leak ? lines[0] : lines.slice(0, 3).join(' ')
+    }
+    return text.trim()
+  } catch (e) { console.error('[aiChat] error:', e); return '' }
 }
 
-// ── Clean raw AI text (strip markdown, stage directions, etc.) ──
+// ÄÄ Clean raw AI text (strip markdown, stage directions, etc.) ÄÄ
 function cleanAiText(raw: string): string {
   let text = raw
   text = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
@@ -102,7 +113,7 @@ function cleanAiText(raw: string): string {
   return text.trim()
 }
 
-// ── Stream AI response - speak first sentence immediately for low latency ──
+// ÄÄ Stream AI response - speak first sentence immediately for low latency ÄÄ
 async function streamAndSpeak(callId: string, messages: Array<{ role: string; content: string }>, maxTokens = 60): Promise<string> {
   try {
     const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -128,6 +139,7 @@ async function streamAndSpeak(callId: string, messages: Array<{ role: string; co
           try {
             const delta = JSON.parse(raw)?.choices?.[0]?.delta?.content || ''
             fullText += delta
+            // Speak first complete sentence immediately (min 12 chars so we don't cut too early)
             if (!firstSentSpoken) {
               const m = fullText.match(/^(.{12,}?[.!?])(\s|$)/)
               if (m) {
@@ -144,38 +156,26 @@ async function streamAndSpeak(callId: string, messages: Array<{ role: string; co
       }
     }
     const cleaned = cleanAiText(fullText)
+    // If no sentence boundary was found (very short reply), speak the full thing
     if (!firstSentSpoken && cleaned) {
       console.log('[streamAndSpeak] No sentence boundary - speaking full reply:', cleaned.slice(0, 60))
       await speak(callId, cleaned)
     }
     return cleaned
-  } catch (e) {
-    console.error('[streamAndSpeak] error:', e); return ''
-  }
+  } catch (e) { console.error('[streamAndSpeak] error:', e); return '' }
 }
 
-// ── Handle call.answered ──
-// Two call types only:
-// 1. Task call: task has instructions — AI follows them
-// 2. Personal call: task is empty — silent connect, no AI
+
+// -- Handle call.answered --
+// Two call types:
+// 1. Personal call: task is empty - user just wants to talk, no AI involvement
+// 2. Task call: task has custom instructions - AI follows the task prompt exactly
 async function handleAnswered(callId: string, task: string) {
   try {
-    console.log(`[handleAnswered] START callId=${callId.slice(0, 25)} task="${task.slice(0, 80)}"`)
-
+    console.log(`[handleAnswered] START callId=${callId.slice(0, 25)} task="${task.slice(0, 80)}"`) 
     const isPersonalCall = !task || task.trim() === '' || task === 'personal call'
 
-    console.log(`[handleAnswered] callType: isPersonalCall=${isPersonalCall}`)
-
-    await dbUpsert(callId, {
-      status: 'active',
-      task: task || 'personal call',
-      greeted: false,
-      processing: true,
-      is_speaking: false,
-      objection_count: 0,
-      started_at: Date.now(),
-      last_ai_text: ''
-    })
+    await dbUpsert(callId, { status: 'active', task: task || 'personal call', greeted: false, processing: true, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' })
 
     // Start transcription — use 'both' since 'inbound'/'outbound' alone can miss audio
     const txResult = await telnyxPost(`/calls/${callId}/actions/transcription_start`, {
@@ -195,19 +195,22 @@ async function handleAnswered(callId: string, task: string) {
       return
     }
 
-    // Task call — generate greeting from the task text
-    const greetingPrompt = `You are on a live phone call. Your task: ${task}
+    // Build greeting based on call type
+    const greetingPrompt = `You are making an outbound phone call on behalf of someone. Your specific task for this call is: ${task}
 
-Say a natural opening line that starts working toward completing your task. 1-2 sentences max. Be friendly and direct. YOU called THEM. Never say Thanks for calling. No markdown, no stage directions. Spoken words only.`
+Say a natural opening line that starts working toward completing your task. 1-2 sentences max. Be friendly and direct.
+YOU called THEM. Never say Thanks for calling. No markdown, no stage directions.
+Spoken words only.`
     const fallbackGreeting = 'Hey, how are you doing today?'
 
     const greeting = await aiChat([{ role: 'system', content: greetingPrompt }], 60) || fallbackGreeting
+
     const transcript = [{ speaker: 'ai', text: greeting }]
     const conversation = [{ role: 'assistant', content: greeting }]
-
     await dbPatch(callId, { greeted: true, transcript, conversation, greeting_sent_at: Date.now() })
     await speak(callId, greeting)
-
+    // Do NOT unlock processing here — let call.speak.ended clear both
+    // is_speaking and processing, so no echo transcription sneaks through
     console.log('[handleAnswered] DONE greeting sent, waiting for speak.ended to unlock')
   } catch (e) {
     console.error('[handleAnswered] ERROR:', e)
@@ -220,11 +223,13 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
   try {
     console.log(`[handleTranscription] text="${text}" isFinal=${isFinal}`)
 
+    // Only process final transcriptions for AI reply
     if (!isFinal) {
       console.log('[VOICE DEBUG] Dropped: not final transcription', { callId: callId.slice(0, 20), text })
       return
     }
 
+    // Ignore very short utterances (noise, "uh", etc.)
     if (text.length < 3) {
       console.log('[VOICE DEBUG] Dropped: text too short', { callId: callId.slice(0, 20), text })
       return
@@ -237,62 +242,61 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     }
 
     // Greeting cooldown — drop any transcription within 5s of the greeting
+    // The greeting TTS gets picked up by 'both' tracks as a transcription echo
     const greetingSentAt = state.greeting_sent_at as number | undefined
     if (greetingSentAt && Date.now() - greetingSentAt < 5000) {
-      console.log('[VOICE DEBUG] Dropped: greeting cooldown (within 5s of greeting)', {
-        callId: callId.slice(0, 20), text: text.slice(0, 50), elapsed: Date.now() - greetingSentAt
-      })
+      console.log('[VOICE DEBUG] Dropped: greeting cooldown (within 5s of greeting)', { callId: callId.slice(0, 20), text: text.slice(0, 50), elapsed: Date.now() - greetingSentAt })
       return
     }
 
-    // Echo filter — drop transcriptions that closely match ANY AI utterance
+    // Echo filter — drop transcriptions that closely match ANY AI utterance in conversation
+    // This prevents TTS bleed (AI's own voice being picked up and re-processed)
     const incoming = text.toLowerCase().trim()
     const echoConvo: Array<{ role: string; content: string }> = Array.isArray(state.conversation) ? state.conversation : []
     const aiTexts = echoConvo.filter(m => m.role === 'assistant').map(m => m.content.toLowerCase().trim())
+    // Also include last_ai_text as a fallback
     const lastAiText = (state.last_ai_text || '').toLowerCase().trim()
     if (lastAiText && !aiTexts.includes(lastAiText)) aiTexts.push(lastAiText)
 
     for (const aiText of aiTexts) {
       if (aiText.length < 10) continue
+      // Check if the incoming text is a substring of any AI utterance or vice versa
       if (aiText.includes(incoming) || incoming.includes(aiText.slice(0, 50))) {
-        console.log('[VOICE DEBUG] Dropped: echo filter (matches AI text)', {
-          callId: callId.slice(0, 20), text: text.slice(0, 50), matchedAi: aiText.slice(0, 50)
-        })
+        console.log('[VOICE DEBUG] Dropped: echo filter (matches AI text)', { callId: callId.slice(0, 20), text: text.slice(0, 50), matchedAi: aiText.slice(0, 50) })
         return
       }
+      // Also check similarity — if >60% of words match, it's likely echo
       const aiWords = new Set(aiText.split(/\s+/))
       const inWords = incoming.split(/\s+/)
       if (inWords.length > 3) {
         const matchCount = inWords.filter(w => aiWords.has(w)).length
         const matchRatio = matchCount / inWords.length
         if (matchRatio > 0.6) {
-          console.log('[VOICE DEBUG] Dropped: echo filter (word similarity)', {
-            callId: callId.slice(0, 20), text: text.slice(0, 50), matchRatio: matchRatio.toFixed(2)
-          })
+          console.log('[VOICE DEBUG] Dropped: echo filter (word similarity)', { callId: callId.slice(0, 20), text: text.slice(0, 50), matchRatio: matchRatio.toFixed(2) })
           return
         }
       }
     }
 
-    // Barge-in: if AI is speaking and human says 2+ words, stop playback
+    // If AI is currently speaking and human says 2+ words, barge-in
     let currentState = state
     if (state.is_speaking && text.split(' ').length >= 2) {
       await telnyxPost(`/calls/${callId}/actions/playback_stop`, { stop: 'all' })
       await dbPatch(callId, { is_speaking: false, processing: false })
       await new Promise(res => setTimeout(res, 200))
+      // Only re-fetch DB state after barge-in since flags may have changed
       currentState = await dbGet(callId)
     }
 
+    // Check processing flag — if locked, skip
     if (currentState?.processing) {
       console.log('[VOICE DEBUG] Dropped: processing=true', { callId: callId.slice(0, 20), text, processing: currentState.processing })
       return
     }
 
     console.log(`[handleTranscription] PROCESSING: "${text}"`)
-
     const transcript: Array<{ speaker: string; text: string }> = Array.isArray(currentState.transcript) ? [...currentState.transcript] : []
     const conversation: Array<{ role: string; content: string }> = Array.isArray(currentState.conversation) ? [...currentState.conversation] : []
-
     transcript.push({ speaker: 'customer', text })
     await dbPatch(callId, { processing: true, transcript })
 
@@ -306,6 +310,7 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
       conversation.push({ role: 'assistant', content: bye })
       await dbPatch(callId, { transcript, conversation })
       await speak(callId, bye)
+      // Unlock processing immediately — don't wait for speak.ended
       await dbPatch(callId, { processing: false })
       console.log('[handleTranscription] END: said goodbye')
       return
@@ -314,25 +319,38 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     // Determine call type from stored task
     const storedTask = currentState.task || ''
     const isPersonal = !storedTask || storedTask === 'personal call'
-
+    
     let systemPrompt: string
     if (isPersonal) {
+      // Personal call — AI should just have a natural conversation, no script
       systemPrompt = `You are on a live phone call. This is a personal call — just have a natural, friendly conversation. No sales pitch, no script.\n\nRULES:\n- Be conversational and friendly.\n- HOLD phrases: say Of course, take your time. and wait.\n- 1-3 sentences max. Natural spoken words. No markdown.`
     } else {
-      // Task call — AI follows the task text, nothing else
-      systemPrompt = `You are on a live phone call. Your task: ${storedTask}\n\nStay on task. 1 sentence per reply. Spoken words only.\n\nRULES:\n- Stay focused on your task.\n- Answer their questions if they ask.\n- HOLD phrases: say Of course, take your time. and wait.\n- 1-3 sentences max. Natural spoken words. No markdown.`
+      // Custom AI task — AI must follow the user's specific instructions
+      systemPrompt = `You are on a live phone call. You were given a specific task for this call: "${storedTask}"
+
+CRITICAL: Stay focused on your task. Your job is to accomplish what you were asked to do.
+Do NOT go off-topic. Do NOT pitch oil changes or any other unrelated services.
+
+RULES:
+- Stay on task: "${storedTask}"
+- Answer their questions if they ask.
+- HOLD phrases: say Of course, take your time. and wait.
+- 1-3 sentences max. Natural spoken words. No markdown.`
     }
 
     const messages = [{ role: 'system', content: systemPrompt }, ...conversation.slice(-10), { role: 'user', content: text }]
     console.log('[handleTranscription] calling AI for response...')
-
     const reply = await streamAndSpeak(callId, messages, 60)
+
     if (reply) {
       console.log(`[handleTranscription] AI replied: "${reply.slice(0, 80)}"`)
       transcript.push({ speaker: 'ai', text: reply })
       conversation.push({ role: 'assistant', content: reply })
       const newObjCount = isSoftNo ? objectionCount + 1 : objectionCount
       await dbPatch(callId, { transcript, conversation, objection_count: newObjCount })
+      // speak() already called inside streamAndSpeak - do not call again
+      // Unlock processing immediately so next transcription can be processed
+      // call.speak.ended acts as a safety net to clear is_speaking
       await dbPatch(callId, { processing: false })
     } else {
       console.log('[handleTranscription] AI returned empty, unlocking')
@@ -350,18 +368,17 @@ export async function POST(req: NextRequest) {
   const eventType = body?.data?.event_type as string
   const payload = body?.data?.payload as Record<string, unknown>
   const callId = payload?.call_control_id as string
-
   console.log(`[webhook] ${eventType} callId=${callId?.slice(0, 25) || 'n/a'}`)
 
-  if (eventType === 'version') return NextResponse.json({ v: 'v8.0-two-paths' })
+  if (eventType === 'version') return NextResponse.json({ v: 'v7.0-call-types' })
 
   // call.initiated — create DB row early so state exists when other events arrive
   if (eventType === 'call.initiated') {
     let task = ''
     const cs = payload?.client_state as string
     if (cs) { try { task = JSON.parse(Buffer.from(cs, 'base64').toString()).task || '' } catch { /* ok */ } }
-    console.log(`[webhook] call.initiated — creating DB row, task="${task.slice(0, 50)}"`)
-    waitUntil(dbUpsert(callId, { task, status: 'calling', greeted: false, processing: false, is_speaking: false, objection_count: 0, started_at: Date.now(), last_ai_text: '' }))
+    console.log(`[webhook] call.initiated — creating DB row, task="${task.slice(0, 50)}"`) 
+    waitUntil(dbUpsert(callId, { task, status: 'calling', greeted: false, processing: false, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' }))
     return NextResponse.json('OK')
   }
 
@@ -374,6 +391,8 @@ export async function POST(req: NextRequest) {
   }
 
   // call.speak.ended — clear is_speaking AND processing flags
+  // This is the authoritative unlock point: no transcription should be
+  // processed while TTS is still playing (prevents echo re-processing).
   if (eventType === 'call.speak.ended') {
     console.log('[webhook] call.speak.ended — clearing is_speaking + processing')
     waitUntil(dbPatch(callId, { is_speaking: false, processing: false }))
@@ -393,9 +412,7 @@ export async function POST(req: NextRequest) {
     const urls = payload?.recording_urls
     let url = ''
     if (typeof urls === 'string') url = urls
-    else if (urls && typeof urls === 'object') {
-      url = (urls as Record<string, string>).mp3 || (urls as Record<string, string>).wav || Object.values(urls as Record<string, string>)[0] || ''
-    }
+    else if (urls && typeof urls === 'object') { url = (urls as Record<string, string>).mp3 || (urls as Record<string, string>).wav || Object.values(urls as Record<string, string>)[0] || '' }
     if (!url && payload?.public_url) url = payload.public_url as string
     if (url) waitUntil(dbPatch(callId, { recording_url: url }))
     return NextResponse.json('OK')
