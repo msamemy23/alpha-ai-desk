@@ -716,7 +716,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                 {filtered.map(d => {
                   const t = calcTotals(d as unknown as Record<string,unknown>)
                   return (
-                    <tr key={d.id} className="cursor-pointer" onClick={() => { setForm(d as Partial<Doc>); setEditing(d.id) }}>
+                    <tr key={d.id} className="cursor-pointer" onClick={() => { const cust = customers.find(c => c.id === d.customer_id); setForm({ ...d, customer_phone: d.customer_phone || cust?.phone || '', customer_email: d.customer_email || cust?.email || '' } as Partial<Doc>); setEditing(d.id) }}>
                       <td className="font-mono text-sm text-blue">{d.doc_number}</td>
                       <td className="font-medium">{d.customer_name || '—'}</td>
                       <td className="text-text-secondary">{fmt(d.doc_date)}</td>
