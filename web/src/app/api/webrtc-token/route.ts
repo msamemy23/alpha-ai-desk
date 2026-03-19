@@ -172,9 +172,9 @@ export async function GET() {
     if (credId) {
       try {
         const token = await generateToken(credId)
-        // Fire-and-forget: ensure the connection has the outbound profile
+        // Ensure outbound profile is set BEFORE returning token (synchronous - required for PSTN calls)
         const connId = await getSetting('webrtc_conn_id')
-        if (connId) ensureOutboundProfile(connId)
+        if (connId) await ensureOutboundProfile(connId)
         return NextResponse.json({ token, credentialId: credId })
       } catch (e: any) {
         console.log('[webrtc-token] Existing credential failed, will recreate:', e.message)
