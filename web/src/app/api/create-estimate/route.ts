@@ -1,4 +1,4 @@
-export const dynamic = "force-dynamic"
+﻿export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 
@@ -12,9 +12,10 @@ export async function POST(req: NextRequest) {
   const customerPhone: string = body.customer_phone || ''
   const { vehicle, vehicle_year, vehicle_make, vehicle_model, parts, labors, notes } = body
 
-  // Support Receipt, Invoice, and Estimate types
-  const docType: string = body.type || 'Estimate'
-  const prefix = docType === 'Estimate' ? 'EST' : docType === 'Receipt' ? 'REC' : 'INV'
+  // Only Invoice and Estimate types — Receipt is treated as Invoice
+  const rawType: string = body.type || 'Estimate'
+  const docType: string = rawType === 'Receipt' ? 'Invoice' : rawType
+  const prefix = docType === 'Estimate' ? 'EST' : 'INV'
 
   // Parse vehicle string like "2019 Toyota Camry" if individual fields aren't provided
   let vYear = vehicle_year || ''
@@ -74,7 +75,7 @@ export async function POST(req: NextRequest) {
   const { data, error } = await sb.from('documents').insert({
     type: docType,
     doc_number,
-    status: docType === 'Receipt' ? 'Paid' : 'Draft',
+    status: rawType === 'Receipt' ? 'Paid' : 'Draft',
     doc_date: new Date().toISOString().split('T')[0],
     customer_id: customer_id,
     customer_name: customerName || 'Customer',
