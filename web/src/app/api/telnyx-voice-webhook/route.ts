@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Telnyx Voice Webhook — AI voice agent v7.0
  * - Three call types: Alpha sales, custom AI task, personal call
  * - Personal calls: silent connect, no AI greeting or script
@@ -117,10 +117,17 @@ REBUTTALS (use one per objection, then accept gracefully if they still say no):
 
 CLOSING: Always try to get a specific day. Can I put you down for a day? Even tentatively, just so we hold a spot.
 
+CONVERSATION FLOW (follow these stages in order):
+1. OPEN: Greet them and ask how they are doing.
+2. QUALIFY: Ask ONCE when they last got an oil change. Do NOT ask again.
+3. PITCH: Suggest the right oil change and give the price.
+4. SCHEDULE: Get a specific day. Thursday or Friday?
+5. CLOSE: Confirm the day and address on South Main Street.
+
 RULES:
 - YOU called THEM. Never say Thanks for calling.
 - 1-3 sentences max per reply. Short and punchy.
-- Wait for them to finish. Never answer your own questions.
+- CRITICAL: Check conversation history. NEVER repeat a question already answered. Move forward.
 - If not interested or no thanks: give ONE rebuttal, then if still no say No problem, have a great day! and stop.
 - If they say hold on or one sec say Of course, take your time. and wait.
 - Spoken words only. No markdown, no bullets, no stage directions.`
@@ -254,33 +261,33 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     }
 
     // If AI is currently speaking and human says 2+ words, barge-in
+    let currentState = state
     if (state.is_speaking && text.split(' ').length >= 2) {
-      console.log('[handleTranscription] BARGE-IN: stopping AI speech')
       await telnyxPost(`/calls/${callId}/actions/playback_stop`, { stop: 'all' })
+      await telnyxPost(/calls/+callId+/actions/playback_stop, { stop: 'all' })
       await dbPatch(callId, { is_speaking: false, processing: false })
       await new Promise(res => setTimeout(res, 200))
+      // Only re-fetch DB state after barge-in since flags may have changed
+      currentState = await dbGet(callId)
     }
 
     // Check processing flag — if locked, skip
-    const freshState = await dbGet(callId)
-    if (freshState?.processing) {
-      console.log('[VOICE DEBUG] Dropped: processing=true', { callId: callId.slice(0, 20), text, processing: freshState.processing })
+    if (currentState?.processing) {
+      console.log('[VOICE DEBUG] Dropped: processing=true', { callId: callId.slice(0, 20), text, processing: currentState.processing })
       return
     }
 
-    // Lock immediately
     console.log(`[handleTranscription] PROCESSING: "${text}"`)
-    await dbPatch(callId, { processing: true })
-
-    const transcript: Array<{ speaker: string; text: string }> = Array.isArray(freshState.transcript) ? [...freshState.transcript] : []
-    const conversation: Array<{ role: string; content: string }> = Array.isArray(freshState.conversation) ? [...freshState.conversation] : []
+    console.log([handleTranscription] PROCESSING: +JSON.stringify(text))
+    const transcript: Array<{ speaker: string; text: string }> = Array.isArray(currentState.transcript) ? [...currentState.transcript] : []
+    const conversation: Array<{ role: string; content: string }> = Array.isArray(currentState.conversation) ? [...currentState.conversation] : []
     transcript.push({ speaker: 'customer', text })
-    await dbPatch(callId, { transcript })
+    await dbPatch(callId, { processing: true, transcript })
 
-    const objectionCount = (freshState.objection_count as number) || 0
+    const objectionCount = (currentState.objection_count as number) || 0
     const isHardNo = /not interested|do not call|take me off|remove me|stop calling/i.test(text)
     const isSoftNo = /no thank|no thanks|can.?t right now|not right now|maybe later|not today|not looking/i.test(text)
-    const isAlpha = (freshState.task || '') === 'Alpha Auto Center oil change call' || /oil.?change|auto.?center|brake|transmission|engine|state inspection/i.test(freshState.task || '')
+    const isAlpha = (currentState.task || '') === 'Alpha Auto Center oil change call' || /oil.?change|auto.?center|brake|transmission|engine|state inspection/i.test(currentState.task || '')
 
     if (isHardNo || (isSoftNo && objectionCount >= 1)) {
       const bye = 'No problem at all, I appreciate your time. Have a great day!'
@@ -295,12 +302,12 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     }
 
     // Determine call type from stored task
-    const storedTask = freshState.task || ''
+    const storedTask = currentState.task || ''
     const isPersonal = !storedTask || storedTask === 'personal call'
     
     let systemPrompt: string
     if (isAlpha) {
-      systemPrompt = ALPHA_SYSTEM + `\n\nThe customer just said: "${text}"\nRespond naturally. 1-3 sentences max. Spoken words only.`
+      systemPrompt = ALPHA_SYSTEM + `\n\nConversation so far is in the message history above. The customer just said: "${text}"\nRespond naturally. Move the conversation FORWARD — do not repeat questions already asked. 1-3 sentences max. Spoken words only.`
     } else if (isPersonal) {
       // Personal call — AI should just have a natural conversation, no script
       systemPrompt = `You are on a live phone call. This is a personal call — just have a natural, friendly conversation. No sales pitch, no script.\n\nRULES:\n- Be conversational and friendly.\n- HOLD phrases: say Of course, take your time. and wait.\n- 1-3 sentences max. Natural spoken words. No markdown.`
