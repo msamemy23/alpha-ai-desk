@@ -5,7 +5,6 @@ const APP_ID     = process.env.FACEBOOK_APP_ID     || '1379263117302106'
 const APP_SECRET = process.env.FACEBOOK_APP_SECRET || 'f7c21374d2d0b34fc00f9061dae5d286'
 const CALLBACK   = 'https://alpha-ai-desk.vercel.app/api/auth/facebook/callback'
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-// Try all possible env var names for the service key
 const SUPABASE_KEY = (
   process.env.SUPABASE_SERVICE_KEY ||
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
@@ -14,7 +13,6 @@ const SUPABASE_KEY = (
 )
 const BASE = 'https://alpha-ai-desk.vercel.app'
 
-// Use PATCH + eq filter to UPDATE existing row (more reliable than POST upsert)
 async function updateConnector(service: string, data: Record<string, unknown>) {
   const url = `${SUPABASE_URL}/rest/v1/connectors?service=eq.${service}`
   const r = await fetch(url, {
@@ -48,7 +46,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // 1. Exchange code for user access token
+    // 1. Exchange code for short-lived user access token
     const tokenRes = await fetch(
       `https://graph.facebook.com/v21.0/oauth/access_token` +
       `?client_id=${APP_ID}` +
@@ -61,9 +59,33 @@ export async function GET(req: NextRequest) {
       const detail = tokenData.error?.message || JSON.stringify(tokenData)
       return NextResponse.redirect(`${BASE}/connectors?error=facebook_token_failed&detail=${encodeURIComponent(detail)}`)
     }
-    const userToken = tokenData.access_token as string
+    const shortLivedToken = tokenData.access_token as string
 
-    // 2. Get page access tokens
+    // 2. Exchange short-lived token for long-lived token (60 days)
+    //    Page tokens obtained from a long-lived user token are PERMANENT (never expire)
+    let userToken = shortLivedToken
+    let tokenExpiresAt: string | null = null
+    try {
+      const llRes = await fetch(
+        `https://graph.facebook.com/v21.0/oauth/access_token` +
+        `?grant_type=fb_exchange_token` +
+        `&client_id=${APP_ID}` +
+        `&client_secret=${APP_SECRET}` +
+        `&fb_exchange_token=${shortLivedToken}`
+      )
+      const llData = await llRes.json()
+      if (llData.access_token) {
+        userToken = llData.access_token as string
+        // expires_in is in seconds (~5184000 = 60 days)
+        tokenExpiresAt = llData.expires_in
+          ? new Date(Date.now() + (llData.expires_in as number) * 1000).toISOString()
+          : new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString()
+      }
+    } catch (e) {
+      console.warn('[facebook-callback] long-lived token exchange failed, using short-lived:', e)
+    }
+
+    // 3. Get page access tokens (using long-lived user token → page tokens are permanent)
     const pagesRes  = await fetch(`https://graph.facebook.com/v21.0/me/accounts?access_token=${userToken}`)
     const pagesData = await pagesRes.json()
     const pages: Array<{ id: string; name: string; access_token: string }> = pagesData.data || []
@@ -77,13 +99,14 @@ export async function GET(req: NextRequest) {
       await updateConnector('facebook', {
         enabled: true,
         access_token: userToken,
+        token_expires_at: tokenExpiresAt,
         metadata: { note: 'no_pages_found' },
         updated_at: new Date().toISOString(),
       })
       return NextResponse.redirect(`${BASE}/connectors?success=facebook&note=no_pages`)
     }
 
-    // 3. Get Instagram business account
+    // 4. Get Instagram business account
     let igAccountId: string | null = null
     try {
       const igRes  = await fetch(`https://graph.facebook.com/v21.0/${page.id}?fields=instagram_business_account&access_token=${page.access_token}`)
@@ -91,17 +114,18 @@ export async function GET(req: NextRequest) {
       igAccountId  = igData?.instagram_business_account?.id || null
     } catch { /* not linked */ }
 
-    // 4. Save Facebook connector
+    // 5. Save Facebook connector (page tokens from long-lived user token never expire)
     await updateConnector('facebook', {
       enabled: true,
       access_token: userToken,
+      token_expires_at: tokenExpiresAt,
       page_id: page.id,
       page_access_token: page.access_token,
       metadata: { page_name: page.name, instagram_account_id: igAccountId },
       updated_at: new Date().toISOString(),
     })
 
-    // 5. Save Instagram connector
+    // 6. Save Instagram connector
     if (igAccountId) {
       await updateConnector('instagram', {
         enabled: true,
