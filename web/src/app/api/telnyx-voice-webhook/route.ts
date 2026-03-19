@@ -278,7 +278,6 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     }
 
     console.log(`[handleTranscription] PROCESSING: "${text}"`)
-    console.log([handleTranscription] PROCESSING: +JSON.stringify(text))
     const transcript: Array<{ speaker: string; text: string }> = Array.isArray(currentState.transcript) ? [...currentState.transcript] : []
     const conversation: Array<{ role: string; content: string }> = Array.isArray(currentState.conversation) ? [...currentState.conversation] : []
     transcript.push({ speaker: 'customer', text })
