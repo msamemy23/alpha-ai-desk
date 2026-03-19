@@ -264,7 +264,6 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     let currentState = state
     if (state.is_speaking && text.split(' ').length >= 2) {
       await telnyxPost(`/calls/${callId}/actions/playback_stop`, { stop: 'all' })
-      await telnyxPost(/calls/+callId+/actions/playback_stop, { stop: 'all' })
       await dbPatch(callId, { is_speaking: false, processing: false })
       await new Promise(res => setTimeout(res, 200))
       // Only re-fetch DB state after barge-in since flags may have changed
