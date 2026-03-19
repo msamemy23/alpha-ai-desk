@@ -95,6 +95,95 @@ async function aiChat(messages: Array<{ role: string; content: string }>, maxTok
   } catch (e) { console.error('[aiChat] error:', e); return '' }
 }
 
+// ÄÄ Clean raw AI text (strip markdown, stage directions, etc.) ÄÄ
+function cleanAiText(raw: string): string {
+  let text = raw
+  text = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+  text = text.replace(/\*\*([^*]+)\*\*/g, '').replace(/\*([^*]+)\*/g, '')
+  text = text.replace(/^["']|["']$/g, '').trim()
+  text = text.replace(/\([^)]*\)/g, '').replace(/\[[^\]]*\]/g, '').trim()
+  text = text.replace(/\b(laughs|chuckles|pauses|sighs|warmly|cheerfully|gently|softly|nodding|click)\b/gi, '').trim()
+  text = text.replace(/^[-*#]+\s*/gm, '').trim()
+  text = text.replace(/ +/g, ' ').trim()
+  const lns = text.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0)
+  if (lns.length > 1) {
+    const leak = lns[1].startsWith('-') || lns[1].length < 20 || /^(speak|note|after|end|call|task|stage|step|next|if)/i.test(lns[1])
+    text = leak ? lns[0] : lns.slice(0, 3).join(' ')
+  }
+  return text.trim()
+}
+
+// ÄÄ Stream AI response - speak first sentence immediately for low latency ÄÄ
+async function streamAndSpeak(callId: string, messages: Array<{ role: string; content: string }>, maxTokens = 60): Promise<string> {
+  try {
+    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer `, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://alpha-ai-desk.vercel.app' },
+      body: JSON.stringify({ model: AI_MODEL, messages, max_tokens: maxTokens, temperature: 0.7, stream: true }),
+    })
+    if (!r.ok || !r.body) { console.error('[streamAndSpeak] HTTP error:', r.status); return '' }
+    const reader = r.body.getReader()
+    const decoder = new TextDecoder()
+    let fullText = ''
+    let firstSentSpoken = false
+    let done = false
+    while (!done) {
+      const { done: d, value } = await reader.read()
+      done = d
+      if (value) {
+        const chunk = decoder.decode(value, { stream: true })
+        for (const line of chunk.split('\n')) {
+          if (!line.startsWith('data: ')) continue
+          const raw = line.slice(6).trim()
+          if (raw === '[DONE]') { done = true; break }
+          try {
+            const delta = JSON.parse(raw)?.choices?.[0]?.delta?.content || ''
+            fullText += delta
+            // Speak first complete sentence immediately (min 12 chars so we don't cut too early)
+            if (!firstSentSpoken) {
+              const m = fullText.match(/^(.{12,}?[.!?])(\s|$)/)
+              if (m) {
+                firstSentSpoken = true
+                const firstSent = cleanAiText(m[1])
+                if (firstSent) {
+                  console.log('[streamAndSpeak] Speaking first sentence early:', firstSent.slice(0, 60))
+                  await speak(callId, firstSent)
+                }
+              }
+            }
+          } catch { /* skip malformed SSE chunk */ }
+        }
+      }
+    }
+    const cleaned = cleanAiText(fullText)
+    // If no sentence boundary was found (very short reply), speak the full thing
+    if (!firstSentSpoken && cleaned) {
+      console.log('[streamAndSpeak] No sentence boundary - speaking full reply:', cleaned.slice(0, 60))
+      await speak(callId, cleaned)
+    }
+    return cleaned
+  } catch (e) { console.error('[streamAndSpeak] error:', e); return '' }
+}
+
+// ÄÄ Detect Alpha conversation stage from history to prevent looping ÄÄ
+function getAlphaStageContext(conversation: Array<{ role: string; content: string }>): string {
+  const aiMsgs = conversation.filter(m => m.role === 'assistant').map(m => m.content.toLowerCase())
+  const userMsgs = conversation.filter(m => m.role === 'user').map(m => m.content.toLowerCase())
+  const askedOilChange = aiMsgs.some(m => /last.time|oil.change|how.long|when.*oil/i.test(m))
+  const customerAnswered = userMsgs.some(m => /month|week|year|ago|recent|don.t know|never|always|just/i.test(m))
+  const askedSchedule = aiMsgs.some(m => /thursday|friday|what day|which day|schedule|put you down|book you/i.test(m))
+  const covered: string[] = []
+  if (askedOilChange) covered.push('oil change question already asked')
+  if (customerAnswered) covered.push('customer answered')
+  if (askedSchedule) covered.push('scheduling day already asked')
+  let stage = 'STAGE: Opening.'
+  if (askedSchedule) stage = 'STAGE: Closing - confirm appointment day and location.'
+  else if (askedOilChange && customerAnswered) stage = 'STAGE: Pitch price and get a specific day.'
+  else if (askedOilChange) stage = 'STAGE: Waiting for their answer, then pitch price.'
+  const coveredStr = covered.length > 0 ?  ALREADY COVERED: . : ''
+  return ` If they go off-topic, acknowledge in 2-3 words then return to current stage.`
+}
+
 // ── Alpha Auto Center system prompt ──
 const ALPHA_SYSTEM = `You are Sam, an outbound salesperson calling local Houston customers for Alpha International Auto Center at 10710 South Main Street, Houston Texas. Phone: seven one three six six three six nine seven nine.
 
@@ -305,7 +394,8 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     
     let systemPrompt: string
     if (isAlpha) {
-      systemPrompt = ALPHA_SYSTEM + `\n\nConversation so far is in the message history above. The customer just said: "${text}"\nRespond naturally. Move the conversation FORWARD — do not repeat questions already asked. 1-3 sentences max. Spoken words only.`
+      const stageCtx = getAlphaStageContext(conversation)
+      systemPrompt = ALPHA_SYSTEM + `\n\n${stageCtx}\n\nThe customer just said: "${text}".\nRespond in 1 sentence. Spoken words only.`
     } else if (isPersonal) {
       // Personal call — AI should just have a natural conversation, no script
       systemPrompt = `You are on a live phone call. This is a personal call — just have a natural, friendly conversation. No sales pitch, no script.\n\nRULES:\n- Be conversational and friendly.\n- HOLD phrases: say Of course, take your time. and wait.\n- 1-3 sentences max. Natural spoken words. No markdown.`
@@ -325,7 +415,7 @@ RULES:
 
     const messages = [{ role: 'system', content: systemPrompt }, ...conversation.slice(-10), { role: 'user', content: text }]
     console.log('[handleTranscription] calling AI for response...')
-    const reply = await aiChat(messages, 100)
+    const reply = await streamAndSpeak(callId, messages, 60)
 
     if (reply) {
       console.log(`[handleTranscription] AI replied: "${reply.slice(0, 80)}"`)
@@ -333,7 +423,7 @@ RULES:
       conversation.push({ role: 'assistant', content: reply })
       const newObjCount = isSoftNo ? objectionCount + 1 : objectionCount
       await dbPatch(callId, { transcript, conversation, objection_count: newObjCount })
-      await speak(callId, reply)
+      // speak() already called inside streamAndSpeak - do not call again
       // Unlock processing immediately so next transcription can be processed
       // call.speak.ended acts as a safety net to clear is_speaking
       await dbPatch(callId, { processing: false })
