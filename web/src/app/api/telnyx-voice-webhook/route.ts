@@ -1,9 +1,8 @@
 ﻿/**
- * Telnyx Voice Webhook — AI voice agent v7.0
- * - Three call types: Alpha sales, custom AI task, personal call
+ * Telnyx Voice Webhook - AI voice agent v8.0
+ * - Two call types: task-based AI call, personal call
  * - Personal calls: silent connect, no AI greeting or script
- * - Custom task calls: AI follows user's specific instructions
- * - Alpha sales calls: uses Alpha Auto Center sales script
+ * - Task calls: AI follows the given prompt exactly, clean slate each call
  * - Echo filter, barge-in, transcription engine B, both tracks
  */
 import { NextRequest, NextResponse } from 'next/server'
