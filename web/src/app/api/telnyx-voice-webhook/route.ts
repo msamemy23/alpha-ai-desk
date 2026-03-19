@@ -99,7 +99,7 @@ async function aiChat(messages: Array<{ role: string; content: string }>, maxTok
 function cleanAiText(raw: string): string {
   let text = raw
   text = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
-  text = text.replace(/\*\*([^*]+)\*\*/g, '').replace(/\*([^*]+)\*/g, '')
+  text = text.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\*([^*]+)\*/g, '$1')
   text = text.replace(/^["']|["']$/g, '').trim()
   text = text.replace(/\([^)]*\)/g, '').replace(/\[[^\]]*\]/g, '').trim()
   text = text.replace(/\b(laughs|chuckles|pauses|sighs|warmly|cheerfully|gently|softly|nodding|click)\b/gi, '').trim()
@@ -118,7 +118,7 @@ async function streamAndSpeak(callId: string, messages: Array<{ role: string; co
   try {
     const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
-      headers: { Authorization: `Bearer `, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://alpha-ai-desk.vercel.app' },
+      headers: { Authorization: `Bearer ${OPENROUTER_API_KEY}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://alpha-ai-desk.vercel.app' },
       body: JSON.stringify({ model: AI_MODEL, messages, max_tokens: maxTokens, temperature: 0.7, stream: true }),
     })
     if (!r.ok || !r.body) { console.error('[streamAndSpeak] HTTP error:', r.status); return '' }
@@ -180,8 +180,8 @@ function getAlphaStageContext(conversation: Array<{ role: string; content: strin
   if (askedSchedule) stage = 'STAGE: Closing - confirm appointment day and location.'
   else if (askedOilChange && customerAnswered) stage = 'STAGE: Pitch price and get a specific day.'
   else if (askedOilChange) stage = 'STAGE: Waiting for their answer, then pitch price.'
-  const coveredStr = covered.length > 0 ?  ALREADY COVERED: . : ''
-  return ` If they go off-topic, acknowledge in 2-3 words then return to current stage.`
+  const coveredStr = covered.length > 0 ? ` ALREADY COVERED: ${covered.join(', ')}.` : ''
+  return `${stage}${coveredStr} If they go off-topic, acknowledge briefly then return to current stage.`
 }
 
 // ── Alpha Auto Center system prompt ──
