@@ -209,9 +209,11 @@ GET SHOP STATS — Get current shop performance metrics:
 DELETE RECORD:
 {"tool":"action","action":"deleteRecord","payload":{"table":"customers","id":"uuid-here"}}
 
-SEND MESSAGE (shows confirmation card):
-{"tool":"message","to":"+15551234567","channel":"sms","body":"Hi, your vehicle is ready!"}
-For email: {"tool":"message","to":"john@example.com","channel":"email","subject":"Your Estimate","body":"Hi John, attached is your estimate."}
+SEND MESSAGE (shows confirmation card before sending):
+{"tool":"message","to":"+15551234567","channel":"sms","body":"Hi, your vehicle is ready!","customerId":"uuid-if-known","customerName":"John Doe"}
+For email: {"tool":"message","to":"john@example.com","channel":"email","subject":"Your Estimate","body":"Hi John, attached is your estimate.","customerId":"uuid-if-known","customerName":"John Doe"}
+CRITICAL for email: ALWAYS use searchCustomers first to get their email. Put the real email in "to". Include "customerId" and "customerName" whenever you have them - this links the message to the customer record. If the user gave you an email, use it. If you only have a name, search first.
+IMPORTANT: If user says "email [name] this message" - search for that customer first, get their email, then call message tool with email in "to" and their customerId.
 
 PLACE PHONE CALL — connects the user directly to someone (you are NOT on the call):
 {"tool":"call","to":"+15551234567","name":"Customer Name"}
@@ -326,7 +328,7 @@ export default function AIPage() {
   const [speakEnabled, setSpeakEnabled] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [history, setHistory] = useState<HistoryEntry[]>([])
-  const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:string;subject?:string}|null>(null)
+const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:string;subject?:string;customerId?:string;customerName?:string}|null>(null)
   const [voiceCall, setVoiceCall] = useState<VoiceCallState | null>(null)
   const [voiceActive, setVoiceActive] = useState(false)
   const [voiceSpeaking, setVoiceSpeaking] = useState(false)
@@ -1139,6 +1141,8 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           body: parsed.body as string,
           channel: (parsed.channel as string) || 'sms',
           subject: parsed.subject as string | undefined,
+          customerId: parsed.customerId as string | undefined,
+          customerName: parsed.customerName as string | undefined,
         })
         const channel = (parsed.channel as string) || 'sms'
         const assistantMsg: ChatMessage = {
@@ -1273,6 +1277,8 @@ Continue silently.` }); continue } // Unknown — treat as final response
           body: pendingSms.body,
           channel: pendingSms.channel || 'sms',
           subject: pendingSms.subject || undefined,
+          customerId: pendingSms.customerId || undefined,
+          customerName: pendingSms.customerName || undefined,
         })
       })
       const channelLabel = pendingSms.channel === 'email' ? 'Email' : 'SMS'
