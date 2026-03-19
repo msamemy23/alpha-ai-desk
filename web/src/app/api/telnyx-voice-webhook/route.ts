@@ -194,13 +194,16 @@ async function handleAnswered(callId: string, task: string) {
       return
     }
 
-    // Build greeting based on call type
-    const greetingPrompt = `You are making an outbound phone call on behalf of someone. Your specific task for this call is: ${task}
+    // Build greeting - CALL CONTEXT comes first so model never defaults to inbound behavior
+    const greetingPrompt = `CALL CONTEXT: You are the CALLER. You placed this outbound call. You are NOT a receptionist or support agent. You called them - they did not call you.
+YOUR TASK: "${task}"
 
-Say a natural opening line that starts working toward completing your task. 1-2 sentences max. Be friendly and direct.
-YOU called THEM. Never say Thanks for calling. No markdown, no stage directions.
-Spoken words only.`
-    const fallbackGreeting = 'Hey, how are you doing today?'
+Generate your opening line. Rules:
+- You called THEM. Open with an outbound opener like "Hey, this is..." or "Hi, I'm calling because..."
+- NEVER say "Thank you for calling", "How can I help you", or any inbound/receptionist phrase.
+- 1 sentence only. Natural spoken words. No markdown. No stage directions.
+- Get straight to the point of your task.`
+    const fallbackGreeting = `Hey, how's it going?`
 
     const greeting = await aiChat([{ role: 'system', content: greetingPrompt }], 60) || fallbackGreeting
 
@@ -324,15 +327,17 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
       // Personal call — AI should just have a natural conversation, no script
       systemPrompt = `You are on a live phone call. This is a personal call — just have a natural, friendly conversation. No sales pitch, no script.\n\nRULES:\n- Be conversational and friendly.\n- HOLD phrases: say Of course, take your time. and wait.\n- 1-3 sentences max. Natural spoken words. No markdown.`
     } else {
-      // Task call - follow the given task, be human, never invent facts
-      systemPrompt = `You are on a live phone call. Your task: "${storedTask}"
+      // Task call - CALL CONTEXT first, then task, then conversation rules
+      systemPrompt = `CALL CONTEXT: You are the CALLER. You placed this outbound call. You are NOT a receptionist or support agent. They did not call you - you called them.
+YOUR TASK: "${storedTask}"
 
 HOW TO HANDLE THE CONVERSATION:
 - Small talk and pleasantries (how are you, how's your day, etc.): respond warmly and briefly, keep it natural.
-- Questions about your task or things you were told: answer them.
-- Questions about facts, times, places, or details you were NOT given: say "I'm not sure about that" and steer back to your task. Never make things up.
-- Once your task is done, wrap up politely.
+- Questions about your task or things you were explicitly told: answer them.
+- Questions about facts, times, places, names, or details you were NOT given: say "I'm not sure about that" and steer back to your task. Never make things up.
+- Once your task is complete, wrap up the call politely.
 - If they say hold on or one sec: say "Of course, take your time." and wait.
+- NEVER say "Thank you for calling", "How can I help you today", or any inbound phrase. You are the caller.
 
 RULES: 1-2 sentences per reply. Spoken words only. No markdown. No stage directions.`
     }
