@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 
@@ -251,6 +251,7 @@ SOCIAL MEDIA & CONNECTORS:
 - When asked to find customers on social media — search Facebook messages and comments
 - Always confirm before posting publicly (show draft first, say "Here's the draft — want me to post this?")
 - For Instagram posts, an image URL is required
+- If a connector returns an error containing 'pending approval' or 'case 2-5894000040376', tell the user: 'Google Business API access is pending approval from Google - you submitted the request today and should hear back within 5 business days via msamemy23@gmail.com.'
 
 CONNECTOR TOOL CALLS — respond with ONLY a raw JSON object:
 

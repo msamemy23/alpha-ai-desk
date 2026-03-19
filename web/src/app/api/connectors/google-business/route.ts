@@ -9,8 +9,14 @@ const ACCOUNT_MGMT = 'https://mybusinessaccountmanagement.googleapis.com/v1'
 const BIZ_INFO     = 'https://mybusinessbusinessinformation.googleapis.com/v1'
 const MY_BUSINESS  = 'https://mybusiness.googleapis.com/v4'
 
-async function discoverLocation(token: string): Promise<{ accountName: string; locationName: string; debug: Record<string, unknown> }> {
+async function discoverLocation(token: string): Promise<{
+  accountName: string
+  locationName: string
+  pendingApproval: boolean
+  debug: Record<string, unknown>
+}> {
   const debug: Record<string, unknown> = {}
+  let pendingApproval = false
 
   // Strategy 1: New Account Management API + Business Information API
   try {
@@ -20,6 +26,11 @@ async function discoverLocation(token: string): Promise<{ accountName: string; l
     const accData = await accRes.json()
     debug.newApi_accounts_status = accRes.status
     debug.newApi_accounts = accData
+
+    // 429 with quota_limit_value=0 means API approved but awaiting Google's allowlist
+    if (accRes.status === 429) {
+      pendingApproval = true
+    }
 
     const firstAccount = accData?.accounts?.[0]
     if (firstAccount) {
@@ -34,7 +45,7 @@ async function discoverLocation(token: string): Promise<{ accountName: string; l
 
       const firstLocation = locData?.locations?.[0]
       if (firstLocation) {
-        return { accountName, locationName: firstLocation.name as string, debug }
+        return { accountName, locationName: firstLocation.name as string, pendingApproval: false, debug }
       }
     }
   } catch (e) {
@@ -46,30 +57,32 @@ async function discoverLocation(token: string): Promise<{ accountName: string; l
     const accRes = await fetch(`${MY_BUSINESS}/accounts`, {
       headers: { 'Authorization': `Bearer ${token}` },
     })
-    const accData = await accRes.json()
-    debug.v4_accounts_status = accRes.status
-    debug.v4_accounts = accData
+    if (accRes.ok) {
+      const accData = await accRes.json()
+      debug.v4_accounts_status = accRes.status
+      debug.v4_accounts = accData
 
-    const firstAccount = accData?.accounts?.[0]
-    if (firstAccount) {
-      const accountName = firstAccount.name as string
-      const locRes = await fetch(`${MY_BUSINESS}/${accountName}/locations`, {
-        headers: { 'Authorization': `Bearer ${token}` },
-      })
-      const locData = await locRes.json()
-      debug.v4_locations_status = locRes.status
-      debug.v4_locations = locData
+      const firstAccount = accData?.accounts?.[0]
+      if (firstAccount) {
+        const accountName = firstAccount.name as string
+        const locRes = await fetch(`${MY_BUSINESS}/${accountName}/locations`, {
+          headers: { 'Authorization': `Bearer ${token}` },
+        })
+        const locData = await locRes.json()
+        debug.v4_locations_status = locRes.status
+        debug.v4_locations = locData
 
-      const firstLocation = locData?.locations?.[0]
-      if (firstLocation) {
-        return { accountName, locationName: firstLocation.name as string, debug }
+        const firstLocation = locData?.locations?.[0]
+        if (firstLocation) {
+          return { accountName, locationName: firstLocation.name as string, pendingApproval: false, debug }
+        }
       }
     }
   } catch (e) {
     debug.v4_error = e instanceof Error ? e.message : String(e)
   }
 
-  return { accountName: '', locationName: '', debug }
+  return { accountName: '', locationName: '', pendingApproval, debug }
 }
 
 export async function POST(req: NextRequest) {
@@ -91,10 +104,12 @@ export async function POST(req: NextRequest) {
   let locationName = (connector.metadata?.location_name as string) || ''
 
   // If we don't have them yet, try to discover
+  let pendingApproval = false
   if (!accountName || !locationName) {
     const discovered = await discoverLocation(token)
     accountName = discovered.accountName
     locationName = discovered.locationName
+    pendingApproval = discovered.pendingApproval
 
     // Cache the discovered IDs in Supabase
     if (accountName || locationName) {
@@ -107,6 +122,7 @@ export async function POST(req: NextRequest) {
       return ok({
         accountName,
         locationName,
+        pendingApproval,
         connectorMetadata: connector.metadata,
         tokenPrefix: token.slice(0, 20) + '...',
         discovery: discovered.debug,
@@ -140,7 +156,10 @@ export async function POST(req: NextRequest) {
           call_to_action?: { type: string; url: string }
         }
         if (!summary) return fail('summary required')
-        if (!fullLocationPath) return fail('Google Business location not found — make sure your business is verified on Google')
+        if (!fullLocationPath) {
+          if (pendingApproval) return fail('Google Business API access is pending approval from Google (case 2-5894000040376). Expected within 5 business days.', 503)
+          return fail('Google Business location not found — make sure your business is verified on Google', 400)
+        }
 
         const postBody: Record<string, unknown> = {
           languageCode: 'en-US',
@@ -163,7 +182,10 @@ export async function POST(req: NextRequest) {
 
       // ── Get reviews ──────────────────────────────────────────────
       case 'get_reviews': {
-        if (!fullLocationPath) return fail('Google Business location not found — connect your Google Business account and make sure your business is verified')
+        if (!fullLocationPath) {
+          if (pendingApproval) return fail('Google Business API access is pending approval from Google (support case 2-5894000040376, submitted today). Google typically approves within 5 business days — check msamemy23@gmail.com for the approval email.', 503)
+          return fail('Google Business location not found — make sure your business is verified on Google', 400)
+        }
 
         const r = await fetch(`${MY_BUSINESS}/${fullLocationPath}/reviews`, {
           headers: { 'Authorization': `Bearer ${token}` },
@@ -177,7 +199,10 @@ export async function POST(req: NextRequest) {
       case 'reply_review': {
         const { review_id, reply } = body as { review_id: string; reply: string }
         if (!review_id || !reply) return fail('review_id and reply required')
-        if (!fullLocationPath) return fail('Google Business location not found')
+        if (!fullLocationPath) {
+          if (pendingApproval) return fail('Google Business API access is pending approval from Google. Expected within 5 business days.', 503)
+          return fail('Google Business location not found', 400)
+        }
 
         const r = await fetch(`${MY_BUSINESS}/${fullLocationPath}/reviews/${review_id}/reply`, {
           method: 'PUT',
