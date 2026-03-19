@@ -34,8 +34,8 @@ interface Customer { id: string; name: string; phone: string; email: string }
 const SHOP_NUM = '+17136636979'
 
 function formatPhone(p: string) {
-  if (!p) return '
-  const d = p.replace(/\D/g, ')
+  if (!p) return ''
+  const d = p.replace(/\D/g, '')
   if (d.length === 11 && d[0] === '1') return `(${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`
   if (d.length === 10) return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`
   return p
@@ -49,7 +49,7 @@ function formatDuration(s: number) {
 }
 
 function formatDate(d: string) {
-  if (!d) return '
+  if (!d) return ''
   const dt = new Date(d)
   return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' +
     dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
@@ -89,32 +89,23 @@ export default function MessagesPage() {
   const [selectedThread, setSelectedThread] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [callFilter, setCallFilter] = useState<'all'|'inbound'|'outbound'>('all')
-  const [searchTerm, setSearchTerm] = useState(')
+  const [searchTerm, setSearchTerm] = useState('')
   const [compose, setCompose] = useState(false)
-  const [sendTo, setSendTo] = useState(')
-  const [smsSearch, setSmsSearch] = useState(')
-  const [sendBody, setSendBody] = useState(')
+  const [sendTo, setSendTo] = useState('')
+  const [sendBody, setSendBody] = useState('')
   const [sendChannel, setSendChannel] = useState<'sms'|'email'>('sms')
   const [sending, setSending] = useState(false)
-  const [dialerNum, setDialerNum] = useState(')
+  const [dialerNum, setDialerNum] = useState('')
   const audioRef = useRef<HTMLAudioElement>(null)
   const [playing, setPlaying] = useState(false)
 
-const loadCalls = useCallback(async () => {
-    let allCalls: CallRecord[] = []
-    let from = 0
-    const batchSize = 1000
-    while (true) {
-      const { data } = await supabase
-        .from('call_history')
-        .select('id, call_id, direction, from_number, to_number, duration_secs, status, start_time, end_time, matched_customer_name, transcript, lead_score, lead_reasoning, service_needed, caller_sentiment, key_quotes, call_count_from_number, raw_data')
-        .order('start_time', { ascending: false })
-        .range(from, from + batchSize - 1)
-      if (data) allCalls = [...allCalls, ...data]
-      if (!data || data.length < batchSize) break
-      from += batchSize
-    }
-    setCalls(allCalls)
+  const loadCalls = useCallback(async () => {
+    const { data } = await supabase
+      .from('call_history')
+      .select('id, call_id, direction, from_number, to_number, duration_secs, status, start_time, end_time, matched_customer_name, transcript, lead_score, lead_reasoning, service_needed, caller_sentiment, key_quotes, call_count_from_number, raw_data')
+      .order('start_time', { ascending: false })
+      .limit(5000)
+    if (data) setCalls(data)
   }, [])
 
   const loadMessages = useCallback(async () => {
@@ -168,9 +159,15 @@ const loadCalls = useCallback(async () => {
   const getRecordingUrl = (call: CallRecord) => {
     const rd = call.raw_data
     if (!rd) return null
+    // Prioritize recording_id (gets fresh URL from Telnyx API, never expires)
+    if (rd.recording_id) {
+      const params = new URLSearchParams({ id: rd.recording_id })
+      if (rd.call_session_id) params.set('sessionId', rd.call_session_id)
+      return `/api/recording-proxy?${params}`
+    }
+    // Fallback to direct URL through proxy
     if (rd.download_urls?.mp3) return `/api/recording-proxy?url=${encodeURIComponent(rd.download_urls.mp3)}`
     if (rd.download_urls?.wav) return `/api/recording-proxy?url=${encodeURIComponent(rd.download_urls.wav)}`
-    if (rd.recording_id) return `/api/recording-proxy?id=${rd.recording_id}`
     return null
   }
 
@@ -191,7 +188,7 @@ const loadCalls = useCallback(async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ to: sendTo, body: sendBody, channel: sendChannel }),
       })
-      setSendBody(')
+      setSendBody('')
       setCompose(false)
       loadMessages()
     } finally { setSending(false) }
@@ -294,7 +291,7 @@ const loadCalls = useCallback(async () => {
 
             {tab === 'sms' && (
               <div className="space-y-1 max-h-[70vh] overflow-y-auto">
-                {threads.filter(t => !smsSearch || (t.lastMsg.customer?.name||t.contact||').toLowerCase().includes(smsSearch.toLowerCase())).map(thread => {
+                {threads.map(thread => {
                   const name = thread.lastMsg.customer?.name || formatPhone(thread.contact)
                   return (
                     <div key={thread.contact}
@@ -329,7 +326,7 @@ const loadCalls = useCallback(async () => {
               </div>
 
               {/* Call Info Grid */}
-              <div className="grid grid-cols-2 gap-3 mb-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
                 <div className="bg-white/5 rounded-lg p-3">
                   <div className="text-xs text-gray-500 mb-1">Direction</div>
                   <DirectionBadge dir={selectedCall.direction} />
@@ -406,7 +403,7 @@ const loadCalls = useCallback(async () => {
                 <div className="mb-5">
                   <div className="text-sm font-semibold mb-2">Transcript</div>
                   <div className="bg-black/30 rounded-lg p-4 text-sm text-gray-500 italic">
-                    {selectedCall.transcript === '[transcription_failed]' ? 'Recording expired — transcription unavailable' : 'Pending transcription...'}
+                    {selectedCall.transcript === '[transcription_failed]' ? 'Recording expired — transcription unavailable' : 'Transcribing... check back soon...'}
                   </div>
                 </div>
               )}
@@ -520,4 +517,3 @@ const loadCalls = useCallback(async () => {
     </div>
   )
 }
-

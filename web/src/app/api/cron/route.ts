@@ -43,22 +43,26 @@ export async function GET(req: NextRequest) {
 
   const results: Record<string, unknown> = {}
 
+  // Step 1: Sync calls from Telnyx recordings + activities + AI calls into call_history
+  results.sync_calls = await callApi('/api/telnyx/sync-calls?action=sync-all', {})
+
+  // Step 2: Scan competitors for growth leads
   results.scan_competitors = await callApi('/api/growth/scan-competitors', {
     query: 'auto repair shop Houston TX',
     radius: 15000
   })
 
-  results.follow_ups = await callApi('/api/growth/capture', {
-    action: 'follow_up_pending'
-  })
+  // Step 3: Process follow-ups
+  results.follow_ups = await callApi('/api/growth/capture', { action: 'follow_up_pending' })
 
+  // Step 4: Run automations
   results.automations = await callApi('/api/automations', {})
 
-      // Batch transcribe calls and score leads (processes 10 at a time)
-      results.transcribe_calls = await callApi('/api/telnyx/transcribe-calls?action=batch&limit=10', {})
+  // Step 5: Batch transcribe calls and score leads (processes 10 at a time)
+  results.transcribe_calls = await callApi('/api/telnyx/transcribe-calls?action=batch&limit=10', {})
 
-      // Score any transcribed calls that don't have lead scores yet
-      results.score_leads = await callApi('/api/telnyx/transcribe-calls?action=score&limit=20', {})
+  // Step 6: Score any transcribed calls that don't have lead scores yet
+  results.score_leads = await callApi('/api/telnyx/transcribe-calls?action=score&limit=20', {})
 
   await supabase.from('growth_scans').upsert({
     id: 'last_cron_run',
@@ -67,9 +71,5 @@ export async function GET(req: NextRequest) {
     scanned_at: new Date().toISOString()
   })
 
-  return NextResponse.json({
-    success: true,
-    ran_at: new Date().toISOString(),
-    results
-  })
+  return NextResponse.json({ success: true, ran_at: new Date().toISOString(), results })
 }

@@ -18,7 +18,7 @@ const TELNYX_CONN_ID = process.env.TELNYX_CONN_ID || '2912878759822493204'
 const APP_URL        = 'https://alpha-ai-desk.vercel.app'
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 
 async function dbGet(callId: string) {
   const r = await fetch(

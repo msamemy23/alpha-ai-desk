@@ -20,9 +20,9 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [briefingDismissed, setBriefingDismissed] = useState(false)
   const [briefingExpanded, setBriefingExpanded] = useState(true)
-  const [aiInsight, setAiInsight] = useState(')
+  const [aiInsight, setAiInsight] = useState('')
   const [insightLoading, setInsightLoading] = useState(false)
-  const [slowDayMsg, setSlowDayMsg] = useState(')
+  const [slowDayMsg, setSlowDayMsg] = useState('')
   const [slowDaySending, setSlowDaySending] = useState(false)
   const [slowDayResult, setSlowDayResult] = useState<{sent:number;total:number}|null>(null)
   const [aiAlerts, setAiAlerts] = useState<{id:string;title:string;body:string;priority?:string}[]>([])
@@ -114,7 +114,7 @@ export default function DashboardPage() {
     setInsightLoading(true)
     try {
       const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
-      const apiKey = (settings?.ai_api_key as string) || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || '
+      const apiKey = (settings?.ai_api_key as string) || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || ''
       const model = (settings?.ai_model as string) || 'meta-llama/llama-3.3-70b-instruct:free'
       const baseUrl = (settings?.ai_base_url as string) || 'https://openrouter.ai/api/v1'
       if (!apiKey) { setAiInsight('Configure your AI API key in Settings to use AI insights.'); return }
@@ -180,7 +180,7 @@ export default function DashboardPage() {
   stats!.allJobs.forEach(j => {
     const labors = (j.labors as Record<string,unknown>[]) || []
     labors.forEach(l => {
-      const tech = (l.tech as string) || '
+      const tech = (l.tech as string) || ''
       if (!tech) return
       if (!techMap[tech]) techMap[tech] = { jobs: 0, hours: 0, revenue: 0 }
       techMap[tech].jobs++
@@ -225,7 +225,7 @@ export default function DashboardPage() {
                 <div className="text-xs text-text-muted">Stale Jobs (&gt;3 days)</div>
                 <div className="text-lg font-bold text-amber">{stats!.staleJobs.length}</div>
                 {stats!.staleJobs.length > 0 && (
-                  <div className="text-xs text-text-muted mt-1 truncate">{(stats!.staleJobs[0].customer_name as string) || 'Unknown'}{stats!.staleJobs.length > 1 ? ` +${stats!.staleJobs.length - 1} more` : '}</div>
+                  <div className="text-xs text-text-muted mt-1 truncate">{(stats!.staleJobs[0].customer_name as string) || 'Unknown'}{stats!.staleJobs.length > 1 ? ` +${stats!.staleJobs.length - 1} more` : ''}</div>
                 )}
               </div>
               <div className="bg-bg-card border border-border rounded-lg p-3">
@@ -255,42 +255,6 @@ export default function DashboardPage() {
             <div className={`text-lg sm:text-2xl font-bold ${s.color}`}>{s.value}</div>
             <div className="text-xs text-text-muted mt-1">{s.label}</div>
           </div>
-        ))}
-      </div>
-
-      {/* Revenue Goal Progress Bar */}
-      {stats!.monthRevenue > 0 && (
-        <div className="card">
-          <div className="flex items-center justify-between mb-2">
-            <div>
-              <span className="text-sm font-bold">Monthly Revenue Goal</span>
-              <span className="text-text-muted text-sm ml-2">,000</span>
-            </div>
-            <span className="text-sm font-bold text-green">{((stats!.monthRevenue / 100000) * 100).toFixed(1)}%</span>
-          </div>
-          <div className="w-full bg-bg-hover rounded-full h-3 overflow-hidden">
-            <div className="h-3 rounded-full transition-all duration-500"
-              style={{ width: ${Math.min((stats!.monthRevenue / 100000) * 100, 100)}%, background: stats!.monthRevenue >= 100000 ? '#22c55e' : stats!.monthRevenue >= 75000 ? '#f59e0b' : '#3b82f6' }} />
-          </div>
-          <div className="flex justify-between mt-1">
-            <span className="text-xs text-text-muted">{formatCurrency(stats!.monthRevenue)} collected</span>
-            <span className="text-xs text-text-muted">{formatCurrency(Math.max(0, 100000 - stats!.monthRevenue))} to go</span>
-          </div>
-        </div>
-      )}
-
-      {/* Quick Actions */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[
-          { label: 'New Job', icon: '🔧', href: '/jobs', color: 'border-blue/40 hover:border-blue' },
-          { label: 'New Customer', icon: '👤', href: '/customers', color: 'border-green/40 hover:border-green' },
-          { label: 'New Estimate', icon: '📄', href: '/estimates', color: 'border-amber/40 hover:border-amber' },
-          { label: 'Messages', icon: '💬', href: '/messages', color: 'border-purple/40 hover:border-purple' },
-        ].map(a => (
-          <a key={a.label} href={a.href} className={card text-center p-4 cursor-pointer transition-all border  hover:scale-[1.02]}>
-            <div className="text-2xl mb-1">{a.icon}</div>
-            <div className="text-xs font-medium">{a.label}</div>
-          </a>
         ))}
       </div>
 
@@ -426,4 +390,3 @@ export default function DashboardPage() {
     </div>
   )
 }
-

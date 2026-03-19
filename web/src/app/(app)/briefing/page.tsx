@@ -13,11 +13,10 @@ export default function BriefingPage() {
     weekRevenue: number
     monthRevenue: number
     partsWaiting: Record<string,unknown>[]
-    hotLeads: Record<string,unknown>[]
   } | null>(null)
 
   const load = useCallback(async () => {
-    const [{ data: jobs }, { data: docs }, { count: unread }, { data: hotCallsRaw }] = await Promise.all([
+    const [{ data: jobs }, { data: docs }, { count: unread }] = await Promise.all([
       supabase.from('jobs').select('*').order('created_at', { ascending: false }),
       supabase.from('documents').select('*').order('created_at', { ascending: false }),
       supabase.from('messages').select('*', { count: 'exact', head: true }).eq('read', false).eq('direction', 'inbound'),
@@ -95,7 +94,7 @@ export default function BriefingPage() {
       </div>
 
       {/* Revenue */}
-      <div className="grid grid-cols-2 gap-4 mb-6 sm:mb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6 sm:mb-8">
         <div className="card">
           <div className="text-xs text-text-muted uppercase tracking-wider mb-1">THIS WEEK (Mon–Today)</div>
           <div className="text-xl font-bold text-green">{formatCurrency(data.weekRevenue)}</div>
@@ -176,24 +175,5 @@ export default function BriefingPage() {
         )}
       </div>
     </div>
-
-    {/* Hot leads from today's calls */}
-    {data.hotLeads && data.hotLeads.length > 0 && (
-      <div className="card">
-        <div className="text-xs font-bold uppercase tracking-wider text-text-muted mb-3">🔥 Hot Leads — Call Back Today</div>
-        <div className="space-y-2">
-          {data.hotLeads.map((l: Record<string,unknown>, i: number) => (
-            <div key={i} className="flex items-center gap-3 p-3 bg-red/5 border border-red/20 rounded-lg">
-              <div className="flex-1">
-                <div className="text-sm font-medium">{String(l.matched_customer_name || l.from_number || 'Unknown')}</div>
-                <div className="text-xs text-text-muted mt-0.5">{String(l.service_needed || 'Interested in service')}</div>
-              </div>
-              <a href={	el:} className="btn btn-sm btn-primary text-xs">📞 Call Back</a>
-            </div>
-          ))}
-        </div>
-      </div>
-    )}
-  </div>
   )
 }

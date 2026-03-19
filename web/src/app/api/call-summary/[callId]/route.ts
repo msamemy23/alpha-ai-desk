@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 
 export async function GET(
   _req: NextRequest,
@@ -24,9 +24,10 @@ export async function GET(
       ? JSON.parse(state.transcript || '[]')
       : (state.transcript || [])
 
-    const duration = state.started_at
-      ? Math.floor((Date.now() - Number(state.started_at)) / 1000)
+    const startMs = state.started_at
+      ? (typeof state.started_at === 'string' ? new Date(state.started_at).getTime() : Number(state.started_at))
       : 0
+    const duration = startMs ? Math.floor((Date.now() - startMs) / 1000) : 0
 
     return NextResponse.json({
       ok:            true,

@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { supabase, calcTotals, formatCurrency } from '@/lib/supabase'
 
 interface Customer { id: string; name: string; phone: string; email: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin: string; vehicle_plate: string; vehicle_mileage: string }
-interface Doc { id: string; type: string; doc_number: string; status: string; doc_date: string; customer_name: string; customer_id: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; warranty_months: number | null; warranty_mileage: number | null; warranty_start: string | null; warranty_exclusions: string | null; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
+interface Doc { id: string; type: string; doc_number: string; status: string; doc_date: string; customer_name: string; customer_id: string; customer_phone?: string; customer_email?: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; warranty_months: number | null; warranty_mileage: number | null; warranty_start: string | null; warranty_exclusions: string | null; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
 
 const WARRANTY_PRESETS = [
   {
@@ -256,18 +256,16 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     if (!sendModal) return
     setSendError(''); setSendSuccess('')
     const customer = customers.find(c => c.id === sendModal.customer_id)
-    const to = channel === 'sms' ? customer?.phone : customer?.email
-    if (!to) {
-      setSendError(channel === 'sms'
-        ? 'No phone number on file for this customer. Edit the customer to add one.'
-        : 'No email on file for this customer. Edit the customer to add one, or go to Customers page.')
-      return
-    }
+    // Try all sources: customer table, document fields, form phone/email fields
+    const emailAddr = customer?.email || sendModal.customer_email || (sendModal as Record<string,unknown>).customer_email || ''
+    const phoneAddr = customer?.phone || sendModal.customer_phone || (sendModal as Record<string,unknown>).customer_phone || ''
+    const to = channel === 'sms' ? phoneAddr : emailAddr
     setSendingDoc(true)
     try {
+      // Send with whatever we have — API will also look up from document/customer as fallback
       const res = await fetch('/api/send-document', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documentId: sendModal.id, channel, [channel === 'sms' ? 'phone' : 'email']: to })
+        body: JSON.stringify({ documentId: sendModal.id, channel, ...(emailAddr ? { email: emailAddr } : {}), ...(phoneAddr ? { phone: phoneAddr } : {}) })
       })
       if (!res.ok) {
         const d = await res.json().catch(() => ({}))
@@ -283,12 +281,13 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   // Feature 9: Quick email to customer from list
   const quickEmail = async (doc: Doc) => {
     const customer = customers.find(c => c.id === doc.customer_id)
-    if (!customer?.email) return alert('No email on file for this customer')
+    const email = customer?.email || doc.customer_email
+    if (!email) return alert('No email on file for this customer')
     setEmailSending(doc.id)
     try {
       await fetch('/api/send-document', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documentId: doc.id, channel: 'email', email: customer.email })
+        body: JSON.stringify({ documentId: doc.id, channel: 'email', email })
       })
     } catch { alert('Failed to send email') }
     finally { setEmailSending(null); load() }
@@ -371,7 +370,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Parts</div>
               <div className="space-y-2 min-w-[600px]">
                 {((form.parts||[]) as Record<string,unknown>[]).map((p,i) => (
-                  <div key={i} className="grid grid-cols-12 gap-2 items-center">
+                  <div key={i} className="grid grid-cols-12 gap-2 items-center min-w-[600px]">
                     <input className="form-input col-span-4" placeholder="Part name" value={p.name as string||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],name:e.target.value}; setForm(f=>({...f,parts:p2})) }} />
                     <input className="form-input col-span-2" placeholder="Brand" value={p.brand as string||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],brand:e.target.value}; setForm(f=>({...f,parts:p2})) }} />
                     <input className="form-input col-span-1" type="number" placeholder="Qty" value={p.qty as number||1} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],qty:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
@@ -390,7 +389,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Labor</div>
               <div className="space-y-2 min-w-[600px]">
                 {((form.labors||[]) as Record<string,unknown>[]).map((l,i) => (
-                  <div key={i} className="grid grid-cols-12 gap-2 items-center">
+                  <div key={i} className="grid grid-cols-12 gap-2 items-center min-w-[600px]">
                     <input className="form-input col-span-5" placeholder="Operation" value={l.operation as string||''} onChange={e => { const l2=[...((form.labors||[]) as Record<string,unknown>[])]; l2[i]={...l2[i],operation:e.target.value}; setForm(f=>({...f,labors:l2})) }} />
                     <select className="form-select col-span-2" value={l.tech as string||''} onChange={e => { const l2=[...((form.labors||[]) as Record<string,unknown>[])]; l2[i]={...l2[i],tech:e.target.value}; setForm(f=>({...f,labors:l2})) }}>
                       <option value="">—</option>{['Paul','Devin','Luis','Louie'].map(t=><option key={t}>{t}</option>)}
@@ -717,7 +716,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                 {filtered.map(d => {
                   const t = calcTotals(d as unknown as Record<string,unknown>)
                   return (
-                    <tr key={d.id} className="cursor-pointer" onClick={() => { setForm(d as Partial<Doc>); setEditing(d.id) }}>
+                    <tr key={d.id} className="cursor-pointer" onClick={() => { const cust = customers.find(c => c.id === d.customer_id); setForm({ ...d, customer_phone: d.customer_phone || cust?.phone || '', customer_email: d.customer_email || cust?.email || '' } as Partial<Doc>); setEditing(d.id) }}>
                       <td className="font-mono text-sm text-blue">{d.doc_number}</td>
                       <td className="font-medium">{d.customer_name || '—'}</td>
                       <td className="text-text-secondary">{fmt(d.doc_date)}</td>
@@ -750,12 +749,15 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
       {/* Send modal */}
       {sendModal && (() => {
         const cust = customers.find(c => c.id === sendModal.customer_id)
+        const displayEmail = cust?.email || sendModal.customer_email
+        const displayPhone = cust?.phone || sendModal.customer_phone
+        const displayName = cust?.name || sendModal.customer_name
         return (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
           <div className="bg-bg-card border border-border rounded-xl w-full max-w-sm p-6">
             <h2 className="text-lg font-bold mb-2">Send {sendModal.type} #{sendModal.doc_number}</h2>
-            {cust && <p className="text-sm text-text-muted mb-1">Customer: <strong>{cust.name}</strong></p>}
-            {cust && <p className="text-xs text-text-muted mb-4">{cust.email ? `Email: ${cust.email}` : 'No email on file'}{cust.phone ? ` · Phone: ${cust.phone}` : ''}</p>}
+            {displayName && <p className="text-sm text-text-muted mb-1">Customer: <strong>{displayName}</strong></p>}
+            <p className="text-xs text-text-muted mb-4">{displayEmail ? `Email: ${displayEmail}` : 'No email on file'}{displayPhone ? ` · Phone: ${displayPhone}` : ''}</p>
             {sendError && <div className="text-sm text-red-400 bg-red-400/10 border border-red-400/30 rounded-lg p-3 mb-3">{sendError}</div>}
             {sendSuccess && <div className="text-sm text-green-400 bg-green-400/10 border border-green-400/30 rounded-lg p-3 mb-3">{sendSuccess}</div>}
             <div className="space-y-3">

@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
 
     // Store initial state in Supabase immediately
     const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-    const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY     || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+    const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY     || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
     await fetch(`${SUPABASE_URL}/rest/v1/ai_calls`, {
       method:  'POST',
       headers: {

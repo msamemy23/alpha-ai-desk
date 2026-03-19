@@ -14,8 +14,10 @@ export async function POST(req: NextRequest) {
     const digits = to.replace(/\D/g, '')
     const e164 = digits.startsWith('1') ? '+' + digits : digits.length === 10 ? '+1' + digits : '+' + digits
 
-    // Build task — use passed task or default Alpha script
-    const callTask = task || 'Alpha Auto Center oil change call'
+    // Build task — use passed task as-is
+    // Empty/undefined task = personal call (user just wants to talk, no AI script)
+    // Non-empty task = AI call (AI follows these instructions)
+    const callTask = task || ''
 
     // Encode task in client_state so webhook knows what to do
     const clientState = Buffer.from(JSON.stringify({ task: callTask, name: name || e164 })).toString('base64')
@@ -45,8 +47,8 @@ export async function POST(req: NextRequest) {
       {
         method: 'POST',
         headers: {
-          apikey: process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-          Authorization: `Bearer ${process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''}`,
+          apikey: process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
+          Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''}`,
           'Content-Type': 'application/json',
           Prefer: 'resolution=merge-duplicates',
         },
@@ -59,7 +61,7 @@ export async function POST(req: NextRequest) {
           is_speaking: false,
           script_stage: 0,
           objection_count: 0,
-          started_at: new Date().toISOString(),
+          started_at: Date.now(),
         }),
       }
     )

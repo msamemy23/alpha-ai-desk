@@ -14,7 +14,7 @@ const supabase = createClient(
 )
 
 const AI_KEY = process.env.OPENROUTER_API_KEY || ''
-const AI_MODEL = process.env.AI_MODEL || 'deepseek/deepseek-chat-v3-0324'
+const AI_MODEL = process.env.AI_MODEL || 'deepseek/deepseek-v3.2'
 const AI_BASE = 'https://openrouter.ai/api/v1'
 
 // Fetch all call legs from Telnyx

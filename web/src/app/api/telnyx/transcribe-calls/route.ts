@@ -86,7 +86,7 @@ export async function POST(req: NextRequest) {
   try {
     const url = new URL(req.url)
     const action = url.searchParams.get('action')||'batch'
-    const limit = parseInt(url.searchParams.get('limit')||'50')
+    const limit = parseInt(url.searchParams.get('limit')||'10')
     const db = getServiceClient()
 
     if (action==='debug') {

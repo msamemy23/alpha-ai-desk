@@ -21,7 +21,7 @@ export async function POST() {
       warranty_months: 12,
       payment_methods: ['Cash', 'Card', 'Zelle', 'Cash App'],
       ai_api_key: process.env.OPENROUTER_API_KEY || '',
-      ai_model: 'deepseek/deepseek-chat-v3-0324:free',
+      ai_model: 'deepseek/deepseek-v3.2',
       ai_base_url: 'https://openrouter.ai/api/v1',
       telnyx_api_key: process.env.TELNYX_API_KEY || '',
       telnyx_phone_number: process.env.TELNYX_PHONE_NUMBER || '',
