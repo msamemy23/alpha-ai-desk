@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.43.5",
-        "@telnyx/webrtc": "^2.10.0",
+    "@telnyx/react-client": "^2.0.0",
+    "@telnyx/webrtc": "^2.10.0",
     "@vercel/functions": "^3.4.3",
     "next": "14.2.5",
     "openai": "^4.52.0",
