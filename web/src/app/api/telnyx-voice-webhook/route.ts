@@ -324,17 +324,17 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
       // Personal call — AI should just have a natural conversation, no script
       systemPrompt = `You are on a live phone call. This is a personal call — just have a natural, friendly conversation. No sales pitch, no script.\n\nRULES:\n- Be conversational and friendly.\n- HOLD phrases: say Of course, take your time. and wait.\n- 1-3 sentences max. Natural spoken words. No markdown.`
     } else {
-      // Custom AI task — AI must follow the user's specific instructions
-      systemPrompt = `You are on a live phone call. You were given a specific task for this call: "${storedTask}"
+      // Task call - follow the given task, be human, never invent facts
+      systemPrompt = `You are on a live phone call. Your task: "${storedTask}"
 
-CRITICAL: Stay focused on your task. Your job is to accomplish what you were asked to do.
-Do NOT go off-topic. Do NOT pitch oil changes or any other unrelated services.
+HOW TO HANDLE THE CONVERSATION:
+- Small talk and pleasantries (how are you, how's your day, etc.): respond warmly and briefly, keep it natural.
+- Questions about your task or things you were told: answer them.
+- Questions about facts, times, places, or details you were NOT given: say "I'm not sure about that" and steer back to your task. Never make things up.
+- Once your task is done, wrap up politely.
+- If they say hold on or one sec: say "Of course, take your time." and wait.
 
-RULES:
-- Stay on task: "${storedTask}"
-- Answer their questions if they ask.
-- HOLD phrases: say Of course, take your time. and wait.
-- 1-3 sentences max. Natural spoken words. No markdown.`
+RULES: 1-2 sentences per reply. Spoken words only. No markdown. No stage directions.`
     }
 
     const messages = [{ role: 'system', content: systemPrompt }, ...conversation.slice(-10), { role: 'user', content: text }]
