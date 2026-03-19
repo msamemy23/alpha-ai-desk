@@ -4,10 +4,73 @@ import { getConnector, getValidGoogleToken, updateConnector } from '@/lib/connec
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
 function fail(msg: string, status = 400) { return NextResponse.json({ ok: false, error: msg }, { status }) }
 
-// New Google Business Profile API endpoints (v4 is deprecated)
+// Google Business Profile API endpoints
 const ACCOUNT_MGMT = 'https://mybusinessaccountmanagement.googleapis.com/v1'
 const BIZ_INFO     = 'https://mybusinessbusinessinformation.googleapis.com/v1'
 const MY_BUSINESS  = 'https://mybusiness.googleapis.com/v4'
+
+async function discoverLocation(token: string): Promise<{ accountName: string; locationName: string; debug: Record<string, unknown> }> {
+  const debug: Record<string, unknown> = {}
+
+  // Strategy 1: New Account Management API + Business Information API
+  try {
+    const accRes = await fetch(`${ACCOUNT_MGMT}/accounts`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    })
+    const accData = await accRes.json()
+    debug.newApi_accounts_status = accRes.status
+    debug.newApi_accounts = accData
+
+    const firstAccount = accData?.accounts?.[0]
+    if (firstAccount) {
+      const accountName = firstAccount.name as string
+      const locRes = await fetch(
+        `${BIZ_INFO}/${accountName}/locations?readMask=name,title,storefrontAddress`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      })
+      const locData = await locRes.json()
+      debug.newApi_locations_status = locRes.status
+      debug.newApi_locations = locData
+
+      const firstLocation = locData?.locations?.[0]
+      if (firstLocation) {
+        return { accountName, locationName: firstLocation.name as string, debug }
+      }
+    }
+  } catch (e) {
+    debug.newApi_error = e instanceof Error ? e.message : String(e)
+  }
+
+  // Strategy 2: Old My Business API v4 (fallback)
+  try {
+    const accRes = await fetch(`${MY_BUSINESS}/accounts`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    })
+    const accData = await accRes.json()
+    debug.v4_accounts_status = accRes.status
+    debug.v4_accounts = accData
+
+    const firstAccount = accData?.accounts?.[0]
+    if (firstAccount) {
+      const accountName = firstAccount.name as string
+      const locRes = await fetch(`${MY_BUSINESS}/${accountName}/locations`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      })
+      const locData = await locRes.json()
+      debug.v4_locations_status = locRes.status
+      debug.v4_locations = locData
+
+      const firstLocation = locData?.locations?.[0]
+      if (firstLocation) {
+        return { accountName, locationName: firstLocation.name as string, debug }
+      }
+    }
+  } catch (e) {
+    debug.v4_error = e instanceof Error ? e.message : String(e)
+  }
+
+  return { accountName: '', locationName: '', debug }
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.json() as Record<string, unknown>
@@ -27,47 +90,42 @@ export async function POST(req: NextRequest) {
   let accountName  = (connector.metadata?.account_name as string) || ''
   let locationName = (connector.metadata?.location_name as string) || ''
 
-  // If we don't have them yet, try to discover using the new APIs
+  // If we don't have them yet, try to discover
   if (!accountName || !locationName) {
-    try {
-      // Step 1: List accounts via Account Management API
-      const accRes = await fetch(`${ACCOUNT_MGMT}/accounts`, {
-        headers: { 'Authorization': `Bearer ${token}` },
+    const discovered = await discoverLocation(token)
+    accountName = discovered.accountName
+    locationName = discovered.locationName
+
+    // Cache the discovered IDs in Supabase
+    if (accountName || locationName) {
+      const meta = { ...(connector.metadata || {}), account_name: accountName, location_name: locationName }
+      await updateConnector('google_business', { metadata: meta })
+    }
+
+    // If action is debug, return discovery results
+    if (action === 'debug') {
+      return ok({
+        accountName,
+        locationName,
+        connectorMetadata: connector.metadata,
+        tokenPrefix: token.slice(0, 20) + '...',
+        discovery: discovered.debug,
       })
-      const accData = await accRes.json()
-      console.log('[google-biz] accounts response:', JSON.stringify(accData).slice(0, 500))
-
-      const firstAccount = accData?.accounts?.[0]
-      if (firstAccount) {
-        accountName = firstAccount.name  // format: "accounts/123"
-
-        // Step 2: List locations via Business Information API
-        const locRes = await fetch(
-          `${BIZ_INFO}/${accountName}/locations?readMask=name,title,storefrontAddress`, {
-          headers: { 'Authorization': `Bearer ${token}` },
-        })
-        const locData = await locRes.json()
-        console.log('[google-biz] locations response:', JSON.stringify(locData).slice(0, 500))
-
-        const firstLocation = locData?.locations?.[0]
-        if (firstLocation) {
-          locationName = firstLocation.name  // format: "locations/456"
-        }
-      }
-
-      // Cache the discovered IDs in Supabase so we don't re-discover every time
-      if (accountName || locationName) {
-        const meta = { ...(connector.metadata || {}), account_name: accountName, location_name: locationName }
-        await updateConnector('google_business', { metadata: meta })
-      }
-    } catch (e) {
-      console.error('[google-biz] discovery error:', e)
-      /* will fail below if not set */
     }
   }
 
-  // For reviews/posts, we need the full location path: accounts/X/locations/Y
-  // The new API returns locationName as "locations/456", so we combine with accountName
+  // For debug action even when we have cached values
+  if (action === 'debug') {
+    return ok({
+      accountName,
+      locationName,
+      connectorMetadata: connector.metadata,
+      tokenPrefix: token.slice(0, 20) + '...',
+      cached: true,
+    })
+  }
+
+  // For reviews/posts, we need the full location path
   const fullLocationPath = accountName && locationName
     ? `${accountName}/${locationName}`
     : ''
