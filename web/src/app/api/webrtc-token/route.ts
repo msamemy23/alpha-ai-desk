@@ -1,4 +1,4 @@
-/**
+﻿/**
  * WebRTC Token API v3
  * - Creates a Credential Connection with outbound_voice_profile_id set
  * - Patches existing connections if they're missing the outbound profile
@@ -38,6 +38,18 @@ async function saveSetting(key: string, value: string) {
   })
 }
 
+// Find an existing Credential Connection by name (fallback when name already in use)
+async function findConnectionByName(name: string): Promise<string | null> {
+  try {
+    const r = await fetch(`${TELNYX_BASE}/credential_connections`, {
+      headers: { Authorization: `Bearer ${TELNYX_API_KEY}` },
+    })
+    const data = await r.json()
+    const conn = (data.data || []).find((c: Record<string, unknown>) => c.connection_name === name)
+    return (conn?.id as string) || null
+  } catch { return null }
+}
+
 // Create a Credential Connection with outbound voice profile attached
 async function createCredentialConnection(): Promise<string> {
   console.log('[webrtc-token] Creating Credential Connection...')
@@ -59,6 +71,16 @@ async function createCredentialConnection(): Promise<string> {
   })
   const data = await r.json()
   if (!r.ok) {
+    const errDetail: string = (data.errors?.[0]?.detail || '').toString()
+    if (errDetail.toLowerCase().includes('already in use') || errDetail.toLowerCase().includes('already taken')) {
+      console.log('[webrtc-token] Name already in use, finding existing connection...')
+      const existingId = await findConnectionByName('Alpha WebRTC Stable')
+      if (existingId) {
+        console.log('[webrtc-token] Reusing existing connection:', existingId)
+        await saveSetting('webrtc_conn_id', existingId)
+        return existingId
+      }
+    }
     console.error('[webrtc-token] Connection creation failed:', JSON.stringify(data))
     throw new Error(data.errors?.[0]?.detail || 'Failed to create credential connection')
   }
