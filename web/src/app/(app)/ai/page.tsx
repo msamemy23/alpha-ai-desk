@@ -1481,21 +1481,21 @@ Continue silently.` }); continue } // Unknown — treat as final response
   }
 
   const suggested = [
-    "What jobs are open right now?",
-    "Build me an estimate for front brakes on a 2019 Toyota Camry",
-    "Who hasn't been in for 90+ days?",
-    "How much revenue this month?",
-    "Create a new customer: John Smith, 555-123-4567",
-    "Open a new job for the white 2020 Honda Civic — AC not blowing cold",
-    "What are today's shop stats?",
-    "Schedule a follow-up text to remind about the oil change",
-    "Draft a follow-up text for customers with unpaid invoices",
-    "Who hasn't paid in over 30 days?",
-    "Which tech has the most open jobs right now?",
-    "Write a supplement request for an insurance job",
-    "Look up everything we have on Maria Garcia",
-    "Generate a slow-day outreach message",
-    "Give me a Google review response",
+    "What jobs are still open right now?",
+    "Pull up everything on David Torres",
+    "Call this number - tell them their car is ready for pickup",
+    "Build an estimate for front brakes and rotors on a 2020 F-150",
+    "Text Carlos that we need to keep his car one more day",
+    "Who owes us money right now?",
+    "Open a new job - check engine light on a 2021 RAV4",
+    "Email the estimate to the customer",
+    "How much did we bring in this week?",
+    "Mark the Camry job as complete",
+    "Add a new customer: James Reed, 713-555-0192",
+    "Schedule a follow-up text to Carlos for tomorrow",
+    "Call this number and ask if they want to book an appointment",
+    "Convert the estimate to an invoice",
+    "What are the shop stats today?",
   ]
 
   const fileInputRef = useRef<HTMLInputElement>(null)
