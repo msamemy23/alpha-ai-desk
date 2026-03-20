@@ -216,10 +216,12 @@ For email: {"tool":"message","to":"john@example.com","channel":"email","subject"
 PLACE PHONE CALL — connects the user directly to someone (you are NOT on the call):
 {"tool":"call","to":"+15551234567","name":"Customer Name"}
 Use when user says: "call 2819008141", "call John", "dial this number", "ring them" — just a number or name with no task attached.
+CRITICAL: If given a NAME (not a raw phone number), ALWAYS run searchCustomers FIRST to get their real phone number. Never guess or make up a number. Only put the actual number from search results into "to".
 
 AI VOICE CALL — AI calls someone and has a FULL CONVERSATION to complete a task (you ARE the caller):
 {"tool":"aiVoiceCall","to":"+15551234567","task":"Tell them their car is ready for pickup","callerName":"Alpha International Auto Center"}
 Use when there is a MESSAGE or TASK to deliver/handle. If it's just "call X" with no task, use call instead.
+CRITICAL: If given a NAME (not a raw phone number), ALWAYS run searchCustomers FIRST to get their real phone number. Never guess or make up a number. Only put the actual number from search results into "to".
 
 NAVIGATE:
 {"tool":"navigate","view":"jobs"}
