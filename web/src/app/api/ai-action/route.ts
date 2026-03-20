@@ -179,6 +179,7 @@ export async function POST(req: NextRequest) {
         // Enrich customers with their jobs/vehicle info
         const customers = custRes.data || []
         const allJobs = jobsRes.data || []
+        const allDocs = docsRes.data || []
         const enriched = customers.map((c: Record<string, unknown>) => {
           const custJobs = allJobs.filter((j: Record<string, unknown>) => {
             const cName = (c.name as string || '').toLowerCase()
@@ -191,7 +192,22 @@ export async function POST(req: NextRequest) {
           const uniqueVehicles = vehicles.filter((v: Record<string, unknown>, i: number, arr: Record<string, unknown>[]) =>
             arr.findIndex((u: Record<string, unknown>) => u.year === v.year && u.make === v.make && u.model === v.model) === i
           )
-          return { ...c, vehicles: uniqueVehicles, recent_jobs: custJobs.slice(0, 5) }
+          // Backfill email from documents if missing on customer record
+          let resolvedEmail = (c.email as string) || null
+          if (!resolvedEmail) {
+            const cName = (c.name as string || '').toLowerCase()
+            const docWithEmail = allDocs.find((d: Record<string, unknown>) => {
+              const dName = (d.customer_name as string || '').toLowerCase()
+              const emailVal = d.customer_email as string | null
+              return emailVal && (d.customer_id === c.id || dName.includes(cName) || cName.includes(dName))
+            })
+            if (docWithEmail) {
+              resolvedEmail = docWithEmail.customer_email as string
+              // Save email back to customers table so future searches find it directly
+              sb.from('customers').update({ email: resolvedEmail }).eq('id', c.id as string).then(() => {})
+            }
+          }
+          return { ...c, email: resolvedEmail, vehicles: uniqueVehicles, recent_jobs: custJobs.slice(0, 5) }
         })
 
         // Also find customers referenced in jobs but not in customers table
@@ -212,7 +228,7 @@ export async function POST(req: NextRequest) {
 
         return ok({
           customers: [...enriched, ...Object.values(jobOnlyCustomers)],
-          documents: docsRes.data || [],
+          documents: allDocs,
           jobs: allJobs,
           messages: msgsRes.data || [],
           search_query: q,
@@ -277,8 +293,9 @@ export async function POST(req: NextRequest) {
         const doc = docs?.[0]
         if (!doc) return fail('Document not found')
 
-        // Find customer email
+        // Find customer email — check customers table first, then the document itself
         let toEmail = overrideEmail as string | undefined
+        if (!toEmail && doc.customer_email) toEmail = doc.customer_email
         if (!toEmail && doc.customer_id) {
           const { data: cust } = await sb.from('customers').select('email').eq('id', doc.customer_id).single()
           toEmail = cust?.email
