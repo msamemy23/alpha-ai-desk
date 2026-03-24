@@ -70,8 +70,8 @@ function LeadBadge({ score }: { score: string | null }) {
 function DirectionBadge({ dir }: { dir: string }) {
   const isIn = dir === 'inbound' || dir === 'in'
   return (
-    <span className={`text-xs px-2 py-0.5 rounded font-medium ${\
-      isIn ? 'bg-green-500/20 text-green-400' : 'bg-purple-500/20 text-purple-400'\
+    <span className={`text-xs px-2 py-0.5 rounded font-medium ${
+      isIn ? 'bg-green-500/20 text-green-400' : 'bg-purple-500/20 text-purple-400'
     }`}>
       {isIn ? 'Inbound' : 'Outbound'}
     </span>
@@ -226,8 +226,8 @@ export default function MessagesPage() {
       <div className="flex gap-1 mb-4 border-b border-white/10">
         {(['calls', 'sms'] as const).map(t => (
           <button key={t} onClick={() => { setTab(t); setSelectedCall(null); setSelectedThread(null) }}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${\
-              tab === t ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-white'\
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              tab === t ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-white'
             }`}>
             {t === 'calls' ? `Calls (${calls.length})` : `SMS (${threads.length})`}
           </button>
@@ -247,8 +247,8 @@ export default function MessagesPage() {
                   <input className="form-input flex-1" placeholder="Search calls by name, phone, service..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
                   {(['all','inbound','outbound'] as const).map(f => (
                     <button key={f} onClick={() => setCallFilter(f)}
-                      className={`px-3 py-1.5 text-xs rounded font-medium ${\
-                        callFilter === f ? 'bg-blue-600 text-white' : 'bg-white/5 text-gray-400 hover:bg-white/10'\
+                      className={`px-3 py-1.5 text-xs rounded font-medium ${
+                        callFilter === f ? 'bg-blue-600 text-white' : 'bg-white/5 text-gray-400 hover:bg-white/10'
                       }`}>
                       {f.charAt(0).toUpperCase() + f.slice(1)}
                     </button>
@@ -260,8 +260,8 @@ export default function MessagesPage() {
                   {filteredCalls.map(call => (
                     <div key={call.id}
                       onClick={() => setSelectedCall(call)}
-                      className={`p-3 rounded-lg cursor-pointer transition-colors ${\
-                        selectedCall?.id === call.id ? 'bg-blue-600/20 border border-blue-500/30' : 'bg-white/5 hover:bg-white/10'\
+                      className={`p-3 rounded-lg cursor-pointer transition-colors ${
+                        selectedCall?.id === call.id ? 'bg-blue-600/20 border border-blue-500/30' : 'bg-white/5 hover:bg-white/10'
                       }`}>
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
@@ -300,8 +300,8 @@ export default function MessagesPage() {
                   return (
                     <div key={thread.contact}
                       onClick={() => setSelectedThread(thread.contact)}
-                      className={`p-3 rounded-lg cursor-pointer transition-colors ${\
-                        selectedThread === thread.contact ? 'bg-blue-600/20 border border-blue-500/30' : 'bg-white/5 hover:bg-white/10'\
+                      className={`p-3 rounded-lg cursor-pointer transition-colors ${
+                        selectedThread === thread.contact ? 'bg-blue-600/20 border border-blue-500/30' : 'bg-white/5 hover:bg-white/10'
                       }`}>
                       <div className="flex justify-between items-center">
                         <div className="flex items-center gap-2">
@@ -464,8 +464,8 @@ export default function MessagesPage() {
                 <div className="flex-1 overflow-y-auto p-4 space-y-2">
                   {thread.messages.map(msg => (
                     <div key={msg.id} className={`flex ${msg.direction === 'inbound' ? 'justify-start' : 'justify-end'}`}>
-                      <div className={`max-w-[80%] rounded-xl px-3 py-2 text-sm ${\
-                        msg.direction === 'inbound' ? 'bg-white/10' : 'bg-blue-600'\
+                      <div className={`max-w-[80%] rounded-xl px-3 py-2 text-sm ${
+                        msg.direction === 'inbound' ? 'bg-white/10' : 'bg-blue-600'
                       }`}>
                         <div>{msg.body}</div>
                         <div className="text-xs opacity-60 mt-1">{formatDate(msg.created_at)}</div>
