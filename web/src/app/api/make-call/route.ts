@@ -4,7 +4,7 @@ const WEBHOOK_URL = 'https://alpha-ai-desk.vercel.app/api/telnyx-voice-webhook'
 
 export async function POST(req: NextRequest) {
   try {
-    const { to, name, task } = await req.json()
+    const { to, name, task, callerName } = await req.json()
     if (!to) return NextResponse.json({ error: 'Missing to' }, { status: 400 })
 
     const apiKey = process.env.TELNYX_API_KEY!
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
     const callTask = task || ''
 
     // Encode task in client_state so webhook knows what to do
-    const clientState = Buffer.from(JSON.stringify({ task: callTask, name: name || e164 })).toString('base64')
+    const clientState = Buffer.from(JSON.stringify({ task: callTask, name: name || e164, callerName: callerName || '' })).toString('base64')
 
     const res = await fetch('https://api.telnyx.com/v2/calls', {
       method: 'POST',

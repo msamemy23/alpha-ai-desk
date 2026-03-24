@@ -14,13 +14,13 @@ const NAV = [
   { href: '/shopboard', icon: '📋', label: 'Shop Board' },
   { href: '/estimates', icon: '📄', label: 'Estimates' },
   { href: '/invoices', icon: '🧾', label: 'Invoices' },
-    { href: '/receipts', icon: '🧾', label: 'Receipts' },
   { href: '/insurance', icon: '🛡️', label: 'Insurance' },
   { href: '/parts', icon: '🔩', label: 'Parts Lookup' },
   { href: '/messages', icon: '💬', label: 'Calls & Messages' },
   { href: '/ai', icon: '🤖', label: 'Alpha AI' },
-    { href: '/growth', icon: '📈', label: 'Growth' },
-{ href: '/automations', icon: '⏰', label: 'Automations' },   { href: '/settings', icon: '⚙️', label: 'Settings' },
+  { href: '/growth', icon: '📈', label: 'Growth' },
+  { href: '/automations', icon: '⏰', label: 'Automations' },
+  { href: '/settings', icon: '⚙️', label: 'Settings' },
 ]
 
 interface Notification {
@@ -216,7 +216,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </div>
         <main className="flex-1 overflow-y-auto bg-bg-base">
           {children}
-                    <PhoneWidget />
+          <PhoneWidget />
         </main>
       </div>
     </div>
