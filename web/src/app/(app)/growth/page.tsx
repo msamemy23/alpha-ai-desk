@@ -148,12 +148,12 @@ export default function GrowthPage() {
   const [reportModal, setReportModal] = useState<{ title: string; leads: any[] } | null>(null)
   const [outreachHistory, setOutreachHistory] = useState<Rec[]>([])
   const notify = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => { setToast({ message, type }) }, [])
-  const load = useCallback(async () => { setLoading(true); try { const [c, r, l, camp, acts, posts, oh] = await Promise.all([supabase.from('customers').select('*').order('created_at', { ascending: false }
-  useEffect(() => {
-    supabase.from('settings').select('reviewUrl').limit(1).single()
-      .then(({ data }) => { if (data?.reviewUrl) setReviewUrl(data.reviewUrl) })
-  }, [])), supabase.from('referrals').select('*').order('created_at', { ascending: false }), supabase.from('leads').select('*').order('created_at', { ascending: false }), supabase.from('growth_campaigns').select('*').order('created_at', { ascending: false }), supabase.from('growth_activity').select('*').order('created_at', { ascending: false }).limit(50), supabase.from('social_posts').select('*').order('created_at', { ascending: false }).limit(20), supabase.from('outreach_history').select('*').order('created_at', { ascending: false }).limit(50)]); setCustomers(c.data || []); setReferrals(r.data || []); setLeads(l.data || []); setCampaigns(camp.data || []); setActivityLog(acts.data || []); setPostHistory(posts.data || []); setOutreachHistory(oh.data || []) } catch { notify('Failed to load', 'error') } setLoading(false) }, [notify])
+  const load = useCallback(async () => { setLoading(true); try { const [c, r, l, camp, acts, posts, oh] = await Promise.all([supabase.from('customers').select('*').order('created_at', { ascending: false }), supabase.from('referrals').select('*').order('created_at', { ascending: false }), supabase.from('leads').select('*').order('created_at', { ascending: false }), supabase.from('growth_campaigns').select('*').order('created_at', { ascending: false }), supabase.from('growth_activity').select('*').order('created_at', { ascending: false }).limit(50), supabase.from('social_posts').select('*').order('created_at', { ascending: false }).limit(20), supabase.from('outreach_history').select('*').order('created_at', { ascending: false }).limit(50)]); setCustomers(c.data || []); setReferrals(r.data || []); setLeads(l.data || []); setCampaigns(camp.data || []); setActivityLog(acts.data || []); setPostHistory(posts.data || []); setOutreachHistory(oh.data || []) } catch { notify('Failed to load', 'error') } setLoading(false) }, [notify])
   useEffect(() => { load() }, [load])
+  useEffect(() => {
+    supabase.from('settings').select('google_review_url').limit(1).single()
+      .then(({ data }) => { if (data?.google_review_url) setReviewUrl(data.google_review_url) })
+  }, [])
     useEffect(() => { if (tab === 'capture') supabase.from('call_history').select('*').order('start_time', { ascending: false }).limit(50).then(({ data }) => setCallHistory(data || [])) }, [tab])
   const staleCustomers = customers.filter(c => {
     const lastSeen = c.last_contact || c.last_visit || c.created_at
