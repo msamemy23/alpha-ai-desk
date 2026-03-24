@@ -11,7 +11,13 @@ export async function sendEmail({
   apiKey?: string
 }) {
   const key = apiKey || process.env.RESEND_API_KEY
-  if (!key) throw new Error('RESEND_API_KEY not configured')
+  if (!key) {
+    throw new Error(
+      'Email is not configured. To fix this: go to Settings → Integrations and add your Resend API key, ' +
+      'or set RESEND_API_KEY in your Vercel environment variables. ' +
+      'Get a free API key at resend.com.'
+    )
+  }
 
   const fromAddr = from || process.env.FROM_EMAIL || 'Alpha Auto <onboarding@resend.dev>'
 
@@ -25,7 +31,11 @@ export async function sendEmail({
   })
 
   const data = await res.json()
-  if (!res.ok) throw new Error(data.message || 'Email send failed')
+  if (!res.ok) {
+    // Surface Resend's error message clearly
+    const msg = data.message || data.error || 'Email send failed'
+    throw new Error(`Resend API error: ${msg}`)
+  }
   return data
 }
 
@@ -152,12 +162,12 @@ export function estimateEmailHtml(doc: Record<string, unknown>, settings: Record
       ${warrantyExpiry ? `<div>Expires: <strong>${warrantyExpiry}</strong></div>` : ''}
     </div>
     ${warrantyExclusions ? `<div class="warranty-exclusions"><strong>Exclusions:</strong> ${warrantyExclusions}</div>` : ''}
-    <div style="margin-top:10px;font-size:9px;color:#888;line-height:1.4;border-top:1px solid #bfdbfe;padding-top:8px">All warranty claims must be submitted to Alpha International Auto Center at 10710 S. Main St, Houston, TX 77025 during normal business hours. Contact (713) 663-6979 before beginning any warranty repair. Unauthorized repairs will void this warranty. This warranty is governed by the laws of the State of Texas.</div>
+    <div style="margin-top:10px;font-size:9px;color:#888;line-height:1.4;border-top:1px solid #bfdbfe;padding-top:8px">All warranty claims must be submitted to ${shopNameStr} during normal business hours. Contact ${settings.shop_phone || '(713) 663-6979'} before beginning any warranty repair. Unauthorized repairs will void this warranty. This warranty is governed by the laws of the State of Texas.</div>
   </div>` : ''}
   <div class="footer">
     <div style="font-size:13px;color:#333;margin-bottom:10px">Thank you for choosing ${shopNameStr}! We appreciate your business.</div>
     <div>${settings.payment_terms || 'Payment Terms: Due on receipt'} &nbsp;|&nbsp; Accepted: ${settings.payment_methods || 'Cash, Card, Zelle, Cash App'}</div>
-    <div style="margin-top:4px">${settings.shop_phone || '(713) 663-6979'} &nbsp;·&nbsp; ${settings.shop_email || 'alphainternationalauto.com'}</div>
+    <div style="margin-top:4px">${settings.shop_phone || '(713) 663-6979'} &nbsp;·&nbsp; ${settings.shop_email || ''}</div>
   </div>
 </div>
 </body></html>`

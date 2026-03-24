@@ -10,9 +10,16 @@ function fail(msg: string, status = 400) { return NextResponse.json({ ok: false,
 // Table: automations { id, name, description, schedule, task_prompt, enabled, last_run, next_run, run_count, status, created_at }
 // schedule examples: '05:00' (daily at 5am), 'mon 09:00' (mondays at 9am), 'every 2h'
 
-function parseNextRun(schedule: string): string {
+async function getTimezone(): Promise<string> {
+  try {
+    const sb = getServiceClient()
+    const { data } = await sb.from('settings').select('timezone').limit(1).single()
+    return data?.timezone || 'America/Chicago'
+  } catch { return 'America/Chicago' }
+}
+
+function parseNextRun(schedule: string, tz: string = 'America/Chicago'): string {
   const now = new Date()
-  const tz = 'America/Chicago' // Houston CST/CDT
   const nowCT = new Date(now.toLocaleString('en-US', { timeZone: tz }))
 
   // Daily time: '05:00', '7:30pm', '14:30'
@@ -92,7 +99,8 @@ export async function POST(req: NextRequest) {
     if (!name || !schedule || !task_prompt) {
       return fail('name, schedule, and task_prompt are required')
     }
-    const next_run = parseNextRun(schedule)
+    const tz = await getTimezone()
+    const next_run = parseNextRun(schedule, tz)
     const { data, error } = await sb.from('automations').insert({
       name,
       description: description || '',
@@ -112,7 +120,8 @@ export async function POST(req: NextRequest) {
     const { id, ...updates } = body as Record<string, unknown>
     if (!id) return fail('id required')
     if (updates.schedule) {
-      updates.next_run = parseNextRun(updates.schedule as string)
+      const tz = await getTimezone()
+      updates.next_run = parseNextRun(updates.schedule as string, tz)
     }
     const { data, error } = await sb.from('automations').update({
       ...updates,
@@ -137,7 +146,10 @@ export async function POST(req: NextRequest) {
     if (enabled) {
       // Re-calculate next_run when re-enabling
       const { data: existing } = await sb.from('automations').select('schedule').eq('id', id).single()
-      if (existing?.schedule) updates.next_run = parseNextRun(existing.schedule)
+      if (existing?.schedule) {
+        const tz = await getTimezone()
+        updates.next_run = parseNextRun(existing.schedule, tz)
+      }
     }
     const { data, error } = await sb.from('automations').update(updates).eq('id', id).select().single()
     if (error) return fail(error.message)
@@ -173,11 +185,12 @@ export async function POST(req: NextRequest) {
       const aiData = await res.json()
       const result = aiData.choices?.[0]?.message?.content || 'Automation executed'
 
+      const tz = await getTimezone()
       await sb.from('automations').update({
         last_run: new Date().toISOString(),
         run_count: (automation.run_count || 0) + 1,
         last_result: result.slice(0, 500),
-        next_run: parseNextRun(automation.schedule),
+        next_run: parseNextRun(automation.schedule, tz),
         status: 'completed',
       }).eq('id', id)
 
@@ -222,11 +235,12 @@ export async function POST(req: NextRequest) {
         })
         const aiData = await res.json()
         const result = aiData.choices?.[0]?.message?.content || 'Done'
+        const tz = await getTimezone()
         await sb.from('automations').update({
           last_run: new Date().toISOString(),
           run_count: (automation.run_count || 0) + 1,
           last_result: result.slice(0, 500),
-          next_run: parseNextRun(automation.schedule),
+          next_run: parseNextRun(automation.schedule, tz),
           status: 'completed',
         }).eq('id', automation.id)
         ran++

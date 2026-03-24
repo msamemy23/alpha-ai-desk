@@ -1,21 +1,22 @@
 /**
- * Telnyx Voice Webhook — AI voice agent v7.0
+ * Telnyx Voice Webhook — AI voice agent v8.0
  * - Three call types: Alpha sales, custom AI task, personal call
  * - Personal calls: silent connect, no AI greeting or script
  * - Custom task calls: AI follows user's specific instructions
  * - Alpha sales calls: uses Alpha Auto Center sales script
  * - Echo filter, barge-in, transcription engine B, both tracks
+ * - Groq AI (30-80ms TTFT) with OpenRouter fallback
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { waitUntil } from '@vercel/functions'
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
+const GROQ_API_KEY = process.env.GROQ_API_KEY || ''
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
-// Voice needs a FAST model — free models 429 too often, DeepSeek V3.2 thinking mode too slow
-// Google Gemini Flash Lite is ultra-fast (lowest latency) and very cheap ($0.25/M in)
+// OpenRouter fallback model (Groq is primary for voice)
 const AI_MODEL = 'google/gemini-2.5-flash-lite'
 const VOICE = 'Telnyx.NaturalHD.orion'
 const VOICE_FB = 'Telnyx.NaturalHD.sirius'
@@ -66,8 +67,42 @@ async function speak(callId: string, text: string) {
   console.log(`[speak] sent TTS: "${clean.slice(0, 80)}..."`)
 }
 
-// ── AI Chat via OpenRouter ──
-async function aiChat(messages: Array<{ role: string; content: string }>, maxTokens = 120): Promise<string> {
+// ── AI text cleaner (strips markdown, stage directions, thinking tags) ──
+function cleanAiText(text: string): string {
+  text = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+  text = text.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\*([^*]+)\*/g, '$1')
+  text = text.replace(/^["']|["']$/g, '').trim()
+  text = text.replace(/\([^)]*\)/g, '').replace(/\[[^\]]*\]/g, '').trim()
+  text = text.replace(/\b(laughs|chuckles|pauses|sighs|warmly|cheerfully|gently|softly|nodding|click)\b/gi, '').trim()
+  text = text.replace(/^[-*#]+\s*/gm, '').trim()
+  text = text.replace(/ +/g, ' ').trim()
+  const lines = text.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0)
+  if (lines.length > 1) {
+    const leak = lines[1].startsWith('-') || lines[1].length < 20 || /^(speak|note|after|end|call|task|stage|step|next|if)/i.test(lines[1])
+    text = leak ? lines[0] : lines.slice(0, 3).join(' ')
+  }
+  return text.trim()
+}
+
+// ── AI Chat — Groq first (~30ms TTFT), OpenRouter fallback ──
+async function aiChat(messages: Array<{ role: string; content: string }>, maxTokens = 60): Promise<string> {
+  // Try Groq first — llama-3.1-8b-instant is ~30ms TTFT vs ~500ms OpenRouter
+  if (GROQ_API_KEY) {
+    try {
+      const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'llama-3.1-8b-instant', messages, max_tokens: maxTokens, temperature: 0.7 }),
+      })
+      const d = await r.json()
+      if (r.ok && !d?.error) {
+        const text = cleanAiText(d?.choices?.[0]?.message?.content?.trim() || '')
+        if (text) { console.log('[aiChat] Groq OK'); return text }
+      }
+      console.warn('[aiChat] Groq failed, falling back to OpenRouter:', r.status, JSON.stringify(d?.error))
+    } catch (e) { console.warn('[aiChat] Groq error, falling back:', e) }
+  }
+  // Fall back to OpenRouter (Gemini Flash Lite)
   try {
     const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -75,24 +110,10 @@ async function aiChat(messages: Array<{ role: string; content: string }>, maxTok
       body: JSON.stringify({ model: AI_MODEL, messages, max_tokens: maxTokens, temperature: 0.7 }),
     })
     const d = await r.json()
-    if (!r.ok) { console.error('[aiChat] HTTP error:', r.status, r.statusText, JSON.stringify(d)); return '' }
-    if (d?.error) { console.error('[aiChat] API error:', JSON.stringify(d.error)); return '' }
-    let text: string = d?.choices?.[0]?.message?.content?.trim() || ''
-    // Strip thinking tags if model returns them
-    text = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
-    text = text.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\*([^*]+)\*/g, '$1')
-    text = text.replace(/^["']|["']$/g, '').trim()
-    text = text.replace(/\([^)]*\)/g, '').replace(/\[[^\]]*\]/g, '').trim()
-    text = text.replace(/\b(laughs|chuckles|pauses|sighs|warmly|cheerfully|gently|softly|nodding|click)\b/gi, '').trim()
-    text = text.replace(/^[-*#]+\s*/gm, '').trim()
-    text = text.replace(/ +/g, ' ').trim()
-    const lines = text.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0)
-    if (lines.length > 1) {
-      const leak = lines[1].startsWith('-') || lines[1].length < 20 || /^(speak|note|after|end|call|task|stage|step|next|if)/i.test(lines[1])
-      text = leak ? lines[0] : lines.slice(0, 3).join(' ')
-    }
-    return text.trim()
-  } catch (e) { console.error('[aiChat] error:', e); return '' }
+    if (!r.ok) { console.error('[aiChat] OpenRouter HTTP error:', r.status, JSON.stringify(d)); return '' }
+    if (d?.error) { console.error('[aiChat] OpenRouter API error:', JSON.stringify(d.error)); return '' }
+    return cleanAiText(d?.choices?.[0]?.message?.content?.trim() || '')
+  } catch (e) { console.error('[aiChat] OpenRouter error:', e); return '' }
 }
 
 // ── Alpha Auto Center system prompt ──
@@ -132,7 +153,7 @@ RULES:
 // 3. Personal call: task is empty — user just wants to talk, no AI involvement
 async function handleAnswered(callId: string, task: string) {
   try {
-    console.log(`[handleAnswered] START callId=${callId.slice(0, 25)} task="${task.slice(0, 80)}"`) 
+    console.log(`[handleAnswered] START callId=${callId.slice(0, 25)} task="${task.slice(0, 80)}"`)
     const isAlpha = task === 'Alpha Auto Center oil change call' || (
       /oil.?change|brake|transmission|engine|state inspection/i.test(task) &&
       !/calling.*hotline|calling.*chatgpt|have a conversation|test.*call/i.test(task)
@@ -259,12 +280,14 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
       await telnyxPost(`/calls/${callId}/actions/playback_stop`, { stop: 'all' })
       await dbPatch(callId, { is_speaking: false, processing: false })
       await new Promise(res => setTimeout(res, 200))
+      // Update local state so processing check below uses correct value
+      state.is_speaking = false
+      state.processing = false
     }
 
-    // Check processing flag — if locked, skip
-    const freshState = await dbGet(callId)
-    if (freshState?.processing) {
-      console.log('[VOICE DEBUG] Dropped: processing=true', { callId: callId.slice(0, 20), text, processing: freshState.processing })
+    // Check processing flag — use state already in memory (avoids extra DB round trip)
+    if (state?.processing) {
+      console.log('[VOICE DEBUG] Dropped: processing=true', { callId: callId.slice(0, 20), text, processing: state.processing })
       return
     }
 
@@ -272,15 +295,15 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     console.log(`[handleTranscription] PROCESSING: "${text}"`)
     await dbPatch(callId, { processing: true })
 
-    const transcript: Array<{ speaker: string; text: string }> = Array.isArray(freshState.transcript) ? [...freshState.transcript] : []
-    const conversation: Array<{ role: string; content: string }> = Array.isArray(freshState.conversation) ? [...freshState.conversation] : []
+    const transcript: Array<{ speaker: string; text: string }> = Array.isArray(state.transcript) ? [...state.transcript] : []
+    const conversation: Array<{ role: string; content: string }> = Array.isArray(state.conversation) ? [...state.conversation] : []
     transcript.push({ speaker: 'customer', text })
     await dbPatch(callId, { transcript })
 
-    const objectionCount = (freshState.objection_count as number) || 0
+    const objectionCount = (state.objection_count as number) || 0
     const isHardNo = /not interested|do not call|take me off|remove me|stop calling/i.test(text)
     const isSoftNo = /no thank|no thanks|can.?t right now|not right now|maybe later|not today|not looking/i.test(text)
-    const isAlpha = (freshState.task || '') === 'Alpha Auto Center oil change call' || /oil.?change|auto.?center|brake|transmission|engine|state inspection/i.test(freshState.task || '')
+    const isAlpha = (state.task || '') === 'Alpha Auto Center oil change call' || /oil.?change|auto.?center|brake|transmission|engine|state inspection/i.test(state.task || '')
 
     if (isHardNo || (isSoftNo && objectionCount >= 1)) {
       const bye = 'No problem at all, I appreciate your time. Have a great day!'
@@ -294,10 +317,31 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
       return
     }
 
+    // Farewell/goodbye detection — end the call naturally, no looping
+    const isFarewell = /\b(good\s*night|good\s*bye|goodbye|bye\s*bye|good\s*day|take care|talk\s*(to\s*you\s*)?later|have a good (one|night|day|evening)|catch you later|farewell|see\s*ya|so long)\b/i.test(text)
+    if (isFarewell) {
+      const farewells = [
+        'Great talking to you, good night!',
+        'Good night to you too! Take care!',
+        'Wonderful chatting with you. Good night!',
+        'Good night! Have a wonderful evening!',
+        'Great speaking with you. Good night, take care!',
+      ]
+      const closing = farewells[Math.floor(Math.random() * farewells.length)]
+      transcript.push({ speaker: 'ai', text: closing })
+      conversation.push({ role: 'assistant', content: closing })
+      await dbPatch(callId, { transcript, conversation, processing: false })
+      await speak(callId, closing)
+      // Hang up after TTS finishes
+      setTimeout(() => telnyxPost('/calls/' + callId + '/actions/hangup', {}), 3500)
+      console.log('[handleTranscription] END: farewell detected, hanging up')
+      return
+    }
+
     // Determine call type from stored task
-    const storedTask = freshState.task || ''
+    const storedTask = state.task || ''
     const isPersonal = !storedTask || storedTask === 'personal call'
-    
+
     let systemPrompt: string
     if (isAlpha) {
       systemPrompt = ALPHA_SYSTEM + `\n\nThe customer just said: "${text}"\nRespond naturally. 1-3 sentences max. Spoken words only.`
@@ -308,19 +352,19 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
       // Custom AI task — AI must follow the user's specific instructions
       systemPrompt = `You are on a live phone call. You were given a specific task for this call: "${storedTask}"
 
-CRITICAL: Stay focused on your task. Your job is to accomplish what you were asked to do.
-Do NOT go off-topic. Do NOT pitch oil changes or any other unrelated services.
+CRITICAL: Stay focused on your task. Complete each step in order. Do NOT go off-topic.
 
 RULES:
-- Stay on task: "${storedTask}"
-- Answer their questions if they ask.
-- HOLD phrases: say Of course, take your time. and wait.
-- 1-3 sentences max. Natural spoken words. No markdown.`
+- Follow the task steps in order: "${storedTask}"
+- Answer naturally if they respond or ask something.
+- HOLD: say 'Of course, take your time.' and wait.
+- When the task steps are all done or the person says goodbye, give ONE warm natural farewell and stop — do not keep talking.
+- 1-3 sentences max. Spoken words only. No markdown, no loops, no repetition.`
     }
 
     const messages = [{ role: 'system', content: systemPrompt }, ...conversation.slice(-10), { role: 'user', content: text }]
     console.log('[handleTranscription] calling AI for response...')
-    const reply = await aiChat(messages, 100)
+    const reply = await aiChat(messages, 60)
 
     if (reply) {
       console.log(`[handleTranscription] AI replied: "${reply.slice(0, 80)}"`)
@@ -350,14 +394,14 @@ export async function POST(req: NextRequest) {
   const callId = payload?.call_control_id as string
   console.log(`[webhook] ${eventType} callId=${callId?.slice(0, 25) || 'n/a'}`)
 
-  if (eventType === 'version') return NextResponse.json({ v: 'v7.0-call-types' })
+  if (eventType === 'version') return NextResponse.json({ v: 'v8.0-groq' })
 
   // call.initiated — create DB row early so state exists when other events arrive
   if (eventType === 'call.initiated') {
     let task = ''
     const cs = payload?.client_state as string
     if (cs) { try { task = JSON.parse(Buffer.from(cs, 'base64').toString()).task || '' } catch { /* ok */ } }
-    console.log(`[webhook] call.initiated — creating DB row, task="${task.slice(0, 50)}"`) 
+    console.log(`[webhook] call.initiated — creating DB row, task="${task.slice(0, 50)}"`)
     waitUntil(dbUpsert(callId, { task, status: 'calling', greeted: false, processing: false, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' }))
     return NextResponse.json('OK')
   }

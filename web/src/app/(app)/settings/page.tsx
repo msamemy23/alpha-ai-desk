@@ -69,7 +69,7 @@ export default function SettingsPage() {
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
         body: JSON.stringify({
           model,
-          messages: [{ role: 'user', content: `You are responding to a ${reviewStars}-star Google review for "${shopName}". The review says: "${reviewText}"\n\nWrite a ${tone} response from the business owner. Keep it 2-4 sentences, professional but personable. Don't use generic filler. Address specific points they mentioned. Return ONLY the response text.` }],
+          messages: [{ role: 'user', content: `You are responding to a ${reviewStars}-star Google review for \"${shopName}\". The review says: \"${reviewText}\"\\n\\nWrite a ${tone} response from the business owner. Keep it 2-4 sentences, professional but personable. Don't use generic filler. Address specific points they mentioned. Return ONLY the response text.` }],
           max_tokens: 300,
         })
       })
@@ -117,6 +117,29 @@ export default function SettingsPage() {
           ].map(({ k, label }) => (
             <div key={k}><label className="form-label">{label}</label><input className="form-input" value={settings[k] as string||''} onChange={sf(k)} /></div>
           ))}
+          <div>
+            <label className="text-sm font-medium text-text-secondary mb-1 block">Google Review URL</label>
+            <input
+              className="form-input w-full"
+              placeholder="https://g.page/r/your-shop/review"
+              value={settings.google_review_url || ''}
+              onChange={e => setSettings(prev => ({ ...prev, google_review_url: e.target.value }))}
+            />
+            <p className="text-xs text-text-muted mt-1">Get this from your Google Business Profile → Get more reviews</p>
+          </div>
+          <div>
+            <label className="text-sm font-medium text-text-secondary mb-1 block">Timezone</label>
+            <select
+              className="form-input w-full"
+              value={settings.timezone || 'America/Chicago'}
+              onChange={e => setSettings(prev => ({ ...prev, timezone: e.target.value }))}
+            >
+              <option value="America/Chicago">Central (Houston)</option>
+              <option value="America/New_York">Eastern</option>
+              <option value="America/Denver">Mountain</option>
+              <option value="America/Los_Angeles">Pacific</option>
+            </select>
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div><label className="form-label">Labor Rate ($/hr)</label><input className="form-input" type="number" value={settings.labor_rate as number||120} onChange={sf('labor_rate')} /></div>
             <div><label className="form-label">Tax Rate (%)</label><input className="form-input" type="number" step="0.01" value={settings.tax_rate as number||8.25} onChange={sf('tax_rate')} /></div>

@@ -1,7 +1,7 @@
 /**
- * WebRTC Token API v3
+ * WebRTC Token API v4
  * - Creates a Credential Connection with outbound_voice_profile_id set
- * - Patches existing connections if they're missing the outbound profile
+ * - Verifies outbound profile on every token fetch; forces full rebuild if patch fails
  * - Returns JWT token for browser WebRTC client
  */
 import { NextRequest, NextResponse } from 'next/server'
@@ -11,7 +11,7 @@ const TELNYX_BASE = 'https://api.telnyx.com/v2'
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 
-// The one outbound voice profile on this account — required for PSTN routing
+// The one outbound voice profile on this account - required for PSTN routing
 const OUTBOUND_VOICE_PROFILE_ID = '2668698936952227186'
 
 async function getSetting(key: string): Promise<string | null> {
@@ -38,7 +38,19 @@ async function saveSetting(key: string, value: string) {
   })
 }
 
-// Create a Credential Connection with outbound voice profile attached
+// Find an existing Credential Connection by name (fallback when name already in use)
+async function findConnectionByName(name: string): Promise<string | null> {
+  try {
+    const r = await fetch(`${TELNYX_BASE}/credential_connections`, {
+      headers: { Authorization: `Bearer ${TELNYX_API_KEY}` },
+    })
+    const data = await r.json()
+    const conn = (data.data || []).find((c: Record<string, unknown>) => c.connection_name === name)
+    return (conn?.id as string) || null
+  } catch { return null }
+}
+
+// Create a Credential Connection with outbound voice profile baked in
 async function createCredentialConnection(): Promise<string> {
   console.log('[webrtc-token] Creating Credential Connection...')
   const r = await fetch(`${TELNYX_BASE}/credential_connections`, {
@@ -59,6 +71,16 @@ async function createCredentialConnection(): Promise<string> {
   })
   const data = await r.json()
   if (!r.ok) {
+    const errDetail: string = (data.errors?.[0]?.detail || '').toString()
+    if (errDetail.toLowerCase().includes('already in use') || errDetail.toLowerCase().includes('already taken')) {
+      console.log('[webrtc-token] Name already in use, finding existing connection...')
+      const existingId = await findConnectionByName('Alpha WebRTC Stable')
+      if (existingId) {
+        console.log('[webrtc-token] Reusing existing connection:', existingId)
+        await saveSetting('webrtc_conn_id', existingId)
+        return existingId
+      }
+    }
     console.error('[webrtc-token] Connection creation failed:', JSON.stringify(data))
     throw new Error(data.errors?.[0]?.detail || 'Failed to create credential connection')
   }
@@ -69,8 +91,9 @@ async function createCredentialConnection(): Promise<string> {
   return connId
 }
 
-// Patch an existing connection to add the outbound voice profile if missing
-async function ensureOutboundProfile(connId: string): Promise<void> {
+// Patch outbound voice profile on existing connection.
+// Returns true if patch succeeded, false if it failed (caller should force full rebuild).
+async function ensureOutboundProfile(connId: string): Promise<boolean> {
   try {
     const r = await fetch(`${TELNYX_BASE}/credential_connections/${connId}`, {
       method: 'PATCH',
@@ -85,13 +108,15 @@ async function ensureOutboundProfile(connId: string): Promise<void> {
       }),
     })
     if (r.ok) {
-      console.log('[webrtc-token] Patched connection with outbound profile:', connId)
-    } else {
-      const err = await r.text()
-      console.warn('[webrtc-token] Patch warning:', err.slice(0, 200))
+      console.log('[webrtc-token] Outbound profile confirmed on connection:', connId)
+      return true
     }
+    const err = await r.text()
+    console.warn('[webrtc-token] Outbound profile patch failed:', err.slice(0, 200))
+    return false
   } catch (e) {
     console.warn('[webrtc-token] Could not patch connection:', e)
+    return false
   }
 }
 
@@ -146,13 +171,22 @@ export async function GET() {
     }
 
     // Try existing credential first
-    let credId = await getSetting('webrtc_credential_id')
+    const credId = await getSetting('webrtc_credential_id')
     if (credId) {
       try {
         const token = await generateToken(credId)
-        // Fire-and-forget: ensure the connection has the outbound profile
+        // Ensure outbound profile is set — if patch fails, wipe and rebuild from scratch
         const connId = await getSetting('webrtc_conn_id')
-        if (connId) ensureOutboundProfile(connId)
+        if (connId) {
+          const profileOk = await ensureOutboundProfile(connId)
+          if (!profileOk) {
+            console.log('[webrtc-token] Profile patch failed — forcing clean rebuild for reliable outbound routing')
+            await saveSetting('webrtc_conn_id', '')
+            await saveSetting('webrtc_credential_id', '')
+            const result = await fullSetup()
+            return NextResponse.json(result)
+          }
+        }
         return NextResponse.json({ token, credentialId: credId })
       } catch (e: any) {
         console.log('[webrtc-token] Existing credential failed, will recreate:', e.message)
@@ -160,13 +194,19 @@ export async function GET() {
     }
 
     // Try existing connection, create new credential
-    let connId = await getSetting('webrtc_conn_id')
+    const connId = await getSetting('webrtc_conn_id')
     if (connId) {
       try {
-        await ensureOutboundProfile(connId)
-        credId = await createCredential(connId)
-        const token = await generateToken(credId)
-        return NextResponse.json({ token, credentialId: credId })
+        const profileOk = await ensureOutboundProfile(connId)
+        if (!profileOk) {
+          console.log('[webrtc-token] Profile patch failed on connection — forcing full setup')
+          await saveSetting('webrtc_conn_id', '')
+          const result = await fullSetup()
+          return NextResponse.json(result)
+        }
+        const newCredId = await createCredential(connId)
+        const token = await generateToken(newCredId)
+        return NextResponse.json({ token, credentialId: newCredId })
       } catch (e: any) {
         console.log('[webrtc-token] Existing connection failed, doing full setup:', e.message)
       }

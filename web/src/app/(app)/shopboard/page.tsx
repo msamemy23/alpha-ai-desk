@@ -12,14 +12,6 @@ const STATUS_COLORS: Record<string, string> = {
   'Closed': 'bg-gray-500/20 text-gray-400',
 }
 
-const TECHS = ['Paul', 'Devin', 'Luis', 'Louie', 'Unassigned']
-
-const EMPLOYEES = [
-  { id: 'masoud', name: 'Masoud', emoji: '👨‍🔧' },
-  { id: 'omar', name: 'Omar', emoji: '🔧' },
-  { id: 'javier', name: 'Javier (Gordo)', emoji: '🛠️' },
-]
-
 const MOTIVATIONAL_QUOTES = [
   "Let's get this bread! Time to make moves. 💪",
   "Another day, another opportunity to be great. 🔥",
@@ -35,73 +27,155 @@ const MOTIVATIONAL_QUOTES = [
   "Excellence is not an act, it's a habit. Go be excellent! 💎",
 ]
 
-interface ClockEntry {
-  employee: string
-  clockIn: string
-  clockOut?: string
+interface Staff {
+  id: number
+  name: string
+  role: 'technician' | 'employee'
+  emoji: string
+  active: boolean
+}
+
+interface TimeclockEntry {
+  id: number
+  staff_name: string
+  clock_in: string
+  clock_out: string | null
+  hours_worked: number | null
 }
 
 export default function ShopBoardPage() {
   const [jobs, setJobs] = useState<any[]>([])
   const [filter, setFilter] = useState<'active' | 'all' | 'today'>('active')
-  const [clockEntries, setClockEntries] = useState<ClockEntry[]>([])
+  const [staff, setStaff] = useState<Staff[]>([])
+  const [technicians, setTechnicians] = useState<Staff[]>([])
+  const [timeclockEntries, setTimeclockEntries] = useState<TimeclockEntry[]>([])
   const [clockQuote, setClockQuote] = useState<{ name: string; quote: string } | null>(null)
+  const [loading, setLoading] = useState(true)
 
-  // Load clock entries from localStorage
+  // Load employees from API
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem('time_clock')
-      if (stored) setClockEntries(JSON.parse(stored))
-    } catch { /* ignore */ }
+    const loadStaff = async () => {
+      try {
+        const res = await fetch('/api/staff')
+        const data = await res.json()
+        if (data.ok && data.staff) {
+          const employees = data.staff.filter((s: Staff) => s.role === 'employee')
+          setStaff(employees)
+        }
+      } catch (e) {
+        console.error('Failed to load staff:', e)
+      }
+    }
+    loadStaff()
   }, [])
 
-  const saveClockEntries = (entries: ClockEntry[]) => {
-    setClockEntries(entries)
-    localStorage.setItem('time_clock', JSON.stringify(entries))
-  }
+  // Load technicians from API
+  useEffect(() => {
+    const loadTechs = async () => {
+      try {
+        const res = await fetch('/api/staff?role=technician')
+        const data = await res.json()
+        if (data.ok && data.staff) {
+          setTechnicians(data.staff)
+        }
+      } catch (e) {
+        console.error('Failed to load technicians:', e)
+      }
+    }
+    loadTechs()
+  }, [])
 
-  const getEmployeeStatus = (empId: string) => {
+  // Load timeclock status on mount
+  useEffect(() => {
+    const loadTimeclock = async () => {
+      try {
+        const res = await fetch('/api/timeclock')
+        const data = await res.json()
+        if (data.ok && data.entries) {
+          setTimeclockEntries(data.entries)
+        }
+      } catch (e) {
+        console.error('Failed to load timeclock:', e)
+      } finally {
+        setLoading(false)
+      }
+    }
+    loadTimeclock()
+  }, [])
+
+  const getEmployeeStatus = (empName: string) => {
     const today = new Date().toDateString()
-    const todayEntries = clockEntries.filter(
-      e => e.employee === empId && new Date(e.clockIn).toDateString() === today
+    const todayEntries = timeclockEntries.filter(
+      e => e.staff_name === empName && new Date(e.clock_in).toDateString() === today
     )
     const lastEntry = todayEntries[todayEntries.length - 1]
-    if (lastEntry && !lastEntry.clockOut) {
-      return { clockedIn: true, since: lastEntry.clockIn, todayEntries }
+    if (lastEntry && !lastEntry.clock_out) {
+      return { clockedIn: true, since: lastEntry.clock_in, todayEntries }
     }
     return { clockedIn: false, since: null, todayEntries }
   }
 
-  const getTotalHoursToday = (empId: string) => {
+  const getTotalHoursToday = (empName: string) => {
     const today = new Date().toDateString()
-    const todayEntries = clockEntries.filter(
-      e => e.employee === empId && new Date(e.clockIn).toDateString() === today
+    const todayEntries = timeclockEntries.filter(
+      e => e.staff_name === empName && new Date(e.clock_in).toDateString() === today
     )
     let total = 0
     for (const entry of todayEntries) {
-      const start = new Date(entry.clockIn).getTime()
-      const end = entry.clockOut ? new Date(entry.clockOut).getTime() : Date.now()
-      total += (end - start) / 1000 / 60 / 60
+      if (entry.hours_worked) {
+        total += entry.hours_worked
+      } else {
+        const start = new Date(entry.clock_in).getTime()
+        const end = entry.clock_out ? new Date(entry.clock_out).getTime() : Date.now()
+        total += (end - start) / 1000 / 60 / 60
+      }
     }
     return total
   }
 
-  const handleClockIn = (empId: string, empName: string) => {
-    const quote = MOTIVATIONAL_QUOTES[Math.floor(Math.random() * MOTIVATIONAL_QUOTES.length)]
-    const newEntry: ClockEntry = { employee: empId, clockIn: new Date().toISOString() }
-    saveClockEntries([...clockEntries, newEntry])
-    setClockQuote({ name: empName, quote })
-    setTimeout(() => setClockQuote(null), 6000)
+  const handleClockIn = async (empName: string) => {
+    try {
+      const res = await fetch('/api/timeclock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'clock_in', staff_name: empName }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        const quote = MOTIVATIONAL_QUOTES[Math.floor(Math.random() * MOTIVATIONAL_QUOTES.length)]
+        setClockQuote({ name: empName, quote })
+        setTimeout(() => setClockQuote(null), 6000)
+        // Reload timeclock entries
+        const tcRes = await fetch('/api/timeclock')
+        const tcData = await tcRes.json()
+        if (tcData.ok && tcData.entries) {
+          setTimeclockEntries(tcData.entries)
+        }
+      }
+    } catch (e) {
+      console.error('Clock in failed:', e)
+    }
   }
 
-  const handleClockOut = (empId: string) => {
-    const updated = clockEntries.map(e => {
-      if (e.employee === empId && !e.clockOut) {
-        return { ...e, clockOut: new Date().toISOString() }
+  const handleClockOut = async (empName: string) => {
+    try {
+      const res = await fetch('/api/timeclock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'clock_out', staff_name: empName }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        // Reload timeclock entries
+        const tcRes = await fetch('/api/timeclock')
+        const tcData = await tcRes.json()
+        if (tcData.ok && tcData.entries) {
+          setTimeclockEntries(tcData.entries)
+        }
       }
-      return e
-    })
-    saveClockEntries(updated)
+    } catch (e) {
+      console.error('Clock out failed:', e)
+    }
   }
 
   useEffect(() => {
@@ -120,6 +194,16 @@ export default function ShopBoardPage() {
     if (filter === 'today') return new Date(j.created_at).toDateString() === today
     return true
   })
+
+  const techs = ['Unassigned', ...technicians.map(t => t.name)]
+
+  if (loading) {
+    return (
+      <div className="p-4 sm:p-6 lg:p-8 flex items-center justify-center" style={{ height: 'calc(100vh - 0px)' }}>
+        <p className="text-text-muted">Loading...</p>
+      </div>
+    )
+  }
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 flex flex-col" style={{ height: 'calc(100vh - 0px)' }}>
@@ -148,9 +232,9 @@ export default function ShopBoardPage() {
         )}
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          {EMPLOYEES.map(emp => {
-            const status = getEmployeeStatus(emp.id)
-            const hours = getTotalHoursToday(emp.id)
+          {staff.map(emp => {
+            const status = getEmployeeStatus(emp.name)
+            const hours = getTotalHoursToday(emp.name)
             return (
               <div key={emp.id} className={`rounded-xl border p-4 transition-all ${status.clockedIn ? 'border-green/50 bg-green/5' : 'border-border bg-bg-hover'}`}>
                 <div className="flex items-center justify-between mb-2">
@@ -174,12 +258,12 @@ export default function ShopBoardPage() {
                 </p>
 
                 {status.clockedIn ? (
-                  <button onClick={() => handleClockOut(emp.id)}
+                  <button onClick={() => handleClockOut(emp.name)}
                     className="w-full py-2 rounded-lg text-sm font-semibold bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/30 transition-colors">
                     Clock Out
                   </button>
                 ) : (
-                  <button onClick={() => handleClockIn(emp.id, emp.name)}
+                  <button onClick={() => handleClockIn(emp.name)}
                     className="w-full py-2 rounded-lg text-sm font-semibold bg-green/20 text-green hover:bg-green/30 border border-green/30 transition-colors">
                     Clock In
                   </button>
@@ -192,7 +276,7 @@ export default function ShopBoardPage() {
 
       {/* ===== JOBS BY TECH ===== */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 flex-1 overflow-auto">
-        {TECHS.map(tech => {
+        {techs.map(tech => {
           const techJobs = filtered.filter(j => tech === 'Unassigned' ? !j.tech : j.tech === tech)
           return (
             <div key={tech} className="bg-bg-card border border-border rounded-xl p-3 flex flex-col">

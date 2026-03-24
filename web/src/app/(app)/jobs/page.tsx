@@ -19,6 +19,7 @@ export default function JobsPage() {
   const [form, setForm] = useState<Partial<Job & {internal_notes: string; customer_notes: string; is_insurance: boolean}>>({})
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('active')
+  const [technicians, setTechnicians] = useState<string[]>(['Unassigned'])
 
   const load = useCallback(async () => {
     const [{ data: j }, { data: c }] = await Promise.all([
@@ -26,6 +27,22 @@ export default function JobsPage() {
       supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model,vehicle_color,vehicle_engine,vehicle_plate').order('name')
     ])
     setJobs((j || []) as Job[]); setCustomers((c || []) as Customer[])
+  }, [])
+
+  // Load technicians from API
+  useEffect(() => {
+    const loadTechs = async () => {
+      try {
+        const res = await fetch('/api/staff?role=technician')
+        const data = await res.json()
+        if (data.ok && data.staff) {
+          setTechnicians(['Unassigned', ...data.staff.map((s: {name: string}) => s.name)])
+        }
+      } catch (e) {
+        console.error('Failed to load technicians:', e)
+      }
+    }
+    loadTechs()
   }, [])
 
   useEffect(() => {
@@ -125,8 +142,7 @@ export default function JobsPage() {
                 <div>
                   <label className="form-label">Tech</label>
                   <select className="form-select" value={(form as Record<string,string>).tech||''} onChange={e => setForm(f=>({...f,tech:e.target.value}))}>
-                    <option value="">Unassigned</option>
-                    {['Paul','Devin','Luis','Louie'].map(t => <option key={t}>{t}</option>)}
+                    {technicians.map(t => <option key={t} value={t === 'Unassigned' ? '' : t}>{t}</option>)}
                   </select>
                 </div>
                 <div>

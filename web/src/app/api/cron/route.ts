@@ -1,14 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import { getServiceClient } from '@/lib/supabase'
 
 export const dynamic = 'force-dynamic'
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-)
-
-const CRON_SECRET = process.env.CRON_SECRET || ''
 
 function getBaseUrl(): string {
   if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL
@@ -37,10 +30,16 @@ async function callApi(path: string, body?: Record<string, unknown>) {
 }
 
 export async function GET(req: NextRequest) {
-  if (CRON_SECRET && req.headers.get('authorization') !== `Bearer ${CRON_SECRET}`) {
+  // Always require CRON_SECRET — if not set, route is disabled for safety
+  const cronSecret = process.env.CRON_SECRET
+  if (!cronSecret) {
+    return NextResponse.json({ error: 'CRON_SECRET env var is not configured' }, { status: 401 })
+  }
+  if (req.headers.get('authorization') !== `Bearer ${cronSecret}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  const supabase = getServiceClient()
   const results: Record<string, unknown> = {}
 
   // Step 1: Sync calls from Telnyx recordings + activities + AI calls into call_history
@@ -55,13 +54,16 @@ export async function GET(req: NextRequest) {
   // Step 3: Process follow-ups
   results.follow_ups = await callApi('/api/growth/capture', { action: 'follow_up_pending' })
 
-  // Step 4: Run automations
-  results.automations = await callApi('/api/automations', {})
+  // Step 4: Run custom prompt automations (user-created ones)
+  results.custom_automations = await callApi('/api/automations', { action: 'check_due' })
 
-  // Step 5: Batch transcribe calls and score leads (processes 10 at a time)
+  // Step 5: Run ALL enabled system automations (review requests, follow-ups, reminders, etc.)
+  results.system_automations = await callApi('/api/system-automations', { action: 'run_all_due' })
+
+  // Step 6: Batch transcribe calls and score leads (processes 10 at a time)
   results.transcribe_calls = await callApi('/api/telnyx/transcribe-calls?action=batch&limit=10', {})
 
-  // Step 6: Score any transcribed calls that don't have lead scores yet
+  // Step 7: Score any transcribed calls that don't have lead scores yet
   results.score_leads = await callApi('/api/telnyx/transcribe-calls?action=score&limit=20', {})
 
   await supabase.from('growth_scans').upsert({
