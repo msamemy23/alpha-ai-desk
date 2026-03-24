@@ -1,6 +1,6 @@
 /**
  * Telnyx Voice Webhook — AI voice agent v8.0
- * - Three call types: Alpha sales, custom AI task, personal call
+ * - Three call types: Alpha sales (exact match only), custom AI task, personal call
  * - Personal calls: silent connect, no AI greeting or script
  * - Custom task calls: AI follows user's specific instructions
  * - Alpha sales calls: uses Alpha Auto Center sales script
@@ -148,22 +148,19 @@ RULES:
 
 // ── Handle call.answered ──
 // Three call types:
-// 1. Alpha sales call: task === 'Alpha Auto Center oil change call' or mentions auto services
+// 1. Alpha sales call: task === 'Alpha Auto Center oil change call' (exact match only)
 // 2. AI task call: task has custom instructions (e.g. "ask if he's going to church")
 // 3. Personal call: task is empty — user just wants to talk, no AI involvement
-async function handleAnswered(callId: string, task: string) {
+async function handleAnswered(callId: string, task: string, callerName?: string) {
   try {
-    console.log(`[handleAnswered] START callId=${callId.slice(0, 25)} task="${task.slice(0, 80)}"`)
-    const isAlpha = task === 'Alpha Auto Center oil change call' || (
-      /oil.?change|brake|transmission|engine|state inspection/i.test(task) &&
-      !/calling.*hotline|calling.*chatgpt|have a conversation|test.*call/i.test(task)
-    )
+    console.log(`[handleAnswered] START callId=${callId.slice(0, 25)} task="${task.slice(0, 80)}" callerName="${callerName || ''}"`)
+    const isAlpha = task === 'Alpha Auto Center oil change call'
     const isPersonalCall = !task || task.trim() === '' || task === 'personal call'
     const isCustomTask = !isAlpha && !isPersonalCall
 
     console.log(`[handleAnswered] callType: isAlpha=${isAlpha} isPersonalCall=${isPersonalCall} isCustomTask=${isCustomTask}`)
 
-    await dbUpsert(callId, { status: 'active', task: task || 'personal call', greeted: false, processing: true, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' })
+    await dbUpsert(callId, { status: 'active', task: task || 'personal call', caller_name: callerName || '', greeted: false, processing: true, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' })
 
     // Start transcription — use 'both' since 'inbound'/'outbound' alone can miss audio
     const txResult = await telnyxPost(`/calls/${callId}/actions/transcription_start`, {
@@ -190,13 +187,14 @@ async function handleAnswered(callId: string, task: string) {
       greetingPrompt = ALPHA_SYSTEM + '\n\nSay your opening line to a Houston customer. One punchy sentence.\nYOU called THEM. Never say Thanks for calling.'
       fallbackGreeting = 'Hey there, this is Sam from Alpha International Auto Center. How are you doing today?'
     } else {
-      // Custom AI task — greeting should reflect the user's actual instructions
-      greetingPrompt = `You are making an outbound phone call on behalf of someone. Your specific task for this call is: "${task}"
+      // Custom AI task — greeting derived ENTIRELY from the task. No Alpha/business references.
+      const nameIntro = callerName ? `Your name is ${callerName}.` : ''
+      greetingPrompt = `You are making a phone call. ${nameIntro}
+Your task: "${task}"
 
-Say a natural opening line that starts working toward completing your task. 1-2 sentences max. Be friendly and direct.
-YOU called THEM. Never say Thanks for calling. No markdown, no stage directions.
-Spoken words only.`
-      fallbackGreeting = 'Hey, how are you doing today?'
+Say a natural opening line. Be friendly. 1-2 sentences max.
+Spoken words only. No markdown.`
+      fallbackGreeting = callerName ? `Hey, this is ${callerName}. How are you doing?` : 'Hey, how are you doing today?'
     }
 
     const greeting = await aiChat([{ role: 'system', content: greetingPrompt }], 60) || fallbackGreeting
@@ -303,7 +301,7 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     const objectionCount = (state.objection_count as number) || 0
     const isHardNo = /not interested|do not call|take me off|remove me|stop calling/i.test(text)
     const isSoftNo = /no thank|no thanks|can.?t right now|not right now|maybe later|not today|not looking/i.test(text)
-    const isAlpha = (state.task || '') === 'Alpha Auto Center oil change call' || /oil.?change|auto.?center|brake|transmission|engine|state inspection/i.test(state.task || '')
+    const isAlpha = (state.task || '') === 'Alpha Auto Center oil change call'
 
     if (isHardNo || (isSoftNo && objectionCount >= 1)) {
       const bye = 'No problem at all, I appreciate your time. Have a great day!'
@@ -340,6 +338,7 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
 
     // Determine call type from stored task
     const storedTask = state.task || ''
+    const storedCallerName = state.caller_name || ''
     const isPersonal = !storedTask || storedTask === 'personal call'
 
     let systemPrompt: string
@@ -349,17 +348,16 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
       // Personal call — AI should just have a natural conversation, no script
       systemPrompt = `You are on a live phone call. This is a personal call — just have a natural, friendly conversation. No sales pitch, no script.\n\nRULES:\n- Be conversational and friendly.\n- HOLD phrases: say Of course, take your time. and wait.\n- 1-3 sentences max. Natural spoken words. No markdown.`
     } else {
-      // Custom AI task — AI must follow the user's specific instructions
-      systemPrompt = `You are on a live phone call. You were given a specific task for this call: "${storedTask}"
+      // Custom AI task — system prompt derived ENTIRELY from the task. No hardcoded business references.
+      const nameLine = storedCallerName ? `Your name is ${storedCallerName}. ` : ''
+      systemPrompt = `You are on a live phone call. ${nameLine}Your task: "${storedTask}"
 
-CRITICAL: Stay focused on your task. Complete each step in order. Do NOT go off-topic.
+Follow your task naturally. When the task is complete or the person says goodbye, say goodbye and end the conversation.
 
 RULES:
-- Follow the task steps in order: "${storedTask}"
-- Answer naturally if they respond or ask something.
-- HOLD: say 'Of course, take your time.' and wait.
-- When the task steps are all done or the person says goodbye, give ONE warm natural farewell and stop — do not keep talking.
-- 1-3 sentences max. Spoken words only. No markdown, no loops, no repetition.`
+- Stay on task. Do NOT discuss anything unrelated to your task.
+- 1-3 sentences max per reply.
+- Spoken words only. No markdown.`
     }
 
     const messages = [{ role: 'system', content: systemPrompt }, ...conversation.slice(-10), { role: 'user', content: text }]
@@ -399,18 +397,20 @@ export async function POST(req: NextRequest) {
   // call.initiated — create DB row early so state exists when other events arrive
   if (eventType === 'call.initiated') {
     let task = ''
+    let callerName = ''
     const cs = payload?.client_state as string
-    if (cs) { try { task = JSON.parse(Buffer.from(cs, 'base64').toString()).task || '' } catch { /* ok */ } }
+    if (cs) { try { const parsed = JSON.parse(Buffer.from(cs, 'base64').toString()); task = parsed.task || ''; callerName = parsed.callerName || '' } catch { /* ok */ } }
     console.log(`[webhook] call.initiated — creating DB row, task="${task.slice(0, 50)}"`)
-    waitUntil(dbUpsert(callId, { task, status: 'calling', greeted: false, processing: false, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' }))
+    waitUntil(dbUpsert(callId, { task, caller_name: callerName, status: 'calling', greeted: false, processing: false, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' }))
     return NextResponse.json('OK')
   }
 
   if (eventType === 'call.answered') {
     let task = ''
+    let callerName = ''
     const cs = payload?.client_state as string
-    if (cs) { try { task = JSON.parse(Buffer.from(cs, 'base64').toString()).task || '' } catch { /* ok */ } }
-    waitUntil(handleAnswered(callId, task))
+    if (cs) { try { const parsed = JSON.parse(Buffer.from(cs, 'base64').toString()); task = parsed.task || ''; callerName = parsed.callerName || '' } catch { /* ok */ } }
+    waitUntil(handleAnswered(callId, task, callerName))
     return NextResponse.json('OK')
   }
 

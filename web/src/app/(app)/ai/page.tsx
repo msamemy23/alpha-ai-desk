@@ -673,11 +673,24 @@ export default function AIPage() {
     }
 
     // Direct call detection — bypass AI for explicit call commands
-    // Matches: "call 2819008141" or "call 2819008141 and ask if he's going to church"
-    const callMatch = text.match(/^(?:call|dial|phone|ring)\s+([\d\s\-\(\)\+]+?)(?:\s+(?:and|to|then)\s+(.+))?$/i)
+    // Matches: "call 2819008141 im aaron and ask if he's going to church"
+    // Captures: phone number, then everything after the phone number as the rest
+    const callMatch = text.match(/^(?:call|dial|phone|ring)\s+([\d\s\-\(\)\+]+?)(?:\s+(.+))?$/i)
     if (callMatch) {
       const phone = callMatch[1].replace(/\s/g, '')
-      const instructions = callMatch[2]?.trim() || ''
+      let rest = callMatch[2]?.trim() || ''
+
+      // Parse caller identity from rest (e.g. "im aaron and ask ...", "I'm aaron and ask ...")
+      let callerName = ''
+      const nameMatch = rest.match(/^(?:i'?m\s+|my\s+name\s+is\s+)(\w+)\s*(?:and\s+)?/i)
+      if (nameMatch) {
+        callerName = nameMatch[1]
+        rest = rest.slice(nameMatch[0].length).trim()
+      }
+
+      // Strip leading "and/to/then" if present (e.g. "and ask if he's going to church")
+      let instructions = rest.replace(/^(?:and|to|then)\s+/i, '').trim()
+
       // If user gave instructions ("call X and ask Y"), use them as the AI task
       // If no instructions ("call X"), it's a personal call — no AI script
       const callTask = instructions
@@ -690,7 +703,7 @@ export default function AIPage() {
             const r = await fetch('/api/make-call', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ to: phone, name: phone, task: callTask })
+              body: JSON.stringify({ to: phone, name: phone, task: callTask, callerName })
             })
             const d = await r.json()
             const msg: ChatMessage = d.ok
