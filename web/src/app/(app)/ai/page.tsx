@@ -337,6 +337,7 @@ export default function AIPage() {
   const voiceSynthRef = useRef<SpeechSynthesisUtterance | null>(null)
   const bestVoiceRef = useRef<SpeechSynthesisVoice | null>(null)
   const voicePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const endedAtRef = useRef<number | null>(null)
   const voiceActiveRef = useRef(false)
   const [jumpingIn, setJumpingIn] = useState(false)
   const [jumpInPhone, setJumpInPhone] = useState('')
@@ -739,14 +740,19 @@ export default function AIPage() {
             recording_url: d.recording_url || prev.recording_url,
           } : null)
           if (d.status === 'ended') {
-            if (voicePollRef.current) clearInterval(voicePollRef.current)
-            // Add summary to chat
-            const summaryMsg: ChatMessage = {
-              role: 'assistant',
-              content: '',
-              html: renderVoiceSummary(d)
+            // Keep polling 15s after call ends to catch recording_url and summary
+            if (!endedAtRef.current) endedAtRef.current = Date.now()
+            if (Date.now() - endedAtRef.current > 15000) {
+              if (voicePollRef.current) clearInterval(voicePollRef.current)
+              endedAtRef.current = null
+              // Add summary to chat
+              const summaryMsg: ChatMessage = {
+                role: 'assistant',
+                content: '',
+                html: renderVoiceSummary(d)
+              }
+              setMessages(prev => [...prev, summaryMsg])
             }
-            setMessages(prev => [...prev, summaryMsg])
           }
         }
       } catch { /* ignore poll errors */ }

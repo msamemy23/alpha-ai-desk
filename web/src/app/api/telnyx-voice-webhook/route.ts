@@ -1,20 +1,22 @@
-﻿/**
- * Telnyx Voice Webhook - AI voice agent v8.0
- * - Two call types: task-based AI call, personal call
+/**
+ * Telnyx Voice Webhook — AI voice agent v8.0
+ * - Three call types: Alpha sales, custom AI task, personal call
  * - Personal calls: silent connect, no AI greeting or script
- * - Task calls: AI follows the given prompt exactly, clean slate each call
+ * - Custom task calls: AI follows user's specific instructions
+ * - Alpha sales calls: uses Alpha Auto Center sales script
  * - Echo filter, barge-in, transcription engine B, both tracks
+ * - Groq AI (30-80ms TTFT) with OpenRouter fallback
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { waitUntil } from '@vercel/functions'
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
+const GROQ_API_KEY = process.env.GROQ_API_KEY || ''
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
-// Voice needs a FAST model — free models 429 too often, DeepSeek V3.2 thinking mode too slow
-// Google Gemini Flash Lite is ultra-fast (lowest latency) and very cheap ($0.25/M in)
+// OpenRouter fallback model (Groq is primary for voice)
 const AI_MODEL = 'google/gemini-2.5-flash-lite'
 const VOICE = 'Telnyx.NaturalHD.orion'
 const VOICE_FB = 'Telnyx.NaturalHD.sirius'
@@ -65,38 +67,8 @@ async function speak(callId: string, text: string) {
   console.log(`[speak] sent TTS: "${clean.slice(0, 80)}..."`)
 }
 
-// ── AI Chat via OpenRouter ──
-async function aiChat(messages: Array<{ role: string; content: string }>, maxTokens = 120): Promise<string> {
-  try {
-    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${OPENROUTER_API_KEY}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://alpha-ai-desk.vercel.app' },
-      body: JSON.stringify({ model: AI_MODEL, messages, max_tokens: maxTokens, temperature: 0.7 }),
-    })
-    const d = await r.json()
-    if (!r.ok) { console.error('[aiChat] HTTP error:', r.status, r.statusText, JSON.stringify(d)); return '' }
-    if (d?.error) { console.error('[aiChat] API error:', JSON.stringify(d.error)); return '' }
-    let text: string = d?.choices?.[0]?.message?.content?.trim() || ''
-    // Strip thinking tags if model returns them
-    text = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
-    text = text.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\*([^*]+)\*/g, '$1')
-    text = text.replace(/^["']|["']$/g, '').trim()
-    text = text.replace(/\([^)]*\)/g, '').replace(/\[[^\]]*\]/g, '').trim()
-    text = text.replace(/\b(laughs|chuckles|pauses|sighs|warmly|cheerfully|gently|softly|nodding|click)\b/gi, '').trim()
-    text = text.replace(/^[-*#]+\s*/gm, '').trim()
-    text = text.replace(/ +/g, ' ').trim()
-    const lines = text.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0)
-    if (lines.length > 1) {
-      const leak = lines[1].startsWith('-') || lines[1].length < 20 || /^(speak|note|after|end|call|task|stage|step|next|if)/i.test(lines[1])
-      text = leak ? lines[0] : lines.slice(0, 3).join(' ')
-    }
-    return text.trim()
-  } catch (e) { console.error('[aiChat] error:', e); return '' }
-}
-
-// ÄÄ Clean raw AI text (strip markdown, stage directions, etc.) ÄÄ
-function cleanAiText(raw: string): string {
-  let text = raw
+// ── AI text cleaner (strips markdown, stage directions, thinking tags) ──
+function cleanAiText(text: string): string {
   text = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
   text = text.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\*([^*]+)\*/g, '$1')
   text = text.replace(/^["']|["']$/g, '').trim()
@@ -104,75 +76,92 @@ function cleanAiText(raw: string): string {
   text = text.replace(/\b(laughs|chuckles|pauses|sighs|warmly|cheerfully|gently|softly|nodding|click)\b/gi, '').trim()
   text = text.replace(/^[-*#]+\s*/gm, '').trim()
   text = text.replace(/ +/g, ' ').trim()
-  const lns = text.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0)
-  if (lns.length > 1) {
-    const leak = lns[1].startsWith('-') || lns[1].length < 20 || /^(speak|note|after|end|call|task|stage|step|next|if)/i.test(lns[1])
-    text = leak ? lns[0] : lns.slice(0, 3).join(' ')
+  const lines = text.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0)
+  if (lines.length > 1) {
+    const leak = lines[1].startsWith('-') || lines[1].length < 20 || /^(speak|note|after|end|call|task|stage|step|next|if)/i.test(lines[1])
+    text = leak ? lines[0] : lines.slice(0, 3).join(' ')
   }
   return text.trim()
 }
 
-// ÄÄ Stream AI response - speak first sentence immediately for low latency ÄÄ
-async function streamAndSpeak(callId: string, messages: Array<{ role: string; content: string }>, maxTokens = 60): Promise<string> {
+// ── AI Chat — Groq first (~30ms TTFT), OpenRouter fallback ──
+async function aiChat(messages: Array<{ role: string; content: string }>, maxTokens = 60): Promise<string> {
+  // Try Groq first — llama-3.1-8b-instant is ~30ms TTFT vs ~500ms OpenRouter
+  if (GROQ_API_KEY) {
+    try {
+      const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'llama-3.1-8b-instant', messages, max_tokens: maxTokens, temperature: 0.7 }),
+      })
+      const d = await r.json()
+      if (r.ok && !d?.error) {
+        const text = cleanAiText(d?.choices?.[0]?.message?.content?.trim() || '')
+        if (text) { console.log('[aiChat] Groq OK'); return text }
+      }
+      console.warn('[aiChat] Groq failed, falling back to OpenRouter:', r.status, JSON.stringify(d?.error))
+    } catch (e) { console.warn('[aiChat] Groq error, falling back:', e) }
+  }
+  // Fall back to OpenRouter (Gemini Flash Lite)
   try {
     const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${OPENROUTER_API_KEY}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://alpha-ai-desk.vercel.app' },
-      body: JSON.stringify({ model: AI_MODEL, messages, max_tokens: maxTokens, temperature: 0.7, stream: true }),
+      body: JSON.stringify({ model: AI_MODEL, messages, max_tokens: maxTokens, temperature: 0.7 }),
     })
-    if (!r.ok || !r.body) { console.error('[streamAndSpeak] HTTP error:', r.status); return '' }
-    const reader = r.body.getReader()
-    const decoder = new TextDecoder()
-    let fullText = ''
-    let firstSentSpoken = false
-    let done = false
-    while (!done) {
-      const { done: d, value } = await reader.read()
-      done = d
-      if (value) {
-        const chunk = decoder.decode(value, { stream: true })
-        for (const line of chunk.split('\n')) {
-          if (!line.startsWith('data: ')) continue
-          const raw = line.slice(6).trim()
-          if (raw === '[DONE]') { done = true; break }
-          try {
-            const delta = JSON.parse(raw)?.choices?.[0]?.delta?.content || ''
-            fullText += delta
-            // Speak first complete sentence immediately (min 12 chars so we don't cut too early)
-            if (!firstSentSpoken) {
-              const m = fullText.match(/^(.{12,}?[.!?])(\s|$)/)
-              if (m) {
-                firstSentSpoken = true
-                const firstSent = cleanAiText(m[1])
-                if (firstSent) {
-                  console.log('[streamAndSpeak] Speaking first sentence early:', firstSent.slice(0, 60))
-                  await speak(callId, firstSent)
-                }
-              }
-            }
-          } catch { /* skip malformed SSE chunk */ }
-        }
-      }
-    }
-    const cleaned = cleanAiText(fullText)
-    // If no sentence boundary was found (very short reply), speak the full thing
-    if (!firstSentSpoken && cleaned) {
-      console.log('[streamAndSpeak] No sentence boundary - speaking full reply:', cleaned.slice(0, 60))
-      await speak(callId, cleaned)
-    }
-    return cleaned
-  } catch (e) { console.error('[streamAndSpeak] error:', e); return '' }
+    const d = await r.json()
+    if (!r.ok) { console.error('[aiChat] OpenRouter HTTP error:', r.status, JSON.stringify(d)); return '' }
+    if (d?.error) { console.error('[aiChat] OpenRouter API error:', JSON.stringify(d.error)); return '' }
+    return cleanAiText(d?.choices?.[0]?.message?.content?.trim() || '')
+  } catch (e) { console.error('[aiChat] OpenRouter error:', e); return '' }
 }
 
+// ── Alpha Auto Center system prompt ──
+const ALPHA_SYSTEM = `You are Sam, an outbound salesperson calling local Houston customers for Alpha International Auto Center at 10710 South Main Street, Houston Texas. Phone: seven one three six six three six nine seven nine.
 
-// -- Handle call.answered --
-// Two call types:
-// 1. Personal call: task is empty - user just wants to talk, no AI involvement
-// 2. Task call: task has custom instructions - AI follows the task prompt exactly
+YOUR JOB: Sell oil changes. Be friendly, confident, and persuasive.
+
+OIL CHANGE PRICES:
+- Regular oil: thirty-four dollars and ninety-nine cents
+- House synthetic: forty-four dollars and ninety-nine cents
+- Valvoline full synthetic: fifty-four dollars and ninety-nine cents
+- All prices include up to five quarts. Additional quarts cost extra.
+
+OTHER SERVICES (only if asked): brakes, diagnostics, suspension, AC, engine, transmission, state inspections, paint and body.
+
+REBUTTALS (use one per objection, then accept gracefully if they still say no):
+- "I already have a place" -> "That is cool, we just want a chance to earn your business. We are fast, affordable, and right here on Main Street. Can we get you in this week?"
+- "Not due yet" -> "Perfect timing, gives you a chance to try us out. Can we go ahead and get you on the schedule? This week or next?"
+- "Too expensive" -> "I hear you, thirty-four ninety-nine including up to five quarts is honestly one of the best deals in Houston. What were you paying before?"
+- "Busy" -> "I get it, we are quick, most oil changes done in under thirty minutes. Morning or afternoon work better?"
+- "Just text me" -> "Absolutely, but real quick, do you have a day this week that works even tentatively? Thursday or Friday?"
+
+CLOSING: Always try to get a specific day. Can I put you down for a day? Even tentatively, just so we hold a spot.
+
+RULES:
+- YOU called THEM. Never say Thanks for calling.
+- 1-3 sentences max per reply. Short and punchy.
+- Wait for them to finish. Never answer your own questions.
+- If not interested or no thanks: give ONE rebuttal, then if still no say No problem, have a great day! and stop.
+- If they say hold on or one sec say Of course, take your time. and wait.
+- Spoken words only. No markdown, no bullets, no stage directions.`
+
+// ── Handle call.answered ──
+// Three call types:
+// 1. Alpha sales call: task === 'Alpha Auto Center oil change call' or mentions auto services
+// 2. AI task call: task has custom instructions (e.g. "ask if he's going to church")
+// 3. Personal call: task is empty — user just wants to talk, no AI involvement
 async function handleAnswered(callId: string, task: string) {
   try {
-    console.log(`[handleAnswered] START callId=${callId.slice(0, 25)} task="${task.slice(0, 80)}"`) 
+    console.log(`[handleAnswered] START callId=${callId.slice(0, 25)} task="${task.slice(0, 80)}"`)
+    const isAlpha = task === 'Alpha Auto Center oil change call' || (
+      /oil.?change|brake|transmission|engine|state inspection/i.test(task) &&
+      !/calling.*hotline|calling.*chatgpt|have a conversation|test.*call/i.test(task)
+    )
     const isPersonalCall = !task || task.trim() === '' || task === 'personal call'
+    const isCustomTask = !isAlpha && !isPersonalCall
+
+    console.log(`[handleAnswered] callType: isAlpha=${isAlpha} isPersonalCall=${isPersonalCall} isCustomTask=${isCustomTask}`)
 
     await dbUpsert(callId, { status: 'active', task: task || 'personal call', greeted: false, processing: true, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' })
 
@@ -194,16 +183,21 @@ async function handleAnswered(callId: string, task: string) {
       return
     }
 
-    // Build greeting - CALL CONTEXT comes first so model never defaults to inbound behavior
-    const greetingPrompt = `CALL CONTEXT: You are the CALLER. You placed this outbound call. You are NOT a receptionist or support agent. You called them - they did not call you.
-YOUR TASK: "${task}"
+    // Build greeting based on call type
+    let greetingPrompt: string
+    let fallbackGreeting: string
+    if (isAlpha) {
+      greetingPrompt = ALPHA_SYSTEM + '\n\nSay your opening line to a Houston customer. One punchy sentence.\nYOU called THEM. Never say Thanks for calling.'
+      fallbackGreeting = 'Hey there, this is Sam from Alpha International Auto Center. How are you doing today?'
+    } else {
+      // Custom AI task — greeting should reflect the user's actual instructions
+      greetingPrompt = `You are making an outbound phone call on behalf of someone. Your specific task for this call is: "${task}"
 
-Generate your opening line. Rules:
-- You called THEM. Open with an outbound opener like "Hey, this is..." or "Hi, I'm calling because..."
-- NEVER say "Thank you for calling", "How can I help you", or any inbound/receptionist phrase.
-- 1 sentence only. Natural spoken words. No markdown. No stage directions.
-- Get straight to the point of your task.`
-    const fallbackGreeting = `Hey, how's it going?`
+Say a natural opening line that starts working toward completing your task. 1-2 sentences max. Be friendly and direct.
+YOU called THEM. Never say Thanks for calling. No markdown, no stage directions.
+Spoken words only.`
+      fallbackGreeting = 'Hey, how are you doing today?'
+    }
 
     const greeting = await aiChat([{ role: 'system', content: greetingPrompt }], 60) || fallbackGreeting
 
@@ -281,31 +275,35 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     }
 
     // If AI is currently speaking and human says 2+ words, barge-in
-    let currentState = state
     if (state.is_speaking && text.split(' ').length >= 2) {
+      console.log('[handleTranscription] BARGE-IN: stopping AI speech')
       await telnyxPost(`/calls/${callId}/actions/playback_stop`, { stop: 'all' })
       await dbPatch(callId, { is_speaking: false, processing: false })
       await new Promise(res => setTimeout(res, 200))
-      // Only re-fetch DB state after barge-in since flags may have changed
-      currentState = await dbGet(callId)
+      // Update local state so processing check below uses correct value
+      state.is_speaking = false
+      state.processing = false
     }
 
-    // Check processing flag — if locked, skip
-    if (currentState?.processing) {
-      console.log('[VOICE DEBUG] Dropped: processing=true', { callId: callId.slice(0, 20), text, processing: currentState.processing })
+    // Check processing flag — use state already in memory (avoids extra DB round trip)
+    if (state?.processing) {
+      console.log('[VOICE DEBUG] Dropped: processing=true', { callId: callId.slice(0, 20), text, processing: state.processing })
       return
     }
 
+    // Lock immediately
     console.log(`[handleTranscription] PROCESSING: "${text}"`)
-    const transcript: Array<{ speaker: string; text: string }> = Array.isArray(currentState.transcript) ? [...currentState.transcript] : []
-    const conversation: Array<{ role: string; content: string }> = Array.isArray(currentState.conversation) ? [...currentState.conversation] : []
-    transcript.push({ speaker: 'customer', text })
-    conversation.push({ role: 'user', content: text })  // keep customer turns in history so AI has full context
-    await dbPatch(callId, { processing: true, transcript })
+    await dbPatch(callId, { processing: true })
 
-    const objectionCount = (currentState.objection_count as number) || 0
+    const transcript: Array<{ speaker: string; text: string }> = Array.isArray(state.transcript) ? [...state.transcript] : []
+    const conversation: Array<{ role: string; content: string }> = Array.isArray(state.conversation) ? [...state.conversation] : []
+    transcript.push({ speaker: 'customer', text })
+    await dbPatch(callId, { transcript })
+
+    const objectionCount = (state.objection_count as number) || 0
     const isHardNo = /not interested|do not call|take me off|remove me|stop calling/i.test(text)
     const isSoftNo = /no thank|no thanks|can.?t right now|not right now|maybe later|not today|not looking/i.test(text)
+    const isAlpha = (state.task || '') === 'Alpha Auto Center oil change call' || /oil.?change|auto.?center|brake|transmission|engine|state inspection/i.test(state.task || '')
 
     if (isHardNo || (isSoftNo && objectionCount >= 1)) {
       const bye = 'No problem at all, I appreciate your time. Have a great day!'
@@ -319,33 +317,54 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
       return
     }
 
+    // Farewell/goodbye detection — end the call naturally, no looping
+    const isFarewell = /\b(good\s*night|good\s*bye|goodbye|bye\s*bye|good\s*day|take care|talk\s*(to\s*you\s*)?later|have a good (one|night|day|evening)|catch you later|farewell|see\s*ya|so long)\b/i.test(text)
+    if (isFarewell) {
+      const farewells = [
+        'Great talking to you, good night!',
+        'Good night to you too! Take care!',
+        'Wonderful chatting with you. Good night!',
+        'Good night! Have a wonderful evening!',
+        'Great speaking with you. Good night, take care!',
+      ]
+      const closing = farewells[Math.floor(Math.random() * farewells.length)]
+      transcript.push({ speaker: 'ai', text: closing })
+      conversation.push({ role: 'assistant', content: closing })
+      await dbPatch(callId, { transcript, conversation, processing: false })
+      await speak(callId, closing)
+      // Hang up after TTS finishes
+      setTimeout(() => telnyxPost('/calls/' + callId + '/actions/hangup', {}), 3500)
+      console.log('[handleTranscription] END: farewell detected, hanging up')
+      return
+    }
+
     // Determine call type from stored task
-    const storedTask = currentState.task || ''
+    const storedTask = state.task || ''
     const isPersonal = !storedTask || storedTask === 'personal call'
-    
+
     let systemPrompt: string
-    if (isPersonal) {
+    if (isAlpha) {
+      systemPrompt = ALPHA_SYSTEM + `\n\nThe customer just said: "${text}"\nRespond naturally. 1-3 sentences max. Spoken words only.`
+    } else if (isPersonal) {
       // Personal call — AI should just have a natural conversation, no script
       systemPrompt = `You are on a live phone call. This is a personal call — just have a natural, friendly conversation. No sales pitch, no script.\n\nRULES:\n- Be conversational and friendly.\n- HOLD phrases: say Of course, take your time. and wait.\n- 1-3 sentences max. Natural spoken words. No markdown.`
     } else {
-      // Task call - CALL CONTEXT first, then task, then conversation rules
-      systemPrompt = `CALL CONTEXT: You are the CALLER. You placed this outbound call. You are NOT a receptionist or support agent. They did not call you - you called them.
-YOUR TASK: "${storedTask}"
+      // Custom AI task — AI must follow the user's specific instructions
+      systemPrompt = `You are on a live phone call. You were given a specific task for this call: "${storedTask}"
 
-HOW TO HANDLE THE CONVERSATION:
-- Small talk and pleasantries (how are you, how's your day, etc.): respond warmly and briefly, keep it natural.
-- Questions about your task or things you were explicitly told: answer them.
-- Questions about facts, times, places, names, or details you were NOT given: say "I'm not sure about that" and steer back to your task. Never make things up.
-- Once your task is complete, wrap up the call politely.
-- If they say hold on or one sec: say "Of course, take your time." and wait.
-- NEVER say "Thank you for calling", "How can I help you today", or any inbound phrase. You are the caller.
+CRITICAL: Stay focused on your task. Complete each step in order. Do NOT go off-topic.
 
-RULES: 1-2 sentences per reply. Spoken words only. No markdown. No stage directions.`
+RULES:
+- Follow the task steps in order: "${storedTask}"
+- Answer naturally if they respond or ask something.
+- HOLD: say 'Of course, take your time.' and wait.
+- When the task steps are all done or the person says goodbye, give ONE warm natural farewell and stop — do not keep talking.
+- 1-3 sentences max. Spoken words only. No markdown, no loops, no repetition.`
     }
 
-    const messages = [{ role: 'system', content: systemPrompt }, ...conversation.slice(-12)]  // conversation already includes current user turn
+    const messages = [{ role: 'system', content: systemPrompt }, ...conversation.slice(-10), { role: 'user', content: text }]
     console.log('[handleTranscription] calling AI for response...')
-    const reply = await streamAndSpeak(callId, messages, 60)
+    const reply = await aiChat(messages, 60)
 
     if (reply) {
       console.log(`[handleTranscription] AI replied: "${reply.slice(0, 80)}"`)
@@ -353,7 +372,7 @@ RULES: 1-2 sentences per reply. Spoken words only. No markdown. No stage directi
       conversation.push({ role: 'assistant', content: reply })
       const newObjCount = isSoftNo ? objectionCount + 1 : objectionCount
       await dbPatch(callId, { transcript, conversation, objection_count: newObjCount })
-      // speak() already called inside streamAndSpeak - do not call again
+      await speak(callId, reply)
       // Unlock processing immediately so next transcription can be processed
       // call.speak.ended acts as a safety net to clear is_speaking
       await dbPatch(callId, { processing: false })
@@ -375,14 +394,14 @@ export async function POST(req: NextRequest) {
   const callId = payload?.call_control_id as string
   console.log(`[webhook] ${eventType} callId=${callId?.slice(0, 25) || 'n/a'}`)
 
-  if (eventType === 'version') return NextResponse.json({ v: 'v7.0-call-types' })
+  if (eventType === 'version') return NextResponse.json({ v: 'v8.0-groq' })
 
   // call.initiated — create DB row early so state exists when other events arrive
   if (eventType === 'call.initiated') {
     let task = ''
     const cs = payload?.client_state as string
     if (cs) { try { task = JSON.parse(Buffer.from(cs, 'base64').toString()).task || '' } catch { /* ok */ } }
-    console.log(`[webhook] call.initiated — creating DB row, task="${task.slice(0, 50)}"`) 
+    console.log(`[webhook] call.initiated — creating DB row, task="${task.slice(0, 50)}"`)
     waitUntil(dbUpsert(callId, { task, status: 'calling', greeted: false, processing: false, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' }))
     return NextResponse.json('OK')
   }
