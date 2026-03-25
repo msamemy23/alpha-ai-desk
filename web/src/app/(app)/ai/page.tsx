@@ -1,5 +1,4 @@
-// build-trigger: 2026-03-25 12:18
-﻿'use client'
+﻿﻿'use client'
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 
@@ -1192,7 +1191,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         agentMessages.push({ role: 'user', content: `Browse result for "${browseUrl || browseTask}":\n${browseResult}\n\nPresent this to the user clearly.` })
         setStatus('')
         continue
-      }      }
+      }
 
       // DB Action — execute silently, feed result back to AI
       if (parsed.tool === 'action') {
