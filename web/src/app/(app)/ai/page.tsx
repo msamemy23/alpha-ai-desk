@@ -326,10 +326,13 @@ function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
   const [loaded, setLoaded] = useState(false)
   useEffect(() => {
     setLoaded(false)
+    // Fallback: show image after 2s even if onLoad doesn't fire (cached images)
+    const fallback = setTimeout(() => setLoaded(true), 2000)
     if (idx < steps.length - 1) {
-      const t = setTimeout(() => setIdx(i => i + 1), 1400)
-      return () => clearTimeout(t)
+      const t = setTimeout(() => setIdx(i => i + 1), 1800)
+      return () => { clearTimeout(t); clearTimeout(fallback) }
     }
+    return () => clearTimeout(fallback)
   }, [idx, steps.length])
   const step = steps[idx] || steps[0]
   if (!step) return null
