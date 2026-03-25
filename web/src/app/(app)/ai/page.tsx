@@ -1127,7 +1127,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         // If browsing a search engine with a search task, simulate full search flow
         if (isSearchEngine && extractedQuery) {
           const engineUrl = browseUrl.replace(/\?.*/,'').replace(/\/?$/,'')
-          const resultsUrl = `https://www.bing.com/search?q=${encodeURIComponent(extractedQuery)}`
+          const resultsUrl = `https://duckduckgo.com/?q=${encodeURIComponent(extractedQuery)}`
           const engineScreenshot = `/api/screenshot?url=${encodeURIComponent(engineUrl)}`
           const resultsScreenshot = `/api/screenshot?url=${encodeURIComponent(resultsUrl)}`
           setStatus(`🌐 Searching Google for "${extractedQuery}"...`)
