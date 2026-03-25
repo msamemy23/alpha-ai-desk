@@ -1118,6 +1118,45 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       if (parsed.tool === 'browse' || parsed.tool === 'webAutomation') {
         const browseUrl = (parsed.url || '') as string
         const browseTask = (parsed.task || parsed.query || '') as string
+
+        // Detect search-on-engine pattern: e.g. url=google.com + task="search for pikachu"
+        const isSearchEngine = browseUrl && /^https?:\/\/(www\.)?(google|bing|duckduckgo|yahoo)\.(com|co\.\w+)(\/)?(\?.*)?$/i.test(browseUrl)
+        const searchMatch = browseTask && browseTask.match(/search\s+(?:for\s+|on\s+google\s+for\s+)?(.+)/i)
+        const extractedQuery = searchMatch ? searchMatch[1].replace(/\s+picture[s]?\s*$/i, ' pictures').trim() : ''
+
+        // If browsing a search engine with a search task, simulate full search flow
+        if (isSearchEngine && extractedQuery) {
+          const engineUrl = browseUrl.replace(/\?.*/,'').replace(/\/?$/,'')
+          const resultsUrl = `https://www.google.com/search?q=${encodeURIComponent(extractedQuery)}`
+          const engineScreenshot = `/api/screenshot?url=${encodeURIComponent(engineUrl)}`
+          const resultsScreenshot = `/api/screenshot?url=${encodeURIComponent(resultsUrl)}`
+          setStatus(`🌐 Searching Google for "${extractedQuery}"...`)
+          // Generate multi-step browser panel immediately
+          const searchSteps: BrowserPanelStep[] = [
+            { action: `Navigating to ${engineUrl}...`, screenshotUrl: engineScreenshot, url: engineUrl, title: 'Google' },
+            { action: `Typing: "${extractedQuery}"`, screenshotUrl: engineScreenshot, url: engineUrl, title: 'Google' },
+            { action: `Searching for "${extractedQuery}"...`, screenshotUrl: resultsScreenshot, url: resultsUrl, title: `${extractedQuery} - Google Search` },
+          ]
+          setMessages(prev => [...prev, { role: 'browser' as const, content: '', browserSteps: searchSteps }])
+          // Also scrape results for AI answer
+          let browseResult = ''
+          try {
+            const br = await fetch('/api/web-automation', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ type: 'scrape', url: resultsUrl, task: browseTask }),
+              signal: AbortSignal.timeout(28000),
+            })
+            const bd = await br.json()
+            browseResult = bd.analysis || bd.text?.slice(0, 1000) || `Searched Google for "${extractedQuery}"`
+          } catch { browseResult = `Searched Google for "${extractedQuery}"` }
+          accumulated.push(`[Browse: "Search Google for ${extractedQuery}"]\n${browseResult}`)
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: `Browse result for search "${extractedQuery}":\n${browseResult}\n\nPresent this to the user clearly.` })
+          setStatus('')
+          continue
+        }
+
         setStatus(browseUrl ? `🌐 Browsing ${browseUrl}...` : '🌐 Browsing...')
         let browseResult = ''
         let browseSteps: BrowserPanelStep[] = []
@@ -1132,7 +1171,6 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           if (bd.ok) {
             browseResult = bd.analysis || bd.text?.slice(0, 1000) || JSON.stringify(bd).slice(0, 400)
             browseSteps = (bd.steps || []) as BrowserPanelStep[]
-            // Client-side fallback: always show BrowserPanel for URL scrapes
             if (browseSteps.length === 0 && browseUrl) {
               const sUrl = `/api/screenshot?url=${encodeURIComponent(browseUrl)}`
               browseSteps = [
@@ -1153,7 +1191,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         agentMessages.push({ role: 'user', content: `Browse result for "${browseUrl || browseTask}":\n${browseResult}\n\nPresent this to the user clearly.` })
         setStatus('')
         continue
-      }
+      }      }
 
       // DB Action — execute silently, feed result back to AI
       if (parsed.tool === 'action') {
