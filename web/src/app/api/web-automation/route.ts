@@ -194,7 +194,8 @@ export async function POST(req: NextRequest) {
       }
       
       await logRun('scrape', task || url, analysis || text.slice(0, 200), true)
-      return NextResponse.json({ ok: true, type: 'scrape', title, url, text: text.slice(0, 3000), links, analysis })
+      const scrapeScreenshotUrl = `https://image.thum.io/get/width/1280/${encodeURIComponent(url)}`
+      return NextResponse.json({ ok: true, type: 'scrape', title, url, text: text.slice(0, 3000), links, analysis, steps: [{ action: `Opened: ${title || url}`, screenshotUrl: scrapeScreenshotUrl, url, title }] })
     }
 
     // ── SEARCH: search the web and read results ──
@@ -225,7 +226,8 @@ export async function POST(req: NextRequest) {
       }
       
       await logRun('search', searchQuery, analysis, true)
-      return NextResponse.json({ ok: true, type: 'search', query: searchQuery, results, analysis })
+      const searchSteps = results.slice(0, 3).map((r: {title: string; url: string; snippet: string}) => ({ action: r.title || r.url, screenshotUrl: `https://image.thum.io/get/width/1280/${encodeURIComponent(r.url)}`, url: r.url, title: r.title }))
+      return NextResponse.json({ ok: true, type: 'search', query: searchQuery, results, analysis, steps: searchSteps })
     }
 
     // ── PARTS PRICE: search parts across multiple suppliers ──
