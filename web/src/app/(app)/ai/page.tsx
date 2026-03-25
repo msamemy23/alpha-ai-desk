@@ -1134,7 +1134,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             browseSteps = (bd.steps || []) as BrowserPanelStep[]
             // Client-side fallback: always show BrowserPanel for URL scrapes
             if (browseSteps.length === 0 && browseUrl) {
-              const sUrl = `https://image.thum.io/get/width/1280/${encodeURIComponent(browseUrl)}`
+              const sUrl = `/api/screenshot?url=${encodeURIComponent(browseUrl)}`
               browseSteps = [
                 { action: `Navigating to ${browseUrl}...`, screenshotUrl: sUrl, url: browseUrl, title: bd.title || browseUrl },
                 { action: `Reading: ${bd.title || browseUrl}`, screenshotUrl: sUrl, url: browseUrl, title: bd.title || browseUrl },

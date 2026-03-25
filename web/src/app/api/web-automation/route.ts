@@ -1,4 +1,4 @@
-// v2-normalized-lf
+﻿// v2-normalized-lf
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 
@@ -195,7 +195,7 @@ export async function POST(req: NextRequest) {
       }
       
       await logRun('scrape', task || url, analysis || text.slice(0, 200), true)
-      const scrapeScreenshotUrl = `https://image.thum.io/get/width/1280/${encodeURIComponent(url)}`
+      const scrapeScreenshotUrl = `/api/screenshot?url=${encodeURIComponent(url)}`
       const scrapeSteps = [
         { action: `Navigating to ${url}...`, screenshotUrl: scrapeScreenshotUrl, url, title: title || url },
         { action: `Reading page: ${title || url}`, screenshotUrl: scrapeScreenshotUrl, url, title: title || url },
@@ -233,9 +233,9 @@ export async function POST(req: NextRequest) {
       
       await logRun('search', searchQuery, analysis, true)
       const searchSteps: Array<{action: string; screenshotUrl: string; url: string; title: string}> = []
-      searchSteps.push({ action: `Searching for: "${searchQuery}"...`, screenshotUrl: `https://image.thum.io/get/width/1280/https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`, url: `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`, title: `Google: ${searchQuery}` })
+      searchSteps.push({ action: `Searching for: "${searchQuery}"...`, screenshotUrl: `/api/screenshot?url=${encodeURIComponent(`https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`)}`, url: `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`, title: `Google: ${searchQuery}` })
       results.slice(0, 2).forEach((r: {title: string; url: string; snippet: string}) => {
-        searchSteps.push({ action: `Found: ${r.title || r.url} — ${(r.snippet||'').slice(0,80)}${r.snippet && r.snippet.length>80?'...':''}`, screenshotUrl: `https://image.thum.io/get/width/1280/${encodeURIComponent(r.url)}`, url: r.url, title: r.title })
+        searchSteps.push({ action: `Found: ${r.title || r.url} — ${(r.snippet||'').slice(0,80)}${r.snippet && r.snippet.length>80?'...':''}`, screenshotUrl: `/api/screenshot?url=${encodeURIComponent(r.url)}`, url: r.url, title: r.title })
       })
       if (analysis) searchSteps.push({ action: analysis.slice(0, 140) + (analysis.length > 140 ? '...' : ''), screenshotUrl: searchSteps[searchSteps.length-1]?.screenshotUrl || '', url: searchSteps[searchSteps.length-1]?.url || '', title: 'Summary' })
       return NextResponse.json({ ok: true, type: 'search', query: searchQuery, results, analysis, steps: searchSteps })
