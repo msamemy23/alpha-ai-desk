@@ -325,6 +325,7 @@ function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
   const [idx, setIdx] = useState(0)
   const [loaded, setLoaded] = useState(false)
   const [imgError, setImgError] = useState(false)
+  const [hovered, setHovered] = useState(false)
   useEffect(() => {
     setImgError(false)
     const fallback = setTimeout(() => setLoaded(true), 3000)
@@ -341,27 +342,47 @@ function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
   let hostname = ''
   try { hostname = new URL(step.url).hostname } catch { hostname = step.url }
   const faviconUrl = `https://www.google.com/s2/favicons?domain=${hostname}&sz=64`
+  const openUrl = () => window.open(step.url, '_blank', 'noopener,noreferrer')
   return (
     <div style={{borderRadius:'12px',overflow:'hidden',border:'1px solid rgba(255,255,255,0.1)',marginBottom:'4px',boxShadow:'0 4px 24px rgba(0,0,0,0.4)'}}>
+      {/* Title bar */}
       <div style={{background:'#1c1c2e',padding:'8px 12px',display:'flex',alignItems:'center',gap:'8px',borderBottom:'1px solid rgba(255,255,255,0.07)'}}>
         <div style={{display:'flex',gap:'5px',flexShrink:0}}>
           <div style={{width:10,height:10,borderRadius:'50%',background:'#ff5f57'}} />
           <div style={{width:10,height:10,borderRadius:'50%',background:'#febc2e'}} />
           <div style={{width:10,height:10,borderRadius:'50%',background:'#28c840'}} />
         </div>
-        <div style={{flex:1,background:'rgba(255,255,255,0.07)',borderRadius:'6px',padding:'4px 10px',fontSize:'11px',color:'#9ca3af',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+        <div style={{flex:1,background:'rgba(255,255,255,0.07)',borderRadius:'6px',padding:'4px 10px',fontSize:'11px',color:'#9ca3af',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',cursor:'pointer'}} onClick={openUrl} title="Click to open in browser">
           {step.url}
         </div>
+        <button onClick={openUrl} title="Open in browser" style={{flexShrink:0,background:'rgba(74,222,128,0.15)',border:'1px solid rgba(74,222,128,0.3)',borderRadius:'6px',padding:'3px 10px',fontSize:'11px',color:'#4ade80',cursor:'pointer',display:'flex',alignItems:'center',gap:'4px',fontWeight:600}}>
+          Open ↗
+        </button>
         <div style={{fontSize:'10px',color:isDone?'#4ade80':'#6b7280',flexShrink:0,fontWeight:600}}>{idx+1}/{steps.length}</div>
       </div>
-      <div style={{position:'relative',background:'#0a0a14',minHeight:200}}>
+      {/* Screenshot / content area */}
+      <div
+        style={{position:'relative',background:'#0a0a14',minHeight:200,cursor:'pointer'}}
+        onClick={openUrl}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        title="Click to open in browser"
+      >
         {imgSrc && !imgError ? (
           <>
             <img key={imgSrc} src={imgSrc} alt="" style={{width:'100%',display:'block',opacity:loaded?1:0,transition:'opacity 0.4s ease'}} onLoad={()=>setLoaded(true)} onError={()=>{setImgError(true);setLoaded(true)}} />
             {!loaded && (
               <div style={{position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:12,background:'#0a0a14'}}>
-                <div style={{width:28,height:28,borderRadius:'50%',border:'3px solid rgba(74,222,128,0.2)',borderTopColor:'#4ade80',animation:'spin 1s linear infinite'}} />
+                <div style={{width:28,height:28,borderRadius:'50%',border:'3px solid rgba(74,222,128,0.2)',borderTopColor:'#4ade80'}} />
                 <span style={{fontSize:'11px',color:'#4ade80'}}>Loading page...</span>
+              </div>
+            )}
+            {/* Hover overlay */}
+            {loaded && hovered && (
+              <div style={{position:'absolute',inset:0,background:'rgba(0,0,0,0.45)',display:'flex',alignItems:'center',justifyContent:'center',transition:'opacity 0.2s'}}>
+                <div style={{background:'rgba(74,222,128,0.9)',color:'#000',fontWeight:700,fontSize:'14px',padding:'10px 24px',borderRadius:'8px',display:'flex',alignItems:'center',gap:'8px'}}>
+                  🔗 Open in Browser
+                </div>
               </div>
             )}
           </>
@@ -374,6 +395,7 @@ function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
           </div>
         )}
       </div>
+      {/* Status bar */}
       <div style={{background:'#12121f',padding:'10px 14px',borderTop:'1px solid rgba(255,255,255,0.05)',display:'flex',alignItems:'center',gap:'10px'}}>
         <span style={{fontSize:'16px',flexShrink:0}}>🌐</span>
         <span style={{fontSize:'12px',color:'#d1d5db',flex:1,lineHeight:1.5}}>{step.action}</span>
