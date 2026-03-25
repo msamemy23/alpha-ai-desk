@@ -83,32 +83,44 @@ async function runBrowserTask(task: string, url: string, actions: BrowserAction[
     return { success: false, error: 'Full browser automation requires BROWSERLESS_API_KEY. Add it in Vercel environment variables. Get a free key at browserless.io', requiresSetup: true }
   }
   
-  // Build Puppeteer script for browserless
-  const actionsCode = actions.map(a => {
-    if (a.type === 'navigate') return `await page.goto('${a.url}', {waitUntil:'networkidle2',timeout:15000});`
-    if (a.type === 'click') return `await page.click('${a.selector}');await page.waitForTimeout(500);`
-    if (a.type === 'fill') return `await page.type('${a.selector}', '${a.value}', {delay:50});`
-    if (a.type === 'select') return `await page.select('${a.selector}', '${a.value}');`
-    if (a.type === 'wait') return `await page.waitForTimeout(${a.ms || 1000});`
-    if (a.type === 'submit') return `await page.click('${a.selector}');await page.waitForTimeout(2000);`
-    return ''
+  // Build Puppeteer script that captures screenshots at each step
+  const actionsCode = actions.map((a, i) => {
+    let actionCode = ''
+    let actionLabel = ''
+    if (a.type === 'navigate') { actionCode = `await page.goto('${a.url}', {waitUntil:'networkidle2',timeout:15000});`; actionLabel = `Navigate to ${a.url}` }
+    else if (a.type === 'click') { actionCode = `await page.click('${a.selector}');await page.waitForTimeout(800);`; actionLabel = `Click ${a.selector}` }
+    else if (a.type === 'fill') { actionCode = `await page.type('${a.selector}', '${(a.value||'').replace(/'/g, "\\'")}', {delay:30});`; actionLabel = `Fill ${a.selector}` }
+    else if (a.type === 'select') { actionCode = `await page.select('${a.selector}', '${a.value}');`; actionLabel = `Select ${a.value}` }
+    else if (a.type === 'wait') { actionCode = `await page.waitForTimeout(${a.ms || 1000});`; actionLabel = `Wait ${a.ms||1000}ms` }
+    else if (a.type === 'submit') { actionCode = `await page.click('${a.selector}');await page.waitForTimeout(2000);`; actionLabel = `Submit form` }
+    if (!actionCode) return ''
+    return `
+      try {
+        ${actionCode}
+        steps.push({action:'${actionLabel}',screenshot:(await page.screenshot({type:'png',fullPage:false})).toString('base64'),url:page.url(),title:await page.title()});
+      } catch(stepErr) {
+        steps.push({action:'Failed: ${actionLabel} — '+stepErr.message,screenshot:'',url:page.url(),title:await page.title()});
+      }`
   }).join('\n    ')
-  
+
   const script = `
     const browser = await puppeteer.launch();
     const page = await browser.newPage();
     await page.setViewport({width:1280,height:800});
+    const steps = [];
     try {
       await page.goto('${url}', {waitUntil:'networkidle2',timeout:15000});
+      steps.push({action:'Opened page',screenshot:(await page.screenshot({type:'png',fullPage:false})).toString('base64'),url:page.url(),title:await page.title()});
       ${actionsCode}
-      const screenshot = await page.screenshot({type:'png',fullPage:false});
       const text = await page.evaluate(() => document.body.innerText.slice(0,3000));
-      const title = await page.title();
+      const finalTitle = await page.title();
       await browser.close();
-      return {screenshot: screenshot.toString('base64'), text, title, success: true};
+      const lastStep = steps[steps.length-1];
+      return {steps, screenshot:lastStep?lastStep.screenshot:'', text, title:finalTitle, success:true};
     } catch(e) {
+      try { steps.push({action:'Error: '+e.message,screenshot:(await page.screenshot({type:'png',fullPage:false})).toString('base64'),url:page.url(),title:await page.title()}); } catch(_){}
       await browser.close();
-      return {success: false, error: e.message};
+      return {success:false, error:e.message, steps};
     }
   `
   
@@ -134,10 +146,18 @@ interface BrowserAction {
   ms?: number
 }
 
+interface BrowserStep {
+  action: string
+  screenshot: string
+  url: string
+  title: string
+}
+
 interface BrowserResult {
   success: boolean
   error?: string
   screenshot?: string
+  steps?: BrowserStep[]
   text?: string
   title?: string
   requiresSetup?: boolean
