@@ -1121,6 +1121,15 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           if (bd.ok) {
             browseResult = bd.analysis || bd.text?.slice(0, 1000) || JSON.stringify(bd).slice(0, 400)
             browseSteps = (bd.steps || []) as BrowserPanelStep[]
+            // Client-side fallback: always show BrowserPanel for URL scrapes
+            if (browseSteps.length === 0 && browseUrl) {
+              const sUrl = `https://image.thum.io/get/width/1280/${encodeURIComponent(browseUrl)}`
+              browseSteps = [
+                { action: `Navigating to ${browseUrl}...`, screenshotUrl: sUrl, url: browseUrl, title: bd.title || browseUrl },
+                { action: `Reading: ${bd.title || browseUrl}`, screenshotUrl: sUrl, url: browseUrl, title: bd.title || browseUrl },
+                ...(browseResult ? [{ action: `Done: ${browseResult.slice(0, 120)}`, screenshotUrl: sUrl, url: browseUrl, title: bd.title || browseUrl }] : [])
+              ] as BrowserPanelStep[]
+            }
           } else {
             browseResult = bd.error || 'Browse failed'
           }
