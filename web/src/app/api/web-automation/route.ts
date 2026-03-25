@@ -195,7 +195,12 @@ export async function POST(req: NextRequest) {
       
       await logRun('scrape', task || url, analysis || text.slice(0, 200), true)
       const scrapeScreenshotUrl = `https://image.thum.io/get/width/1280/${encodeURIComponent(url)}`
-      return NextResponse.json({ ok: true, type: 'scrape', title, url, text: text.slice(0, 3000), links, analysis, steps: [{ action: `Opened: ${title || url}`, screenshotUrl: scrapeScreenshotUrl, url, title }] })
+      const scrapeSteps = [
+        { action: `Navigating to ${url}...`, screenshotUrl: scrapeScreenshotUrl, url, title: title || url },
+        { action: `Reading page: ${title || url}`, screenshotUrl: scrapeScreenshotUrl, url, title: title || url },
+        ...(analysis ? [{ action: `Analyzed: ${analysis.slice(0, 120)}${analysis.length > 120 ? '...' : ''}`, screenshotUrl: scrapeScreenshotUrl, url, title: title || url }] : [])
+      ]
+      return NextResponse.json({ ok: true, type: 'scrape', title, url, text: text.slice(0, 3000), links, analysis, steps: scrapeSteps })
     }
 
     // ── SEARCH: search the web and read results ──
@@ -226,7 +231,12 @@ export async function POST(req: NextRequest) {
       }
       
       await logRun('search', searchQuery, analysis, true)
-      const searchSteps = results.slice(0, 3).map((r: {title: string; url: string; snippet: string}) => ({ action: r.title || r.url, screenshotUrl: `https://image.thum.io/get/width/1280/${encodeURIComponent(r.url)}`, url: r.url, title: r.title }))
+      const searchSteps: Array<{action: string; screenshotUrl: string; url: string; title: string}> = []
+      searchSteps.push({ action: `Searching for: "${searchQuery}"...`, screenshotUrl: `https://image.thum.io/get/width/1280/https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`, url: `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`, title: `Google: ${searchQuery}` })
+      results.slice(0, 2).forEach((r: {title: string; url: string; snippet: string}) => {
+        searchSteps.push({ action: `Found: ${r.title || r.url} — ${(r.snippet||'').slice(0,80)}${r.snippet && r.snippet.length>80?'...':''}`, screenshotUrl: `https://image.thum.io/get/width/1280/${encodeURIComponent(r.url)}`, url: r.url, title: r.title })
+      })
+      if (analysis) searchSteps.push({ action: analysis.slice(0, 140) + (analysis.length > 140 ? '...' : ''), screenshotUrl: searchSteps[searchSteps.length-1]?.screenshotUrl || '', url: searchSteps[searchSteps.length-1]?.url || '', title: 'Summary' })
       return NextResponse.json({ ok: true, type: 'search', query: searchQuery, results, analysis, steps: searchSteps })
     }
 

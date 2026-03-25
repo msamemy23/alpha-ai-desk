@@ -24,7 +24,8 @@ interface VoiceCallState {
   recording_url?: string
 }
 
-interface ChatMessage { role: 'user'|'assistant'; content: string; html?: string; imageUrl?: string; reasoning?: string; thinkingSeconds?: number }
+interface BrowserStep { action: string; screenshot?: string; screenshotUrl?: string; url: string; title: string }
+interface ChatMessage { role: 'user'|'assistant'|'browser'; content: string; html?: string; imageUrl?: string; reasoning?: string; thinkingSeconds?: number; browserSteps?: BrowserStep[] }
 
 const SYSTEM_PROMPT = `You are Alpha AI, the intelligent assistant for Alpha International Auto Center, an auto repair shop in Houston, TX.
 
@@ -334,6 +335,75 @@ interface HistoryEntry {
   date: string
   preview: string
   messages: ChatMessage[]
+}
+
+
+function BrowserPanel({ steps }: { steps: BrowserStep[] }) {
+  const [idx, setIdx] = useState(0)
+  const [loaded, setLoaded] = useState(false)
+  useEffect(() => {
+    setLoaded(false)
+    if (idx < steps.length - 1) {
+      const t = setTimeout(() => setIdx(i => i + 1), 1500)
+      return () => clearTimeout(t)
+    }
+  }, [idx, steps.length])
+  const step = steps[idx] || steps[0]
+  if (!step) return null
+  const imgSrc = step.screenshotUrl || (step.screenshot ? `data:image/png;base64,${step.screenshot}` : null)
+  const isDone = idx >= steps.length - 1
+  return (
+    <div style={{borderRadius:'12px',overflow:'hidden',border:'1px solid rgba(255,255,255,0.1)',marginBottom:'4px',boxShadow:'0 4px 24px rgba(0,0,0,0.4)'}}>
+      {/* Browser chrome bar */}
+      <div style={{background:'#1c1c2e',padding:'8px 12px',display:'flex',alignItems:'center',gap:'8px',borderBottom:'1px solid rgba(255,255,255,0.07)'}}>
+        <div style={{display:'flex',gap:'5px',flexShrink:0}}>
+          <div style={{width:10,height:10,borderRadius:'50%',background:'#ff5f57'}} />
+          <div style={{width:10,height:10,borderRadius:'50%',background:'#febc2e'}} />
+          <div style={{width:10,height:10,borderRadius:'50%',background:'#28c840'}} />
+        </div>
+        <div style={{flex:1,background:'rgba(255,255,255,0.07)',borderRadius:'6px',padding:'4px 10px',fontSize:'11px',color:'#9ca3af',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:'4px'}}>
+          <span style={{fontSize:'9px',color:'#4ade80'}}>🔒</span>
+          <span style={{overflow:'hidden',textOverflow:'ellipsis'}}>{step.url}</span>
+        </div>
+        <div style={{fontSize:'10px',color:isDone?'#4ade80':'#6b7280',flexShrink:0,fontWeight:600}}>
+          {idx+1} / {steps.length}
+        </div>
+      </div>
+      {/* Screenshot area */}
+      {imgSrc ? (
+        <div style={{position:'relative',background:'#0a0a14',minHeight:200}}>
+          <img
+            src={imgSrc}
+            alt={step.action}
+            style={{width:'100%',display:'block',opacity:loaded?1:0,transition:'opacity 0.5s ease'}}
+            onLoad={()=>setLoaded(true)}
+          />
+          {!loaded && (
+            <div style={{position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:12,background:'#0a0a14'}}>
+              <div style={{width:32,height:32,borderRadius:'50%',border:'3px solid rgba(74,222,128,0.2)',borderTopColor:'#4ade80',animation:'spin 0.8s linear infinite'}} />
+              <span style={{fontSize:'11px',color:'#4ade80'}}>Loading page...</span>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{background:'#0a0a14',padding:'60px',textAlign:'center',color:'#374151',fontSize:'12px'}}>
+          <div style={{fontSize:'32px',marginBottom:'8px'}}>🌐</div>
+          <div>Browsing the web...</div>
+        </div>
+      )}
+      {/* Narration bar */}
+      <div style={{background:'#12121f',padding:'10px 14px',borderTop:'1px solid rgba(255,255,255,0.05)',display:'flex',alignItems:'center',gap:'10px'}}>
+        <span style={{fontSize:'16px',flexShrink:0}}>🌐</span>
+        <span style={{fontSize:'12px',color:'#d1d5db',flex:1,lineHeight:1.5}}>{step.action}</span>
+        {!isDone && (
+          <span style={{fontSize:'18px',color:'#4ade80',letterSpacing:2,flexShrink:0}}>···</span>
+        )}
+        {isDone && (
+          <span style={{fontSize:'10px',color:'#4ade80',flexShrink:0,fontWeight:600}}>✓ Done</span>
+        )}
+      </div>
+    </div>
+  )
 }
 
 export default function AIPage() {
@@ -1287,8 +1357,7 @@ if (parsed.tool === 'webAutomation') {
         } catch (e) { waResult = `Error: ${e instanceof Error ? e.message : 'Unknown'}` }
 
         if (steps.length > 0) {
-          const stepsHtml = `<div style="border:1px solid rgba(74,222,128,0.2);border-radius:12px;overflow:hidden;margin-bottom:4px;background:rgba(0,0,0,0.2)"><div style="padding:8px 12px;background:rgba(74,222,128,0.08);border-bottom:1px solid rgba(74,222,128,0.15);font-size:11px;color:#4ade80;display:flex;align-items:center;gap:6px;"><span>🌐</span><span style="font-weight:600;">AI Browser</span><span style="color:#6b7280;margin-left:4px;">${steps.length} step${steps.length > 1 ? 's' : ''}</span></div>${steps.filter(s => (s.screenshot || s.screenshotUrl)).map((s, i) => `<div style="padding:10px 12px;${i < steps.filter(x=>x.screenshot).length - 1 ? 'border-bottom:1px solid rgba(255,255,255,0.05);' : ''}"><div style="font-size:10px;color:#9ca3af;margin-bottom:6px;"><span style="background:rgba(74,222,128,0.15);color:#4ade80;border-radius:4px;padding:1px 6px;font-size:9px;">${i + 1}</span> ${s.action}</div><img src="${s.screenshotUrl || 'data:image/png;base64,' + s.screenshot}" style="width:100%;border-radius:8px;border:1px solid rgba(255,255,255,0.08);max-height:320px;object-fit:contain;display:block;" />${s.url ? `<div style="font-size:10px;color:#6b7280;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">🔗 ${s.url}</div>` : ''}</div>`).join('')}</div>`
-          setMessages(prev => [...prev, { role: 'assistant' as const, content: '', html: stepsHtml }])
+          setMessages(prev => [...prev, { role: 'browser' as const, content: '', browserSteps: steps }])
         }
 
         accumulated.push(`[webAutomation]: ${waResult}`)
@@ -1769,7 +1838,7 @@ if (parsed.tool === 'webAutomation') {
         )}
         {messages.map((m, i) => (
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-[90%] sm:max-w-[80%] rounded-xl px-4 py-3 text-sm ${m.role === 'user' ? 'bg-blue text-white' : 'bg-bg-card border border-border'}`}>
+            <div className={`text-sm ${m.role === 'browser' ? 'w-full p-0 bg-transparent' : `max-w-[90%] sm:max-w-[80%] rounded-xl px-4 py-3 ${m.role === 'user' ? 'bg-blue text-white' : 'bg-bg-card border border-border'}`}`}>
               {/* Feature 12: Image preview */}
               {m.imageUrl && (
                 <div className="mb-2">
@@ -1789,7 +1858,9 @@ if (parsed.tool === 'webAutomation') {
                   </div>
                 </details>
               )}
-              {m.html
+              {m.role === 'browser' && m.browserSteps
+                  ? <BrowserPanel steps={m.browserSteps} />
+                  : m.html
                 ? <div dangerouslySetInnerHTML={{ __html: (m.content ? renderMarkdown(m.content) : '') + (m.html || '') }} />
                 : m.role === 'assistant' && (m.content.includes('[') || m.content.includes('**') || m.content.includes('!['))
                   ? <div className="whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
