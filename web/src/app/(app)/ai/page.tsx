@@ -24,7 +24,8 @@ interface VoiceCallState {
   recording_url?: string
 }
 
-interface ChatMessage { role: 'user'|'assistant'; content: string; html?: string; imageUrl?: string; reasoning?: string; thinkingSeconds?: number }
+type BrowserPanelStep = {action:string;screenshot?:string;screenshotUrl?:string;url:string;title:string}
+interface ChatMessage { role: 'user'|'assistant'|'browser'; content: string; html?: string; imageUrl?: string; reasoning?: string; thinkingSeconds?: number; browserSteps?: BrowserPanelStep[] }
 
 const SYSTEM_PROMPT = `You are Alpha AI, the intelligent assistant for Alpha International Auto Center, an auto repair shop in Houston, TX.
 
@@ -114,7 +115,9 @@ Labor rate is ALWAYS $120/hr. Use these automatically when building estimates.
 - NEVER auto-create customers without explicit instruction
 
 CRITICAL BEHAVIOR RULES:
-1. When the user mentions "look online", "search for", "find prices for", "look up parts", "check prices", "what does a ___ cost" — you MUST use the webSearch tool to find REAL prices. NEVER make up or estimate prices. NEVER guess part costs. Always search first.
+1. When the user mentions "look online", "search for", "find prices for", "look up parts", "check prices", "what does a ___ cost" — you MUST use the webSearch tool to find REAL prices.
+3. When the user says "go to website", "browse to", "visit", "open URL", or gives a specific URL to check:
+{"tool":"browse","url":"https://example.com","task":"what is on this page"} NEVER make up or estimate prices. NEVER guess part costs. Always search first.
 2. When the user provides a customer name or email during a conversation, IMMEDIATELY use that information. If building an estimate, attach the customer name/email to it. NEVER auto-create a customer just because someone mentions a name. ALWAYS use searchCustomers FIRST to check if they already exist. Only use createCustomer if the user EXPLICITLY says to add/create a new customer AND the search confirms they don't exist.
 3. When the user says "email it", "send it", "text it", "send the estimate", "email that to them" — take ACTION immediately. Use sendEstimateEmail or message tool. Don't ask for confirmation unless you're missing critical info (like the recipient).
 4. Think step by step. If a user gives you multiple instructions in one message, handle ALL of them in order.
@@ -315,6 +318,59 @@ interface HistoryEntry {
   date: string
   preview: string
   messages: ChatMessage[]
+}
+
+
+function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
+  const [idx, setIdx] = useState(0)
+  const [loaded, setLoaded] = useState(false)
+  useEffect(() => {
+    setLoaded(false)
+    if (idx < steps.length - 1) {
+      const t = setTimeout(() => setIdx(i => i + 1), 1400)
+      return () => clearTimeout(t)
+    }
+  }, [idx, steps.length])
+  const step = steps[idx] || steps[0]
+  if (!step) return null
+  const imgSrc = step.screenshotUrl || (step.screenshot ? `data:image/png;base64,${step.screenshot}` : null)
+  const isDone = idx >= steps.length - 1
+  return (
+    <div style={{borderRadius:'12px',overflow:'hidden',border:'1px solid rgba(255,255,255,0.1)',marginBottom:'4px',boxShadow:'0 4px 24px rgba(0,0,0,0.4)'}}>
+      <div style={{background:'#1c1c2e',padding:'8px 12px',display:'flex',alignItems:'center',gap:'8px',borderBottom:'1px solid rgba(255,255,255,0.07)'}}>
+        <div style={{display:'flex',gap:'5px',flexShrink:0}}>
+          <div style={{width:10,height:10,borderRadius:'50%',background:'#ff5f57'}} />
+          <div style={{width:10,height:10,borderRadius:'50%',background:'#febc2e'}} />
+          <div style={{width:10,height:10,borderRadius:'50%',background:'#28c840'}} />
+        </div>
+        <div style={{flex:1,background:'rgba(255,255,255,0.07)',borderRadius:'6px',padding:'4px 10px',fontSize:'11px',color:'#9ca3af',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+          {step.url}
+        </div>
+        <div style={{fontSize:'10px',color:isDone?'#4ade80':'#6b7280',flexShrink:0,fontWeight:600}}>{idx+1}/{steps.length}</div>
+      </div>
+      {imgSrc ? (
+        <div style={{position:'relative',background:'#0a0a14',minHeight:200}}>
+          <img src={imgSrc} alt={step.action} style={{width:'100%',display:'block',opacity:loaded?1:0,transition:'opacity 0.5s ease'}} onLoad={()=>setLoaded(true)} />
+          {!loaded && (
+            <div style={{position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:12,background:'#0a0a14'}}>
+              <div style={{width:28,height:28,borderRadius:'50%',border:'3px solid rgba(74,222,128,0.2)',borderTopColor:'#4ade80'}} />
+              <span style={{fontSize:'11px',color:'#4ade80'}}>Loading...</span>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{background:'#0a0a14',padding:'60px',textAlign:'center',color:'#374151',fontSize:'12px'}}>
+          <div style={{fontSize:'32px',marginBottom:'8px'}}>🌐</div><div>Browsing...</div>
+        </div>
+      )}
+      <div style={{background:'#12121f',padding:'10px 14px',borderTop:'1px solid rgba(255,255,255,0.05)',display:'flex',alignItems:'center',gap:'10px'}}>
+        <span style={{fontSize:'16px',flexShrink:0}}>🌐</span>
+        <span style={{fontSize:'12px',color:'#d1d5db',flex:1,lineHeight:1.5}}>{step.action}</span>
+        {!isDone && <span style={{fontSize:'18px',color:'#4ade80',flexShrink:0}}>···</span>}
+        {isDone && <span style={{fontSize:'10px',color:'#4ade80',flexShrink:0,fontWeight:600}}>✓ Done</span>}
+      </div>
+    </div>
+  )
 }
 
 export default function AIPage() {
@@ -1047,6 +1103,38 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         continue
       }
 
+      // Browse — calls /api/web-automation and shows live browser panel
+      if (parsed.tool === 'browse' || parsed.tool === 'webAutomation') {
+        const browseUrl = (parsed.url || '') as string
+        const browseTask = (parsed.task || parsed.query || '') as string
+        setStatus(browseUrl ? `🌐 Browsing ${browseUrl}...` : '🌐 Browsing...')
+        let browseResult = ''
+        let browseSteps: BrowserPanelStep[] = []
+        try {
+          const br = await fetch('/api/web-automation', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: browseUrl ? 'scrape' : 'search', url: browseUrl || undefined, query: browseTask || undefined, task: browseTask || undefined }),
+            signal: AbortSignal.timeout(28000),
+          })
+          const bd = await br.json()
+          if (bd.ok) {
+            browseResult = bd.analysis || bd.text?.slice(0, 1000) || JSON.stringify(bd).slice(0, 400)
+            browseSteps = (bd.steps || []) as BrowserPanelStep[]
+          } else {
+            browseResult = bd.error || 'Browse failed'
+          }
+        } catch (e) { browseResult = e instanceof Error ? e.message : 'Browse error' }
+        if (browseSteps.length > 0) {
+          setMessages(prev => [...prev, { role: 'browser' as const, content: '', browserSteps: browseSteps }])
+        }
+        accumulated.push(`[Browse: "${browseUrl || browseTask}"]\n${browseResult}`)
+        agentMessages.push({ role: 'assistant', content: raw })
+        agentMessages.push({ role: 'user', content: `Browse result for "${browseUrl || browseTask}":\n${browseResult}\n\nPresent this to the user clearly.` })
+        setStatus('')
+        continue
+      }
+
       // DB Action — execute silently, feed result back to AI
       if (parsed.tool === 'action') {
         const actionName = parsed.action as string
@@ -1666,7 +1754,7 @@ Continue silently.` }); continue } // Unknown — treat as final response
         )}
         {messages.map((m, i) => (
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-[90%] sm:max-w-[80%] rounded-xl px-4 py-3 text-sm ${m.role === 'user' ? 'bg-blue text-white' : 'bg-bg-card border border-border'}`}>
+            <div className={m.role === 'browser' ? 'text-sm w-full p-0 bg-transparent' : m.role === 'user' ? 'max-w-[90%] sm:max-w-[80%] rounded-xl px-4 py-3 text-sm bg-blue text-white' : 'max-w-[90%] sm:max-w-[80%] rounded-xl px-4 py-3 text-sm bg-bg-card border border-border'}>
               {/* Feature 12: Image preview */}
               {m.imageUrl && (
                 <div className="mb-2">
@@ -1686,7 +1774,9 @@ Continue silently.` }); continue } // Unknown — treat as final response
                   </div>
                 </details>
               )}
-              {m.html
+              {m.role === 'browser' && m.browserSteps
+                  ? <BrowserPanel steps={m.browserSteps} />
+                  : m.html
                 ? <div dangerouslySetInnerHTML={{ __html: (m.content ? renderMarkdown(m.content) : '') + (m.html || '') }} />
                 : m.role === 'assistant' && (m.content.includes('[') || m.content.includes('**') || m.content.includes('!['))
                   ? <div className="whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
