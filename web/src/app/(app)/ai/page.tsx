@@ -1,4 +1,4 @@
-﻿'use client'
+﻿﻿'use client'
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 
@@ -324,12 +324,12 @@ interface HistoryEntry {
 function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
   const [idx, setIdx] = useState(0)
   const [loaded, setLoaded] = useState(false)
+  const [imgError, setImgError] = useState(false)
   useEffect(() => {
-    // Don't reset loaded between steps - same img URL stays visible
-    // Fallback: ensure image shows after 2s even on first load
-    const fallback = setTimeout(() => setLoaded(true), 2000)
+    setImgError(false)
+    const fallback = setTimeout(() => setLoaded(true), 3000)
     if (idx < steps.length - 1) {
-      const t = setTimeout(() => setIdx(i => i + 1), 1800)
+      const t = setTimeout(() => setIdx(i => i + 1), 2200)
       return () => { clearTimeout(t); clearTimeout(fallback) }
     }
     return () => clearTimeout(fallback)
@@ -338,6 +338,9 @@ function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
   if (!step) return null
   const imgSrc = step.screenshotUrl || (step.screenshot ? `data:image/png;base64,${step.screenshot}` : null)
   const isDone = idx >= steps.length - 1
+  let hostname = ''
+  try { hostname = new URL(step.url).hostname } catch { hostname = step.url }
+  const faviconUrl = `https://www.google.com/s2/favicons?domain=${hostname}&sz=64`
   return (
     <div style={{borderRadius:'12px',overflow:'hidden',border:'1px solid rgba(255,255,255,0.1)',marginBottom:'4px',boxShadow:'0 4px 24px rgba(0,0,0,0.4)'}}>
       <div style={{background:'#1c1c2e',padding:'8px 12px',display:'flex',alignItems:'center',gap:'8px',borderBottom:'1px solid rgba(255,255,255,0.07)'}}>
@@ -351,21 +354,26 @@ function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
         </div>
         <div style={{fontSize:'10px',color:isDone?'#4ade80':'#6b7280',flexShrink:0,fontWeight:600}}>{idx+1}/{steps.length}</div>
       </div>
-      {imgSrc ? (
-        <div style={{position:'relative',background:'#0a0a14',minHeight:200}}>
-          <img key={imgSrc} src={imgSrc} alt={step.action} style={{width:'100%',display:'block',opacity:loaded?1:0,transition:'opacity 0.4s ease'}} onLoad={()=>setLoaded(true)} onError={()=>setLoaded(true)} />
-          {!loaded && (
-            <div style={{position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:12,background:'#0a0a14'}}>
-              <div style={{width:28,height:28,borderRadius:'50%',border:'3px solid rgba(74,222,128,0.2)',borderTopColor:'#4ade80'}} />
-              <span style={{fontSize:'11px',color:'#4ade80'}}>Loading...</span>
-            </div>
-          )}
-        </div>
-      ) : (
-        <div style={{background:'#0a0a14',padding:'60px',textAlign:'center',color:'#374151',fontSize:'12px'}}>
-          <div style={{fontSize:'32px',marginBottom:'8px'}}>🌐</div><div>Browsing...</div>
-        </div>
-      )}
+      <div style={{position:'relative',background:'#0a0a14',minHeight:200}}>
+        {imgSrc && !imgError ? (
+          <>
+            <img key={imgSrc} src={imgSrc} alt="" style={{width:'100%',display:'block',opacity:loaded?1:0,transition:'opacity 0.4s ease'}} onLoad={()=>setLoaded(true)} onError={()=>{setImgError(true);setLoaded(true)}} />
+            {!loaded && (
+              <div style={{position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:12,background:'#0a0a14'}}>
+                <div style={{width:28,height:28,borderRadius:'50%',border:'3px solid rgba(74,222,128,0.2)',borderTopColor:'#4ade80',animation:'spin 1s linear infinite'}} />
+                <span style={{fontSize:'11px',color:'#4ade80'}}>Loading page...</span>
+              </div>
+            )}
+          </>
+        ) : (
+          <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'40px 24px',gap:16,minHeight:200}}>
+            <img src={faviconUrl} alt="" style={{width:48,height:48,borderRadius:8,background:'rgba(255,255,255,0.05)',padding:4}} onError={(e)=>{(e.target as HTMLImageElement).style.display='none'}} />
+            <div style={{fontSize:'18px',fontWeight:600,color:'#e5e7eb',textAlign:'center'}}>{step.title || hostname}</div>
+            <div style={{fontSize:'12px',color:'#6b7280',textAlign:'center',maxWidth:400}}>{step.url}</div>
+            <div style={{marginTop:8,padding:'6px 16px',borderRadius:20,background:'rgba(74,222,128,0.1)',border:'1px solid rgba(74,222,128,0.2)',fontSize:'11px',color:'#4ade80'}}>{isDone ? 'Page analyzed' : 'Browsing...'}</div>
+          </div>
+        )}
+      </div>
       <div style={{background:'#12121f',padding:'10px 14px',borderTop:'1px solid rgba(255,255,255,0.05)',display:'flex',alignItems:'center',gap:'10px'}}>
         <span style={{fontSize:'16px',flexShrink:0}}>🌐</span>
         <span style={{fontSize:'12px',color:'#d1d5db',flex:1,lineHeight:1.5}}>{step.action}</span>
@@ -2161,3 +2169,4 @@ Continue silently.` }); continue } // Unknown — treat as final response
     </div>
   )
 }
+
