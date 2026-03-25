@@ -202,7 +202,7 @@ export async function POST(req: NextRequest) {
         ...(analysis ? [{ action: `Analyzed: ${analysis.slice(0, 120)}${analysis.length > 120 ? '...' : ''}`, screenshotUrl: scrapeScreenshotUrl, url, title: title || url }] : [])
       ]
       const _steps = [{ action: 'Navigating...', screenshotUrl: scrapeScreenshotUrl, url, title: title || url }, { action: 'Reading page...', screenshotUrl: scrapeScreenshotUrl, url, title: title || url }]
-      return NextResponse.json({ ok: true, type: 'scrape', title, url, text: text.slice(0, 3000), links, analysis, steps: _steps, _v: 4 })
+      return NextResponse.json({ ok: true, type: 'scrape-v5', title, url, text: text.slice(0, 3000), links, analysis, steps: _steps, _v: 4 })
     }
 
     // ── SEARCH: search the web and read results ──
