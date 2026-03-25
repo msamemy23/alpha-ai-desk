@@ -1,3 +1,4 @@
+// v2-normalized-lf
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 
