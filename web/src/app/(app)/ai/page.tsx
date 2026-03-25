@@ -325,8 +325,8 @@ function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
   const [idx, setIdx] = useState(0)
   const [loaded, setLoaded] = useState(false)
   useEffect(() => {
-    setLoaded(false)
-    // Fallback: show image after 2s even if onLoad doesn't fire (cached images)
+    // Don't reset loaded between steps - same img URL stays visible
+    // Fallback: ensure image shows after 2s even on first load
     const fallback = setTimeout(() => setLoaded(true), 2000)
     if (idx < steps.length - 1) {
       const t = setTimeout(() => setIdx(i => i + 1), 1800)
@@ -353,7 +353,7 @@ function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
       </div>
       {imgSrc ? (
         <div style={{position:'relative',background:'#0a0a14',minHeight:200}}>
-          <img src={imgSrc} alt={step.action} style={{width:'100%',display:'block',opacity:loaded?1:0,transition:'opacity 0.5s ease'}} onLoad={()=>setLoaded(true)} />
+          <img key={imgSrc} src={imgSrc} alt={step.action} style={{width:'100%',display:'block',opacity:loaded?1:0,transition:'opacity 0.4s ease'}} onLoad={()=>setLoaded(true)} onError={()=>setLoaded(true)} />
           {!loaded && (
             <div style={{position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:12,background:'#0a0a14'}}>
               <div style={{width:28,height:28,borderRadius:'50%',border:'3px solid rgba(74,222,128,0.2)',borderTopColor:'#4ade80'}} />
