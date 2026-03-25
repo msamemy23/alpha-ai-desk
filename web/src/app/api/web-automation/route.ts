@@ -201,7 +201,8 @@ export async function POST(req: NextRequest) {
         { action: `Reading page: ${title || url}`, screenshotUrl: scrapeScreenshotUrl, url, title: title || url },
         ...(analysis ? [{ action: `Analyzed: ${analysis.slice(0, 120)}${analysis.length > 120 ? '...' : ''}`, screenshotUrl: scrapeScreenshotUrl, url, title: title || url }] : [])
       ]
-      return NextResponse.json({ ok: true, type: 'scrape', title, url, text: text.slice(0, 3000), links, analysis, steps: scrapeSteps })
+      const _steps = [{ action: 'Navigating...', screenshotUrl: scrapeScreenshotUrl, url, title: title || url }, { action: 'Reading page...', screenshotUrl: scrapeScreenshotUrl, url, title: title || url }]
+      return NextResponse.json({ ok: true, type: 'scrape', title, url, text: text.slice(0, 3000), links, analysis, steps: _steps, _v: 4 })
     }
 
     // ── SEARCH: search the web and read results ──
