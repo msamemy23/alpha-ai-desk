@@ -1333,7 +1333,7 @@ if (parsed.tool === 'webAutomation') {
         const browseUrl = parsed.url || ''
         setStatus(browseUrl ? `🌐 Browsing ${browseUrl}...` : '🌐 AI Browser working...')
         let waResult = ''
-        interface BrowserStep { action: string; screenshot: string; url: string; title: string }
+        // BrowserStep defined at module level
         let steps: BrowserStep[] = []
         try {
           const r = await fetch('/api/web-automation', {
@@ -1838,7 +1838,7 @@ if (parsed.tool === 'webAutomation') {
         )}
         {messages.map((m, i) => (
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`text-sm ${m.role === 'browser' ? 'w-full p-0 bg-transparent' : `max-w-[90%] sm:max-w-[80%] rounded-xl px-4 py-3 ${m.role === 'user' ? 'bg-blue text-white' : 'bg-bg-card border border-border'}`}`}>
+            <div className={m.role === 'browser' ? 'text-sm w-full p-0 bg-transparent' : m.role === 'user' ? 'max-w-[90%] sm:max-w-[80%] rounded-xl px-4 py-3 text-sm bg-blue text-white' : 'max-w-[90%] sm:max-w-[80%] rounded-xl px-4 py-3 text-sm bg-bg-card border border-border'}>
               {/* Feature 12: Image preview */}
               {m.imageUrl && (
                 <div className="mb-2">
