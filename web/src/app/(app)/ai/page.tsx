@@ -1127,7 +1127,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         // If browsing a search engine with a search task, simulate full search flow
         if (isSearchEngine && extractedQuery) {
           const engineUrl = browseUrl.replace(/\?.*/,'').replace(/\/?$/,'')
-          const resultsUrl = `https://www.google.com/search?q=${encodeURIComponent(extractedQuery)}`
+          const resultsUrl = `https://www.bing.com/search?q=${encodeURIComponent(extractedQuery)}`
           const engineScreenshot = `/api/screenshot?url=${encodeURIComponent(engineUrl)}`
           const resultsScreenshot = `/api/screenshot?url=${encodeURIComponent(resultsUrl)}`
           setStatus(`🌐 Searching Google for "${extractedQuery}"...`)
@@ -1135,7 +1135,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           const searchSteps: BrowserPanelStep[] = [
             { action: `Navigating to ${engineUrl}...`, screenshotUrl: engineScreenshot, url: engineUrl, title: 'Google' },
             { action: `Typing: "${extractedQuery}"`, screenshotUrl: engineScreenshot, url: engineUrl, title: 'Google' },
-            { action: `Searching for "${extractedQuery}"...`, screenshotUrl: resultsScreenshot, url: resultsUrl, title: `${extractedQuery} - Google Search` },
+            { action: `Searching for "${extractedQuery}"...`, screenshotUrl: resultsScreenshot, url: resultsUrl, title: `${extractedQuery} - Search Results` },
           ]
           setMessages(prev => [...prev, { role: 'browser' as const, content: '', browserSteps: searchSteps }])
           // Also scrape results for AI answer
