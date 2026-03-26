@@ -1,4 +1,4 @@
-export const dynamic = "force-dynamic"
+﻿export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { sendEmail, estimateEmailHtml } from '@/lib/email'
@@ -360,6 +360,130 @@ export async function POST(req: NextRequest) {
           if (invErr) return fail(invErr.message, 500)
           return ok(invData)
         }
+      // ── Add Staff Member ────────────────────────────────────
+      case 'addStaff': {
+        const { name, role, emoji } = payload
+        if (!name) return fail('Staff name is required')
+        const { data, error } = await sb.from('staff').insert({
+          name: String(name).trim(),
+          role: (role as string) || 'technician',
+          emoji: (emoji as string) || ((role === 'technician') ? '🔧' : '👤'),
+          active: true,
+          created_at: new Date().toISOString(),
+        }).select().single()
+        if (error) return fail(error.message, 500)
+        return ok(data)
+      }
+
+      // ── Remove Staff Member ──────────────────────────────────
+      case 'removeStaff': {
+        const { name, id } = payload
+        let query = sb.from('staff').update({ active: false })
+        if (id) query = (query as ReturnType<typeof sb.from>).eq('id', id)
+        else if (name) query = (query as ReturnType<typeof sb.from>).ilike('name', `%${String(name)}%`)
+        else return fail('Provide staff name or id')
+        const { data, error } = await query.select().single()
+        if (error) return fail(error.message, 500)
+        return ok({ removed: true, staff: data })
+      }
+
+      // ── List Staff ───────────────────────────────────────────
+      case 'listStaff': {
+        const { data } = await sb.from('staff').select('*').eq('active', true).order('name')
+        return ok({ staff: data || [] })
+      }
+
+      // ── Update Document ──────────────────────────────────────
+      case 'updateDocument': {
+        const { id, ...updates } = payload
+        if (!id) return fail('Document id is required')
+        const { data, error } = await sb.from('documents').update({
+          ...updates, updated_at: new Date().toISOString(),
+        }).eq('id', id).select().single()
+        if (error) return fail(error.message, 500)
+        return ok(data)
+      }
+
+      // ── Create Appointment ───────────────────────────────────
+      case 'createAppointment': {
+        const { customer_name, customer_id, vehicle, service, scheduled_date, scheduled_time, notes, phone, email } = payload
+        if (!customer_name || !scheduled_date) return fail('customer_name and scheduled_date are required')
+        const { data, error } = await sb.from('appointments').insert({
+          customer_name,
+          customer_id: customer_id || null,
+          vehicle: vehicle || '',
+          service: service || '',
+          scheduled_date,
+          scheduled_time: scheduled_time || '09:00',
+          status: 'Scheduled',
+          notes: notes || '',
+          phone: phone || null,
+          email: email || null,
+          created_at: new Date().toISOString(),
+        }).select().single()
+        if (error) return fail(error.message, 500)
+        return ok(data)
+      }
+
+      // ── Time Clock Report ────────────────────────────────────
+      case 'getTimeclockReport': {
+        const { staff_name, startDate, endDate } = payload
+        const start = (startDate as string) || new Date().toISOString().split('T')[0]
+        const end   = (endDate as string) || start
+        let query = sb.from('timeclock').select('*')
+          .gte('clock_in', start + 'T00:00:00')
+          .lte('clock_in', end + 'T23:59:59')
+          .order('clock_in', { ascending: true })
+        if (staff_name) query = query.ilike('staff_name', `%${String(staff_name)}%`)
+        const { data } = await query
+        const entries = (data || []) as Record<string, unknown>[]
+        const grouped: Record<string, { name: string; entries: Record<string, unknown>[]; totalHours: number }> = {}
+        for (const e of entries) {
+          const n = e.staff_name as string
+          if (!grouped[n]) grouped[n] = { name: n, entries: [], totalHours: 0 }
+          grouped[n].entries.push(e)
+          grouped[n].totalHours += (e.hours_worked as number) || 0
+        }
+        return ok({ entries, grouped: Object.values(grouped), startDate: start, endDate: end })
+      }
+
+      // ── Delete Appointment ───────────────────────────────────
+      case 'deleteAppointment': {
+        const { id } = payload
+        if (!id) return fail('Appointment id is required')
+        const { error } = await sb.from('appointments').delete().eq('id', id)
+        if (error) return fail(error.message, 500)
+        return ok({ deleted: true, id })
+      }
+
+      // ── Update Appointment ───────────────────────────────────
+      case 'updateAppointment': {
+        const { id, ...updates } = payload
+        if (!id) return fail('Appointment id is required')
+        const { data, error } = await sb.from('appointments').update(updates).eq('id', id).select().single()
+        if (error) return fail(error.message, 500)
+        return ok(data)
+      }
+
+      // ── Get Inventory ────────────────────────────────────────
+      case 'getInventory': {
+        const { query: q } = payload
+        let dbQuery = sb.from('inventory').select('*').order('name')
+        if (q) dbQuery = dbQuery.ilike('name', `%${String(q)}%`)
+        const { data } = await dbQuery.limit(50)
+        return ok({ inventory: data || [] })
+      }
+
+      // ── Update Inventory ─────────────────────────────────────
+      case 'updateInventory': {
+        const { id, ...updates } = payload
+        if (!id) return fail('Inventory item id is required')
+        const { data, error } = await sb.from('inventory').update({
+          ...updates, updated_at: new Date().toISOString(),
+        }).eq('id', id).select().single()
+        if (error) return fail(error.message, 500)
+        return ok(data)
+      }
       default:
         return fail(`Unknown action: ${action}`)
     }
@@ -368,3 +492,4 @@ export async function POST(req: NextRequest) {
     return fail(message, 500)
   }
 }
+
