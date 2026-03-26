@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+﻿import { NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
@@ -22,6 +22,13 @@ export async function GET() {
     "ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS labor_rate numeric DEFAULT 125",
     "ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS tax_rate numeric DEFAULT 8.25",
     "CREATE TABLE IF NOT EXISTS public.time_clock (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, employee text NOT NULL, clock_in timestamptz NOT NULL, clock_out timestamptz, date date NOT NULL DEFAULT CURRENT_DATE, hours numeric, created_at timestamptz DEFAULT now())",
+    "CREATE TABLE IF NOT EXISTS public.signatures (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, token uuid NOT NULL UNIQUE DEFAULT gen_random_uuid(), document_id uuid REFERENCES public.documents(id) ON DELETE CASCADE, customer_email text, signer_name text, signature_data text, ip_address text, expires_at timestamptz, signed_at timestamptz, created_at timestamptz DEFAULT now())",
+    "CREATE INDEX IF NOT EXISTS idx_signatures_token ON public.signatures(token)",
+    "CREATE INDEX IF NOT EXISTS idx_signatures_document_id ON public.signatures(document_id)",
+    "ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS signature_requested_at timestamptz",
+    "ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS signature_signed_at timestamptz",
+    "ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS signature_signer_name text",
+    "ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS line_items jsonb DEFAULT '[]'::jsonb",
   ]
 
   const results: Record<string, string> = {}
