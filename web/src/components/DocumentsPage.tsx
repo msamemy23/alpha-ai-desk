@@ -23,6 +23,18 @@ CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will re-
 EXCLUSIONS: This warranty does not cover: (a) pre-existing engine leaks, oil consumption, or internal engine wear; (b) damage caused by use of non-recommended oil grade, viscosity, or filter after the warranted service; (c) engine damage resulting from neglect, overheating, coolant contamination, or failure to maintain proper fluid levels; (d) damage caused by accident, collision, misuse, abuse, negligence, or unauthorized modification; (e) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, property damage, business interruption, or any other costs of any kind; (f) customer-supplied parts or fluids. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
   },
   {
+    label: 'Oil Change (Synthetic) — 6 Months / 6,000 Miles',
+    months: 6,
+    mileage: 6000,
+    exclusions: `LIMITED WARRANTY: The synthetic oil change service performed by Alpha International Auto Center (\"Alpha\") is warranted to the original customer named on this invoice only and is non-transferable. This warranty covers defects in materials and workmanship for the synthetic oil change service, including the oil filter and full-synthetic motor oil installed, for a period of 6 months or 6,000 miles from the date and odometer reading on this invoice, whichever occurs first.
+
+CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will re-perform the oil change service or replace defective materials at no additional cost, provided the vehicle is returned to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs performed by any other facility without prior written authorization from Alpha will void this warranty immediately.
+
+ACTIVE LEAK EXCLUSION: If the customer knowingly continues to operate the vehicle with an active engine oil leak, coolant leak, or water leak after being advised by Alpha or any qualified technician, and such operation causes or contributes to engine damage or oil starvation, this warranty is void. The customer assumes full responsibility for damages resulting from knowingly driving with an active fluid leak.
+
+EXCLUSIONS: This warranty does not cover: (a) pre-existing engine leaks, oil consumption, or internal engine wear; (b) damage caused by use of non-recommended oil grade, viscosity, or filter after the warranted service; (c) engine damage resulting from neglect, overheating, coolant contamination, or failure to maintain proper fluid levels; (d) damage caused by accident, collision, misuse, abuse, negligence, or unauthorized modification; (e) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, or any other costs of any kind; (f) customer-supplied parts or fluids. This warranty is in lieu of all other warranties, express or implied.`  
+  },
+  {
     label: 'Brakes — 12 Months / 12,000 Miles',
     months: 12,
     mileage: 12000,
@@ -50,7 +62,16 @@ EXCLUSIONS: This warranty does not cover: (a) engine components, sensors, or sys
 
 CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace defective internal engine components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs, diagnostics, or service performed by any other facility without prior written authorization from Alpha will immediately void this warranty in its entirety, and Alpha shall have no further obligation.
 
-MANDATORY MAINTENANCE: The customer must adhere to the following maintenance schedule to maintain warranty coverage: oil and filter changes every 3,000 miles or 3 months (whichever comes first) using the oil grade and viscosity specified on this invoice. Failure to maintain proper oil change intervals, or use of non-recommended oil or filters, will void this warranty. Customer must retain all maintenance receipts as proof of compliance.
+MANDATORY RETURN INSPECTIONS — REQUIRED TO MAINTAIN WARRANTY: To activate and preserve full warranty coverage, the customer MUST return the vehicle to Alpha International Auto Center for a complimentary post-rebuild inspection at each of the following odometer milestones after the rebuild date:
+  (1) 500 miles after rebuild — Break-in check: valve clearance, oil level, coolant level, and leak inspection.
+  (2) 1,500 miles after rebuild — Intermediate check: re-torque of critical fasteners, full fluid check.
+  (3) 3,000 miles after rebuild — First oil and filter change, final clearance check.
+
+Failure to complete ALL THREE return inspections at the above milestones will void this warranty in its entirety. After completing the 3,000-mile inspection, you are free to have future oil changes performed at any qualified shop. Alpha will document each inspection on your service record.
+
+MANDATORY MAINTENANCE: Following the 3,000-mile inspection, the customer must adhere to: oil and filter changes every 3,000 miles or 3 months (whichever comes first) using the oil grade and viscosity specified on this invoice. Failure to maintain proper oil change intervals will void this warranty. Customer must retain all maintenance receipts as proof of compliance.
+
+ACTIVE LEAK EXCLUSION: If the customer knowingly continues to operate the vehicle with an active coolant leak, water leak, or engine oil leak after being advised by Alpha or any qualified technician, and such operation causes or contributes to engine overheating, cylinder head damage, bearing failure, or other internal damage, this warranty is void with respect to such damage. The customer assumes full and sole responsibility for all damages resulting from knowingly driving with an active fluid leak.
 
 EXCLUSIONS: This warranty does not cover: (a) external engine components, accessories, sensors, wiring, exhaust, or systems not specifically rebuilt or replaced on this invoice; (b) damage caused by overheating, coolant system failure, oil starvation, or failure to maintain proper fluid levels; (c) pre-existing conditions in unrelated vehicle systems (transmission, electrical, cooling system) that cause engine damage; (d) damage caused by accident, collision, flood, misuse, abuse, negligence, or unauthorized modification including aftermarket performance parts, tuning, nitrous oxide, superchargers, turbo kits, or engine swaps; (e) vehicles used for commercial, racing, towing, or off-road purposes unless expressly noted; (f) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, death, property damage, business interruption, or any other costs of any kind; (g) customer-supplied or used parts; (h) damage resulting from failure to complete required follow-up inspections. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
   },
@@ -431,6 +452,52 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                   }}>
                     {WARRANTY_PRESETS.map(p => <option key={p.label} value={p.label}>{p.label}</option>)}
                   </select>
+                  <button
+                    type="button"
+                    className="mt-2 text-xs px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium transition-colors flex items-center gap-1.5"
+                    onClick={() => {
+                      const desc = [
+                        ...(form.line_items || []).map((li: LineItem) => li.description),
+                        form.notes || ""
+                      ].join(" ").toLowerCase()
+                      let matched = WARRANTY_PRESETS.find(p => p.label === "No Warranty")!
+                      if (/synthetic|full.?syn/i.test(desc) && /oil.?change|lube|oil.?service/i.test(desc)) {
+                        matched = WARRANTY_PRESETS.find(p => p.label.includes("Synthetic")) || matched
+                      } else if (/oil.?change|lube|oil.?service/i.test(desc)) {
+                        matched = WARRANTY_PRESETS.find(p => p.label === "Oil Change — 3 Months / 3,000 Miles") || matched
+                      } else if (/rebuild|engine.?rebuild|motor.?rebuild/i.test(desc)) {
+                        matched = WARRANTY_PRESETS.find(p => p.label.includes("Engine Rebuild")) || matched
+                      } else if (/engine|motor/i.test(desc)) {
+                        matched = WARRANTY_PRESETS.find(p => p.label.includes("Engine Repair")) || matched
+                      } else if (/transmission|trans\b|tranny/i.test(desc)) {
+                        matched = WARRANTY_PRESETS.find(p => p.label.includes("Transmission")) || matched
+                      } else if (/brake|rotor|caliper|pad/i.test(desc)) {
+                        matched = WARRANTY_PRESETS.find(p => p.label.includes("Brakes")) || matched
+                      } else if (/ac\b|a\/c|air.?cond|hvac|refrigerant|freon/i.test(desc)) {
+                        matched = WARRANTY_PRESETS.find(p => p.label.includes("AC")) || matched
+                      } else if (/suspension|strut|shock|spring|sway.?bar|control.?arm|ball.?joint/i.test(desc)) {
+                        matched = WARRANTY_PRESETS.find(p => p.label.includes("Suspension")) || matched
+                      } else if (/electric|wiring|alternator|starter|battery|fuse|relay|module|ecm|pcm/i.test(desc)) {
+                        matched = WARRANTY_PRESETS.find(p => p.label.includes("Electrical")) || matched
+                      } else if (/body|paint|dent|bumper|panel|collision/i.test(desc)) {
+                        matched = WARRANTY_PRESETS.find(p => p.label.includes("Body")) || matched
+                      } else if (/inspection|state.?insp/i.test(desc)) {
+                        matched = WARRANTY_PRESETS.find(p => p.label.includes("State Inspection")) || matched
+                      }
+                      if (matched) {
+                        setForm(f => ({
+                          ...f,
+                          warranty_type: matched.label,
+                          warranty_months: matched.months || null,
+                          warranty_mileage: matched.mileage || null,
+                          warranty_exclusions: matched.exclusions || null,
+                          warranty_start: f.doc_date || new Date().toISOString().split("T")[0],
+                        }))
+                      }
+                    }}
+                  >
+                    ✨ Auto-Detect Warranty
+                  </button>
                 </div>
                 {form.warranty_type && form.warranty_type !== 'No Warranty' && form.warranty_type !== 'State Inspection — No Warranty' && (
                   <>
