@@ -162,6 +162,11 @@ export default function MessagesPage() {
     setLoading(true)
     Promise.all([loadCalls(), loadMessages(), loadCustomers()]).finally(() => setLoading(false))
 
+    // Background sync: pull latest Telnyx recordings into call_history (fire and forget)
+    fetch('/api/telnyx/sync-calls?action=sync-recordings', { method: 'POST' })
+      .then(() => setTimeout(loadCalls, 5000))
+      .catch(() => {})
+
     // Poll every 10 seconds
     pollRef.current = setInterval(() => { loadCalls(); loadMessages() }, 10000)
 
