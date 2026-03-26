@@ -710,15 +710,16 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
           </div>
           <div className="card p-0 overflow-x-auto">
             <table className="data-table w-full min-w-[640px]">
-              <thead><tr><th>Doc #</th><th>Customer</th><th>Date</th><th>Status</th><th>Total</th><th>Actions</th></tr></thead>
+              <thead><tr><th>Doc #</th><th>Customer</th><th>Vehicle</th><th>Date</th><th>Status</th><th>Total</th><th>Actions</th></tr></thead>
               <tbody>
-                {filtered.length === 0 && <tr><td colSpan={6} className="text-center text-text-muted py-8">No {type.toLowerCase()}s yet</td></tr>}
+                {filtered.length === 0 && <tr><td colSpan={7} className="text-center text-text-muted py-8">No {type.toLowerCase()}s yet</td></tr>}
                 {filtered.map(d => {
                   const t = calcTotals(d as unknown as Record<string,unknown>)
                   return (
                     <tr key={d.id} className="cursor-pointer" onClick={() => { const cust = customers.find(c => c.id === d.customer_id); setForm({ ...d, customer_phone: d.customer_phone || cust?.phone || '', customer_email: d.customer_email || cust?.email || '' } as Partial<Doc>); setEditing(d.id) }}>
                       <td className="font-mono text-sm text-blue">{d.doc_number}</td>
                       <td className="font-medium">{d.customer_name || '—'}</td>
+                      <td className="text-sm text-text-muted">{[d.vehicle_year, d.vehicle_make, d.vehicle_model].filter(Boolean).join(' ') || '—'}</td>
                       <td className="text-text-secondary">{fmt(d.doc_date)}</td>
                       <td><span className={`tag ${statusColor[d.status]||'tag-gray'}`}>{d.status}</span></td>
                       <td className="font-semibold">{formatCurrency(t.total)}</td>
