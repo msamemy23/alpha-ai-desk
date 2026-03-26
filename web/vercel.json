@@ -1,43 +1,5 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
-  "framework": "nextjs",
-  "regions": [
-    "iad1"
-  ],
-  "crons": [
-    {
-      "path": "/api/cron",
-      "schedule": "0 * * * *"
-    }
-  ],
-  "functions": {
-    "src/app/api/telnyx-voice-webhook/route.ts": {
-      "maxDuration": 60
-    },
-    "src/app/api/calls/webhook/route.ts": {
-      "maxDuration": 60
-    },
-    "src/app/api/ai-process-turn/route.ts": {
-      "maxDuration": 60
-    },
-    "src/app/api/ai-process-inbound/route.ts": {
-      "maxDuration": 60
-    },
-    "src/app/api/ai-voice-call/route.ts": {
-      "maxDuration": 60
-    },
-    "src/app/api/cron/route.ts": {
-      "maxDuration": 60
-    },
-    "src/app/api/telnyx/sync-calls/route.ts": {
-      "maxDuration": 60
-    },
-    "src/app/api/growth/import-past-calls/route.ts": {
-      "maxDuration": 60
-    },
-    "src/app/api/growth/scan-competitors/route.ts": {
-      "maxDuration": 60
-    }
-  }
+  "framework": "nextjs"
 }
