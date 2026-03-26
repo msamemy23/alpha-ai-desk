@@ -25,7 +25,6 @@ const NAV = [
   { href: '/growth', icon: '📈', label: 'Growth' },
   { href: '/automations', icon: '⏰', label: 'Automations' },
   { href: '/reports', icon: '📉', label: 'Reports' },
-  { href: '/staff', icon: '👥', label: 'Staff' },
   { href: '/settings', icon: '⚙️', label: 'Settings' },
 ]
 
