@@ -912,7 +912,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                   </p>
 
                   {sigResult && (
-                    <div className={p-3 rounded-xl mb-4 text-sm font-medium }>
+                    <div className={`p-3 rounded-xl mb-4 text-sm font-medium ${sigResult.type==='success'?'bg-green-50 text-green-700':'bg-red-50 text-red-700'}`}>
                       {sigResult.type === 'success' ? '✅ ' : '❌ '}{sigResult.msg}
                     </div>
                   )}
@@ -934,7 +934,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                           })
                           const data = await res.json()
                           if (data.success) {
-                            setSigResult({ type: 'success', msg: Signature request sent to  })
+                            setSigResult({ type: 'success', msg: `Signature request sent to ${doc.customer_email}` })
                             load()
                           } else {
                             setSigResult({ type: 'error', msg: data.error || 'Failed to send signature request' })
