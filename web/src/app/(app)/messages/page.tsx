@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { supabase, markMessageRead } from '@/lib/supabase'
 
@@ -30,6 +30,8 @@ interface Message {
 }
 interface Thread { contact: string; messages: Message[]; unread: number; lastMsg: Message }
 interface Customer { id: string; name: string; phone: string; email: string }
+
+const SHOP_NUM = '+17136636979'
 
 function formatPhone(p: string) {
   if (!p) return ''
@@ -94,16 +96,17 @@ export default function MessagesPage() {
   const [sendChannel, setSendChannel] = useState<'sms'|'email'>('sms')
   const [sending, setSending] = useState(false)
   const [dialerNum, setDialerNum] = useState('')
-  const [shopPhone, setShopPhone] = useState('')
   const audioRef = useRef<HTMLAudioElement>(null)
   const [playing, setPlaying] = useState(false)
+  const [newCallFlash, setNewCallFlash] = useState(false)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const loadCalls = useCallback(async () => {
     const { data } = await supabase
       .from('call_history')
       .select('id, call_id, direction, from_number, to_number, duration_secs, status, start_time, end_time, matched_customer_name, transcript, lead_score, lead_reasoning, service_needed, caller_sentiment, key_quotes, call_count_from_number, raw_data')
       .order('start_time', { ascending: false })
-      .limit(5000)
+      .limit(1500)
     if (data) setCalls(data)
   }, [])
 
@@ -123,12 +126,36 @@ export default function MessagesPage() {
 
   useEffect(() => {
     setLoading(true)
-    // Load shop phone from settings
-    supabase.from('settings').select('telnyx_phone_number,shop_phone').limit(1).single()
-      .then(({ data }) => {
-        setShopPhone(data?.telnyx_phone_number || data?.shop_phone || '')
-      })
     Promise.all([loadCalls(), loadMessages(), loadCustomers()]).finally(() => setLoading(false))
+
+    // Poll every 10 seconds for new calls and messages
+    pollRef.current = setInterval(() => { loadCalls(); loadMessages() }, 10000)
+
+    // Supabase realtime: instant update when new call comes in
+    const callChannel = supabase
+      .channel('live_call_history')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'call_history' }, (payload: any) => {
+        loadCalls()
+        if (payload.eventType === 'INSERT') {
+          setNewCallFlash(true)
+          setTimeout(() => setNewCallFlash(false), 5000)
+        }
+      })
+      .subscribe()
+
+    // Supabase realtime: instant update when new SMS arrives
+    const msgChannel = supabase
+      .channel('live_messages')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, () => {
+        loadMessages()
+      })
+      .subscribe()
+
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current)
+      supabase.removeChannel(callChannel)
+      supabase.removeChannel(msgChannel)
+    }
   }, [loadCalls, loadMessages, loadCustomers])
 
   // Group messages into threads
@@ -163,15 +190,9 @@ export default function MessagesPage() {
   const getRecordingUrl = (call: CallRecord) => {
     const rd = call.raw_data
     if (!rd) return null
-    // Prioritize recording_id (gets fresh URL from Telnyx API, never expires)
-    if (rd.recording_id) {
-      const params = new URLSearchParams({ id: rd.recording_id })
-      if (rd.call_session_id) params.set('sessionId', rd.call_session_id)
-      return `/api/recording-proxy?${params}`
-    }
-    // Fallback to direct URL through proxy
     if (rd.download_urls?.mp3) return `/api/recording-proxy?url=${encodeURIComponent(rd.download_urls.mp3)}`
     if (rd.download_urls?.wav) return `/api/recording-proxy?url=${encodeURIComponent(rd.download_urls.wav)}`
+    if (rd.recording_id) return `/api/recording-proxy?id=${rd.recording_id}`
     return null
   }
 
@@ -212,9 +233,24 @@ export default function MessagesPage() {
     <div className="p-6 max-w-[1400px] mx-auto">
       <audio ref={audioRef} onEnded={() => setPlaying(false)} className="hidden" />
 
+      {/* New call flash notification */}
+      {newCallFlash && (
+        <div className="fixed top-4 right-4 z-50 bg-green-600 text-white px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 animate-bounce">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13 19.79 19.79 0 0 1 1.63 4.4 2 2 0 0 1 3.6 2.21h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.06 6.06l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+          <span className="font-semibold">New call received!</span>
+          <button onClick={() => setNewCallFlash(false)} className="ml-2 opacity-70 hover:opacity-100 text-lg leading-none">&times;</button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">Communications</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-2xl font-bold">Communications</h1>
+          <span className="flex items-center gap-1.5 text-xs text-green-400 bg-green-500/10 border border-green-500/20 px-2 py-1 rounded-full">
+            <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse inline-block" />
+            Live
+          </span>
+        </div>
         <div className="flex gap-2">
           <button className="btn btn-secondary" onClick={() => makeCall(dialerNum)}>Call</button>
           <input className="form-input w-48" placeholder="Phone number..." value={dialerNum} onChange={e => setDialerNum(e.target.value)} />
@@ -271,14 +307,9 @@ export default function MessagesPage() {
                           </span>
                           <LeadBadge score={call.lead_score} />
                         </div>
-                        <div className="flex items-center gap-3 text-sm text-gray-400" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center gap-3 text-sm text-gray-400">
                           <span>{formatDuration(call.duration_secs)}</span>
                           <span>{formatDate(call.start_time)}</span>
-                          <button
-                            onClick={e => { e.stopPropagation(); makeCall(call.direction === "inbound" ? call.from_number : call.to_number) }}
-                            className="px-2 py-1 text-xs bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded hover:bg-blue-600/40 transition-colors font-medium"
-                            title="Call Back"
-                          >📞 Call</button>
                         </div>
                       </div>
                       {call.service_needed && call.service_needed !== 'unknown' && (
@@ -330,7 +361,7 @@ export default function MessagesPage() {
               </div>
 
               {/* Call Info Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
+              <div className="grid grid-cols-2 gap-3 mb-5">
                 <div className="bg-white/5 rounded-lg p-3">
                   <div className="text-xs text-gray-500 mb-1">Direction</div>
                   <DirectionBadge dir={selectedCall.direction} />
@@ -407,7 +438,7 @@ export default function MessagesPage() {
                 <div className="mb-5">
                   <div className="text-sm font-semibold mb-2">Transcript</div>
                   <div className="bg-black/30 rounded-lg p-4 text-sm text-gray-500 italic">
-                    {selectedCall.transcript === '[transcription_failed]' ? 'Recording expired — transcription unavailable' : 'Transcribing... check back soon...'}
+                    {selectedCall.transcript === '[transcription_failed]' ? 'Recording expired — transcription unavailable' : 'Pending transcription...'}
                   </div>
                 </div>
               )}
@@ -521,3 +552,4 @@ export default function MessagesPage() {
     </div>
   )
 }
+
