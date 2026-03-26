@@ -459,10 +459,13 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                     type="button"
                     className="mt-2 text-xs px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium transition-colors flex items-center gap-1.5"
                     onClick={() => {
+                      const parts = (form.parts || []) as Record<string,unknown>[]
+                      const labors = (form.labors || []) as Record<string,unknown>[]
                       const desc = [
-                        ...(form.line_items || []).map((li: LineItem) => li.description),
-                        form.notes || ""
-                      ].join(" ").toLowerCase()
+                        ...parts.map(p => ${p.name||''} ),
+                        ...labors.map(l => String(l.operation||'')),
+                        form.notes || ''
+                      ].join(' ').toLowerCase()
                       let matched = WARRANTY_PRESETS.find(p => p.label === "No Warranty")!
                       if (/synthetic|full.?syn/i.test(desc) && /oil.?change|lube|oil.?service/i.test(desc)) {
                         matched = WARRANTY_PRESETS.find(p => p.label.includes("Synthetic")) || matched
