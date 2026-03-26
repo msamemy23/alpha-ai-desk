@@ -19,6 +19,7 @@ const NAV = [
   { href: '/insurance', icon: '🛡️', label: 'Insurance' },
   { href: '/parts', icon: '🔩', label: 'Parts Lookup' },
   { href: '/inventory', icon: '📦', label: 'Inventory' },
+  { href: '/dvi', icon: '🔍', label: 'Inspections (DVI)' },
   { href: '/messages', icon: '💬', label: 'Calls & Messages' },
   { href: '/ai', icon: '🤖', label: 'Alpha AI' },
   { href: '/growth', icon: '📈', label: 'Growth' },
@@ -38,6 +39,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [notifLoading, setNotifLoading] = useState(false)
   const [location, setLocation] = useState('main')
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [lightMode, setLightMode] = useState(false)
 
   useEffect(() => {
     getUnreadCount().then(setUnread)
@@ -49,10 +51,26 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       .subscribe()
     const saved = localStorage.getItem('alpha_location')
     if (saved) setLocation(saved)
+    const savedMode = localStorage.getItem('alpha_light_mode')
+    if (savedMode === 'true') {
+      setLightMode(true)
+      document.documentElement.classList.add('light')
+    }
     return () => { supabase.removeChannel(channel) }
   }, [])
 
   useEffect(() => { setSidebarOpen(false) }, [pathname])
+
+  const toggleLightMode = () => {
+    const next = !lightMode
+    setLightMode(next)
+    localStorage.setItem('alpha_light_mode', String(next))
+    if (next) {
+      document.documentElement.classList.add('light')
+    } else {
+      document.documentElement.classList.remove('light')
+    }
+  }
 
   const loadNotifications = async () => {
     setNotifLoading(true)
@@ -145,36 +163,48 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </button>
           <span className="text-sm font-semibold lg:hidden">Alpha AI</span>
           <div className="hidden lg:block" />
-          <div className="relative">
-            <button className="relative p-1.5 rounded-lg hover:bg-bg-hover transition-colors" onClick={toggleNotif}>
-              <span className="text-lg">🔔</span>
-              {notifications.length > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 bg-red text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
-                  {notifications.length > 9 ? '9+' : notifications.length}
-                </span>
-              )}
+          <div className="flex items-center gap-2">
+            {/* Light/Dark mode toggle */}
+            <button
+              className="p-1.5 rounded-lg hover:bg-bg-hover transition-colors text-text-muted hover:text-text-primary"
+              onClick={toggleLightMode}
+              title={lightMode ? 'Switch to Dark Mode' : 'Switch to Light Mode'}
+            >
+              {lightMode ? '🌙' : '☀️'}
             </button>
-            {notifOpen && (
-              <div className="absolute right-0 top-full mt-2 w-80 max-w-[calc(100vw-2rem)] bg-bg-card border border-border rounded-xl shadow-xl z-50 max-h-96 overflow-y-auto">
-                <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-                  <span className="text-sm font-bold">Notifications</span>
-                  <button className="text-xs text-text-muted hover:text-text-primary" onClick={() => setNotifOpen(false)}>Close</button>
-                </div>
-                {notifLoading ? (
-                  <div className="p-4 text-sm text-text-muted text-center">Loading…</div>
-                ) : notifications.length === 0 ? (
-                  <div className="p-4 text-sm text-text-muted text-center">All caught up!</div>
-                ) : (
-                  notifications.map(n => (
-                    <div key={n.id} className="px-4 py-3 border-b border-border last:border-0 hover:bg-bg-hover">
-                      <div className="text-sm font-medium">{n.title}</div>
-                      <div className="text-xs text-text-muted mt-0.5">{n.body}</div>
-                      <div className="text-xs text-text-muted mt-1 opacity-60">{n.time}</div>
-                    </div>
-                  ))
+
+            {/* Notifications */}
+            <div className="relative">
+              <button className="relative p-1.5 rounded-lg hover:bg-bg-hover transition-colors" onClick={toggleNotif}>
+                <span className="text-lg">🔔</span>
+                {notifications.length > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 bg-red text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
+                    {notifications.length > 9 ? '9+' : notifications.length}
+                  </span>
                 )}
-              </div>
-            )}
+              </button>
+              {notifOpen && (
+                <div className="absolute right-0 top-full mt-2 w-80 max-w-[calc(100vw-2rem)] bg-bg-card border border-border rounded-xl shadow-xl z-50 max-h-96 overflow-y-auto">
+                  <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+                    <span className="text-sm font-bold">Notifications</span>
+                    <button className="text-xs text-text-muted hover:text-text-primary" onClick={() => setNotifOpen(false)}>Close</button>
+                  </div>
+                  {notifLoading ? (
+                    <div className="p-4 text-sm text-text-muted text-center">Loading…</div>
+                  ) : notifications.length === 0 ? (
+                    <div className="p-4 text-sm text-text-muted text-center">All caught up!</div>
+                  ) : (
+                    notifications.map(n => (
+                      <div key={n.id} className="px-4 py-3 border-b border-border last:border-0 hover:bg-bg-hover">
+                        <div className="text-sm font-medium">{n.title}</div>
+                        <div className="text-xs text-text-muted mt-0.5">{n.body}</div>
+                        <div className="text-xs text-text-muted mt-1 opacity-60">{n.time}</div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
         <main className="flex-1 overflow-y-auto bg-bg-base">
