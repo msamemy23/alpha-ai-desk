@@ -28,13 +28,13 @@
       "maxDuration": 60
     },
     "src/app/api/cron/route.ts": {
-      "maxDuration": 120
+      "maxDuration": 60
     },
     "src/app/api/telnyx/sync-calls/route.ts": {
-      "maxDuration": 300
+      "maxDuration": 60
     },
     "src/app/api/growth/import-past-calls/route.ts": {
-      "maxDuration": 300
+      "maxDuration": 60
     },
     "src/app/api/growth/scan-competitors/route.ts": {
       "maxDuration": 60
