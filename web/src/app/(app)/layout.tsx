@@ -8,28 +8,27 @@ import PhoneWidget from '@/components/PhoneWidget'
 const NAV = [
   { href: '/dashboard', icon: '📊', label: 'Dashboard' },
   { href: '/briefing', icon: '📅', label: 'Daily Briefing' },
+  { href: '/appointments', icon: '🗓️', label: 'Appointments' },
   { href: '/customers', icon: '👤', label: 'Customers' },
   { href: '/vehicles', icon: '🚗', label: 'Vehicles' },
   { href: '/jobs', icon: '🔧', label: 'Jobs' },
   { href: '/shopboard', icon: '📋', label: 'Shop Board' },
   { href: '/estimates', icon: '📄', label: 'Estimates' },
   { href: '/invoices', icon: '🧾', label: 'Invoices' },
+  { href: '/canned-jobs', icon: '⚡', label: 'Canned Jobs' },
   { href: '/insurance', icon: '🛡️', label: 'Insurance' },
   { href: '/parts', icon: '🔩', label: 'Parts Lookup' },
+  { href: '/inventory', icon: '📦', label: 'Inventory' },
   { href: '/messages', icon: '💬', label: 'Calls & Messages' },
   { href: '/ai', icon: '🤖', label: 'Alpha AI' },
   { href: '/growth', icon: '📈', label: 'Growth' },
   { href: '/automations', icon: '⏰', label: 'Automations' },
+  { href: '/reports', icon: '📉', label: 'Reports' },
+  { href: '/staff', icon: '👥', label: 'Staff' },
   { href: '/settings', icon: '⚙️', label: 'Settings' },
 ]
 
-interface Notification {
-  id: string
-  type: string
-  title: string
-  body: string
-  time: string
-}
+interface Notification { id: string; type: string; title: string; body: string; time: string }
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
@@ -53,10 +52,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     return () => { supabase.removeChannel(channel) }
   }, [])
 
-  // Close sidebar on route change (mobile)
-  useEffect(() => {
-    setSidebarOpen(false)
-  }, [pathname])
+  useEffect(() => { setSidebarOpen(false) }, [pathname])
 
   const loadNotifications = async () => {
     setNotifLoading(true)
@@ -89,60 +85,40 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen overflow-hidden">
-      {/* Mobile overlay */}
       {sidebarOpen && (
-        <div
-          className="fixed inset-0 bg-black/60 z-40 lg:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
+        <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
-      {/* Sidebar */}
       <aside className={`
         fixed inset-y-0 left-0 z-50 w-64 bg-bg-card border-r border-border flex flex-col shrink-0
         transform transition-transform duration-200 ease-in-out
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         lg:static lg:translate-x-0 lg:w-60
       `}>
-        {/* Logo */}
         <div className="flex items-center gap-3 px-4 py-5 border-b border-border">
           <div className="w-9 h-9 rounded-lg bg-blue/20 flex items-center justify-center text-lg">🔧</div>
           <div>
             <div className="text-sm font-bold text-text-primary leading-tight">Alpha Desktop AI</div>
             <div className="text-xs text-text-muted">Auto Center</div>
           </div>
-          {/* Close button on mobile */}
-          <button
-            className="ml-auto p-1 rounded-lg hover:bg-bg-hover lg:hidden"
-            onClick={() => setSidebarOpen(false)}
-          >
+          <button className="ml-auto p-1 rounded-lg hover:bg-bg-hover lg:hidden" onClick={() => setSidebarOpen(false)}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
             </svg>
           </button>
         </div>
 
-        {/* Location Selector */}
         <div className="px-3 pt-3">
-          <select
-            className="form-select text-xs w-full"
-            value={location}
-            onChange={e => switchLocation(e.target.value)}
-          >
+          <select className="form-select text-xs w-full" value={location} onChange={e => switchLocation(e.target.value)}>
             <option value="main">Main — 10710 S Main St</option>
             <option value="south">South — Coming Soon</option>
             <option value="north">North — Coming Soon</option>
           </select>
         </div>
 
-        {/* Nav */}
         <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
           {NAV.map(item => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`nav-item ${pathname.startsWith(item.href) ? 'active' : ''}`}
-            >
+            <Link key={item.href} href={item.href} className={`nav-item ${pathname.startsWith(item.href) ? 'active' : ''}`}>
               <span>{item.icon}</span>
               <span className="flex-1">{item.label}</span>
               {item.href === '/messages' && unread > 0 && (
@@ -154,36 +130,23 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
 
-        {/* Footer */}
         <div className="p-4 border-t border-border">
           <div className="text-xs text-text-muted text-center">Alpha International Auto Center</div>
           <div className="text-xs text-text-muted text-center">(713) 663-6979</div>
         </div>
       </aside>
 
-      {/* Main */}
       <div className="flex-1 flex flex-col overflow-hidden w-full">
-        {/* Top bar */}
         <div className="h-12 border-b border-border flex items-center justify-between px-3 sm:px-4 shrink-0 bg-bg-card">
-          {/* Hamburger button - mobile only */}
-          <button
-            className="p-2 rounded-lg hover:bg-bg-hover transition-colors lg:hidden"
-            onClick={() => setSidebarOpen(true)}
-          >
+          <button className="p-2 rounded-lg hover:bg-bg-hover transition-colors lg:hidden" onClick={() => setSidebarOpen(true)}>
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" />
             </svg>
           </button>
-          {/* App name on mobile */}
           <span className="text-sm font-semibold lg:hidden">Alpha AI</span>
-          {/* Spacer for desktop */}
           <div className="hidden lg:block" />
-          {/* Notifications */}
           <div className="relative">
-            <button
-              className="relative p-1.5 rounded-lg hover:bg-bg-hover transition-colors"
-              onClick={toggleNotif}
-            >
+            <button className="relative p-1.5 rounded-lg hover:bg-bg-hover transition-colors" onClick={toggleNotif}>
               <span className="text-lg">🔔</span>
               {notifications.length > 0 && (
                 <span className="absolute -top-0.5 -right-0.5 bg-red text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
