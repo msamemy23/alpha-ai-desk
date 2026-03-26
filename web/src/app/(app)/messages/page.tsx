@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { supabase, markMessageRead } from '@/lib/supabase'
 
@@ -102,12 +102,46 @@ export default function MessagesPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const loadCalls = useCallback(async () => {
-    const { data } = await supabase
+    const { data: historyData } = await supabase
       .from('call_history')
       .select('id, call_id, direction, from_number, to_number, duration_secs, status, start_time, end_time, matched_customer_name, transcript, lead_score, lead_reasoning, service_needed, caller_sentiment, key_quotes, call_count_from_number, raw_data')
       .order('start_time', { ascending: false })
       .limit(1500)
-    if (data) setCalls(data)
+
+    // ALSO load directly from ai_calls — catches new inbound calls before cron syncs them
+    const { data: aiData } = await supabase
+      .from('ai_calls')
+      .select('id, task, status, started_at, transcript, summary, recording_url')
+      .order('started_at', { ascending: false })
+      .limit(200)
+
+    const aiAsRecords: CallRecord[] = (aiData || []).map((a: any) => {
+      const isInbound = (a.task || '').includes('Inbound call from')
+      const fromMatch = (a.task || '').match(/Inbound call from ([+\d]+)/)
+      const tsNum = typeof a.started_at === 'number' ? a.started_at : parseInt(a.started_at || '0')
+      const ts = new Date(tsNum > 1e12 ? tsNum : tsNum * 1000)
+      const txText = Array.isArray(a.transcript)
+        ? a.transcript.map((t: any) => `${t.speaker === 'ai' ? 'AI' : 'Caller'}: ${t.text}`).join('\n')
+        : (typeof a.transcript === 'string' ? a.transcript : null)
+      return {
+        id: `ai-${a.id}`, call_id: `ai-${a.id}`,
+        direction: isInbound ? 'inbound' : 'outbound',
+        from_number: isInbound ? (fromMatch?.[1] || '') : '+17136636979',
+        to_number: isInbound ? '+17136636979' : '',
+        duration_secs: 0, status: a.status,
+        start_time: isNaN(ts.getTime()) ? new Date().toISOString() : ts.toISOString(),
+        end_time: '', matched_customer_name: null, transcript: txText,
+        lead_score: null, lead_reasoning: null, service_needed: null,
+        caller_sentiment: null, key_quotes: null, call_count_from_number: null,
+        raw_data: { source: 'ai_calls', recording_url: a.recording_url, summary: a.summary },
+      } as CallRecord
+    })
+
+    const historyIds = new Set((historyData || []).map((c: any) => c.call_id))
+    const newAiRecords = aiAsRecords.filter(a => !historyIds.has(a.call_id))
+    const merged = [...(historyData || []), ...newAiRecords]
+      .sort((a, b) => new Date(b.start_time).getTime() - new Date(a.start_time).getTime())
+    setCalls(merged as CallRecord[])
   }, [])
 
   const loadMessages = useCallback(async () => {
@@ -128,13 +162,13 @@ export default function MessagesPage() {
     setLoading(true)
     Promise.all([loadCalls(), loadMessages(), loadCustomers()]).finally(() => setLoading(false))
 
-    // Poll every 10 seconds for new calls and messages
+    // Poll every 10 seconds
     pollRef.current = setInterval(() => { loadCalls(); loadMessages() }, 10000)
 
-    // Supabase realtime: instant update when new call comes in
-    const callChannel = supabase
-      .channel('live_call_history')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'call_history' }, (payload: any) => {
+    // Realtime: ai_calls (new inbound calls appear here instantly)
+    const aiCallChannel = supabase
+      .channel('live_ai_calls')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ai_calls' }, (payload) => {
         loadCalls()
         if (payload.eventType === 'INSERT') {
           setNewCallFlash(true)
@@ -143,17 +177,22 @@ export default function MessagesPage() {
       })
       .subscribe()
 
-    // Supabase realtime: instant update when new SMS arrives
+    // Realtime: call_history (synced records)
+    const histChannel = supabase
+      .channel('live_call_history')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'call_history' }, () => { loadCalls() })
+      .subscribe()
+
+    // Realtime: new SMS
     const msgChannel = supabase
       .channel('live_messages')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, () => {
-        loadMessages()
-      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, () => { loadMessages() })
       .subscribe()
 
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
-      supabase.removeChannel(callChannel)
+      supabase.removeChannel(aiCallChannel)
+      supabase.removeChannel(histChannel)
       supabase.removeChannel(msgChannel)
     }
   }, [loadCalls, loadMessages, loadCustomers])
@@ -193,6 +232,7 @@ export default function MessagesPage() {
     if (rd.download_urls?.mp3) return `/api/recording-proxy?url=${encodeURIComponent(rd.download_urls.mp3)}`
     if (rd.download_urls?.wav) return `/api/recording-proxy?url=${encodeURIComponent(rd.download_urls.wav)}`
     if (rd.recording_id) return `/api/recording-proxy?id=${rd.recording_id}`
+    if (rd.recording_url) return `/api/recording-proxy?url=${encodeURIComponent(rd.recording_url)}`
     return null
   }
 
@@ -233,12 +273,11 @@ export default function MessagesPage() {
     <div className="p-6 max-w-[1400px] mx-auto">
       <audio ref={audioRef} onEnded={() => setPlaying(false)} className="hidden" />
 
-      {/* New call flash notification */}
       {newCallFlash && (
         <div className="fixed top-4 right-4 z-50 bg-green-600 text-white px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 animate-bounce">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13 19.79 19.79 0 0 1 1.63 4.4 2 2 0 0 1 3.6 2.21h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.06 6.06l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
           <span className="font-semibold">New call received!</span>
-          <button onClick={() => setNewCallFlash(false)} className="ml-2 opacity-70 hover:opacity-100 text-lg leading-none">&times;</button>
+          <button onClick={() => setNewCallFlash(false)} className="ml-2 opacity-70 hover:opacity-100 text-lg">&times;</button>
         </div>
       )}
 
