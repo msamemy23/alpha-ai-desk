@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 import { useEffect, useState, useCallback } from 'react'
 import { supabase, calcTotals, formatCurrency } from '@/lib/supabase'
 
@@ -246,7 +246,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   const sf = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
     setForm(f => ({ ...f, [k]: e.target.value }))
 
-  const filtered = docs.filter(d => !search || [d.doc_number, d.customer_name, d.status].some(v => (v||'').toLowerCase().includes(search.toLowerCase())))
+  const filtered = docs.filter(d => !search || [d.doc_number, d.customer_name, d.status, d.vehicle_year, d.vehicle_make, d.vehicle_model, d.vehicle_plate, d.vehicle_vin].some(v => (v||'').toLowerCase().includes(search.toLowerCase())))
   const totals = form ? calcTotals(form as Record<string,unknown>) : null
   const fmt = (d: string) => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—'
 
