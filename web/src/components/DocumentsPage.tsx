@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { supabase, calcTotals, formatCurrency } from '@/lib/supabase'
 
 interface Customer { id: string; name: string; phone: string; email: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin: string; vehicle_plate: string; vehicle_mileage: string }
-interface Doc { id: string; type: string; doc_number: string; status: string; doc_date: string; customer_name: string; customer_id: string; customer_phone?: string; customer_email?: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; warranty_months: number | null; warranty_mileage: number | null; warranty_start: string | null; warranty_exclusions: string | null; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
+interface Doc { id: string; type: string; doc_number: string; status: string; doc_date: string; customer_name: string; customer_id: string; customer_phone?: string; customer_email?: string; signature_requested_at?: string; signature_signed_at?: string; signature_signer_name?: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; warranty_months: number | null; warranty_mileage: number | null; warranty_start: string | null; warranty_exclusions: string | null; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
 
 const WARRANTY_PRESETS = [
   {
@@ -179,6 +179,9 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   const [sendingDoc, setSendingDoc] = useState(false)
   const [sendError, setSendError] = useState('')
   const [sendSuccess, setSendSuccess] = useState('')
+  const [sigModal, setSigModal] = useState<Doc | null>(null)
+  const [sigSending, setSigSending] = useState(false)
+  const [sigResult, setSigResult] = useState<{type:'success'|'error';msg:string}|null>(null)
   // Inline new customer creation
   const [showNewCustomer, setShowNewCustomer] = useState(false)
   const [newCustName, setNewCustName] = useState('')
@@ -344,7 +347,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                 <button className="btn btn-secondary" onClick={()=>{setEditing(null);setForm({})}}>← Back</button>
                 <button className="btn btn-primary" onClick={save}>Save {type}</button>
                 {editing !== 'new' && <button className="btn btn-danger" onClick={del}>Delete</button>}
-                {editing !== 'new' && <button className="btn btn-secondary" onClick={() => setSendModal(form as Doc)}>Send</button>}
+                {editing !== 'new' && <button className="btn btn-secondary" onClick={() => setSendModal(form as Doc)}>Send</button>} <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={() => { if (form.id) { setSigModal(form as Doc); setSigResult(null) } }}>✍️ Sign</button>
               {editing !== 'new' && type === 'Estimate' && <button className="btn btn-primary btn-sm" onClick={async () => { if (!confirm('Convert this estimate to an invoice?')) return; const prefix = 'INV'; const year = new Date().getFullYear(); const { data: existing } = await supabase.from('documents').select('doc_number').eq('type','Invoice').like('doc_number',`${prefix}-${year}-%`); const nums = (existing||[]).map((d:Record<string,string>) => parseInt(d.doc_number.split('-').pop()||'0')); const next = Math.max(0,...nums)+1; const doc_number = `${prefix}-${year}-${String(next).padStart(4,'0')}`; const invoiceData = {...form, type:'Invoice', doc_number, status:'Draft', created_at: new Date().toISOString(), updated_at: new Date().toISOString()}; delete (invoiceData as Record<string,unknown>).id; await supabase.from('documents').insert(invoiceData); setEditing(null); setForm({}); window.location.href='/invoices'; }}>Convert to Invoice</button>}
                 {editing !== 'new' && type === 'Invoice' && <button className="btn btn-secondary" onClick={() => setPlanModal(form as Doc)}>Payment Plan</button>}
               </div>
@@ -793,6 +796,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                       <td onClick={e => e.stopPropagation()}>
                         <div className="flex gap-1">
                           <button className="btn btn-secondary btn-sm" onClick={() => setSendModal(d)}>Send</button>
+                          <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:'11px',padding:'4px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}} onClick={() => { setSigModal(d); setSigResult(null) }} title="Send for e-signature">✍️ Sign</button>
                           {/* Feature 9: Quick email button */}
                           <button
                             className="btn btn-secondary btn-sm"
@@ -837,6 +841,85 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
         </div>
         )
       })()}
+      {/* E-Signature Modal */}
+      {sigModal && (() => {
+        const doc = sigModal
+        const hasEmail = !!(doc.customer_email)
+        const alreadySigned = !!doc.signature_signed_at
+        const alreadyRequested = !!doc.signature_requested_at && !doc.signature_signed_at
+        return (
+          <div className="modal-overlay" onClick={() => setSigModal(null)}>
+            <div className="modal-box" style={{maxWidth:480}} onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-bold" style={{color:'#7c3aed'}}>✍️ E-Signature</h3>
+                <button className="btn-close" onClick={() => setSigModal(null)}>✕</button>
+              </div>
+
+              {alreadySigned ? (
+                <div className="p-4 rounded-xl" style={{background:'#f0fdf4',border:'1px solid #bbf7d0'}}>
+                  <p className="font-semibold" style={{color:'#16a34a'}}>✅ Document already signed</p>
+                  <p className="text-sm mt-1" style={{color:'#166534'}}>Signed by: <strong>{doc.signature_signer_name}</strong></p>
+                  <p className="text-sm" style={{color:'#166534'}}>On: {new Date(doc.signature_signed_at!).toLocaleString()}</p>
+                </div>
+              ) : (
+                <>
+                  <div className="mb-4 p-3 rounded-xl" style={{background:'#f5f3ff',border:'1px solid #ddd6fe'}}>
+                    <p className="text-sm font-medium" style={{color:'#5b21b6'}}>{doc.type} #{doc.doc_number}</p>
+                    <p className="text-sm" style={{color:'#6d28d9'}}>Customer: {doc.customer_name}</p>
+                    {hasEmail && <p className="text-sm" style={{color:'#7c3aed'}}>📧 {doc.customer_email}</p>}
+                    {!hasEmail && <p className="text-sm font-semibold" style={{color:'#dc2626'}}>⚠️ No email on file — add customer email first</p>}
+                    {alreadyRequested && <p className="text-xs mt-1" style={{color:'#9ca3af'}}>Signature request sent on {new Date(doc.signature_requested_at!).toLocaleDateString()}</p>}
+                  </div>
+
+                  <p className="text-sm mb-4" style={{color:'#374151'}}>
+                    This will send an email to the customer with a secure link to review the {doc.type} and sign electronically. You will be notified when they sign.
+                  </p>
+
+                  {sigResult && (
+                    <div className={p-3 rounded-xl mb-4 text-sm font-medium }>
+                      {sigResult.type === 'success' ? '✅ ' : '❌ '}{sigResult.msg}
+                    </div>
+                  )}
+
+                  <div className="flex gap-2 justify-end">
+                    <button className="btn btn-secondary" onClick={() => setSigModal(null)}>Cancel</button>
+                    <button
+                      className="btn"
+                      style={{background:'#7c3aed',color:'white',opacity: sigSending || !hasEmail ? 0.6 : 1, cursor: sigSending || !hasEmail ? 'not-allowed' : 'pointer'}}
+                      disabled={sigSending || !hasEmail}
+                      onClick={async () => {
+                        setSigSending(true)
+                        setSigResult(null)
+                        try {
+                          const res = await fetch('/api/sign', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'send', documentId: doc.id })
+                          })
+                          const data = await res.json()
+                          if (data.success) {
+                            setSigResult({ type: 'success', msg: Signature request sent to  })
+                            load()
+                          } else {
+                            setSigResult({ type: 'error', msg: data.error || 'Failed to send signature request' })
+                          }
+                        } catch {
+                          setSigResult({ type: 'error', msg: 'Network error. Please try again.' })
+                        } finally {
+                          setSigSending(false)
+                        }
+                      }}
+                    >
+                      {sigSending ? '…Sending' : alreadyRequested ? '🔁 Resend Signature Request' : '📤 Send for Signature'}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )
+      })()}
+
 
       {/* Inline new customer modal */}
       {showNewCustomer && (
