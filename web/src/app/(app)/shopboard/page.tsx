@@ -9,16 +9,15 @@ interface Employee {
   name: string
   role: string
   emoji?: string
+  active?: boolean
 }
 
 interface TimeclockEntry {
   id: number
   staff_name: string
-  staff_id?: number
   clock_in: string
   clock_out?: string | null
   hours_worked?: number | null
-  note?: string | null
 }
 
 interface Job {
@@ -54,8 +53,7 @@ function fmtHours(h: number | null | undefined) {
 function getMondayOfWeek(date: Date) {
   const d = new Date(date)
   const day = d.getDay()
-  const diff = day === 0 ? -6 : 1 - day
-  d.setDate(d.getDate() + diff)
+  d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day))
   d.setHours(0, 0, 0, 0)
   return d
 }
@@ -72,6 +70,13 @@ function toYMD(date: Date) {
 
 const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
+const ROLE_EMOJIS: Record<string, string> = {
+  technician: '🔧',
+  employee: '👤',
+  manager: '👔',
+  advisor: '📋',
+}
+
 const STATUS_COLORS: Record<string, string> = {
   pending:       'bg-yellow-100 text-yellow-800 border-yellow-300',
   'in-progress': 'bg-blue-100 text-blue-800 border-blue-300',
@@ -86,55 +91,136 @@ const PRIORITY_DOT: Record<string, string> = {
   low:    'bg-green-500',
 }
 
+// ─── Add Staff Modal ───────────────────────────────────────────────────────────
+function AddStaffModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
+  const [name, setName]     = useState('')
+  const [role, setRole]     = useState('technician')
+  const [loading, setLoading] = useState(false)
+  const [err, setErr]       = useState('')
+
+  async function submit() {
+    if (!name.trim()) { setErr('Name is required'); return }
+    setLoading(true)
+    setErr('')
+    try {
+      const res = await fetch('/api/staff', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'add', name: name.trim(), role, emoji: ROLE_EMOJIS[role] || '👤' }),
+      })
+      const json = await res.json()
+      if (!json.ok) throw new Error(json.error || 'Failed to add')
+      onAdded()
+      onClose()
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Failed to add staff')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 p-6">
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="text-lg font-bold text-gray-900">Add Employee</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">×</button>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Full Name *</label>
+            <input
+              autoFocus
+              type="text"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && submit()}
+              placeholder="e.g. Carlos"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
+            <select
+              value={role}
+              onChange={e => setRole(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="technician">🔧 Technician</option>
+              <option value="employee">👤 Employee</option>
+              <option value="advisor">📋 Service Advisor</option>
+              <option value="manager">👔 Manager</option>
+            </select>
+          </div>
+
+          {err && <p className="text-red-500 text-sm">{err}</p>}
+
+          <div className="flex gap-3 pt-1">
+            <button
+              onClick={onClose}
+              className="flex-1 py-2 rounded-lg border border-gray-200 text-sm font-medium text-gray-600 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={submit}
+              disabled={loading}
+              className="flex-1 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+            >
+              {loading ? 'Adding…' : 'Add Employee'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function ShopBoardPage() {
-  const [employees, setEmployees]       = useState<Employee[]>([])
-  const [entries, setEntries]           = useState<TimeclockEntry[]>([])
-  const [weekEntries, setWeekEntries]   = useState<TimeclockEntry[]>([])
-  const [jobs, setJobs]                 = useState<Job[]>([])
-  const [loading, setLoading]           = useState(true)
-  const [clockLoading, setClockLoading] = useState<Record<string, boolean>>({})
-  const [error, setError]               = useState<string | null>(null)
-  const [weekStart, setWeekStart]       = useState<Date>(() => getMondayOfWeek(new Date()))
-  const [activeTab, setActiveTab]       = useState<'clock' | 'board'>('clock')
+  const [employees, setEmployees]         = useState<Employee[]>([])
+  const [entries, setEntries]             = useState<TimeclockEntry[]>([])
+  const [weekEntries, setWeekEntries]     = useState<TimeclockEntry[]>([])
+  const [jobs, setJobs]                   = useState<Job[]>([])
+  const [loading, setLoading]             = useState(true)
+  const [clockLoading, setClockLoading]   = useState<Record<string, boolean>>({})
+  const [deleteLoading, setDeleteLoading] = useState<Record<number, boolean>>({})
+  const [error, setError]                 = useState<string | null>(null)
+  const [weekStart, setWeekStart]         = useState<Date>(() => getMondayOfWeek(new Date()))
+  const [activeTab, setActiveTab]         = useState<'clock' | 'board'>('clock')
+  const [showAddModal, setShowAddModal]   = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState<Employee | null>(null)
 
-  // ── Fetch employees via /api/staff (uses service key, bypasses RLS) ──────
+  // ── Fetch employees ────────────────────────────────────────────────────────
   const fetchEmployees = useCallback(async () => {
     try {
-      const res = await fetch('/api/staff')
+      const res  = await fetch('/api/staff')
       const json = await res.json()
       setEmployees(json.staff || [])
-    } catch {
-      setEmployees([])
-    }
+    } catch { setEmployees([]) }
   }, [])
 
-  // ── Fetch today's clock entries ───────────────────────────────────────────
+  // ── Fetch today ────────────────────────────────────────────────────────────
   const fetchToday = useCallback(async () => {
-    const today = toYMD(new Date())
     try {
-      const res = await fetch(`/api/timeclock?date=${today}`)
+      const res  = await fetch(`/api/timeclock?date=${toYMD(new Date())}`)
       const json = await res.json()
       setEntries(json.entries || [])
-    } catch {
-      setEntries([])
-    }
+    } catch { setEntries([]) }
   }, [])
 
-  // ── Fetch week entries ────────────────────────────────────────────────────
+  // ── Fetch week ─────────────────────────────────────────────────────────────
   const fetchWeek = useCallback(async (monday: Date) => {
-    const startDate = toYMD(monday)
-    const endDate   = toYMD(addDays(monday, 6))
     try {
-      const res = await fetch(`/api/timeclock?startDate=${startDate}&endDate=${endDate}`)
+      const res  = await fetch(`/api/timeclock?startDate=${toYMD(monday)}&endDate=${toYMD(addDays(monday, 6))}`)
       const json = await res.json()
       setWeekEntries(json.entries || [])
-    } catch {
-      setWeekEntries([])
-    }
+    } catch { setWeekEntries([]) }
   }, [])
 
-  // ── Fetch active jobs directly via Supabase anon client ───────────────────
+  // ── Fetch jobs ─────────────────────────────────────────────────────────────
   const fetchJobs = useCallback(async () => {
     const { data } = await supabase
       .from('jobs')
@@ -149,70 +235,116 @@ export default function ShopBoardPage() {
       .finally(() => setLoading(false))
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Clock In / Out ────────────────────────────────────────────────────────
+  // ── Clock in / out ─────────────────────────────────────────────────────────
   const handleClock = useCallback(async (empName: string, action: 'clock_in' | 'clock_out') => {
-    setClockLoading(prev => ({ ...prev, [empName]: true }))
+    setClockLoading(p => ({ ...p, [empName]: true }))
     setError(null)
     try {
-      const res = await fetch('/api/timeclock', {
+      const res  = await fetch('/api/timeclock', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, staff_name: empName }),
       })
       const json = await res.json()
-      if (!json.ok) throw new Error(json.error || 'Clock action failed')
+      if (!json.ok) throw new Error(json.error || 'Clock failed')
       await Promise.all([fetchToday(), fetchWeek(weekStart)])
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Clock action failed')
     } finally {
-      setClockLoading(prev => ({ ...prev, [empName]: false }))
+      setClockLoading(p => ({ ...p, [empName]: false }))
     }
   }, [fetchToday, fetchWeek, weekStart])
 
-  // ── Derived: who is clocked in right now ─────────────────────────────────
+  // ── Delete employee ────────────────────────────────────────────────────────
+  const handleDelete = useCallback(async (emp: Employee) => {
+    setDeleteLoading(p => ({ ...p, [emp.id]: true }))
+    setError(null)
+    try {
+      const res  = await fetch('/api/staff', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'deactivate', id: emp.id }),
+      })
+      const json = await res.json()
+      if (!json.ok) throw new Error(json.error || 'Delete failed')
+      await fetchEmployees()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Delete failed')
+    } finally {
+      setDeleteLoading(p => ({ ...p, [emp.id]: false }))
+      setConfirmDelete(null)
+    }
+  }, [fetchEmployees])
+
+  // ── Derived state ──────────────────────────────────────────────────────────
   const clockedInNames = new Set(
     entries.filter(e => e.clock_in && !e.clock_out).map(e => e.staff_name)
   )
 
-  // ── Derived: today's total hours per employee ─────────────────────────────
   function todayHours(name: string) {
-    return entries
-      .filter(e => e.staff_name === name && e.hours_worked != null)
-      .reduce((sum, e) => sum + (e.hours_worked || 0), 0)
+    return entries.filter(e => e.staff_name === name && e.hours_worked != null)
+      .reduce((s, e) => s + (e.hours_worked || 0), 0)
   }
 
-  // ── Derived: week grid — employee × day → entries ─────────────────────────
   function weekGrid(name: string): (TimeclockEntry[] | null)[] {
     return DAY_LABELS.map((_, i) => {
       const day = toYMD(addDays(weekStart, i))
-      const dayEntries = weekEntries.filter(e => {
-        if (e.staff_name !== name) return false
-        return e.clock_in.split('T')[0] === day
-      })
-      return dayEntries.length > 0 ? dayEntries : null
+      const de  = weekEntries.filter(e => e.staff_name === name && e.clock_in.split('T')[0] === day)
+      return de.length > 0 ? de : null
     })
   }
 
-  // ── Week label ─────────────────────────────────────────────────────────────
   const weekEndDate = addDays(weekStart, 6)
   const weekLabel   = `${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${weekEndDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+  const techs       = Array.from(new Set(jobs.map(j => j.assigned_tech || 'Unassigned')))
 
-  // ── Jobs grouped by tech ───────────────────────────────────────────────────
-  const techs = Array.from(new Set(jobs.map(j => j.assigned_tech || 'Unassigned')))
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4" />
-          <p className="text-gray-500 text-sm">Loading Shop Board…</p>
-        </div>
+  if (loading) return (
+    <div className="flex items-center justify-center min-h-[60vh]">
+      <div className="text-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4" />
+        <p className="text-gray-500 text-sm">Loading Shop Board…</p>
       </div>
-    )
-  }
+    </div>
+  )
 
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-7xl mx-auto">
+
+      {/* ── Modals ── */}
+      {showAddModal && (
+        <AddStaffModal
+          onClose={() => setShowAddModal(false)}
+          onAdded={() => { fetchEmployees(); fetchToday(); fetchWeek(weekStart) }}
+        />
+      )}
+
+      {/* ── Confirm Delete Dialog ── */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Remove Employee?</h3>
+            <p className="text-sm text-gray-600 mb-5">
+              Remove <span className="font-semibold">{confirmDelete.name}</span> from the board?
+              Their time clock history will be kept.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmDelete(null)}
+                className="flex-1 py-2 rounded-lg border border-gray-200 text-sm font-medium text-gray-600 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleDelete(confirmDelete)}
+                disabled={deleteLoading[confirmDelete.id]}
+                className="flex-1 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleteLoading[confirmDelete.id] ? 'Removing…' : 'Remove'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -228,57 +360,71 @@ export default function ShopBoardPage() {
             className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
               activeTab === 'clock' ? 'bg-white shadow text-gray-900' : 'text-gray-600 hover:text-gray-800'
             }`}
-          >
-            ⏱ Time Clock
-          </button>
+          >⏱ Time Clock</button>
           <button
             onClick={() => setActiveTab('board')}
             className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
               activeTab === 'board' ? 'bg-white shadow text-gray-900' : 'text-gray-600 hover:text-gray-800'
             }`}
-          >
-            🔧 Jobs Board
-          </button>
+          >🔧 Jobs Board</button>
         </div>
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
-          ⚠️ {error}
-        </div>
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">⚠️ {error}</div>
       )}
 
       {/* ──────────────────────── TIME CLOCK TAB ───────────────────────────── */}
       {activeTab === 'clock' && (
         <div className="space-y-6">
 
-          {/* ── Clock In/Out Cards ── */}
+          {/* ── Today's Status + Add Button ── */}
           <div>
-            <h2 className="text-base font-semibold text-gray-700 mb-3">Today&apos;s Status</h2>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-base font-semibold text-gray-700">Today&apos;s Status</h2>
+              <button
+                onClick={() => setShowAddModal(true)}
+                className="flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+              >
+                <span className="text-base leading-none">+</span> Add Employee
+              </button>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {employees.length === 0 && (
-                <p className="col-span-4 text-sm text-gray-400 italic py-4">
-                  No staff found. Add staff in the system first.
-                </p>
+                <div className="col-span-4 flex flex-col items-center py-10 text-gray-400">
+                  <span className="text-4xl mb-2">👥</span>
+                  <p className="font-medium">No employees yet</p>
+                  <button
+                    onClick={() => setShowAddModal(true)}
+                    className="mt-3 text-sm text-blue-600 underline"
+                  >+ Add your first employee</button>
+                </div>
               )}
               {employees.map(emp => {
-                const isClockedIn = clockedInNames.has(emp.name)
-                const isLoading   = clockLoading[emp.name]
-                const hrs         = todayHours(emp.name)
-                const activeEntry = entries.find(e => e.staff_name === emp.name && !e.clock_out)
+                const isClockedIn  = clockedInNames.has(emp.name)
+                const isLoading    = clockLoading[emp.name]
+                const hrs          = todayHours(emp.name)
+                const activeEntry  = entries.find(e => e.staff_name === emp.name && !e.clock_out)
 
                 return (
                   <div
                     key={emp.id}
-                    className={`rounded-xl border-2 p-4 transition-all ${
+                    className={`rounded-xl border-2 p-4 transition-all relative ${
                       isClockedIn ? 'border-green-400 bg-green-50' : 'border-gray-200 bg-white'
                     }`}
                   >
-                    <div className="flex items-start justify-between mb-3">
+                    {/* Remove button */}
+                    <button
+                      onClick={() => setConfirmDelete(emp)}
+                      className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors text-sm"
+                      title={`Remove ${emp.name}`}
+                    >✕</button>
+
+                    <div className="flex items-start justify-between mb-3 pr-5">
                       <div>
                         <p className="font-semibold text-gray-900">
-                          {emp.emoji && <span className="mr-1">{emp.emoji}</span>}
-                          {emp.name}
+                          {emp.emoji || ROLE_EMOJIS[emp.role] || '👤'} {emp.name}
                         </p>
                         <p className="text-xs text-gray-500 capitalize">{emp.role}</p>
                       </div>
@@ -305,16 +451,12 @@ export default function ShopBoardPage() {
                         disabled={isClockedIn || isLoading}
                         onClick={() => handleClock(emp.name, 'clock_in')}
                         className="flex-1 text-sm font-medium py-2 px-3 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                      >
-                        {isLoading && !isClockedIn ? '…' : 'Clock In'}
-                      </button>
+                      >{isLoading && !isClockedIn ? '…' : 'Clock In'}</button>
                       <button
                         disabled={!isClockedIn || isLoading}
                         onClick={() => handleClock(emp.name, 'clock_out')}
                         className="flex-1 text-sm font-medium py-2 px-3 rounded-lg bg-gray-700 text-white hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                      >
-                        {isLoading && isClockedIn ? '…' : 'Clock Out'}
-                      </button>
+                      >{isLoading && isClockedIn ? '…' : 'Clock Out'}</button>
                     </div>
                   </div>
                 )
@@ -327,35 +469,13 @@ export default function ShopBoardPage() {
             <div className="flex flex-wrap items-center gap-3 mb-3">
               <h2 className="text-base font-semibold text-gray-700">Weekly Attendance</h2>
               <div className="flex items-center gap-1.5 text-sm">
-                <button
-                  onClick={() => {
-                    const d = addDays(weekStart, -7)
-                    setWeekStart(d)
-                    fetchWeek(d)
-                  }}
-                  className="p-1.5 rounded-md hover:bg-gray-100 text-gray-600"
-                  title="Previous week"
-                >◀</button>
+                <button onClick={() => { const d = addDays(weekStart,-7); setWeekStart(d); fetchWeek(d) }}
+                  className="p-1.5 rounded-md hover:bg-gray-100 text-gray-600" title="Previous week">◀</button>
                 <span className="text-gray-600 min-w-[220px] text-center font-medium">{weekLabel}</span>
-                <button
-                  onClick={() => {
-                    const d = addDays(weekStart, 7)
-                    setWeekStart(d)
-                    fetchWeek(d)
-                  }}
-                  className="p-1.5 rounded-md hover:bg-gray-100 text-gray-600"
-                  title="Next week"
-                >▶</button>
-                <button
-                  onClick={() => {
-                    const d = getMondayOfWeek(new Date())
-                    setWeekStart(d)
-                    fetchWeek(d)
-                  }}
-                  className="text-xs px-2.5 py-1 rounded-md bg-gray-100 hover:bg-gray-200 text-gray-600 ml-1"
-                >
-                  This Week
-                </button>
+                <button onClick={() => { const d = addDays(weekStart,7); setWeekStart(d); fetchWeek(d) }}
+                  className="p-1.5 rounded-md hover:bg-gray-100 text-gray-600" title="Next week">▶</button>
+                <button onClick={() => { const d = getMondayOfWeek(new Date()); setWeekStart(d); fetchWeek(d) }}
+                  className="text-xs px-2.5 py-1 rounded-md bg-gray-100 hover:bg-gray-200 text-gray-600 ml-1">This Week</button>
               </div>
             </div>
 
@@ -368,10 +488,7 @@ export default function ShopBoardPage() {
                       const date    = addDays(weekStart, i)
                       const isToday = toYMD(date) === toYMD(new Date())
                       return (
-                        <th
-                          key={day}
-                          className={`text-center py-3 px-2 font-semibold min-w-[100px] ${isToday ? 'text-blue-700' : 'text-gray-700'}`}
-                        >
+                        <th key={day} className={`text-center py-3 px-2 font-semibold min-w-[100px] ${isToday ? 'text-blue-700' : 'text-gray-700'}`}>
                           <div>{day}</div>
                           <div className={`text-xs font-normal ${isToday ? 'text-blue-500' : 'text-gray-400'}`}>
                             {date.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}
@@ -384,30 +501,22 @@ export default function ShopBoardPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {employees.length === 0 && (
-                    <tr>
-                      <td colSpan={9} className="text-center py-8 text-gray-400 text-sm italic">No employees found</td>
-                    </tr>
+                    <tr><td colSpan={9} className="text-center py-8 text-gray-400 text-sm italic">No employees</td></tr>
                   )}
                   {employees.map((emp, ri) => {
                     const grid      = weekGrid(emp.name)
-                    const weekTotal = grid.flat().filter(Boolean)
-                      .reduce((sum, e) => sum + ((e as TimeclockEntry).hours_worked || 0), 0)
-
+                    const weekTotal = grid.flat().filter(Boolean).reduce((s, e) => s + ((e as TimeclockEntry).hours_worked || 0), 0)
                     return (
                       <tr key={emp.id} className={ri % 2 === 0 ? 'bg-white' : 'bg-gray-50/40'}>
-                        <td className="py-3 px-4 font-medium text-gray-800 whitespace-nowrap">
-                          {emp.name}
-                        </td>
+                        <td className="py-3 px-4 font-medium text-gray-800 whitespace-nowrap">{emp.name}</td>
                         {grid.map((dayEntries, di) => {
                           const date    = addDays(weekStart, di)
                           const isToday = toYMD(date) === toYMD(new Date())
-                          if (!dayEntries || dayEntries.length === 0) {
-                            return (
-                              <td key={di} className={`text-center py-3 px-2 ${isToday ? 'bg-blue-50/30' : ''}`}>
-                                <span className="text-gray-300 text-xs">—</span>
-                              </td>
-                            )
-                          }
+                          if (!dayEntries) return (
+                            <td key={di} className={`text-center py-3 px-2 ${isToday ? 'bg-blue-50/30' : ''}`}>
+                              <span className="text-gray-300 text-xs">—</span>
+                            </td>
+                          )
                           const dayTotal = dayEntries.reduce((s, e) => s + (e.hours_worked || 0), 0)
                           return (
                             <td key={di} className={`text-center py-2 px-2 ${isToday ? 'bg-blue-50/30' : ''}`}>
@@ -416,21 +525,17 @@ export default function ShopBoardPage() {
                                   <span className="font-semibold text-gray-800">{fmt12(e.clock_in)}</span>
                                   {e.clock_out
                                     ? <><span className="text-gray-400"> – </span><span className="font-semibold text-gray-800">{fmt12(e.clock_out)}</span></>
-                                    : <span className="text-green-600 font-semibold"> – now</span>
-                                  }
+                                    : <span className="text-green-600 font-semibold"> – now</span>}
                                 </div>
                               ))}
-                              {dayTotal > 0 && (
-                                <div className="text-xs text-blue-600 font-bold mt-0.5">{fmtHours(dayTotal)}</div>
-                              )}
+                              {dayTotal > 0 && <div className="text-xs text-blue-600 font-bold mt-0.5">{fmtHours(dayTotal)}</div>}
                             </td>
                           )
                         })}
                         <td className="text-center py-3 px-3">
                           {weekTotal > 0
                             ? <span className="text-sm font-bold text-gray-800">{fmtHours(weekTotal)}</span>
-                            : <span className="text-gray-300 text-xs">—</span>
-                          }
+                            : <span className="text-gray-300 text-xs">—</span>}
                         </td>
                       </tr>
                     )
@@ -449,12 +554,7 @@ export default function ShopBoardPage() {
             <h2 className="text-base font-semibold text-gray-700">
               Active Jobs <span className="text-gray-400 font-normal text-sm">({jobs.length})</span>
             </h2>
-            <button
-              onClick={fetchJobs}
-              className="text-xs px-3 py-1.5 rounded-md bg-gray-100 hover:bg-gray-200 text-gray-600"
-            >
-              ↻ Refresh
-            </button>
+            <button onClick={fetchJobs} className="text-xs px-3 py-1.5 rounded-md bg-gray-100 hover:bg-gray-200 text-gray-600">↻ Refresh</button>
           </div>
 
           {jobs.length === 0 && (
