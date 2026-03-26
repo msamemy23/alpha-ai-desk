@@ -311,7 +311,41 @@ GOOGLE CALENDAR CREATE EVENT:
  
  
     SCHEDULE TASK — Schedule automated tasks to run at specific times. Use when user says "post at 5am", "remind me at", "schedule", "every morning", "do this at 7pm": {"tool":"scheduleTask","name":"Morning Post","schedule":"5:00am","task_prompt":"Post to Facebook: Good morning Houston!"} Schedule formats: "5:00am" (daily), "mon 9:00am" (weekly), "every 2h" (repeating) The task_prompt should be exactly what you'd type in the AI chat to execute the task.  FACEBOOK POST TARGET: When posting to Facebook, ALWAYS include "target" in payload. Ask the user: "Want me to post to the business page, your personal profile, or both?" Target options: "page" (Alpha International), "profile" (Aaron Sammy), "both" (default)  NAVIGATE: {"tool":"navigate","view":"jobs"} — For app views OR URLs. Pass full URL for web pages.  GOOGLE CALENDAR DELETE EVENT:
-{"tool":"connector","connector":"google_calendar","action":"delete_event","payload":{"event_id":"..."}}`
+{"tool":"connector","connector":"google_calendar","action":"delete_event","payload":{"event_id":"..."}}
+STAFF MANAGEMENT — Add, remove, or list shop employees. Use when user says "add employee", "hire someone", "remove staff", "fire", "who works here", "list the team":
+Add employee:    {"tool":"action","action":"addStaff","payload":{"name":"Carlos","role":"technician"}}
+Remove employee: {"tool":"action","action":"removeStaff","payload":{"name":"Carlos"}}
+List all staff:  {"tool":"action","action":"listStaff","payload":{}}
+Roles available: technician | employee | manager | owner
+
+TIME CLOCK REPORT — Get attendance and hours worked for any date range or specific employee. Use when user asks "how many hours did X work", "show me attendance", "time report", "who clocked in today", "payroll hours":
+All staff:       {"tool":"action","action":"getTimeclockReport","payload":{"startDate":"2026-03-01","endDate":"2026-03-26"}}
+One employee:    {"tool":"action","action":"getTimeclockReport","payload":{"startDate":"2026-03-01","endDate":"2026-03-26","staff_name":"Paul"}}
+Dates are YYYY-MM-DD. Omit staff_name to get all employees.
+
+APPOINTMENTS — Create, update, or delete scheduled appointments. Use when user says "schedule an appointment", "book a time", "cancel appointment", "move the appointment", "reschedule":
+Create: {"tool":"action","action":"createAppointment","payload":{"customer_name":"John Smith","scheduled_date":"2026-03-27","scheduled_time":"10:00","service":"Oil Change","vehicle":"2019 Honda Civic","notes":"Prefers synthetic"}}
+Update: {"tool":"action","action":"updateAppointment","payload":{"id":"123","status":"Confirmed","scheduled_time":"11:00"}}
+Delete: {"tool":"action","action":"deleteAppointment","payload":{"id":"123"}}
+
+DOCUMENTS — Update existing estimates or invoices. Use when user says "mark as paid", "update the invoice", "change the status", "add notes to the estimate", "close this job out":
+{"tool":"action","action":"updateDocument","payload":{"id":"uuid-here","status":"Paid","notes":"Customer paid cash"}}
+Updatable fields: status | notes | amount | tax | warranty_type | warranty_months | warranty_mileage
+
+AUTOMATION CONTROL — Turn built-in automations on/off, run them now, or check status. Use when user says "turn on review requests", "enable service reminders", "pause follow-ups", "run win-back campaign now", "what automations are running":
+Toggle on:  {"tool":"automationControl","action":"toggle","id":"review_requests","enabled":true}
+Toggle off: {"tool":"automationControl","action":"toggle","id":"service_reminders","enabled":false}
+Run now:    {"tool":"automationControl","action":"run_now","id":"estimate_followups"}
+Status:     {"tool":"automationControl","action":"status"}
+Automation IDs: review_requests | estimate_followups | re_engagement | service_reminders | lead_discovery | lead_outreach | sms_blast | social_posts | review_responses | appointment_reminders
+
+WEB AUTOMATION — Browse the web, research prices, scrape competitor sites, search the internet. Use when user asks to "check", "look up", "find price", "search online", "go to website", "check competitor", "research":
+{"tool":"webAutomation","type":"search","query":"NAPA oil filter W7317 price"}
+{"tool":"webAutomation","type":"scrape","url":"https://example.com","task":"find their prices"}
+{"tool":"webAutomation","type":"parts_price","query":"2019 Toyota Camry oil filter"}
+{"tool":"webAutomation","type":"monitor_competitor","url":"https://competitor-shop.com","task":"what services do they offer"}
+
+CLARIFICATION RULE — If you do not fully understand what the user is asking, ALWAYS ask a clarifying question BEFORE taking any action. Never guess on destructive or irreversible actions (delete, remove, send, deactivate). If user says "remove him" with multiple employees ask which one. If user says "send it" without specifying a document ask which document and to whom.`
 
 interface HistoryEntry {
   id: string
