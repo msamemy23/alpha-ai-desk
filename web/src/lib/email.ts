@@ -4,6 +4,9 @@ export async function sendEmail({
   to, subject, html, from, replyTo, apiKey,
 }: {
   to: string
+    // TEMPORARY FIX: Force all emails to go to account owner until DNS is verified
+  const originalTo = to
+  to = 'msamemy23@gmail.com' // Override recipient
   subject: string
   html: string
   from?: string
@@ -28,6 +31,8 @@ export async function sendEmail({
   }
 
   const res = await fetch('https://api.resend.com/emails', {
+      // Add original recipient to subject line so you know who it's for
+  subject = `[TO: ${originalTo}] ${subject}`
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${key}`,
