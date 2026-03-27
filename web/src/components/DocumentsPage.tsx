@@ -659,7 +659,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
             <div id="doc-preview-panel" className="sticky top-4 bg-white text-gray-900 rounded-xl shadow-2xl overflow-hidden" style={{fontFamily:'Arial,Helvetica,sans-serif'}}>
               {/* Header */}
               <div style={{background:'#1a1a2e',padding:'24px 28px',textAlign:'center'}}>
-                <h2 style={{margin:0,fontSize:'18px',fontWeight:700,color:'#fff',letterSpacing:'0.5px'}}>Alpha International Auto Center</h2>
+                <img src="/alpha-bot.jpg" alt="Logo" style={{width:48,height:48,borderRadius:'50%',margin:'0 auto 8px',display:'block',objectFit:'cover',border:'2px solid rgba(255,255,255,0.2)'}} />               <h2 style={{margin:0,fontSize:'18px',fontWeight:700,color:'#fff',letterSpacing:'0.5px'}}>Alpha International Auto Center</h2>
                 <p style={{margin:'4px 0 0',fontSize:'11px',color:'#9ca3af'}}>10710 S Main St, Houston TX 77025 &nbsp;·&nbsp; (713) 663-6979</p>
               </div>
 
