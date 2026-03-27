@@ -37,7 +37,6 @@ export async function POST(req: NextRequest) {
       // sendEmail() auto-falls back to onboarding@resend.dev for unverified domains
           // TEMP FIX: Route to account owner until DNS verified
     const originalEmail = email
-    email = 'msamemy23@gmail.com'
       await sendEmail({
         to: email,
       subject: `[TO: ${originalEmail}] ${docType} #${doc.doc_number} from ${shopName}`,        html,
