@@ -252,7 +252,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   const openNew = async () => {
     const docNumber = await genDocNumber()
     setForm({ type, doc_number: docNumber, doc_date: new Date().toISOString().split('T')[0], status: 'Draft', tax_rate: 8.25, apply_tax: true, warranty_type: 'No Warranty', parts: [], labors: [] })
-    setEditing('new')
+    setEditing('new'); setSignatureImg(null)
   }
 
   const detectWarranty = (doc: Record<string, unknown>) => {
@@ -812,7 +812,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                 </div>
               )}
 
-              {/* Footer */}
+              {signatureImg && (<div style={{padding:'16px 28px',borderTop:'1px solid #eee',textAlign:'center'}}><div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'#999',marginBottom:'8px'}}>Customer Signature</div><img src={signatureImg} alt="Signature" style={{maxWidth:220,maxHeight:80,margin:'0 auto'}} />{form.signature_signer_name && <div style={{fontSize:'11px',color:'#555',marginTop:'4px'}}>{form.signature_signer_name}</div>}{form.signature_signed_at && <div style={{fontSize:'10px',color:'#999'}}>{new Date(form.signature_signed_at).toLocaleString()}</div>}</div>)}{/* Footer */}
               <div style={{padding:'12px 28px',textAlign:'center',fontSize:'10px',color:'#999',borderTop:'1px solid #eee',background:'#fafafa'}}>
                 <div>Payment Terms: Due on receipt &nbsp;|&nbsp; Accepted: Cash, Card, Zelle, Cash App</div>
                 <div style={{marginTop:'4px'}}>(713) 663-6979 &nbsp;·&nbsp; alphainternationalauto.com</div>
@@ -838,7 +838,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                 {filtered.map(d => {
                   const t = calcTotals(d as unknown as Record<string,unknown>)
                   return (
-                    <tr key={d.id} className="cursor-pointer" onClick={() => { const cust = customers.find(c => c.id === d.customer_id); setForm({ ...d, customer_phone: d.customer_phone || cust?.phone || '', customer_email: d.customer_email || cust?.email || '' } as Partial<Doc>); setEditing(d.id) }}>
+                    <tr key={d.id} className="cursor-pointer" onClick={() => { const cust = customers.find(c => c.id === d.customer_id); setForm({ ...d, customer_phone: d.customer_phone || cust?.phone || '', customer_email: d.customer_email || cust?.email || '' } as Partial<Doc>); setEditing(d.id); setSignatureImg(null); if (d.signature_signed_at) { supabase.from('signatures').select('signature_data').eq('document_id', d.id).not('signed_at','is',null).order('signed_at',{ascending:false}).limit(1).single().then(({data:sig})=>{ if(sig?.signature_data) setSignatureImg(sig.signature_data) }) } }}>
                       <td className="font-mono text-sm text-blue">{d.doc_number}</td>
                       <td className="font-medium">{d.customer_name || '—'}</td>
                       <td className="text-sm text-text-muted">{[d.vehicle_year, d.vehicle_make, d.vehicle_model].filter(Boolean).join(' ') || '—'}</td>
