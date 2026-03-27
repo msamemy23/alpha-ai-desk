@@ -255,8 +255,54 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     setEditing('new')
   }
 
+  const detectWarranty = (doc: Record<string, unknown>) => {
+    const parts = ((doc.parts || []) as Record<string, unknown>[])
+    const labors = ((doc.labors || []) as Record<string, unknown>[])
+    const desc = [
+      ...parts.map((p: Record<string, unknown>) => String(p.name || '') + ' ' + String(p.brand || '')),
+      ...labors.map((l: Record<string, unknown>) => String(l.operation || '')),
+      String(doc.notes || '')
+    ].join(' ').toLowerCase()
+    let matched = WARRANTY_PRESETS.find(p => p.label === "No Warranty")!
+    if (/synthetic|full.?syn/i.test(desc) && /oil.?change|lube|oil.?service/i.test(desc)) {
+      matched = WARRANTY_PRESETS.find(p => p.label.includes("Synthetic")) || matched
+    } else if (/oil.?change|lube|oil.?service/i.test(desc)) {
+      matched = WARRANTY_PRESETS.find(p => p.label === "Oil Change — 3 Months / 3,000 Miles") || matched
+    } else if (/rebuild|engine.?rebuild|motor.?rebuild/i.test(desc)) {
+      matched = WARRANTY_PRESETS.find(p => p.label.includes("Engine Rebuild")) || matched
+    } else if (/engine|motor/i.test(desc)) {
+      matched = WARRANTY_PRESETS.find(p => p.label.includes("Engine Repair")) || matched
+    } else if (/transmission|trans\b|tranny/i.test(desc)) {
+      matched = WARRANTY_PRESETS.find(p => p.label.includes("Transmission")) || matched
+    } else if (/brake|rotor|caliper|pad/i.test(desc)) {
+      matched = WARRANTY_PRESETS.find(p => p.label.includes("Brakes")) || matched
+    } else if (/ac\b|a\/c|air.?cond|hvac|refrigerant|freon/i.test(desc)) {
+      matched = WARRANTY_PRESETS.find(p => p.label.includes("AC")) || matched
+    } else if (/suspension|strut|shock|spring|sway.?bar|control.?arm|ball.?joint/i.test(desc)) {
+      matched = WARRANTY_PRESETS.find(p => p.label.includes("Suspension")) || matched
+    } else if (/electric|wiring|alternator|starter|battery|fuse|relay|module|ecm|pcm/i.test(desc)) {
+      matched = WARRANTY_PRESETS.find(p => p.label.includes("Electrical")) || matched
+    } else if (/body|paint|dent|bumper|panel|collision/i.test(desc)) {
+      matched = WARRANTY_PRESETS.find(p => p.label.includes("Body")) || matched
+    } else if (/inspection|state.?insp/i.test(desc)) {
+      matched = WARRANTY_PRESETS.find(p => p.label.includes("State Inspection")) || matched
+    }
+    return matched
+  }
+
   const save = async () => {
     const data = { ...form, type, updated_at: new Date().toISOString() }
+    // Auto-detect warranty if not manually set or still on default
+    if (!data.warranty_type || data.warranty_type === 'No Warranty') {
+      const detected = detectWarranty(data)
+      if (detected && detected.label !== 'No Warranty') {
+        data.warranty_type = detected.label
+        data.warranty_months = detected.months || null
+        data.warranty_mileage = detected.mileage || null
+        data.warranty_exclusions = detected.exclusions || null
+        data.warranty_start = (data.doc_date as string) || new Date().toISOString().split('T')[0]
+      }
+    }
     if (editing === 'new') await supabase.from('documents').insert({ ...data, created_at: new Date().toISOString() })
     else if (editing) await supabase.from('documents').update(data).eq('id', editing)
     setEditing(null); setForm({}); load()
@@ -492,37 +538,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                     type="button"
                     className="mt-2 text-xs px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium transition-colors flex items-center gap-1.5"
                     onClick={() => {
-                      const parts = ((form.parts || []) as Record<string, unknown>[])
-                      const labors = ((form.labors || []) as Record<string, unknown>[])
-                      const desc = [
-                        ...parts.map((p: Record<string, unknown>) => String(p.name || '') + ' ' + String(p.brand || '')),
-                        ...labors.map((l: Record<string, unknown>) => String(l.operation || '')),
-                        String(form.notes || '')
-                      ].join(' ').toLowerCase()
-                      let matched = WARRANTY_PRESETS.find(p => p.label === "No Warranty")!
-                      if (/synthetic|full.?syn/i.test(desc) && /oil.?change|lube|oil.?service/i.test(desc)) {
-                        matched = WARRANTY_PRESETS.find(p => p.label.includes("Synthetic")) || matched
-                      } else if (/oil.?change|lube|oil.?service/i.test(desc)) {
-                        matched = WARRANTY_PRESETS.find(p => p.label === "Oil Change — 3 Months / 3,000 Miles") || matched
-                      } else if (/rebuild|engine.?rebuild|motor.?rebuild/i.test(desc)) {
-                        matched = WARRANTY_PRESETS.find(p => p.label.includes("Engine Rebuild")) || matched
-                      } else if (/engine|motor/i.test(desc)) {
-                        matched = WARRANTY_PRESETS.find(p => p.label.includes("Engine Repair")) || matched
-                      } else if (/transmission|trans\b|tranny/i.test(desc)) {
-                        matched = WARRANTY_PRESETS.find(p => p.label.includes("Transmission")) || matched
-                      } else if (/brake|rotor|caliper|pad/i.test(desc)) {
-                        matched = WARRANTY_PRESETS.find(p => p.label.includes("Brakes")) || matched
-                      } else if (/ac\b|a\/c|air.?cond|hvac|refrigerant|freon/i.test(desc)) {
-                        matched = WARRANTY_PRESETS.find(p => p.label.includes("AC")) || matched
-                      } else if (/suspension|strut|shock|spring|sway.?bar|control.?arm|ball.?joint/i.test(desc)) {
-                        matched = WARRANTY_PRESETS.find(p => p.label.includes("Suspension")) || matched
-                      } else if (/electric|wiring|alternator|starter|battery|fuse|relay|module|ecm|pcm/i.test(desc)) {
-                        matched = WARRANTY_PRESETS.find(p => p.label.includes("Electrical")) || matched
-                      } else if (/body|paint|dent|bumper|panel|collision/i.test(desc)) {
-                        matched = WARRANTY_PRESETS.find(p => p.label.includes("Body")) || matched
-                      } else if (/inspection|state.?insp/i.test(desc)) {
-                        matched = WARRANTY_PRESETS.find(p => p.label.includes("State Inspection")) || matched
-                      }
+                      const matched = detectWarranty(form)
                       if (matched) {
                         setForm(f => ({
                           ...f,

@@ -102,7 +102,13 @@ ${vehicle ? `<strong>Vehicle:</strong> ${vehicle}<br>` : ''}
 <div class="ftr">${shopName}<br>${settings?.shop_address || ''}</div>
 </div></body></html>`
 
-    const fromAddr = settings?.from_email || process.env.FROM_EMAIL || `${shopName} <onboarding@resend.dev>`
+    // Use from_email from settings, but ensure it's a valid Resend sender.
+    // If from_email is a non-resend.dev address (e.g. custom domain not verified with Resend),
+    // Resend may accept the API call but silently fail to deliver. Fall back to onboarding@resend.dev.
+    const rawFrom = settings?.from_email || process.env.FROM_EMAIL || ''
+    const fromAddr = rawFrom && rawFrom.includes('@') && !rawFrom.includes('resend.dev')
+      ? `${shopName} <onboarding@resend.dev>`
+      : rawFrom || `${shopName} <onboarding@resend.dev>`
     let emailError: string | null = null
     try {
       await sendEmail({
@@ -111,7 +117,7 @@ ${vehicle ? `<strong>Vehicle:</strong> ${vehicle}<br>` : ''}
         html,
         apiKey: settings?.resend_api_key || process.env.RESEND_API_KEY,
         from: fromAddr,
-        replyTo: settings?.shop_email,
+        replyTo: settings?.shop_email || rawFrom || undefined,
       })
     } catch (err: unknown) {
       emailError = err instanceof Error ? err.message : String(err)
@@ -189,12 +195,18 @@ ${signatureData ? `<img src="${signatureData}" style="max-width:300px;max-height
 <div class="ftr">${shopName} · ${settings?.shop_address || ''}</div>
 </div></body></html>`
 
+    // Use resend.dev fallback for from address (same logic as send action)
+    const rawFromComplete = settings?.from_email || ''
+    const fromAddrComplete = rawFromComplete && rawFromComplete.includes('@') && !rawFromComplete.includes('resend.dev')
+      ? `${shopName} <onboarding@resend.dev>`
+      : rawFromComplete || `${shopName} <onboarding@resend.dev>`
+
     await sendEmail({
       to: sig.customer_email,
       subject: `✅ Signature Confirmed — ${doc.type} #${doc.doc_number}`,
       html: confirmHtml,
       apiKey: settings?.resend_api_key,
-      from: settings?.from_email || `${shopName} <onboarding@resend.dev>`,
+      from: fromAddrComplete,
     })
 
     // Also notify shop
@@ -204,7 +216,7 @@ ${signatureData ? `<img src="${signatureData}" style="max-width:300px;max-height
         subject: `🖊️ Customer signed ${doc.type} #${doc.doc_number} — ${signerName}`,
         html: `<p><strong>${signerName}</strong> has signed <strong>${doc.type} #${doc.doc_number}</strong> for ${vehicle} on ${new Date(now).toLocaleString()}.</p>`,
         apiKey: settings?.resend_api_key,
-        from: settings?.from_email || `${shopName} <onboarding@resend.dev>`,
+        from: fromAddrComplete,
       }).catch(() => {}) // Don't fail if shop notification fails
     }
 

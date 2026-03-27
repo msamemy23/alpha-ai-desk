@@ -34,7 +34,10 @@ export async function POST(req: NextRequest) {
       const email = custEmail
       if (!email) return NextResponse.json({ error: 'No email on file for this customer' }, { status: 400 })
       const html = estimateEmailHtml(doc, settings || {})
-      const fromEmail = settings?.from_email || 'Alpha Auto <onboarding@resend.dev>'
+      const rawFromEmail = settings?.from_email || ''
+      const fromEmail = rawFromEmail && rawFromEmail.includes('@') && !rawFromEmail.includes('resend.dev')
+        ? `${shopName} <onboarding@resend.dev>`
+        : rawFromEmail || 'Alpha Auto <onboarding@resend.dev>'
       await sendEmail({
         to: email,
         subject: `${docType} #${doc.doc_number} from ${shopName}`,
