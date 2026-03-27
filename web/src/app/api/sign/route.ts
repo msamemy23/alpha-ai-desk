@@ -102,18 +102,26 @@ ${vehicle ? `<strong>Vehicle:</strong> ${vehicle}<br>` : ''}
 <div class="ftr">${shopName}<br>${settings?.shop_address || ''}</div>
 </div></body></html>`
 
-    await sendEmail({
-      to: email,
-      subject: `Action Required: Sign your ${doc.type} #${doc.doc_number} — ${shopName}`,
-      html,
-      apiKey: settings?.resend_api_key,
-      from: settings?.from_email || `${shopName} <onboarding@resend.dev>`,
-      replyTo: settings?.shop_email,
-    })
+    const fromAddr = settings?.from_email || process.env.FROM_EMAIL || `${shopName} <onboarding@resend.dev>`
+    let emailError: string | null = null
+    try {
+      await sendEmail({
+        to: email,
+        subject: `Action Required: Sign your ${doc.type} #${doc.doc_number} — ${shopName}`,
+        html,
+        apiKey: settings?.resend_api_key || process.env.RESEND_API_KEY,
+        from: fromAddr,
+        replyTo: settings?.shop_email,
+      })
+    } catch (err: unknown) {
+      emailError = err instanceof Error ? err.message : String(err)
+      console.error('Sign email error:', emailError)
+    }
 
     await db.from('documents').update({ signature_requested_at: new Date().toISOString() }).eq('id', documentId)
 
-    return NextResponse.json({ success: true, email, token })
+    const siteUrl2 = process.env.NEXT_PUBLIC_SITE_URL || 'https://alpha-ai-desk.vercel.app'
+    return NextResponse.json({ success: true, email, token, signUrl: `${siteUrl2}/sign/${token}`, emailError })
   }
 
   // ── COMPLETE signature ──────────────────────────────────────────────────
