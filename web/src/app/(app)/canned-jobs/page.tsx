@@ -17,7 +17,7 @@ interface CannedJob {
 }
 interface CannedPart { name: string; part_number: string; cost: number; qty: number }
 
-const CATEGORIES = ['All', 'Oil Change', 'Brakes', 'Tires', 'Engine', 'Suspension', 'Electrical', 'Transmission', 'A/C', 'Diagnostic', 'Maintenance', 'Other']
+const CATEGORIES = ['All', 'Oil Change', 'Brakes', 'Tires', 'Engine', 'Suspension', 'Electrical', 'Transmission', 'A/C', 'Diagnostic', 'Maintenance', 'Other', 'Warranty']
 
 function fmtCur(n: number | null | undefined) {
   if (!n) return '$0'
