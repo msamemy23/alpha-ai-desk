@@ -90,3 +90,35 @@ body {
 
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
 .animate-pulse-slow { animation: pulse 2s ease-in-out infinite; }
+
+
+/* ===== LIGHT MODE ===== */
+html.light body {
+  background: #f0f2f5;
+  color: #1a1a2e;
+}
+html.light .bg-bg-base, html.light [class*='bg-bg-base'] { background: #f0f2f5 !important; }
+html.light .bg-bg-card, html.light [class*='bg-bg-card'] { background: #ffffff !important; }
+html.light .bg-bg-hover, html.light [class*='bg-bg-hover'] { background: #e8eaed !important; }
+html.light .bg-bg-input, html.light [class*='bg-bg-input'] { background: #ffffff !important; }
+html.light .text-text-primary { color: #1a1a2e !important; }
+html.light .text-text-secondary { color: #4a5568 !important; }
+html.light .text-text-muted { color: #718096 !important; }
+html.light .border-border, html.light [class*='border-border'] { border-color: #d1d5db !important; }
+html.light .card { background: #ffffff !important; border-color: #d1d5db !important; color: #1a1a2e !important; }
+html.light .form-input, html.light .form-select, html.light .form-textarea { background: #ffffff !important; border-color: #d1d5db !important; color: #1a1a2e !important; }
+html.light .form-label { color: #4a5568 !important; }
+html.light .nav-item { color: #4a5568 !important; }
+html.light .nav-item:hover { background: #e8eaed !important; color: #1a1a2e !important; }
+html.light .nav-item.active { background: rgba(74,158,255,0.15) !important; color: #1a6bd4 !important; }
+html.light .data-table th { color: #4a5568 !important; border-color: #d1d5db !important; }
+html.light .data-table td { border-color: #e5e7eb !important; }
+html.light .data-table tr:hover td { background: #f3f4f6 !important; }
+html.light .btn-secondary { background: #e8eaed !important; color: #1a1a2e !important; border-color: #d1d5db !important; }
+html.light .btn-secondary:hover { background: #d1d5db !important; }
+html.light .modal-box { background: #ffffff !important; border-color: #d1d5db !important; color: #1a1a2e !important; }
+html.light ::-webkit-scrollbar-thumb { background: #c1c5cb !important; }
+html.light aside { background: #1a1a2e !important; }
+html.light aside .nav-item { color: #c0c9d8 !important; }
+html.light aside .nav-item:hover { background: rgba(255,255,255,0.1) !important; color: #ffffff !important; }
+html.light aside .nav-item.active { background: rgba(74,158,255,0.2) !important; color: #7ec8ff !important; }
