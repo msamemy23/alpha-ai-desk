@@ -224,7 +224,8 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   // Feature 13: Payment Plan
   const [planModal, setPlanModal] = useState<Doc | null>(null)
   const [planForm, setPlanForm] = useState({ down_payment: 0, installments: 3, frequency: 'monthly' })
-  const [emailSending, setEmailSending] = useState<string | null>(null)   const [signatureImg, setSignatureImg] = useState<string | null>(null)
+    const [emailSending, setEmailSending] = useState<string | null>(null)
+  const [signatureImg, setSignatureImg] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     const [{ data: d }, { data: c }] = await Promise.all([
