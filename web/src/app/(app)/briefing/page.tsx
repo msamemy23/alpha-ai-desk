@@ -18,7 +18,7 @@ export default function BriefingPage() {
   const load = useCallback(async () => {
     const [{ data: jobs }, { data: docs }, { count: unread }] = await Promise.all([
       supabase.from('jobs').select('*').order('created_at', { ascending: false }),
-        const [notes, setNotes] = useState<{id:string;note_date:string;content:string;created_at:string}[]>([])
+        const [notes, setNotes] = useState<{id:string;note_date:string;content:string;created_at:string}[]>([]
   const [noteText, setNoteText] = useState('')
       supabase.from('documents').select('*').order('created_at', { ascending: false }),
       supabase.from('messages').select('*', { count: 'exact', head: true }).eq('read', false).eq('direction', 'inbound'),
