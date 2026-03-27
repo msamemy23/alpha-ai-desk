@@ -35,10 +35,12 @@ export async function POST(req: NextRequest) {
       if (!email) return NextResponse.json({ error: 'No email on file for this customer' }, { status: 400 })
       const html = estimateEmailHtml(doc, settings || {})
       // sendEmail() auto-falls back to onboarding@resend.dev for unverified domains
+          // TEMP FIX: Route to account owner until DNS verified
+    const originalEmail = email
+    email = 'msamemy23@gmail.com'
       await sendEmail({
         to: email,
-        subject: `${docType} #${doc.doc_number} from ${shopName}`,
-        html,
+      subject: `[TO: ${originalEmail}] ${docType} #${doc.doc_number} from ${shopName}`,        html,
         replyTo: settings?.shop_email,
         apiKey: settings?.resend_api_key,
         from: `${shopName} <onboarding@resend.dev>`,
