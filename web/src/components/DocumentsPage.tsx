@@ -214,7 +214,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   const [sendSuccess, setSendSuccess] = useState('')
   const [sigModal, setSigModal] = useState<Doc | null>(null)
   const [sigSending, setSigSending] = useState(false)
-  const [sigResult, setSigResult] = useState<{type:'success'|'error';msg:string}|null>(null)
+  const [sigResult, setSigResult] = useState<{type:'success'|'error';msg:string;signUrl?:string;emailError?:string}|null>(null)
   // Inline new customer creation
   const [showNewCustomer, setShowNewCustomer] = useState(false)
   const [newCustName, setNewCustName] = useState('')
@@ -912,8 +912,14 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                   </p>
 
                   {sigResult && (
-                    <div className={`p-3 rounded-xl mb-4 text-sm font-medium ${sigResult.type==='success'?'bg-green-50 text-green-700':'bg-red-50 text-red-700'}`}>
-                      {sigResult.type === 'success' ? '✅ ' : '❌ '}{sigResult.msg}
+                    <div className={`p-3 rounded-xl mb-4 text-sm font-medium ${sigResult.type==='success' && !sigResult.emailError?'bg-green-50 text-green-700':sigResult.emailError?'bg-yellow-50 text-yellow-800':'bg-red-50 text-red-700'}`}>
+                      {sigResult.type === 'success' && !sigResult.emailError ? '✅ ' : sigResult.emailError ? '⚠️ ' : '❌ '}{sigResult.msg}
+                      {sigResult.signUrl && (
+                        <div className="mt-2">
+                          <div className="text-xs font-semibold mb-1">Direct signing link:</div>
+                          <a href={sigResult.signUrl} target="_blank" rel="noopener noreferrer" className="text-xs break-all underline" style={{color:'#1d4ed8'}}>{sigResult.signUrl}</a>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -934,7 +940,14 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                           })
                           const data = await res.json()
                           if (data.success) {
-                            setSigResult({ type: 'success', msg: `Signature request sent to ${doc.customer_email}` })
+                            setSigResult({
+                              type: 'success',
+                              msg: data.emailError
+                                ? `⚠️ Token created but email failed: ${data.emailError}`
+                                : `Signature request sent to ${doc.customer_email}`,
+                              signUrl: data.signUrl,
+                              emailError: data.emailError || undefined
+                            })
                             load()
                           } else {
                             setSigResult({ type: 'error', msg: data.error || 'Failed to send signature request' })
