@@ -18,6 +18,8 @@ export default function BriefingPage() {
   const load = useCallback(async () => {
     const [{ data: jobs }, { data: docs }, { count: unread }] = await Promise.all([
       supabase.from('jobs').select('*').order('created_at', { ascending: false }),
+        const [notes, setNotes] = useState<{id:string;note_date:string;content:string;created_at:string}[]>([])
+  const [noteText, setNoteText] = useState('')
       supabase.from('documents').select('*').order('created_at', { ascending: false }),
       supabase.from('messages').select('*', { count: 'exact', head: true }).eq('read', false).eq('direction', 'inbound'),
     ])
@@ -57,11 +59,33 @@ export default function BriefingPage() {
       partsWaiting,
     })
     setLoading(false)
+        // Load notes
+    fetch('/api/daily-notes').then(r=>r.json()).then(d=>setNotes(d.notes||[])).catch(()=>{})
   }, [])
 
   useEffect(() => { load() }, [load])
 
-  if (loading) return <div className="p-4 sm:p-6 lg:p-8 text-text-muted">Loading briefing…</div>
+  if (
+    
+      const addNote = async () => {
+    if (!noteText.trim()) return
+    await fetch('/api/daily-notes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: noteText })
+    })
+    setNoteText('')
+    fetch('/api/daily-notes').then(r=>r.json()).then(d=>setNotes(d.notes||[]))
+  }
+
+  const deleteNote = async (id: string) => {
+    await fetch('/api/daily-notes', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id })
+    })
+    fetch('/api/daily-notes').then(r=>r.json()).then(d=>setNotes(d.notes||[]))
+  }loading) return <div className="p-4 sm:p-6 lg:p-8 text-text-muted">Loading briefing…</div>
   if (!data) return null
 
   const today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
@@ -173,7 +197,46 @@ export default function BriefingPage() {
             ))}
           </div>
         )}
-      </div>
+      
+      
+            {/* Daily Notes */}
+      <div className="card">
+        <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary mb-4">📝 Daily Notes</h2>
+        <div className="flex gap-2 mb-4">
+          <input
+            className="form-input flex-1"
+            placeholder="Add a note about today..."
+            value={noteText}
+            onChange={e => setNoteText(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') addNote() }}
+          />
+          <button className="btn btn-primary" onClick={addNote}>Add</button>
+        </div>
+        <div className="space-y-2 max-h-96 overflow-y-auto">
+          {notes.length === 0 ? (
+            <p className="text-xs text-text-muted text-center py-4">No notes yet</p>
+          ) : (
+            notes.map(n => (
+              <div key={n.id} className="bg-bg-hover rounded-lg p-3 group">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex-1">
+                    <p className="text-sm text-text-primary whitespace-pre-wrap">{n.content}</p>
+                    <p className="text-xs text-text-muted mt-1">
+                      {new Date(n.note_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                      {' · '}
+                      {new Date(n.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                    </p>
+                  </div>
+                  <button
+                    className="text-xs text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                    onClick={() => deleteNote(n.id)}
+                  >✕</button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div></div>
     </div>
   )
 }
