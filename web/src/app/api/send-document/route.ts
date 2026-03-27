@@ -42,9 +42,7 @@ export async function POST(req: NextRequest) {
         to: email,
       subject: `[TO: ${originalEmail}] ${docType} #${doc.doc_number} from ${shopName}`,        html,
         replyTo: settings?.shop_email,
-        apiKey: settings?.resend_api_key,
-        from: `${shopName} <onboarding@resend.dev>`,
-      })
+              })
       // Log
       await db.from('messages').insert({
         direction: 'outbound', channel: 'email',
