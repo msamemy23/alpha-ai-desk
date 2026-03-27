@@ -69,49 +69,38 @@ export async function POST(req: NextRequest) {
     const vehicle = [doc.vehicle_year, doc.vehicle_make, doc.vehicle_model].filter(Boolean).join(' ') || ''
 
     const html = `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-body{font-family:Arial,sans-serif;background:#f0f0f0;margin:0;padding:20px}
-.wrap{max-width:600px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.12)}
-.hdr{background:#111827;padding:32px;text-align:center;color:#fff}
-.hdr h1{margin:0 0 6px;font-size:24px;letter-spacing:-0.5px}
-.hdr p{margin:0;opacity:.7;font-size:14px}
-.body{padding:32px}
-.info{background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:20px;margin:20px 0;font-size:14px;line-height:1.9}
-.info strong{color:#111827}
-.btn{display:block;background:#2563eb;color:#fff !important;text-decoration:none;padding:16px;border-radius:10px;font-size:17px;font-weight:700;text-align:center;margin:24px 0}
-.btn:hover{background:#1d4ed8}
-.note{font-size:12px;color:#9ca3af;text-align:center;margin-top:4px}
-.ftr{background:#f9fafb;border-top:1px solid #e5e7eb;padding:20px;text-align:center;font-size:12px;color:#6b7280}
-</style></head>
-<body><div class="wrap">
-<div class="hdr"><h1>${shopName}</h1><p>Please review and sign your ${doc.type}</p></div>
-<div class="body">
-<p style="font-size:16px">Hi <strong>${doc.customer_name || 'Valued Customer'}</strong>,</p>
-<p>Your <strong>${doc.type} #${doc.doc_number}</strong> from ${shopName} is ready for your electronic signature.</p>
-<div class="info">
-<strong>Document:</strong> ${doc.type} #${doc.doc_number}<br>
-${vehicle ? `<strong>Vehicle:</strong> ${vehicle}<br>` : ''}
-<strong>Total:</strong> $${total}<br>
-<strong>Date:</strong> ${doc.doc_date || ''}
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="font-family:Arial,sans-serif;margin:0;padding:20px;background:#f4f4f4">
+<div style="max-width:600px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden">
+<div style="background:#111827;padding:24px;text-align:center;color:#fff">
+<h2 style="margin:0;font-size:20px">${shopName}</h2>
 </div>
-<p>Please click below to review the full document and sign electronically. Your signed copy will be emailed to you.</p>
-<a href="${signUrl}" class="btn">📝 Review &amp; Sign Now</a>
-<p class="note">This link expires in 7 days. Questions? Call us at ${settings?.shop_phone || ''}.</p>
+<div style="padding:24px">
+<p>Hi ${doc.customer_name || 'Valued Customer'},</p>
+<p>Your ${doc.type} #${doc.doc_number} is ready for your electronic signature.</p>
+<table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px">
+<tr><td style="padding:6px 0"><strong>Document:</strong></td><td style="padding:6px 0">${doc.type} #${doc.doc_number}</td></tr>
+${vehicle ? `<tr><td style="padding:6px 0"><strong>Vehicle:</strong></td><td style="padding:6px 0">${vehicle}</td></tr>` : ''}
+<tr><td style="padding:6px 0"><strong>Total:</strong></td><td style="padding:6px 0">$${total}</td></tr>
+<tr><td style="padding:6px 0"><strong>Date:</strong></td><td style="padding:6px 0">${doc.doc_date || ''}</td></tr>
+</table>
+<p>Click below to review the full document and sign electronically:</p>
+<p style="text-align:center;margin:24px 0"><a href="${signUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:14px 32px;border-radius:6px;font-size:16px;font-weight:600">Review and Sign</a></p>
+<p style="font-size:12px;color:#888">This link expires in 7 days. Questions? Call us at ${settings?.shop_phone || ''}.</p>
 </div>
-<div class="ftr">${shopName}<br>${settings?.shop_address || ''}</div>
-</div></body></html>`
+<div style="border-top:1px solid #eee;padding:16px;text-align:center;font-size:12px;color:#888">${shopName} · ${settings?.shop_address || ''}</div>
+</div>
+</body></html>`
 
     // sendEmail() auto-falls back to onboarding@resend.dev for unverified domains
     let emailError: string | null = null
     try {
       await sendEmail({
         to: email,
-        subject: `Action Required: Sign your ${doc.type} #${doc.doc_number} — ${shopName}`,
+        subject: `${doc.type} #${doc.doc_number} — Please review and sign`,
         html,
         apiKey: settings?.resend_api_key || process.env.RESEND_API_KEY,
-        from: `${shopName} <onboarding@resend.dev>`,
-        replyTo: settings?.shop_email || settings?.from_email || undefined,
+        from: 'Alpha Auto <onboarding@resend.dev>',
       })
     } catch (err: unknown) {
       emailError = err instanceof Error ? err.message : String(err)
@@ -169,7 +158,7 @@ body{font-family:Arial,sans-serif;background:#f0f0f0;margin:0;padding:20px}
 .ftr{background:#f9fafb;border-top:1px solid #e5e7eb;padding:20px;text-align:center;font-size:12px;color:#6b7280}
 </style></head>
 <body><div class="wrap">
-<div class="hdr"><h1>✅ Document Signed</h1><p>${shopName}</p></div>
+<div class="hdr"><h1>Document Signed</h1><p>${shopName}</p></div>
 <div class="body">
 <p style="font-size:16px">Hi <strong>${signerName || doc.customer_name || 'Valued Customer'}</strong>,</p>
 <p>Thank you! Your electronic signature has been recorded. Here is your confirmation:</p>
@@ -190,26 +179,24 @@ ${signatureData ? `<img src="${signatureData}" style="max-width:300px;max-height
 </div></body></html>`
 
     // sendEmail() auto-falls back to onboarding@resend.dev for unverified domains
-    const fromAddrComplete = `${shopName} <onboarding@resend.dev>`
+    const fromAddrComplete = 'Alpha Auto <onboarding@resend.dev>'
 
     await sendEmail({
       to: sig.customer_email,
-      subject: `✅ Signature Confirmed — ${doc.type} #${doc.doc_number}`,
+      subject: `Signature Confirmed — ${doc.type} #${doc.doc_number}`,
       html: confirmHtml,
       apiKey: settings?.resend_api_key,
       from: fromAddrComplete,
-      replyTo: settings?.shop_email || settings?.from_email || undefined,
     })
 
     // Also notify shop
     if (settings?.shop_email) {
       await sendEmail({
         to: settings.shop_email,
-        subject: `🖊️ Customer signed ${doc.type} #${doc.doc_number} — ${signerName}`,
+        subject: `Customer signed ${doc.type} #${doc.doc_number} — ${signerName}`,
         html: `<p><strong>${signerName}</strong> has signed <strong>${doc.type} #${doc.doc_number}</strong> for ${vehicle} on ${new Date(now).toLocaleString()}.</p>`,
         apiKey: settings?.resend_api_key,
         from: fromAddrComplete,
-        replyTo: settings?.shop_email || undefined,
       }).catch(() => {}) // Don't fail if shop notification fails
     }
 
