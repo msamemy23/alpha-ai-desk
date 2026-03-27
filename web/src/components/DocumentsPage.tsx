@@ -848,7 +848,6 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                       <td className="font-semibold">{formatCurrency(t.total)}</td>
                       <td onClick={e => e.stopPropagation()}>
                         <div className="flex gap-1">
-                          <button className="btn btn-secondary btn-sm" onClick={() => setSendModal(d)}>Send</button>
                           <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:'11px',padding:'4px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}} onClick={() => { setSigModal(d); setSigResult(null) }} title="Send for e-signature">✍️ Sign</button>
                           {/* Feature 9: Quick email button */}
                           <button
