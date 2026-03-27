@@ -102,13 +102,7 @@ ${vehicle ? `<strong>Vehicle:</strong> ${vehicle}<br>` : ''}
 <div class="ftr">${shopName}<br>${settings?.shop_address || ''}</div>
 </div></body></html>`
 
-    // Use from_email from settings, but ensure it's a valid Resend sender.
-    // If from_email is a non-resend.dev address (e.g. custom domain not verified with Resend),
-    // Resend may accept the API call but silently fail to deliver. Fall back to onboarding@resend.dev.
-    const rawFrom = settings?.from_email || process.env.FROM_EMAIL || ''
-    const fromAddr = rawFrom && rawFrom.includes('@') && !rawFrom.includes('resend.dev')
-      ? `${shopName} <onboarding@resend.dev>`
-      : rawFrom || `${shopName} <onboarding@resend.dev>`
+    // sendEmail() auto-falls back to onboarding@resend.dev for unverified domains
     let emailError: string | null = null
     try {
       await sendEmail({
@@ -116,8 +110,8 @@ ${vehicle ? `<strong>Vehicle:</strong> ${vehicle}<br>` : ''}
         subject: `Action Required: Sign your ${doc.type} #${doc.doc_number} — ${shopName}`,
         html,
         apiKey: settings?.resend_api_key || process.env.RESEND_API_KEY,
-        from: fromAddr,
-        replyTo: settings?.shop_email || rawFrom || undefined,
+        from: `${shopName} <onboarding@resend.dev>`,
+        replyTo: settings?.shop_email || settings?.from_email || undefined,
       })
     } catch (err: unknown) {
       emailError = err instanceof Error ? err.message : String(err)
@@ -195,11 +189,8 @@ ${signatureData ? `<img src="${signatureData}" style="max-width:300px;max-height
 <div class="ftr">${shopName} · ${settings?.shop_address || ''}</div>
 </div></body></html>`
 
-    // Use resend.dev fallback for from address (same logic as send action)
-    const rawFromComplete = settings?.from_email || ''
-    const fromAddrComplete = rawFromComplete && rawFromComplete.includes('@') && !rawFromComplete.includes('resend.dev')
-      ? `${shopName} <onboarding@resend.dev>`
-      : rawFromComplete || `${shopName} <onboarding@resend.dev>`
+    // sendEmail() auto-falls back to onboarding@resend.dev for unverified domains
+    const fromAddrComplete = `${shopName} <onboarding@resend.dev>`
 
     await sendEmail({
       to: sig.customer_email,
@@ -207,6 +198,7 @@ ${signatureData ? `<img src="${signatureData}" style="max-width:300px;max-height
       html: confirmHtml,
       apiKey: settings?.resend_api_key,
       from: fromAddrComplete,
+      replyTo: settings?.shop_email || settings?.from_email || undefined,
     })
 
     // Also notify shop
@@ -217,6 +209,7 @@ ${signatureData ? `<img src="${signatureData}" style="max-width:300px;max-height
         html: `<p><strong>${signerName}</strong> has signed <strong>${doc.type} #${doc.doc_number}</strong> for ${vehicle} on ${new Date(now).toLocaleString()}.</p>`,
         apiKey: settings?.resend_api_key,
         from: fromAddrComplete,
+        replyTo: settings?.shop_email || undefined,
       }).catch(() => {}) // Don't fail if shop notification fails
     }
 

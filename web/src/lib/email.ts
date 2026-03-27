@@ -19,7 +19,13 @@ export async function sendEmail({
     )
   }
 
-  const fromAddr = from || process.env.FROM_EMAIL || 'Alpha Auto <onboarding@resend.dev>'
+  // Determine the from address: always force onboarding@resend.dev if the caller
+  // passed a non-resend domain (custom domains that aren't verified will silently
+  // fail delivery even when the API returns 200).
+  let fromAddr = from || process.env.FROM_EMAIL || 'Alpha Auto <onboarding@resend.dev>'
+  if (fromAddr && !fromAddr.includes('resend.dev')) {
+    fromAddr = 'Alpha Auto <onboarding@resend.dev>'
+  }
 
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -32,7 +38,6 @@ export async function sendEmail({
 
   const data = await res.json()
   if (!res.ok) {
-    // Surface Resend's error message clearly
     const msg = data.message || data.error || 'Email send failed'
     throw new Error(`Resend API error: ${msg}`)
   }
