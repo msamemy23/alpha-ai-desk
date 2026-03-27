@@ -839,7 +839,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                 {filtered.map(d => {
                   const t = calcTotals(d as unknown as Record<string,unknown>)
                   return (
-                    <tr key={d.id} className="cursor-pointer" onClick={() => { const cust = customers.find(c => c.id === d.customer_id); setForm({ ...d, customer_phone: d.customer_phone || cust?.phone || '', customer_email: d.customer_email || cust?.email || '' } as Partial<Doc>); setEditing(d.id); setSignatureImg(null); if (d.signature_signed_at) { supabase.from('signatures').select('signature_data').eq('document_id', d.id).not('signed_at','is',null).order('signed_at',{ascending:false}).limit(1).single().then(({data:sig})=>{ if(sig?.signature_data) setSignatureImg(sig.signature_data) }) } }}>
+                    <tr key={d.id} className="cursor-pointer" onClick={() => { const cust = customers.find(c => c.id === d.customer_id); setForm({ ...d, customer_phone: d.customer_phone || cust?.phone || '', customer_email: d.customer_email || cust?.email || '' } as Partial<Doc>); setEditing(d.id); setSignatureImg(null); if (d.signature_signed_at) { fetch('/api/signature?documentId='+d.id).then(r=>r.json()).then(sig=>{ if(sig?.signature_data) setSignatureImg(sig.signature_data) }) } }}>
                       <td className="font-mono text-sm text-blue">{d.doc_number}</td>
                       <td className="font-medium">{d.customer_name || '—'}</td>
                       <td className="text-sm text-text-muted">{[d.vehicle_year, d.vehicle_make, d.vehicle_model].filter(Boolean).join(' ') || '—'}</td>
