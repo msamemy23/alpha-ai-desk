@@ -672,7 +672,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
 
   // ==================== NEW STATE ====================
   // Feature toggles
-    const [features, setFeatures] = useState({ search: true, socialMedia: true, thinking: false })
+    const [features, setFeatures] = useState({ search: true, socialMedia: true, thinking: false, automation: false, automation: false })
   const toggleFeature = (key: keyof typeof features) => setFeatures(prev => ({ ...prev, [key]: !prev[key] }))
 
   // Connectors popup state
@@ -928,7 +928,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   }
 
     const agentLoop = async (history: ChatMessage[], featureFlags?: { search: boolean;  socialMedia: boolean; thinking: boolean }) => {
-        const activeFeatures = featureFlags || { search: true, socialMedia: true, thinking: false }
+        const activeFeatures = featureFlags || { search: true, socialMedia: true, thinking: false, automation: false }
     const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
     const apiKey = settings?.ai_api_key
     if (!apiKey) {
@@ -966,7 +966,8 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
 - "new invoice" = NEW document, not lookup old ones.
 - User should NEVER have to repeat themselves.
 
-FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' : 'OFF'}\n- Social Media: ${activeFeatures.socialMedia ? 'ON' : 'OFF'}\n- Deep Thinking: ${activeFeatures.thinking ? 'ON' : 'OFF'}\nIf a feature is OFF and the user tries to use it, tell them to enable the toggle at the bottom of the chat input.`
+FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' : 'OFF'}\n- Social Media: ${activeFeatures.socialMedia ? 'ON' : 'OFF'}\n- Deep Thinking: ${activeFeatures.thinking ? 'ON' : 'OFF'}
+- Automation Mode: ${activeFeatures.automation ? 'ON' : 'OFF'}\nIf a feature is OFF and the user tries to use it, tell them to enable the toggle at the bottom of the chat input.`
 
       setStatus(step === 0 ? 'Thinking...' : 'Working...')
 
@@ -2155,6 +2156,20 @@ Continue silently.` }); continue } // Unknown — treat as final response
             title="Attach a file"
           >
             📎 Files
+          </button>
+
+                    {/* Automation toggle */}
+          <button
+            onClick={() => toggleFeature('automation')}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border ${
+              features.automation
+                ? 'bg-orange-500/20 border-orange-500/50 text-orange-400'
+                : 'bg-bg-card border-border text-text-muted hover:border-orange-400/30 hover:text-text-secondary'
+            }`}
+            title={features.automation ? 'Automation mode ON — AI will use browser automation for tasks' : 'Automation mode OFF — click to enable browser automation'}
+          >
+            {features.automation && <span className="w-1.5 h-1.5 rounded-full bg-orange-400 flex-shrink-0" />}
+            🤖 Automation
           </button>
         </div>
 
