@@ -292,7 +292,10 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   }
 
   const save = async () => {
-    const data = { ...form, type, updated_at: new Date().toISOString() }
+    const VALID_COLS = new Set(['type','doc_number','status','doc_date','due_date','expires_date','customer_id','customer_name','job_id','vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage','parts','labors','shop_supplies','sublet','tax_rate','apply_tax','deposit','amount_paid','payment_method','cashier','payment_terms','payment_methods','warranty_type','warranty_months','warranty_mileage','warranty_start','warranty_exclusions','warranty_claim','notes','locked','sent_at','created_at','updated_at','customer_phone','customer_email','signature_signed_at','signature_signer_name','signature_requested_at','line_items','payment_plan'])
+    const raw = { ...form, type, updated_at: new Date().toISOString() } as Record<string,unknown>
+    const data: Record<string,unknown> = {}
+    for (const k of Object.keys(raw)) { if (VALID_COLS.has(k)) data[k] = raw[k] }
     // Auto-detect warranty if not manually set or still on default
     if (!data.warranty_type || data.warranty_type === 'No Warranty') {
       const detected = detectWarranty(data)
@@ -304,9 +307,15 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
         data.warranty_start = (data.doc_date as string) || new Date().toISOString().split('T')[0]
       }
     }
-    if (editing === 'new') await supabase.from('documents').insert({ ...data, created_at: new Date().toISOString() })
-    else if (editing) await supabase.from('documents').update(data).eq('id', editing)
-    setEditing(null); setForm({}); load()
+    try {
+      let result
+      if (editing === 'new') result = await supabase.from('documents').insert({ ...data, created_at: new Date().toISOString() })
+      else if (editing) result = await supabase.from('documents').update(data).eq('id', editing)
+      if (result?.error) throw new Error(result.error.message)
+      setEditing(null); setForm({}); load()
+    } catch (e: unknown) {
+      alert('Save failed: ' + (e instanceof Error ? e.message : 'Unknown error'))
+    }
   }
 
   const del = async () => {
