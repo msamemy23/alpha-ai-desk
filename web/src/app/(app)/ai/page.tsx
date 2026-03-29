@@ -967,7 +967,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
 - User should NEVER have to repeat themselves.
 
 FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' : 'OFF'}\n- Social Media: ${activeFeatures.socialMedia ? 'ON' : 'OFF'}\n- Deep Thinking: ${activeFeatures.thinking ? 'ON' : 'OFF'}
-- Automation Mode: ${activeFeatures.parsed.tool === 'browse' ? 'ON' : 'OFF'}\nIf a feature is OFF and the user tries to use it, tell them to enable the toggle at the bottom of the chat input.
+- Automation Mode: ${activeFeatures.automation ? 'ON' : 'OFF'}\nIf a feature is OFF and the user tries to use it, tell them to enable the toggle at the bottom of the chat input.
 When AUTOMATION MODE is ON, you have FULL Puppeteer browser automation. For ANY task involving visiting websites, checking prices on specific sites, filling forms, clicking buttons, or interacting with web pages, use: {"tool":"webAutomation","type":"browser","url":"https://target-site.com","task":"what to do","actions":[{"type":"navigate","url":"https://target-site.com"},{"type":"fill","selector":"input#search","value":"search term"},{"type":"click","selector":"button.submit"},{"type":"wait","ms":2000}]} Available actions: navigate (url), click (CSS selector), fill (selector+value), select (selector+value), wait (ms), submit (selector). Real screenshots are captured at each step. Use this for: visiting AutoZone/NAPA/OReilly to check prices, filling contact forms, submitting applications, checking competitor websites, ordering parts online, etc.`
 
       setStatus(step === 0 ? 'Thinking...' : 'Working...')
