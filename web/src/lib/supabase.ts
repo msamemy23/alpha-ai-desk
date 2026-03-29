@@ -18,6 +18,26 @@ export function getServiceClient() {
 
 // ─── DB Helpers ────────────────────────────────────────────────
 
+export async function getShopProfile() {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return null
+  const { data } = await supabase
+    .from('shop_profiles')
+    .select('*')
+    .eq('user_id', user.id)
+    .single()
+  return data as {
+    id: string
+    user_id: string
+    shop_name: string
+    phone: string
+    address: string
+    city_state_zip: string
+    services: string[]
+    created_at: string
+  } | null
+}
+
 export async function getSettings() {
   const { data } = await supabase.from('settings').select('*').limit(1).single()
   return data
