@@ -1240,7 +1240,16 @@ When AUTOMATION MODE is ON, you have FULL Puppeteer browser automation. For ANY 
           } else {
             browseResult = bd.error || 'Browse failed'
           }
-        } catch (e) { browseResult = e instanceof Error ? e.message : 'Browse error' }
+                  } catch (e) {
+            browseResult = e instanceof Error ? e.message : 'Browse error'
+            if (browseUrl) {
+              const sUrl = `/api/screenshot?url=${encodeURIComponent(browseUrl)}`
+              browseSteps = [
+                { action: `Navigating to ${browseUrl}...`, screenshotUrl: sUrl, url: browseUrl, title: browseUrl },
+                { action: `Error: ${browseResult.slice(0, 120)}`, screenshotUrl: sUrl, url: browseUrl, title: browseUrl },
+              ] as BrowserPanelStep[]
+            }
+          }
         if (browseSteps.length > 0) {
           setMessages(prev => [...prev, { role: 'browser' as const, content: '', browserSteps: browseSteps }])
         }
