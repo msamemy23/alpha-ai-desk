@@ -291,7 +291,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     return matched
   }
 
-  const save = async () => {
+  const save = async (keepOpen = false) => {
     const VALID_COLS = new Set(['type','doc_number','status','doc_date','due_date','expires_date','customer_id','customer_name','job_id','vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage','parts','labors','shop_supplies','sublet','tax_rate','apply_tax','deposit','amount_paid','payment_method','cashier','payment_terms','payment_methods','warranty_type','warranty_months','warranty_mileage','warranty_start','warranty_exclusions','warranty_claim','notes','locked','sent_at','created_at','updated_at','customer_phone','customer_email','signature_signed_at','signature_signer_name','signature_requested_at','line_items','payment_plan'])
     const raw = { ...form, type, updated_at: new Date().toISOString() } as Record<string,unknown>
     const data: Record<string,unknown> = {}
@@ -312,7 +312,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
       if (editing === 'new') result = await supabase.from('documents').insert({ ...data, created_at: new Date().toISOString() })
       else if (editing) result = await supabase.from('documents').update(data).eq('id', editing)
       if (result?.error) throw new Error(result.error.message)
-      setEditing(null); setForm({}); load()
+      if (!keepOpen) { setEditing(null); setForm({}); load() }
     } catch (e: unknown) {
       alert('Save failed: ' + (e instanceof Error ? e.message : 'Unknown error'))
     }
@@ -436,7 +436,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                 <button className="btn btn-secondary" onClick={()=>{setEditing(null);setForm({})}}>← Back</button>
                 <button className="btn btn-primary" onClick={save}>Save {type}</button>
                 {editing !== 'new' && <button className="btn btn-danger" onClick={del}>Delete</button>}
-                {editing !== 'new' && <button className="btn btn-secondary" onClick={() => setSendModal(form as Doc)}>Send</button>} <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={() => { if (form.id) { setSigModal(form as Doc); setSigResult(null) } }}>✍️ Sign</button>
+                {editing !== 'new' && <button className="btn btn-secondary" onClick={async () => { await save(true); setSendModal(form as Doc) }}>Send</button>} <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={async () => { if (form.id) { await save(true); setSigModal(form as Doc); setSigResult(null) } }}>✍️ Sign</button>
               {editing !== 'new' && type === 'Estimate' && <button className="btn btn-primary btn-sm" onClick={async () => { if (!confirm('Convert this estimate to an invoice?')) return; const prefix = 'INV'; const year = new Date().getFullYear(); const { data: existing } = await supabase.from('documents').select('doc_number').eq('type','Invoice').like('doc_number',`${prefix}-${year}-%`); const nums = (existing||[]).map((d:Record<string,string>) => parseInt(d.doc_number.split('-').pop()||'0')); const next = Math.max(0,...nums)+1; const doc_number = `${prefix}-${year}-${String(next).padStart(4,'0')}`; const invoiceData = {...form, type:'Invoice', doc_number, status:'Draft', created_at: new Date().toISOString(), updated_at: new Date().toISOString()}; delete (invoiceData as Record<string,unknown>).id; await supabase.from('documents').insert(invoiceData); setEditing(null); setForm({}); window.location.href='/invoices'; }}>Convert to Invoice</button>}
                 {editing !== 'new' && type === 'Invoice' && <button className="btn btn-secondary" onClick={() => setPlanModal(form as Doc)}>Payment Plan</button>}
               </div>
