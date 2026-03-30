@@ -6,6 +6,10 @@ export async function POST(req: NextRequest) {
   const sb = getServiceClient()
   const body = await req.json()
 
+  // Resolve shop_id so new records pass RLS — look up the single shop profile
+  const { data: shopProfile } = await sb.from('shop_profiles').select('id').limit(1).single()
+  const shopId: string | null = shopProfile?.id ?? null
+
   // Accept both "customer" (from proposeDocument) and "customer_name"
   const customerName: string = body.customer || body.customer_name || ''
   const customerEmail: string = body.customer_email || ''
@@ -46,9 +50,10 @@ export async function POST(req: NextRequest) {
         await sb.from('customers').update(updates).eq('id', customer_id)
       }
     } else {
-      const insertData: Record<string, string> = {
+      const insertData: Record<string, string | null> = {
         name: customerName,
         created_at: new Date().toISOString(),
+        shop_id: shopId,
       }
       if (customerEmail) insertData.email = customerEmail
       if (customerPhone) insertData.phone = customerPhone
@@ -75,6 +80,7 @@ export async function POST(req: NextRequest) {
   const { data, error } = await sb.from('documents').insert({
     type: docType,
     doc_number,
+    shop_id: shopId,
     status: rawType === 'Receipt' ? 'Paid' : 'Draft',
     doc_date: new Date().toISOString().split('T')[0],
     customer_id: customer_id,

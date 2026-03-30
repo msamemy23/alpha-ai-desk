@@ -10,6 +10,10 @@ export async function POST(req: NextRequest) {
   const sb = getServiceClient()
   const { action, payload } = await req.json() as { action: string; payload: Record<string, unknown> }
 
+  // Resolve shop_id for all insert operations — required for RLS to pass
+  const { data: _shopProfile } = await sb.from('shop_profiles').select('id').limit(1).single()
+  const shopId: string | null = _shopProfile?.id ?? null
+
   try {
     switch (action) {
 
@@ -20,6 +24,7 @@ export async function POST(req: NextRequest) {
         const { data, error } = await sb.from('customers').insert({
           name, phone: phone || null, email: email || null,
           address: address || null, notes: notes || null,
+          shop_id: shopId,
           created_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
@@ -35,6 +40,7 @@ export async function POST(req: NextRequest) {
           vehicle_year: vehicle_year || '', vehicle_make: vehicle_make || '',
           vehicle_model: vehicle_model || '', vin: vin || '',
           status: status || 'Pending', notes: notes || '',
+          shop_id: shopId,
           created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
@@ -52,7 +58,7 @@ export async function POST(req: NextRequest) {
         const doc_number = `${prefix}-${year}-${String(next).padStart(4, '0')}`
 
         const { data, error } = await sb.from('documents').insert({
-          type: docType, doc_number, status: 'Draft',
+          type: docType, doc_number, shop_id: shopId, status: 'Draft',
           doc_date: new Date().toISOString().split('T')[0],
           customer_name: (payload.customer_name as string) || 'Customer',
           customer_id: payload.customer_id || null,
