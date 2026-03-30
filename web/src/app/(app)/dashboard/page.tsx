@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
-import { supabase, calcTotals, formatCurrency, getShopProfile } from '@/lib/supabase'
+import { supabase, calcTotals, formatCurrency, getShopProfile, getShopId } from '@/lib/supabase'
 
 interface ShopProfile {
   shop_name: string
@@ -53,11 +53,13 @@ export default function DashboardPage() {
   }, [])
 
   const load = useCallback(async () => {
+    const shopId = await getShopId()
+
     const [{ data: jobs }, { data: docs }, { data: customers }, { data: messages }] = await Promise.all([
-      supabase.from('jobs').select('*').order('created_at', { ascending: false }),
-      supabase.from('documents').select('*').order('created_at', { ascending: false }),
-      supabase.from('customers').select('id'),
-      supabase.from('messages').select('*').order('created_at', { ascending: false }).limit(5),
+      supabase.from('jobs').select('*').eq('shop_id', shopId ?? '').order('created_at', { ascending: false }),
+      supabase.from('documents').select('*').eq('shop_id', shopId ?? '').order('created_at', { ascending: false }),
+      supabase.from('customers').select('id').eq('shop_id', shopId ?? ''),
+      supabase.from('messages').select('*').eq('shop_id', shopId ?? '').order('created_at', { ascending: false }).limit(5),
     ])
 
     const openJobs = (jobs || []).filter((j: Record<string,unknown>) => !['Paid','Closed'].includes(j.status as string)).length
