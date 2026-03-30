@@ -1535,21 +1535,18 @@ Continue silently.` }); continue } // Unknown — treat as final response
       const email = parsed.customer_email as string || ''
       const phone = parsed.customer_phone as string || ''
       showToast(`${docType} ${docNum} saved!`)
-      // Offer to send via email/SMS
-      if (email || phone) {
-        const sendOptions: string[] = []
-        if (email) sendOptions.push('email')
-        if (phone) sendOptions.push('SMS')
-        const sendHtml = `<div class="proposal-card" style="margin-top:8px">
-          <div class="font-bold text-sm mb-2">${docType} ${docNum} saved! Send to ${parsed.customer || 'customer'}?</div>
-          <div class="flex gap-2">
-            ${email ? `<button onclick="window.__sendSavedDoc && window.__sendSavedDoc('${data.estimate?.id || ''}','email','${email.replace(/'/g, "\\'")}')" class="btn btn-primary btn-sm">Email to ${email}</button>` : ''}
-            ${phone ? `<button onclick="window.__sendSavedDoc && window.__sendSavedDoc('${data.estimate?.id || ''}','sms','${phone.replace(/'/g, "\\'")}')" class="btn btn-secondary btn-sm">SMS to ${phone}</button>` : ''}
-            <button onclick="this.closest('.proposal-card').style.display='none'" class="btn btn-sm" style="opacity:0.6">Skip</button>
-          </div>
-        </div>`
-        setMessages(prev => [...prev, { role: 'assistant', content: '', html: sendHtml }])
-      }
+      const viewPage = docType === 'Invoice' ? 'invoices' : docType === 'Receipt' ? 'invoices' : 'estimates'
+      const savedDocId = data.estimate?.id || ''
+      // Always show a saved confirmation card with a View button
+      const savedHtml = `<div class="proposal-card" style="margin-top:8px">
+        <div class="font-bold text-sm mb-1">✅ ${docType} <span style="color:#6366f1">${docNum}</span> saved!</div>
+        <div class="flex gap-2 mt-2" style="flex-wrap:wrap">
+          <a href="/${viewPage}" class="btn btn-primary btn-sm" style="text-decoration:none">View ${docType}s</a>
+          ${email ? `<button onclick="window.__sendSavedDoc && window.__sendSavedDoc('${savedDocId}','email','${email.replace(/'/g, "\\'")}')" class="btn btn-secondary btn-sm">📧 Email to ${email}</button>` : ''}
+          ${phone ? `<button onclick="window.__sendSavedDoc && window.__sendSavedDoc('${savedDocId}','sms','${phone.replace(/'/g, "\\'")}')" class="btn btn-secondary btn-sm">📱 SMS to ${phone}</button>` : ''}
+        </div>
+      </div>`
+      setMessages(prev => [...prev, { role: 'assistant', content: '', html: savedHtml }])
     } catch { showToast('Failed to save document') }
   }
 
