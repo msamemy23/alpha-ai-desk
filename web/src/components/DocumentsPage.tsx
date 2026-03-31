@@ -296,8 +296,8 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     const raw = { ...form, type, updated_at: new Date().toISOString() } as Record<string,unknown>
     const data: Record<string,unknown> = {}
     for (const k of Object.keys(raw)) { if (VALID_COLS.has(k)) data[k] = raw[k] }
-    // Auto-detect warranty if not manually set or still on default
-    if (!data.warranty_type || data.warranty_type === 'No Warranty') {
+    // Auto-detect warranty only when creating a new document, never override on edits
+    if (editing === 'new' && (!data.warranty_type || data.warranty_type === 'No Warranty')) {
       const detected = detectWarranty(data)
       if (detected && detected.label !== 'No Warranty') {
         data.warranty_type = detected.label
