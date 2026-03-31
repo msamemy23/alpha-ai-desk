@@ -308,11 +308,26 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
       }
     }
     try {
-      let result
-      if (editing === 'new') result = await supabase.from('documents').insert({ ...data, created_at: new Date().toISOString() })
-      else if (editing) result = await supabase.from('documents').update(data).eq('id', editing)
-      if (result?.error) throw new Error(result.error.message)
-      if (!keepOpen) { setEditing(null); setForm({}); load() }
+      if (editing === 'new') {
+        const result = await supabase.from('documents').insert({ ...data, created_at: new Date().toISOString() }).select()
+        if (result.error) throw new Error(result.error.message)
+      } else if (editing) {
+        const result = await supabase.from('documents').update(data).eq('id', editing).select()
+        if (result.error) throw new Error(result.error.message)
+        if (!result.data || result.data.length === 0) {
+          // RLS blocked the update — refresh shop_id and retry with service route
+          const resp = await fetch('/api/save-document', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: editing, data })
+          })
+          if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}))
+            throw new Error(err.error || 'Save failed')
+          }
+        }
+      }
+      if (!keepOpen) { await load(); setEditing(null); setForm({}) }
     } catch (e: unknown) {
       alert('Save failed: ' + (e instanceof Error ? e.message : 'Unknown error'))
     }
