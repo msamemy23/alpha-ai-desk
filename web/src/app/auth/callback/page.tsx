@@ -12,8 +12,32 @@ export default function AuthCallback() {
     const handleCallback = async () => {
       const { data } = await supabase.auth.getSession()
       if (data.session) {
+        // Set auth cookie
         document.cookie = 'alpha_authed=true; max-age=2592000; path=/; SameSite=Lax'
-        window.location.href = '/dashboard'
+
+        // Check if user has a shop_profiles record, create one if not
+        const userId = data.session.user.id
+        const { data: profile } = await supabase
+          .from('shop_profiles')
+          .select('id')
+          .eq('user_id', userId)
+          .single()
+
+        if (!profile) {
+          // New Google OAuth user - create a shop profile with their email name
+          const email = data.session.user.email || ''
+          const name = data.session.user.user_metadata?.full_name || email.split('@')[0] || 'My Shop'
+          await supabase.from('shop_profiles').insert({
+            user_id: userId,
+            shop_name: name + "'s Shop",
+            phone: '',
+            address: '',
+            city_state_zip: ''
+          })
+          window.location.href = '/onboarding'
+        } else {
+          window.location.href = '/dashboard'
+        }
       } else {
         window.location.href = '/login'
       }
