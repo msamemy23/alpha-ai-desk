@@ -1,5 +1,5 @@
 'use client'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
 const supabase = createClient(
@@ -8,50 +8,115 @@ const supabase = createClient(
 )
 
 export default function AuthCallback() {
+  const [status, setStatus] = useState('Signing you in...')
+
   useEffect(() => {
-    const handleCallback = async () => {
-      const { data } = await supabase.auth.getSession()
-      if (data.session) {
-        // Set auth cookie
-        document.cookie = 'alpha_authed=true; max-age=2592000; path=/; SameSite=Lax'
+    // Handle PKCE code exchange if present in URL
+    const params = new URLSearchParams(window.location.search)
+    const code = params.get('code')
 
-        // Check if user has a shop_profiles record, create one if not
-        const userId = data.session.user.id
-        const { data: profile } = await supabase
-          .from('shop_profiles')
-          .select('id')
-          .eq('user_id', userId)
-          .single()
-
-        if (!profile) {
-          // New Google OAuth user - create a shop profile with their email name
-          const email = data.session.user.email || ''
-          const name = data.session.user.user_metadata?.full_name || email.split('@')[0] || 'My Shop'
-          await supabase.from('shop_profiles').insert({
-            user_id: userId,
-            shop_name: name + "'s Shop",
-            phone: '',
-            address: '',
-            city_state_zip: ''
-          })
-          window.location.href = '/onboarding'
-        } else {
-          window.location.href = '/dashboard'
+    const processAuth = async () => {
+      try {
+        // If there's a code param, exchange it for a session (PKCE flow)
+        if (code) {
+          const { error } = await supabase.auth.exchangeCodeForSession(code)
+          if (error) {
+            console.error('Code exchange error:', error)
+            setStatus('Authentication failed. Redirecting...')
+            setTimeout(() => { window.location.href = '/login' }, 2000)
+            return
+          }
         }
-      } else {
-        window.location.href = '/login'
+
+        // Listen for auth state changes (handles hash fragment flow)
+        const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+          if (session) {
+            // Set auth cookie
+            document.cookie = 'alpha_authed=true; max-age=2592000; path=/; SameSite=Lax'
+
+            // Check if user has a shop_profiles record
+            const userId = session.user.id
+            const { data: profile } = await supabase
+              .from('shop_profiles')
+              .select('id')
+              .eq('user_id', userId)
+              .single()
+
+            if (!profile) {
+              const email = session.user.email || ''
+              const name = session.user.user_metadata?.full_name || email.split('@')[0] || 'My Shop'
+              await supabase.from('shop_profiles').insert({
+                user_id: userId,
+                shop_name: name + "'s Shop",
+                phone: '',
+                address: '',
+                city_state_zip: ''
+              })
+              window.location.href = '/onboarding'
+            } else {
+              window.location.href = '/dashboard'
+            }
+            subscription.unsubscribe()
+          }
+        })
+
+        // Also try getSession after a short delay as fallback
+        setTimeout(async () => {
+          const { data } = await supabase.auth.getSession()
+          if (data.session) {
+            document.cookie = 'alpha_authed=true; max-age=2592000; path=/; SameSite=Lax'
+            const userId = data.session.user.id
+            const { data: profile } = await supabase
+              .from('shop_profiles')
+              .select('id')
+              .eq('user_id', userId)
+              .single()
+
+            if (!profile) {
+              const email = data.session.user.email || ''
+              const name = data.session.user.user_metadata?.full_name || email.split('@')[0] || 'My Shop'
+              await supabase.from('shop_profiles').insert({
+                user_id: userId,
+                shop_name: name + "'s Shop",
+                phone: '',
+                address: '',
+                city_state_zip: ''
+              })
+              window.location.href = '/onboarding'
+            } else {
+              window.location.href = '/dashboard'
+            }
+          } else if (!code) {
+            // No session and no code - redirect to login
+            setStatus('No session found. Redirecting...')
+            setTimeout(() => { window.location.href = '/login' }, 2000)
+          }
+        }, 1000)
+
+      } catch (err) {
+        console.error('Auth callback error:', err)
+        setStatus('Something went wrong. Redirecting...')
+        setTimeout(() => { window.location.href = '/login' }, 2000)
       }
     }
-    handleCallback()
+
+    processAuth()
   }, [])
 
   return (
     <div style={{
       minHeight: '100vh', background: '#0a0a0a',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
+      flexDirection: 'column', gap: '16px',
       color: '#f59e0b', fontFamily: 'Inter, system-ui, sans-serif', fontSize: '16px'
     }}>
-      Signing you in...
+      <div style={{
+        width: '40px', height: '40px', border: '3px solid rgba(245,158,11,0.3)',
+        borderTopColor: '#f59e0b', borderRadius: '50%',
+        animation: 'spin 1s linear infinite'
+      }} />
+      {status}
+      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
     </div>
   )
 }
