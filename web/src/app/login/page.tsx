@@ -18,14 +18,14 @@ export default function LoginPage() {
   const [shopName, setShopName] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [success, setSuccess] = useState('')
+  const [message, setMessage] = useState('')
   const [mode, setMode] = useState<'login' | 'signup' | 'reset'>('login')
 
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     setError('')
-    setSuccess('')
+    setMessage('')
     try {
       if (mode === 'login') {
         const { error } = await supabase.auth.signInWithPassword({ email, password })
@@ -33,26 +33,27 @@ export default function LoginPage() {
         setCookie('alpha_authed', 'true')
         window.location.href = '/dashboard'
       } else if (mode === 'signup') {
-        if (!shopName.trim()) { setError('Shop name is required'); setLoading(false); return }
         const { data, error } = await supabase.auth.signUp({ email, password })
         if (error) throw error
+        // Create shop_profiles row for the new user
         if (data.user) {
           await supabase.from('shop_profiles').insert({
             user_id: data.user.id,
-            shop_name: shopName.trim(),
+            shop_name: shopName || 'My Shop',
             phone: '',
             address: '',
-            city_state_zip: ''
+            city_state_zip: '',
+            services: [],
           })
         }
         setCookie('alpha_authed', 'true')
         window.location.href = '/onboarding'
       } else if (mode === 'reset') {
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
-          redirectTo: `${window.location.origin}/auth/callback`
+          redirectTo: `${window.location.origin}/auth/callback`,
         })
         if (error) throw error
-        setSuccess('Password reset email sent! Check your inbox.')
+        setMessage('Password reset email sent! Check your inbox.')
         setLoading(false)
         return
       }
@@ -82,19 +83,6 @@ export default function LoginPage() {
     boxSizing: 'border-box', transition: 'border-color 0.2s'
   }
 
-  const getTitle = () => {
-    if (mode === 'reset') return 'Reset your password'
-    if (mode === 'signup') return 'Create your shop account'
-    return 'Sign in to your shop dashboard'
-  }
-
-  const getButtonText = () => {
-    if (loading) return mode === 'reset' ? 'Sending...' : mode === 'login' ? 'Signing in...' : 'Creating account...'
-    if (mode === 'reset') return 'Send Reset Link'
-    if (mode === 'signup') return 'Create Account'
-    return 'Sign In'
-  }
-
   return (
     <div style={{
       minHeight: '100vh',
@@ -121,12 +109,12 @@ export default function LoginPage() {
             border: '1px solid rgba(245,158,11,0.3)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: '28px', margin: '0 auto 16px'
-          }}>&#128295;</div>
+          }}>🔧</div>
           <h1 style={{ color: '#f59e0b', fontSize: '22px', fontWeight: '700', margin: '0 0 6px', letterSpacing: '-0.3px' }}>
             Alpha Desktop AI
           </h1>
           <p style={{ color: '#6b7280', fontSize: '14px', margin: 0 }}>
-            {getTitle()}
+            {mode === 'login' ? 'Sign in to your shop dashboard' : mode === 'signup' ? 'Create your shop account' : 'Reset your password'}
           </p>
         </div>
 
@@ -160,9 +148,9 @@ export default function LoginPage() {
         <form onSubmit={handleEmailAuth}>
           {mode === 'signup' && (
             <div style={{ marginBottom: '14px' }}>
-              <label style={{ display: 'block', color: '#9ca3af', fontSize: '13px', fontWeight: '500', marginBottom: '6px' }}>Shop Name *</label>
+              <label style={{ display: 'block', color: '#9ca3af', fontSize: '13px', fontWeight: '500', marginBottom: '6px' }}>Shop Name</label>
               <input type="text" value={shopName} onChange={e => setShopName(e.target.value)}
-                placeholder="Your Shop Name" required style={inputStyle}
+                placeholder="Your Auto Shop" required style={inputStyle}
                 onFocus={e => (e.target.style.borderColor = 'rgba(245,158,11,0.5)')}
                 onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.1)')} />
             </div>
@@ -190,12 +178,12 @@ export default function LoginPage() {
               color: '#f87171', fontSize: '13px'
             }}>{error}</div>
           )}
-          {success && (
+          {message && (
             <div style={{
               background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.3)',
               borderRadius: '8px', padding: '10px 14px', marginBottom: '16px',
               color: '#4ade80', fontSize: '13px'
-            }}>{success}</div>
+            }}>{message}</div>
           )}
           <button type="submit" disabled={loading} style={{
             width: '100%', padding: '13px',
@@ -204,24 +192,24 @@ export default function LoginPage() {
             fontSize: '15px', fontWeight: '700',
             cursor: loading ? 'not-allowed' : 'pointer', transition: 'all 0.2s'
           }}>
-            {getButtonText()}
+            {loading ? 'Please wait…' : mode === 'login' ? 'Sign In' : mode === 'signup' ? 'Create Account' : 'Send Reset Link'}
           </button>
         </form>
 
         {mode === 'login' && (
-          <div style={{ textAlign: 'center', marginTop: '12px' }}>
-            <button onClick={() => { setMode('reset'); setError(''); setSuccess('') }}
+          <div style={{ textAlign: 'center', marginTop: '16px' }}>
+            <button onClick={() => { setMode('reset'); setError(''); setMessage('') }}
               style={{ background: 'none', border: 'none', color: '#6b7280', fontSize: '12px', cursor: 'pointer' }}>
               Forgot password?
             </button>
           </div>
         )}
 
-        <div style={{ textAlign: 'center', marginTop: '16px' }}>
+        <div style={{ textAlign: 'center', marginTop: '20px' }}>
           <span style={{ color: '#6b7280', fontSize: '13px' }}>
-            {mode === 'login' ? "Don't have an account? " : 'Already have an account? '}
+            {mode === 'login' ? "Don't have an account? " : mode === 'signup' ? 'Already have an account? ' : 'Remember your password? '}
           </span>
-          <button onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setError(''); setSuccess('') }}
+          <button onClick={() => { setMode(mode === 'signup' ? 'login' : mode === 'reset' ? 'login' : 'signup'); setError(''); setMessage('') }}
             style={{ background: 'none', border: 'none', color: '#f59e0b', fontSize: '13px', fontWeight: '600', cursor: 'pointer' }}>
             {mode === 'login' ? 'Sign up' : 'Sign in'}
           </button>
