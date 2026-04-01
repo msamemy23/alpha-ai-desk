@@ -840,7 +840,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       ? { role: 'user', content: fullContent, imageUrl: attachImageUrl }
       : userMsg
     const history2 = [...messages, msgForHistory]
-    await agentLoop(history2, features)
+    try { await agentLoop(history2, features) } catch (err) { setMessages(prev => [...prev, { role: 'assistant', content: 'Error: ' + (err instanceof Error ? err.message : 'Request timed out. Try again.') }]) }
     setLoading(false)
     setStatus('')
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -984,7 +984,8 @@ When AUTOMATION MODE is ON, you have FULL Puppeteer browser automation. For ANY 
           frequency_penalty: 0.6,
           presence_penalty: 0.4,
             ...(activeFeatures.thinking ? { reasoning: { effort: 'high' } } : {}),
-        })
+        }),
+        signal: AbortSignal.timeout(30000),
       })
 
       const data = await res.json()
