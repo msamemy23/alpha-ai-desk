@@ -111,7 +111,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     localStorage.setItem('alpha_location', loc)
   }
 
-  const shopName = shopProfile?.shop_name || 'Alpha International Auto Center'
+  const shopName = shopProfile?.shop_name || 'My Shop'
   const shopPhone = shopProfile?.phone || '(713) 663-6979'
 
   return (
@@ -141,7 +141,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
         <div className="px-3 pt-3">
           <select className="form-select text-xs w-full" value={location} onChange={e => switchLocation(e.target.value)}>
-            <option value="main">Main — 10710 S Main St</option>
+            <option value="main" >{shopProfile?.address || 'Set address in Settings'}</option>
             <option value="south">South — Coming Soon</option>
             <option value="north">North — Coming Soon</option>
           </select>
