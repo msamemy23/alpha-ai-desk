@@ -345,7 +345,35 @@ WEB AUTOMATION — Browse the web, research prices, scrape competitor sites, sea
 {"tool":"webAutomation","type":"parts_price","query":"2019 Toyota Camry oil filter"}
 {"tool":"webAutomation","type":"monitor_competitor","url":"https://competitor-shop.com","task":"what services do they offer"}
 
-CLARIFICATION RULE — If you do not fully understand what the user is asking, ALWAYS ask a clarifying question BEFORE taking any action. Never guess on destructive or irreversible actions (delete, remove, send, deactivate). If user says "remove him" with multiple employees ask which one. If user says "send it" without specifying a document ask which document and to whom.`
+CLARIFICATION RULE — If you do not fully understand what the user is asking, ALWAYS ask a clarifying question BEFORE taking any action. Never guess on destructive or irreversible actions (delete, remove, send, deactivate). If user says "remove him" with multiple employees ask which one. If user says "send it" without specifying a document ask which document and to whom.
+
+DESKTOP TOOLS (only available in the desktop app — window.electronAPI must exist):
+These tools control the local Windows PC directly. Only use them when the user says "notify me", "send a desktop notification", "print this", "save this", "screenshot", "run powershell", or asks to browse the web using the local computer.
+
+DESKTOP NOTIFY — Send a native Windows desktop notification. Use when user says "notify me", "send a notification", "alert me", "remind me with a popup":
+{"tool":"desktopNotify","title":"Job Ready","body":"2019 Honda Civic is ready for pickup"}
+
+DESKTOP BROWSE — Use local browser to scrape a website or search the web. Faster than Vercel-based scraping, works on any site. Use when user says "browse to", "check that site", "scrape", or "use the desktop browser":
+{"tool":"desktopBrowse","url":"https://autozone.com/p/oil-filter","task":"get the price"}
+For search: {"tool":"desktopBrowse","type":"search","query":"2019 Honda Civic oil filter price AutoZone"}
+
+DESKTOP PRINT — Open the system print dialog for the current page:
+{"tool":"desktopPrint"}
+
+DESKTOP SAVE PDF — Save the current page as a PDF file (shows save dialog):
+{"tool":"desktopPDF","filename":"invoice-2026.pdf"}
+
+DESKTOP SAVE FILE — Save any text content as a file (shows save dialog):
+{"tool":"desktopSave","content":"file content here","filename":"notes.txt"}
+
+DESKTOP SCREENSHOT — Take a screenshot of the current app window:
+{"tool":"desktopScreenshot"}
+
+DESKTOP POWERSHELL — Run a PowerShell command on the shop computer. Use carefully — confirm with user for anything that modifies files/system:
+{"tool":"desktopPowerShell","command":"Get-ChildItem C:\\Users\\aaron\\Downloads"}
+
+DESKTOP SYSTEM INFO — Get info about the shop computer:
+{"tool":"desktopSystemInfo"}`
 
 interface HistoryEntry {
   id: string
@@ -673,6 +701,9 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   // ==================== NEW STATE ====================
   // Feature toggles
     const [features, setFeatures] = useState({ search: true, socialMedia: true, thinking: false })
+  // Desktop mode detection
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const isDesktop = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron
   const toggleFeature = (key: keyof typeof features) => setFeatures(prev => ({ ...prev, [key]: !prev[key] }))
 
   // Connectors popup state
@@ -1394,7 +1425,159 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       }
 
 if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; try { const r = await fetch('/api/automations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create', name: parsed.name || 'Scheduled Task', description: parsed.description || '', schedule: parsed.schedule, task_prompt: parsed.task_prompt }) }); const d = await r.json(); sr = d.ok ? `Scheduled "${d.data?.name}" at ${d.data?.schedule}` : `Failed: ${d.error}` } catch (e) { sr = `Error: ${e instanceof Error ? e.message : 'Unknown'}` } accumulated.push(`[scheduleTask]: ${sr}`); agentMessages.push({ role: 'assistant', content: raw }); agentMessages.push({ role: 'user', content: `Schedule result: ${sr}
-Continue silently.` }); continue } // Unknown — treat as final response
+Continue silently.` }); continue }
+
+      // ── DESKTOP TOOLS (Electron only) ──────────────────────────────────────
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const isElectronEnv = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron
+
+      if (parsed.tool === 'desktopNotify') {
+        if (!isElectronEnv) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: 'Desktop notifications only work in the desktop app, not the browser. Let the user know.' })
+          continue
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const notifResult = await (window as any).electronAPI.notify(
+          (parsed.title as string) || 'Alpha AI Desk',
+          (parsed.body  as string) || ''
+        )
+        accumulated.push(`[Desktop Notification sent: "${parsed.title}" — "${parsed.body}"]`)
+        agentMessages.push({ role: 'assistant', content: raw })
+        agentMessages.push({ role: 'user', content: `Desktop notification ${notifResult.ok ? 'sent successfully' : 'failed: ' + notifResult.error}. Continue.` })
+        continue
+      }
+
+      if (parsed.tool === 'desktopBrowse') {
+        if (!isElectronEnv) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: 'Desktop browser automation only works in the desktop app. Let the user know.' })
+          continue
+        }
+        setStatus('🖥️ Desktop browser...')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const dea = (window as any).electronAPI
+        let dBrowseResult = ''
+        let dScreenBase64 = ''
+        try {
+          if (parsed.type === 'search' || (!parsed.url && parsed.query)) {
+            const res = await dea.browser.search((parsed.query || parsed.task) as string)
+            dBrowseResult = res.text || res.error || 'No results'
+          } else if (parsed.url) {
+            const res = await dea.browser.scrape(parsed.url as string, (parsed.task as string) || '')
+            dBrowseResult = res.text || res.error || 'No content'
+            dScreenBase64 = res.base64 || ''
+          } else {
+            dBrowseResult = 'No URL or query provided'
+          }
+        } catch (e2) { dBrowseResult = e2 instanceof Error ? e2.message : 'Error' }
+        if (dScreenBase64) {
+          setMessages(prev => [...prev, { role: 'browser' as const, content: '', browserSteps: [{ action: 'Desktop browser result', screenshotUrl: `data:image/png;base64,${dScreenBase64}`, url: (parsed.url as string) || '', title: '' }] }])
+        }
+        accumulated.push(`[Desktop Browse: "${parsed.url || parsed.query}"]\n${dBrowseResult}`)
+        agentMessages.push({ role: 'assistant', content: raw })
+        agentMessages.push({ role: 'user', content: `Desktop browse result:\n${dBrowseResult}\n\nPresent this to the user clearly.` })
+        setStatus('')
+        continue
+      }
+
+      if (parsed.tool === 'desktopPrint') {
+        if (!isElectronEnv) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: 'Desktop print only works in the desktop app. Let the user know.' })
+          continue
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const printResult = await (window as any).electronAPI.print.page()
+        const printMsg: ChatMessage = { role: 'assistant', content: printResult.ok ? '🖨️ Print dialog opened.' : `Print failed: ${printResult.error}` }
+        setMessages(prev => [...prev, printMsg])
+        saveToHistory([...history, printMsg])
+        return
+      }
+
+      if (parsed.tool === 'desktopPDF') {
+        if (!isElectronEnv) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: 'Desktop PDF export only works in the desktop app. Let the user know.' })
+          continue
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const pdfResult = await (window as any).electronAPI.print.pdf((parsed.filename as string) || 'alpha-ai-desk.pdf')
+        const pdfMsg: ChatMessage = { role: 'assistant', content: pdfResult.ok ? `💾 PDF saved to: ${pdfResult.path}` : `PDF save failed: ${pdfResult.error}` }
+        setMessages(prev => [...prev, pdfMsg])
+        saveToHistory([...history, pdfMsg])
+        return
+      }
+
+      if (parsed.tool === 'desktopSave') {
+        if (!isElectronEnv) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: 'Desktop file save only works in the desktop app. Let the user know.' })
+          continue
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const saveResult = await (window as any).electronAPI.files.save(
+          (parsed.content as string) || '',
+          (parsed.filename as string) || 'document.txt',
+          undefined
+        )
+        const saveMsg: ChatMessage = { role: 'assistant', content: saveResult.ok ? `💾 Saved to: ${saveResult.path}` : saveResult.cancelled ? 'Save cancelled.' : `Save failed: ${saveResult.error}` }
+        setMessages(prev => [...prev, saveMsg])
+        saveToHistory([...history, saveMsg])
+        return
+      }
+
+      if (parsed.tool === 'desktopScreenshot') {
+        if (!isElectronEnv) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: 'Desktop screenshot only works in the desktop app. Let the user know.' })
+          continue
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ssResult = await (window as any).electronAPI.system.screenshot()
+        if (ssResult.ok && ssResult.base64) {
+          const ssMsg: ChatMessage = { role: 'assistant', content: '📸 Screenshot taken:', imageUrl: `data:image/png;base64,${ssResult.base64}` }
+          setMessages(prev => [...prev, ssMsg])
+          saveToHistory([...history, ssMsg])
+        } else {
+          setMessages(prev => [...prev, { role: 'assistant', content: `Screenshot failed: ${ssResult.error}` }])
+        }
+        return
+      }
+
+      if (parsed.tool === 'desktopPowerShell') {
+        if (!isElectronEnv) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: 'Desktop PowerShell only works in the desktop app. Let the user know.' })
+          continue
+        }
+        setStatus('⚡ Running PowerShell...')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const psResult = await (window as any).electronAPI.system.powershell((parsed.command as string) || '')
+        accumulated.push(`[PowerShell]: ${psResult.output || psResult.error}`)
+        agentMessages.push({ role: 'assistant', content: raw })
+        agentMessages.push({ role: 'user', content: `PowerShell output:\n${psResult.output || psResult.error || 'No output'}\n\nPresent this to the user.` })
+        setStatus('')
+        continue
+      }
+
+      if (parsed.tool === 'desktopSystemInfo') {
+        if (!isElectronEnv) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: 'System info only works in the desktop app. Let the user know.' })
+          continue
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const si = await (window as any).electronAPI.system.info()
+        const siText = `Platform: ${si.platform} ${si.release} | User: ${si.username} | CPU: ${si.cpus} cores | RAM: ${Math.round(si.memory?.free/1024/1024/1024)}GB free / ${Math.round(si.memory?.total/1024/1024/1024)}GB total`
+        accumulated.push(`[SystemInfo]: ${siText}`)
+        agentMessages.push({ role: 'assistant', content: raw })
+        agentMessages.push({ role: 'user', content: `System info: ${siText}` })
+        continue
+      }
+      // ── END DESKTOP TOOLS ──────────────────────────────────────────────────
+
+// Unknown — treat as final response
       const assistantMsg: ChatMessage = { role: 'assistant', content: raw }
       setMessages(prev => [...prev, assistantMsg])
       speak(raw)
