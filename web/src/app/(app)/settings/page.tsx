@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
-import { supabase, updateSettings } from '@/lib/supabase'
+import { supabase, updateSettings, getSettings, getShopProfile, getShopId } from '@/lib/supabase'
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Record<string,unknown>>({})
@@ -19,8 +19,20 @@ export default function SettingsPage() {
   const [reviewLoading, setReviewLoading] = useState(false)
 
   const load = useCallback(async () => {
-    const { data } = await supabase.from('settings').select('*').limit(1).single()
-    if (data) setSettings(data)
+    // Load settings filtered by shop_id
+    const settingsData = await getSettings()
+    if (settingsData) setSettings(settingsData as Record<string,unknown>)
+    // Also load shop profile to populate shop info fields
+    const profile = await getShopProfile()
+    if (profile) {
+      setSettings(prev => ({
+        ...prev,
+        shop_name: prev.shop_name || profile.shop_name || '',
+        shop_phone: prev.shop_phone || profile.phone || '',
+        shop_address: prev.shop_address || profile.address || '',
+        shop_email: prev.shop_email || (profile as any).email || '',
+      }))
+    }
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -28,6 +40,15 @@ export default function SettingsPage() {
   const save = async () => {
     setSaving(true)
     await updateSettings(settings)
+    // Also update shop_profiles with shop info fields
+    const shopId = await getShopId()
+    if (shopId) {
+      await supabase.from('shop_profiles').update({
+        shop_name: settings.shop_name || '',
+        phone: settings.shop_phone || '',
+        address: settings.shop_address || '',
+      }).eq('id', shopId)
+    }
     setSaving(false); setSaved(true)
     setTimeout(() => setSaved(false), 2500)
   }
@@ -60,16 +81,14 @@ export default function SettingsPage() {
       const model = (settings.ai_model as string) || 'meta-llama/llama-3.3-70b-instruct:free'
       const baseUrl = (settings.ai_base_url as string) || 'https://openrouter.ai/api/v1'
       if (!apiKey) { setReviewDraft('Please configure your AI API key in the AI Config tab first.'); return }
-
       const shopName = (settings.shop_name as string) || 'our shop'
       const tone = reviewStars >= 4 ? 'grateful and warm' : reviewStars >= 3 ? 'appreciative and constructive' : 'empathetic, apologetic, and professional'
-
       const res = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
         body: JSON.stringify({
           model,
-          messages: [{ role: 'user', content: `You are responding to a ${reviewStars}-star Google review for \"${shopName}\". The review says: \"${reviewText}\"\\n\\nWrite a ${tone} response from the business owner. Keep it 2-4 sentences, professional but personable. Don't use generic filler. Address specific points they mentioned. Return ONLY the response text.` }],
+          messages: [{ role: 'user', content: `You are responding to a ${reviewStars}-star Google review for "${shopName}". The review says: "${reviewText}"\n\nWrite a ${tone} response from the business owner. Keep it 2-4 sentences, professional but personable. Don't use generic filler. Address specific points they mentioned. Return ONLY the response text.` }],
           max_tokens: 300,
         })
       })
@@ -88,19 +107,18 @@ export default function SettingsPage() {
   ] as const
 
   return (
-    <div className="p-4 sm:p-6 lg:p-8 animate-fade-in max-w-3xl">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-6">
-        <h1 className="text-xl sm:text-2xl font-bold">Settings</h1>
+    <div className="page-container">
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="page-title">Settings</h1>
         <button className="btn btn-primary" onClick={save} disabled={saving}>
           {saving ? 'Saving…' : saved ? '✓ Saved!' : 'Save Changes'}
         </button>
       </div>
 
       {/* Tab bar */}
-      <div className="flex gap-1 mb-6 bg-bg-card border border-border rounded-lg p-1 w-full sm:w-fit overflow-x-auto">
+      <div className="flex gap-2 mb-6 flex-wrap">
         {TABS.map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)}
-            className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary border-0'}`}>
+          <button key={t.id} onClick={() => setTab(t.id)} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary border-0'}`}>
             {t.label}
           </button>
         ))}
@@ -115,37 +133,33 @@ export default function SettingsPage() {
             { k: 'shop_phone', label: 'Phone' },
             { k: 'shop_email', label: 'Email' },
           ].map(({ k, label }) => (
-            <div key={k}><label className="form-label">{label}</label><input className="form-input" value={settings[k] as string||''} onChange={sf(k)} /></div>
+            <div key={k}>
+              <label className="form-label">{label}</label>
+              <input className="form-input" value={settings[k] as string||''} onChange={sf(k)} />
+            </div>
           ))}
           <div>
-            <label className="text-sm font-medium text-text-secondary mb-1 block">Google Review URL</label>
-            <input
-              className="form-input w-full"
-              placeholder="https://g.page/r/your-shop/review"
-              value={settings.google_review_url || ''}
-              onChange={e => setSettings(prev => ({ ...prev, google_review_url: e.target.value }))}
-            />
+            <label className="form-label">Google Review URL</label>
+            <input className="form-input w-full" placeholder="https://g.page/r/your-shop/review" value={settings.google_review_url as string || ''} onChange={e => setSettings(prev => ({ ...prev, google_review_url: e.target.value }))} />
             <p className="text-xs text-text-muted mt-1">Get this from your Google Business Profile → Get more reviews</p>
           </div>
           <div>
-            <label className="text-sm font-medium text-text-secondary mb-1 block">Timezone</label>
-            <select
-              className="form-input w-full"
-              value={settings.timezone || 'America/Chicago'}
-              onChange={e => setSettings(prev => ({ ...prev, timezone: e.target.value }))}
-            >
+            <label className="form-label">Timezone</label>
+            <select className="form-input w-full" value={settings.timezone as string || 'America/Chicago'} onChange={e => setSettings(prev => ({ ...prev, timezone: e.target.value }))}>
               <option value="America/Chicago">Central (Houston)</option>
               <option value="America/New_York">Eastern</option>
               <option value="America/Denver">Mountain</option>
               <option value="America/Los_Angeles">Pacific</option>
             </select>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 gap-4">
             <div><label className="form-label">Labor Rate ($/hr)</label><input className="form-input" type="number" value={settings.labor_rate as number||120} onChange={sf('labor_rate')} /></div>
             <div><label className="form-label">Tax Rate (%)</label><input className="form-input" type="number" step="0.01" value={settings.tax_rate as number||8.25} onChange={sf('tax_rate')} /></div>
-            <div><label className="form-label">Warranty (months)</label><input className="form-input" type="number" value={settings.warranty_months as number||12} onChange={sf('warranty_months')} /></div>
           </div>
-          <div><label className="form-label">Payment Methods</label><input className="form-input" value={settings.payment_methods as string||''} onChange={sf('payment_methods')} /></div>
+          <div className="grid grid-cols-2 gap-4">
+            <div><label className="form-label">Warranty (months)</label><input className="form-input" type="number" value={settings.warranty_months as number||12} onChange={sf('warranty_months')} /></div>
+            <div><label className="form-label">Payment Methods</label><input className="form-input" value={settings.payment_methods as string||''} onChange={sf('payment_methods')} /></div>
+          </div>
           <div><label className="form-label">Disclaimer</label><textarea className="form-textarea" rows={2} value={settings.disclaimer as string||''} onChange={sf('disclaimer')} /></div>
         </div>
       )}
@@ -160,7 +174,7 @@ export default function SettingsPage() {
           <div><label className="form-label">Model</label>
             <select className="form-select" value={settings.ai_model as string||''} onChange={sf('ai_model')}>
               <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B (Free)</option>
-                            <option value="deepseek/deepseek-v3.2">DeepSeek V3.2</option>
+              <option value="deepseek/deepseek-v3.2">DeepSeek V3.2</option>
               <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
               <option value="openai/gpt-4o">GPT-4o</option>
               <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet</option>
@@ -196,8 +210,7 @@ export default function SettingsPage() {
       {tab === 'outreach' && (
         <div className="card space-y-5">
           <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">📣 AI Customer Outreach</div>
-          <p className="text-sm text-text-muted">Automatically contact customers who haven&apos;t been in recently. AI personalizes each message.</p>
-
+          <p className="text-sm text-text-muted">Automatically contact customers who haven't been in recently. AI personalizes each message.</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="form-label">Target customers inactive for</label>
@@ -217,24 +230,19 @@ export default function SettingsPage() {
               </select>
             </div>
           </div>
-
           <div>
             <label className="form-label">Custom message template (optional)</label>
-            <textarea className="form-textarea" rows={4} value={outreachTemplate} onChange={e => setOutreachTemplate(e.target.value)}
-              placeholder={`Hi {name}! It's been a while since we've seen you at {shopName}. We miss you! Call us at {phone} — special deals this week.`} />
+            <textarea className="form-textarea" rows={4} value={outreachTemplate} onChange={e => setOutreachTemplate(e.target.value)} placeholder={`Hi {name}! It's been a while since we've seen you at {shopName}. We miss you! Call us at {phone}.`} />
             <p className="text-xs text-text-muted mt-1">Use: {'{name}'}, {'{shopName}'}, {'{phone}'}</p>
           </div>
-
           <button className="btn btn-primary w-full" onClick={launchOutreach} disabled={launching}>
             {launching ? 'Sending outreach…' : '🚀 Launch Outreach Campaign'}
           </button>
-
           {launchResult && (
             <div className="bg-green/10 border border-green/30 rounded-lg p-4 text-sm text-green">
               ✅ Sent <strong>{launchResult.sent}</strong> messages out of <strong>{launchResult.total}</strong> eligible customers.
             </div>
           )}
-
           <div className="bg-red/10 border border-red/30 rounded-lg p-3 text-xs text-red/80">
             ⚠️ Only launch campaigns if Telnyx/Resend are configured. Test with a small batch first.
           </div>
@@ -245,29 +253,23 @@ export default function SettingsPage() {
         <div className="card space-y-5">
           <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">⭐ Google Review Response Drafts</div>
           <p className="text-sm text-text-muted">Paste a Google review and get an AI-drafted response. Copy and paste the result into your Google Business reply.</p>
-
           <div>
             <label className="form-label">Star Rating</label>
             <div className="flex gap-1">
               {[1,2,3,4,5].map(n => (
-                <button key={n} onClick={() => setReviewStars(n)}
-                  className={`text-2xl transition-transform hover:scale-110 ${n <= reviewStars ? 'opacity-100' : 'opacity-30'}`}>
+                <button key={n} onClick={() => setReviewStars(n)} className={`text-2xl transition-transform hover:scale-110 ${n <= reviewStars ? 'opacity-100' : 'opacity-30'}`}>
                   ⭐
                 </button>
               ))}
             </div>
           </div>
-
           <div>
             <label className="form-label">Customer Review Text</label>
-            <textarea className="form-textarea" rows={4} value={reviewText} onChange={e => setReviewText(e.target.value)}
-              placeholder="Paste the customer's review here..." />
+            <textarea className="form-textarea" rows={4} value={reviewText} onChange={e => setReviewText(e.target.value)} placeholder="Paste the customer's review here..." />
           </div>
-
           <button className="btn btn-primary w-full" onClick={draftReviewResponse} disabled={reviewLoading || !reviewText.trim()}>
             {reviewLoading ? 'Drafting response…' : '✍️ Draft Response'}
           </button>
-
           {reviewDraft && (
             <div className="space-y-3">
               <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Draft Response</div>

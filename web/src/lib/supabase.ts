@@ -18,52 +18,122 @@ export function getServiceClient() {
 
 // ─── DB Helpers ────────────────────────────────────────────────
 
+export async function getShopProfile() {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return null
+  const { data } = await supabase
+    .from('shop_profiles')
+    .select('*')
+    .eq('user_id', user.id)
+    .single()
+  return data as {
+    id: string
+    user_id: string
+    shop_name: string
+    phone: string
+    address: string
+    city_state_zip: string
+    services: string[]
+    created_at: string
+  } | null
+}
+
+// Returns the current user's shop_profiles.id for filtering data tables.
+export async function getShopId(): Promise<string | null> {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return null
+  const { data } = await supabase
+    .from('shop_profiles')
+    .select('id')
+    .eq('user_id', user.id)
+    .single()
+  return data?.id ?? null
+}
+
 export async function getSettings() {
-  const { data } = await supabase.from('settings').select('*').limit(1).single()
+  const shopId = await getShopId()
+  if (!shopId) return null
+  const { data } = await supabase
+    .from('settings')
+    .select('*')
+    .eq('shop_id', shopId)
+    .limit(1)
+    .single()
   return data
 }
 
 export async function updateSettings(updates: Record<string, unknown>) {
-  const { data: existing } = await supabase.from('settings').select('id').limit(1).single()
+  const shopId = await getShopId()
+  if (!shopId) return
+  const { data: existing } = await supabase
+    .from('settings')
+    .select('id')
+    .eq('shop_id', shopId)
+    .limit(1)
+    .single()
   if (existing) {
     await supabase.from('settings').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', existing.id)
   } else {
-    await supabase.from('settings').insert({ ...updates })
+    await supabase.from('settings').insert({ ...updates, shop_id: shopId })
   }
 }
 
 export async function getCustomers() {
-  const { data } = await supabase.from('customers').select('*').order('created_at', { ascending: false })
+  const shopId = await getShopId()
+  if (!shopId) return []
+  const { data } = await supabase
+    .from('customers')
+    .select('*')
+    .eq('shop_id', shopId)
+    .order('created_at', { ascending: false })
   return data || []
 }
 
 export async function getJobs(filter?: { status?: string }) {
-  let q = supabase.from('jobs').select('*').order('created_at', { ascending: false })
+  const shopId = await getShopId()
+  if (!shopId) return []
+  let q = supabase
+    .from('jobs')
+    .select('*')
+    .eq('shop_id', shopId)
+    .order('created_at', { ascending: false })
   if (filter?.status) q = q.eq('status', filter.status)
   const { data } = await q
   return data || []
 }
 
 export async function getDocuments(type?: string) {
-  let q = supabase.from('documents').select('*').order('created_at', { ascending: false })
+  const shopId = await getShopId()
+  if (!shopId) return []
+  let q = supabase
+    .from('documents')
+    .select('*')
+    .eq('shop_id', shopId)
+    .order('created_at', { ascending: false })
   if (type) q = q.eq('type', type)
   const { data } = await q
   return data || []
 }
 
 export async function getMessages(limit = 100) {
+  const shopId = await getShopId()
+  if (!shopId) return []
   const { data } = await supabase
     .from('messages')
     .select('*, customer:customers(name,phone,email)')
+    .eq('shop_id', shopId)
     .order('created_at', { ascending: false })
     .limit(limit)
   return data || []
 }
 
 export async function getUnreadCount() {
+  const shopId = await getShopId()
+  if (!shopId) return 0
   const { count } = await supabase
     .from('messages')
     .select('*', { count: 'exact', head: true })
+    .eq('shop_id', shopId)
     .eq('read', false)
     .eq('direction', 'inbound')
   return count || 0

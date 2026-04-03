@@ -2,7 +2,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import { supabase, getUnreadCount } from '@/lib/supabase'
+import { supabase, getUnreadCount, getShopProfile } from '@/lib/supabase'
 import PhoneWidget from '@/components/PhoneWidget'
 
 const NAV = [
@@ -21,14 +21,23 @@ const NAV = [
   { href: '/inventory', icon: '📦', label: 'Inventory' },
   { href: '/dvi', icon: '🔍', label: 'Inspections (DVI)' },
   { href: '/messages', icon: '💬', label: 'Calls & Messages' },
+  { href: '/voicemail', icon: '📞', label: 'AI Voicemail' },
   { href: '/ai', icon: '🤖', label: 'Alpha AI' },
   { href: '/growth', icon: '📈', label: 'Growth' },
   { href: '/automations', icon: '⏰', label: 'Automations' },
   { href: '/reports', icon: '📉', label: 'Reports' },
+  { href: '/onboarding', icon: '🚀', label: 'Onboarding' },
   { href: '/settings', icon: '⚙️', label: 'Settings' },
 ]
 
 interface Notification { id: string; type: string; title: string; body: string; time: string }
+
+interface ShopProfile {
+  shop_name: string
+  phone: string
+  address: string
+  city_state_zip: string
+}
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
@@ -39,9 +48,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [location, setLocation] = useState('main')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [lightMode, setLightMode] = useState(false)
+  const [shopProfile, setShopProfile] = useState<ShopProfile | null>(null)
 
   useEffect(() => {
     getUnreadCount().then(setUnread)
+    getShopProfile().then(p => { if (p) setShopProfile(p) })
     const channel = supabase
       .channel('messages_unread')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, () => {
@@ -100,6 +111,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     localStorage.setItem('alpha_location', loc)
   }
 
+  const shopName = shopProfile?.shop_name || 'My Shop'
+  const shopPhone = shopProfile?.phone || '(713) 663-6979'
+
   return (
     <div className="flex h-screen overflow-hidden">
       {sidebarOpen && (
@@ -127,7 +141,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
         <div className="px-3 pt-3">
           <select className="form-select text-xs w-full" value={location} onChange={e => switchLocation(e.target.value)}>
-            <option value="main">Main — 10710 S Main St</option>
+            <option value="main" >{shopProfile?.address || 'Set address in Settings'}</option>
             <option value="south">South — Coming Soon</option>
             <option value="north">North — Coming Soon</option>
           </select>
@@ -148,8 +162,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </nav>
 
         <div className="p-4 border-t border-border">
-          <div className="text-xs text-text-muted text-center">Alpha International Auto Center</div>
-          <div className="text-xs text-text-muted text-center">(713) 663-6979</div>
+          <div className="text-xs text-text-muted text-center">{shopName}</div>
+          <div className="text-xs text-text-muted text-center">{shopPhone}</div>
         </div>
       </aside>
 
@@ -163,7 +177,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <span className="text-sm font-semibold lg:hidden">Alpha AI</span>
           <div className="hidden lg:block" />
           <div className="flex items-center gap-2">
-            {/* Light/Dark mode toggle */}
             <button
               className="p-1.5 rounded-lg hover:bg-bg-hover transition-colors text-text-muted hover:text-text-primary"
               onClick={toggleLightMode}
@@ -172,7 +185,24 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               {lightMode ? '🌙' : '☀️'}
             </button>
 
-            {/* Notifications */}
+            <button
+              className="p-1.5 rounded-lg hover:bg-bg-hover transition-colors text-text-muted hover:text-text-primary"
+              title="Sign Out"
+              onClick={async () => {
+                try {
+                  const { createClient } = await import('@supabase/supabase-js')
+                  const sb = createClient('https://fztnsqrhjesqcnsszqdb.supabase.co','eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ6dG5zcXJoamVzcWNuc3N6cWRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMwMTM3MDIsImV4cCI6MjA1ODU4OTcwMn0.4_MNwSmqTU_dlPWtqY9HGqFlrxL_50y0_C1e3KeQ4Fo')
+                  await sb.auth.signOut()
+                } catch {}
+                document.cookie = 'alpha_authed=; max-age=0; path=/'
+                window.location.href = '/login'
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
+            </button>
+
             <div className="relative">
               <button className="relative p-1.5 rounded-lg hover:bg-bg-hover transition-colors" onClick={toggleNotif}>
                 <span className="text-lg">🔔</span>

@@ -42,7 +42,9 @@ export function estimateEmailHtml(
   const parts = (doc.parts as Record<string, unknown>[]) || []
   const labors = (doc.labors as Record<string, unknown>[]) || []
   const taxRate = Number(doc.tax_rate) || 8.25
+  const applyTax = doc.apply_tax !== false
   const shopSupplies = Number(doc.shop_supplies) || 0
+  const deposit = Number(doc.deposit) || 0
   const partsTotal = parts.reduce(
     (s, p) => s + (Number(p.qty) || 1) * (Number(p.unitPrice) || 0),
     0
@@ -51,8 +53,9 @@ export function estimateEmailHtml(
     (s, l) => s + (Number(l.hours) || 0) * (Number(l.rate) || 0),
     0
   )
-  const tax = partsTotal * (taxRate / 100)
+  const tax = applyTax ? partsTotal * (taxRate / 100) : 0
   const total = partsTotal + laborTotal + shopSupplies + tax
+  const balanceDue = Math.max(total - deposit, 0)
   const vehicle = [doc.vehicle_year, doc.vehicle_make, doc.vehicle_model]
     .filter(Boolean)
     .join(' ')
@@ -60,14 +63,14 @@ export function estimateEmailHtml(
   const partsRows = parts
     .map(
       (p) =>
-        `<tr><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${p.description || ''}</td><td style="padding:4px 8px;text-align:center;border-bottom:1px solid #f0f0f0">${p.qty || 1}</td><td style="padding:4px 8px;text-align:right;border-bottom:1px solid #f0f0f0">$${((Number(p.qty) || 1) * (Number(p.unitPrice) || 0)).toFixed(2)}</td></tr>`
+        `<tr><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${p.name || p.description || ''}</td><td style="padding:4px 8px;text-align:center;border-bottom:1px solid #f0f0f0">${p.qty || 1}</td><td style="padding:4px 8px;text-align:right;border-bottom:1px solid #f0f0f0">$${((Number(p.qty) || 1) * (Number(p.unitPrice) || 0)).toFixed(2)}</td></tr>`
     )
     .join('')
 
   const laborRows = labors
     .map(
       (l) =>
-        `<tr><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${l.description || 'Labor'}</td><td style="padding:4px 8px;text-align:center;border-bottom:1px solid #f0f0f0">${l.hours || 0}h @ $${l.rate || 0}</td><td style="padding:4px 8px;text-align:right;border-bottom:1px solid #f0f0f0">$${((Number(l.hours) || 0) * (Number(l.rate) || 0)).toFixed(2)}</td></tr>`
+        `<tr><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${l.operation || l.description || 'Labor'}</td><td style="padding:4px 8px;text-align:center;border-bottom:1px solid #f0f0f0">${l.hours || 0}h @ $${l.rate || 0}</td><td style="padding:4px 8px;text-align:right;border-bottom:1px solid #f0f0f0">$${((Number(l.hours) || 0) * (Number(l.rate) || 0)).toFixed(2)}</td></tr>`
     )
     .join('')
 
@@ -96,11 +99,16 @@ export function estimateEmailHtml(
       ${partsTotal > 0 ? `<tr><td style="padding:3px 8px">Parts</td><td style="padding:3px 8px;text-align:right">$${partsTotal.toFixed(2)}</td></tr>` : ''}
       ${laborTotal > 0 ? `<tr><td style="padding:3px 8px">Labor</td><td style="padding:3px 8px;text-align:right">$${laborTotal.toFixed(2)}</td></tr>` : ''}
       ${shopSupplies > 0 ? `<tr><td style="padding:3px 8px">Shop Supplies</td><td style="padding:3px 8px;text-align:right">$${shopSupplies.toFixed(2)}</td></tr>` : ''}
-      <tr><td style="padding:3px 8px">Tax (${taxRate}%)</td><td style="padding:3px 8px;text-align:right">$${tax.toFixed(2)}</td></tr>
+      ${applyTax ? `<tr><td style="padding:3px 8px">Tax (${taxRate}%)</td><td style="padding:3px 8px;text-align:right">$${tax.toFixed(2)}</td></tr>` : ''}
       <tr style="font-size:16px;font-weight:bold;border-top:2px solid #111">
         <td style="padding:8px">Total</td>
         <td style="padding:8px;text-align:right">$${total.toFixed(2)}</td>
       </tr>
+      ${deposit > 0 ? `<tr><td style="padding:3px 8px;color:#16a34a">Deposit Paid</td><td style="padding:3px 8px;text-align:right;color:#16a34a">-$${deposit.toFixed(2)}</td></tr>
+      <tr style="font-size:16px;font-weight:bold;border-top:2px solid #111">
+        <td style="padding:8px">Balance Due</td>
+        <td style="padding:8px;text-align:right">$${balanceDue.toFixed(2)}</td>
+      </tr>` : ''}
     </table>
     <p style="font-size:13px;color:#6b7280">Questions? Call us at ${shopPhone}.</p>
   </div>

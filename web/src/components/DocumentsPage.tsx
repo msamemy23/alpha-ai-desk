@@ -67,10 +67,10 @@ ACTIVE LEAK EXCLUSION: Any oil or fluid leak that is present, visible, or detect
 EXCLUSIONS: This warranty does not cover: (a) engine components, sensors, or systems not specifically repaired or replaced on this invoice; (b) damage caused by overheating, coolant loss, oil starvation, or failure to maintain proper fluid levels and scheduled maintenance; (c) pre-existing conditions, sludge buildup, or internal engine wear not addressed in the original repair; (d) damage caused by accident, collision, flood, misuse, abuse, negligence, or unauthorized modification including aftermarket performance parts, tuning, or engine swaps; (e) head gasket failure caused by overheating events occurring after the repair; (f) vehicles used for commercial, racing, towing, or off-road purposes unless expressly noted; (g) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, death, property damage, business interruption, or any other costs of any kind; (h) customer-supplied or used parts; (i) any failure resulting from non-compliance with the mandatory return inspection requirement set forth above. The customer must follow all recommended maintenance schedules and return for any required follow-up inspections noted on the invoice. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
   },
   {
-    label: 'Engine Rebuild — 24 Months / 24,000 Miles',
-    months: 24,
-    mileage: 24000,
-    exclusions: `LIMITED WARRANTY: The engine rebuild performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the internal engine components replaced during the rebuild (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 24 months or 24,000 miles from the date and odometer reading on this invoice, whichever occurs first.
+    label: 'Engine Rebuild — 12 Months / 12,000 Miles',
+    months: 12,
+    mileage: 12000,
+    exclusions: `LIMITED WARRANTY: The engine rebuild performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the internal engine components replaced during the rebuild (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 12 months or 12,000 miles from the date and odometer reading on this invoice, whichever occurs first.
 
 CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace defective internal engine components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs, diagnostics, or service performed by any other facility without prior written authorization from Alpha will immediately void this warranty in its entirety, and Alpha shall have no further obligation.
 
@@ -107,7 +107,7 @@ EXCLUSIONS: This warranty does not cover: (a) transmission components, solenoids
     label: 'Transmission Rebuild — 24 Months / 24,000 Miles',
     months: 24,
     mileage: 24000,
-    exclusions: `LIMITED WARRANTY: The transmission rebuild performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the internal transmission components replaced during the rebuild (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 24 months or 24,000 miles from the date and odometer reading on this invoice, whichever occurs first.
+    exclusions: `LIMITED WARRANTY: The transmission rebuild performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the internal transmission components replaced during the rebuild (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 12 months or 12,000 miles from the date and odometer reading on this invoice, whichever occurs first.
 
 CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace defective internal transmission components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs, diagnostics, or service performed by any other facility without prior written authorization from Alpha will immediately void this warranty in its entirety.
 
@@ -291,10 +291,13 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     return matched
   }
 
-  const save = async () => {
-    const data = { ...form, type, updated_at: new Date().toISOString() }
-    // Auto-detect warranty if not manually set or still on default
-    if (!data.warranty_type || data.warranty_type === 'No Warranty') {
+  const save = async (keepOpen = false) => {
+    const VALID_COLS = new Set(['type','doc_number','status','doc_date','due_date','expires_date','customer_id','customer_name','job_id','vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage','parts','labors','shop_supplies','sublet','tax_rate','apply_tax','deposit','amount_paid','payment_method','cashier','payment_terms','payment_methods','warranty_type','warranty_months','warranty_mileage','warranty_start','warranty_exclusions','warranty_claim','notes','locked','sent_at','created_at','updated_at','customer_phone','customer_email','signature_signed_at','signature_signer_name','signature_requested_at','line_items','payment_plan'])
+    const raw = { ...form, type, updated_at: new Date().toISOString() } as Record<string,unknown>
+    const data: Record<string,unknown> = {}
+    for (const k of Object.keys(raw)) { if (VALID_COLS.has(k)) data[k] = raw[k] }
+    // Auto-detect warranty only when creating a new document, never override on edits
+    if (editing === 'new' && (!data.warranty_type || data.warranty_type === 'No Warranty')) {
       const detected = detectWarranty(data)
       if (detected && detected.label !== 'No Warranty') {
         data.warranty_type = detected.label
@@ -304,9 +307,30 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
         data.warranty_start = (data.doc_date as string) || new Date().toISOString().split('T')[0]
       }
     }
-    if (editing === 'new') await supabase.from('documents').insert({ ...data, created_at: new Date().toISOString() })
-    else if (editing) await supabase.from('documents').update(data).eq('id', editing)
-    setEditing(null); setForm({}); load()
+    try {
+      if (editing === 'new') {
+        const result = await supabase.from('documents').insert({ ...data, created_at: new Date().toISOString() }).select()
+        if (result.error) throw new Error(result.error.message)
+      } else if (editing) {
+        const result = await supabase.from('documents').update(data).eq('id', editing).select()
+        if (result.error) throw new Error(result.error.message)
+        if (!result.data || result.data.length === 0) {
+          // RLS blocked the update — refresh shop_id and retry with service route
+          const resp = await fetch('/api/save-document', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: editing, data })
+          })
+          if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}))
+            throw new Error(err.error || 'Save failed')
+          }
+        }
+      }
+      if (!keepOpen) { await load(); setEditing(null); setForm({}) }
+    } catch (e: unknown) {
+      alert('Save failed: ' + (e instanceof Error ? e.message : 'Unknown error'))
+    }
   }
 
   const del = async () => {
@@ -427,7 +451,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                 <button className="btn btn-secondary" onClick={()=>{setEditing(null);setForm({})}}>← Back</button>
                 <button className="btn btn-primary" onClick={save}>Save {type}</button>
                 {editing !== 'new' && <button className="btn btn-danger" onClick={del}>Delete</button>}
-                {editing !== 'new' && <button className="btn btn-secondary" onClick={() => setSendModal(form as Doc)}>Send</button>} <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={() => { if (form.id) { setSigModal(form as Doc); setSigResult(null) } }}>✍️ Sign</button>
+                {editing !== 'new' && <button className="btn btn-secondary" onClick={async () => { await save(true); setSendModal(form as Doc) }}>Send</button>} <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={async () => { if (form.id) { await save(true); setSigModal(form as Doc); setSigResult(null) } }}>✍️ Sign</button>
               {editing !== 'new' && type === 'Estimate' && <button className="btn btn-primary btn-sm" onClick={async () => { if (!confirm('Convert this estimate to an invoice?')) return; const prefix = 'INV'; const year = new Date().getFullYear(); const { data: existing } = await supabase.from('documents').select('doc_number').eq('type','Invoice').like('doc_number',`${prefix}-${year}-%`); const nums = (existing||[]).map((d:Record<string,string>) => parseInt(d.doc_number.split('-').pop()||'0')); const next = Math.max(0,...nums)+1; const doc_number = `${prefix}-${year}-${String(next).padStart(4,'0')}`; const invoiceData = {...form, type:'Invoice', doc_number, status:'Draft', created_at: new Date().toISOString(), updated_at: new Date().toISOString()}; delete (invoiceData as Record<string,unknown>).id; await supabase.from('documents').insert(invoiceData); setEditing(null); setForm({}); window.location.href='/invoices'; }}>Convert to Invoice</button>}
                 {editing !== 'new' && type === 'Invoice' && <button className="btn btn-secondary" onClick={() => setPlanModal(form as Doc)}>Payment Plan</button>}
               </div>
@@ -848,7 +872,6 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                       <td className="font-semibold">{formatCurrency(t.total)}</td>
                       <td onClick={e => e.stopPropagation()}>
                         <div className="flex gap-1">
-                          <button className="btn btn-secondary btn-sm" onClick={() => setSendModal(d)}>Send</button>
                           <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:'11px',padding:'4px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}} onClick={() => { setSigModal(d); setSigResult(null) }} title="Send for e-signature">✍️ Sign</button>
                           {/* Feature 9: Quick email button */}
                           <button

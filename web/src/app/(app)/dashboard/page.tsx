@@ -1,6 +1,14 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
-import { supabase, calcTotals, formatCurrency } from '@/lib/supabase'
+import Link from 'next/link'
+import { supabase, calcTotals, formatCurrency, getShopProfile, getShopId } from '@/lib/supabase'
+
+interface ShopProfile {
+  shop_name: string
+  phone: string
+  address: string
+  city_state_zip: string
+}
 
 interface Stats {
   openJobs: number
@@ -26,6 +34,8 @@ export default function DashboardPage() {
   const [slowDaySending, setSlowDaySending] = useState(false)
   const [slowDayResult, setSlowDayResult] = useState<{sent:number;total:number}|null>(null)
   const [aiAlerts, setAiAlerts] = useState<{id:string;title:string;body:string;priority?:string}[]>([])
+  const [shopProfile, setShopProfile] = useState<ShopProfile | null>(null)
+  const [profileLoaded, setProfileLoaded] = useState(false)
 
 
   useEffect(() => {
@@ -33,18 +43,23 @@ export default function DashboardPage() {
     const today = new Date().toISOString().split('T')[0]
     const dismissed = localStorage.getItem('briefing_dismissed')
     if (dismissed === today) setBriefingDismissed(true)
-    // Load AI alerts
     fetch('/api/notifications').then(r => r.json()).then(d => {
       if (d.notifications) setAiAlerts(d.notifications.slice(0, 3))
     }).catch(() => {})
+    getShopProfile().then(p => {
+      setShopProfile(p)
+      setProfileLoaded(true)
+    }).catch(() => setProfileLoaded(true))
   }, [])
 
   const load = useCallback(async () => {
+    const shopId = await getShopId()
+
     const [{ data: jobs }, { data: docs }, { data: customers }, { data: messages }] = await Promise.all([
-      supabase.from('jobs').select('*').order('created_at', { ascending: false }),
-      supabase.from('documents').select('*').order('created_at', { ascending: false }),
-      supabase.from('customers').select('id'),
-      supabase.from('messages').select('*').order('created_at', { ascending: false }).limit(5),
+      supabase.from('jobs').select('*').eq('shop_id', shopId ?? '').order('created_at', { ascending: false }),
+      supabase.from('documents').select('*').eq('shop_id', shopId ?? '').order('created_at', { ascending: false }),
+      supabase.from('customers').select('id').eq('shop_id', shopId ?? ''),
+      supabase.from('messages').select('*').eq('shop_id', shopId ?? '').order('created_at', { ascending: false }).limit(5),
     ])
 
     const openJobs = (jobs || []).filter((j: Record<string,unknown>) => !['Paid','Closed'].includes(j.status as string)).length
@@ -54,7 +69,6 @@ export default function DashboardPage() {
     const monthDocs = (docs || []).filter((d: Record<string,unknown>) => (d.type === 'Receipt' || d.type === 'Invoice') && d.status === 'Paid' && (d.created_at as string) >= monthStart)
     const monthRevenue = monthDocs.reduce((s: number, d: Record<string,unknown>) => s + calcTotals(d).total, 0)
 
-    // Build 7-day revenue sparkline
     const chartDays: { label: string; revenue: number }[] = []
     for (let i = 6; i >= 0; i--) {
       const day = new Date(); day.setDate(day.getDate() - i); day.setHours(0,0,0,0)
@@ -94,8 +108,6 @@ export default function DashboardPage() {
 
   useEffect(() => {
     load()
-    // FIXED: removed 'load' from deps to prevent infinite re-render loop
-    // Supabase realtime still updates UI, but won't create feedback cycle
     const channel = supabase.channel('dashboard')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs' }, () => load())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'documents' }, () => load())
@@ -175,7 +187,6 @@ export default function DashboardPage() {
     'Ready for Pickup': 'bg-green', 'Waiting on Parts': 'bg-amber', 'Paid': 'bg-bg-hover', 'Closed': 'bg-bg-hover'
   }
 
-  // Tech performance: count jobs per tech from labors
   const techMap: Record<string, { jobs: number; hours: number; revenue: number }> = {}
   stats!.allJobs.forEach(j => {
     const labors = (j.labors as Record<string,unknown>[]) || []
@@ -190,15 +201,30 @@ export default function DashboardPage() {
   })
   const techs = Object.entries(techMap).sort((a, b) => b[1].revenue - a[1].revenue)
 
-  // Is it a slow day? (fewer than 3 open jobs)
   const isSlowDay = stats!.openJobs < 3
+  const shopName = shopProfile?.shop_name || 'Alpha International Auto Center'
+  const hasProfile = profileLoaded && shopProfile && shopProfile.shop_name
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-6 lg:space-y-8 animate-fade-in">
       <div>
         <h1 className="text-xl sm:text-2xl font-bold">Dashboard</h1>
-        <p className="text-text-muted text-sm mt-1">Alpha International Auto Center</p>
+        <p className="text-text-muted text-sm mt-1">{shopName}</p>
       </div>
+
+      {/* Onboarding banner — show if profile is missing */}
+      {profileLoaded && !hasProfile && (
+        <div className="card border-amber/40 bg-amber/5 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <span className="text-xl">🚀</span>
+            <div>
+              <p className="text-sm font-semibold">Finish setting up your shop</p>
+              <p className="text-xs text-text-muted">Add your shop name, phone, and services to get started.</p>
+            </div>
+          </div>
+          <Link href="/onboarding" className="btn btn-primary btn-sm shrink-0">Complete Setup</Link>
+        </div>
+      )}
 
       {/* Feature 2: Morning Briefing */}
       {!briefingDismissed && (
