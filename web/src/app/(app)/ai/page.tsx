@@ -346,8 +346,9 @@ WEB AUTOMATION � Browse the web, research prices, scrape competitor sites, sea
 {"tool":"webAutomation","type":"monitor_competitor","url":"https://competitor-shop.com","task":"what services do they offer"}
 
 CLARIFICATION RULE � If you do not fully understand what the user is asking, ALWAYS ask a clarifying question BEFORE taking any action. Never guess on destructive or irreversible actions (delete, remove, send, deactivate). If user says "remove him" with multiple employees ask which one. If user says "send it" without specifying a document ask which document and to whom.
+`
 
-DESKTOP TOOLS (only available in the desktop app � window.electronAPI must exist):
+const DESKTOP_TOOLS_PROMPT = `DESKTOP TOOLS (only available in the desktop app � window.electronAPI must exist):
 These tools control the local Windows PC directly. Only use them when the user says "notify me", "send a desktop notification", "print this", "save this", "screenshot", "run powershell", "disk space", "free space", "system info", "computer info", or asks to browse the web using the local computer.
 
 DESKTOP NOTIFY � Send a native Windows desktop notification. Use when user says "notify me", "send a notification", "alert me", "remind me with a popup":
@@ -374,6 +375,7 @@ DESKTOP POWERSHELL — Check shop computer storage and disk space. Use whenever 
 
 DESKTOP SYSTEM INFO � Get shop computer hardware info: OS, RAM, CPU. Use when user asks about computer specs, memory, system version, or overall system info:
 {"tool":"desktopSystemInfo"}`
+
 
 interface HistoryEntry {
   id: string
@@ -700,7 +702,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
 
   // ==================== NEW STATE ====================
   // Feature toggles
-    const [features, setFeatures] = useState({ search: true, socialMedia: true, thinking: false })
+    const [features, setFeatures] = useState({ search: true, socialMedia: true, thinking: false, desktopTools: true })
   // Desktop mode detection
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const isDesktop = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron
@@ -973,7 +975,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     const agentMessages: {role: string; content: string}[] = history.map(m => ({ role: m.role, content: m.content }))
 
     for (let step = 0; step < 10; step++) {
-      const systemWithContext = SYSTEM_PROMPT +
+      const systemWithContext = SYSTEM_PROMPT + (isDesktop && features.desktopTools ? ('`n`n' + DESKTOP_TOOLS_PROMPT) : '') +
         (shopContext ? `\n\nLive shop context:\n${shopContext}` : '') +
         (accumulated.length ? `\n\nCompleted steps so far:\n${accumulated.join('\n')}` : '') + +
           `\n\nCRITICAL INSTRUCTIONS:\n1. NEW INVOICE vs REPRINT: When user says "new invoice" or "I need a invoice for [item]", CREATE a NEW document using proposeDocument. Do NOT reprint or lookup old invoices. A "new invoice" means build a fresh one from scratch.\n2. UNDERSTAND SIMPLE REQUESTS: If the user gives you a customer name and says they need something, DO IT. Don't ask them to repeat. Example: "I need a new invoice for thermostat, $280 flat for Asheanna" = immediately create a invoice with those details, no tax, flat total.\n3. CUSTOMER SEARCH: When the user mentions a customer name, phone, or asks about a customer, ALWAYS use searchCustomers first (NOT createCustomer). Show matching results with name, phone, email, jobs. If no match, say so and ask before creating.\n4. NEVER LOOP: Give ONE clear response per turn. If you're unsure, ask ONE clarifying question. Never repeat yourself.\n5. FLAT RATE: When user says "flat" or "no tax", set tax to 0 and use the exact total they gave.\n6. customer search results: when searchcustomers returns results, always show all matching customers with their full details (name, phone, email, vehicles). the search now includes vehicle info from jobs. never show just one customer if multiple matches exist. present each customer clearly so the user can identify the right one.
@@ -2321,6 +2323,22 @@ Continue silently.` }); continue }
               {features.thinking && <span className="w-1.5 h-1.5 rounded-full bg-purple-400 flex-shrink-0" />}
               ?? Thinking
             </button>
+
+          {/* Desktop Tools toggle - only in Electron */}
+          {isDesktop && (
+            <button
+              onClick={() => toggleFeature('desktopTools')}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border ${
+                features.desktopTools
+                  ? 'bg-orange-500/20 border-orange-500/50 text-orange-400'
+                  : 'bg-bg-card border-border text-text-muted hover:border-orange-400/30 hover:text-text-secondary'
+              }`}
+              title={features.desktopTools ? 'Desktop tools ON — click to disable' : 'Desktop tools OFF — click to enable'}
+            >
+              {features.desktopTools && <span className="w-1.5 h-1.5 rounded-full bg-orange-400 flex-shrink-0" />}
+              🖥️ Desktop
+            </button>
+          )}
 
           {/* Connectors button */}
           <button
