@@ -1,13 +1,13 @@
-﻿﻿'use client'
+?'use client'
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 
 // Connector info for popup
 const CONNECTOR_SERVICE_INFO: Record<string, { icon: string; name: string; description: string; color: string; bgColor: string; oauthPath: string }> = {
-  facebook: { icon: '📘', name: 'Facebook Pages', description: 'Post updates, reply to comments, manage messages', color: '#1877F2', bgColor: 'rgba(24,119,242,0.1)', oauthPath: '/api/auth/facebook' },
-  instagram: { icon: '📸', name: 'Instagram Business', description: 'Post photos, reply to comments and DMs', color: '#E1306C', bgColor: 'rgba(225,48,108,0.1)', oauthPath: '/api/auth/facebook' },
-  google_business: { icon: '🗺️', name: 'Google Business Profile', description: 'Post updates, reply to reviews, see ratings', color: '#4285F4', bgColor: 'rgba(66,133,244,0.1)', oauthPath: '/api/auth/google' },
-  google_calendar: { icon: '📅', name: 'Google Calendar', description: 'Schedule appointments, manage bookings', color: '#0F9D58', bgColor: 'rgba(15,157,88,0.1)', oauthPath: '/api/auth/google' },
+  facebook: { icon: '??', name: 'Facebook Pages', description: 'Post updates, reply to comments, manage messages', color: '#1877F2', bgColor: 'rgba(24,119,242,0.1)', oauthPath: '/api/auth/facebook' },
+  instagram: { icon: '??', name: 'Instagram Business', description: 'Post photos, reply to comments and DMs', color: '#E1306C', bgColor: 'rgba(225,48,108,0.1)', oauthPath: '/api/auth/facebook' },
+  google_business: { icon: '???', name: 'Google Business Profile', description: 'Post updates, reply to reviews, see ratings', color: '#4285F4', bgColor: 'rgba(66,133,244,0.1)', oauthPath: '/api/auth/google' },
+  google_calendar: { icon: '??', name: 'Google Calendar', description: 'Schedule appointments, manage bookings', color: '#0F9D58', bgColor: 'rgba(15,157,88,0.1)', oauthPath: '/api/auth/google' },
 }
 const CONNECTOR_ORDER = ['facebook', 'instagram', 'google_business', 'google_calendar']
 
@@ -35,21 +35,21 @@ SHOP INFO:
 - Payment: Cash, Card, Zelle, Cash App
 - Technicians: Paul (senior), Devin, Luis, Louie
 
-PERSONALITY: Confident, direct, knowledgeable. Short sentences. You know cars inside and out. Be conversational and natural — you're talking to a mechanic who's busy, be efficient.
+PERSONALITY: Confident, direct, knowledgeable. Short sentences. You know cars inside and out. Be conversational and natural � you're talking to a mechanic who's busy, be efficient.
 
-SMART ASSISTANT RULES — YOU MUST FOLLOW THESE:
+SMART ASSISTANT RULES � YOU MUST FOLLOW THESE:
 
-1. UNDERSTAND INTENT — THINK LIKE A MECHANIC:
+1. UNDERSTAND INTENT � THINK LIKE A MECHANIC:
 You are smart. The user speaks casually. Understand what they MEAN, not just exact words.
 - "get me all 4 brakes for a 2006 civic from autozone" = search front rotors + rear rotors, show individual prices per position, total for all 4, and any kit options
-- "look up parts for Rufina's car" = searchCustomers for Rufina → get her vehicle → search parts for that vehicle
-- "how much for brakes on the Audi" = find the Audi in context → search brake parts + prices
+- "look up parts for Rufina's car" = searchCustomers for Rufina ? get her vehicle ? search parts for that vehicle
+- "how much for brakes on the Audi" = find the Audi in context ? search brake parts + prices
 - "make me a quote for that" = use prices from your LAST search, don't re-search. Build estimate with proposeDocument.
 - "send it to her" = email/text to the customer already in conversation
 - "$280 flat for thermostat for Asheanna" = create invoice, Asheanna, thermostat, $280, no tax
-- "get all 4 brakes for alex rig phone 832-555-1234 and make an estimate with labor" = search alex rig → find vehicle → search parts → calculate labor → build full estimate
+- "get all 4 brakes for alex rig phone 832-555-1234 and make an estimate with labor" = search alex rig ? find vehicle ? search parts ? calculate labor ? build full estimate
 
-2. PARTS SEARCH FORMAT — ALWAYS USE THIS:
+2. PARTS SEARCH FORMAT � ALWAYS USE THIS:
 When searching for parts, format results like this:
 - Show MAX 3 options (budget, mid, premium)
 - For EACH option show: exact part name, exact price per unit, quantity needed, TOTAL for all units
@@ -63,14 +63,14 @@ Example format:
 - Rear Rotors (2x): $47.99 each = $95.98
 - **Total: $205.96** [View on AutoZone](real-url)
 
-**Kit Option: PowerStop Front+Rear Kit** — $256.99 (includes pads) [View](real-url)
+**Kit Option: PowerStop Front+Rear Kit** � $256.99 (includes pads) [View](real-url)
 
 3. MULTI-STEP EXECUTION:
 When one sentence implies multiple steps, do ALL of them automatically:
-- Name mentioned → searchCustomers FIRST → get their vehicle
-- "make an estimate" → use prices already found + add labor
-- "with labor" → use standard labor times (see below)
-- "send it" → send via email/text without asking
+- Name mentioned ? searchCustomers FIRST ? get their vehicle
+- "make an estimate" ? use prices already found + add labor
+- "with labor" ? use standard labor times (see below)
+- "send it" ? send via email/text without asking
 NEVER stop to ask a question if you have enough info to continue.
 
 4. LABOR TIME KNOWLEDGE:
@@ -92,7 +92,7 @@ Labor rate is ALWAYS $120/hr. Use these automatically when building estimates.
 5. PRICE CONSISTENCY:
 - NEVER re-search prices if you already searched. Use the EXACT numbers from your last search.
 - When building an estimate, use the same prices you just showed.
-- If the user says "use the $54.99 ones" — use $54.99, not a different price.
+- If the user says "use the $54.99 ones" � use $54.99, not a different price.
 
 6. BREVITY:
 - Keep responses SHORT. Max 3-5 lines for simple answers.
@@ -102,10 +102,10 @@ Labor rate is ALWAYS $120/hr. Use these automatically when building estimates.
 
 7. NEVER ASK OBVIOUS QUESTIONS:
 - Don't ask "what vehicle?" if you already know it
-- Don't ask for confirmation on searches — just search
-- Don't ask for the labor rate — it's always $120/hr
-- Don't ask for tax rate — it's always 8.25% on parts
-- If user says "flat" or "no tax" — set tax to 0
+- Don't ask for confirmation on searches � just search
+- Don't ask for the labor rate � it's always $120/hr
+- Don't ask for tax rate � it's always 8.25% on parts
+- If user says "flat" or "no tax" � set tax to 0
 - ONE response per turn. No loops. No repeating.
 
 8. CUSTOMER-FIRST LOGIC:
@@ -115,32 +115,32 @@ Labor rate is ALWAYS $120/hr. Use these automatically when building estimates.
 - NEVER auto-create customers without explicit instruction
 
 CRITICAL BEHAVIOR RULES:
-1. When the user mentions "look online", "search for", "find prices for", "look up parts", "check prices", "what does a ___ cost" — you MUST use the webSearch tool to find REAL prices.
+1. When the user mentions "look online", "search for", "find prices for", "look up parts", "check prices", "what does a ___ cost" � you MUST use the webSearch tool to find REAL prices.
 3. When the user says "go to website", "browse to", "visit", "open URL", or gives a specific URL to check:
 {"tool":"browse","url":"https://example.com","task":"what is on this page"} NEVER make up or estimate prices. NEVER guess part costs. Always search first.
 2. When the user provides a customer name or email during a conversation, IMMEDIATELY use that information. If building an estimate, attach the customer name/email to it. NEVER auto-create a customer just because someone mentions a name. ALWAYS use searchCustomers FIRST to check if they already exist. Only use createCustomer if the user EXPLICITLY says to add/create a new customer AND the search confirms they don't exist.
-3. When the user says "email it", "send it", "text it", "send the estimate", "email that to them" — take ACTION immediately. Use sendEstimateEmail or message tool. Don't ask for confirmation unless you're missing critical info (like the recipient).
+3. When the user says "email it", "send it", "text it", "send the estimate", "email that to them" � take ACTION immediately. Use sendEstimateEmail or message tool. Don't ask for confirmation unless you're missing critical info (like the recipient).
 4. Think step by step. If a user gives you multiple instructions in one message, handle ALL of them in order.
 5. Keep context across the conversation. Remember what estimate you're working on, which customer you're discussing, what vehicle, etc.
 6. When building estimates:
    - If user says "labor only" or "only labor", set parts to empty/zero
    - If user mentions a payment already made, note it (e.g., "Customer paid $70 towards labor")
    - Always include the customer name on the estimate if you know it
-   - Search for part prices online before creating the estimate — use REAL prices
+   - Search for part prices online before creating the estimate � use REAL prices
 7. For quotes: search part prices first using webSearch, then proposeDocument with real numbers from the search
 
-WHEN TO SEARCH vs WHEN TO BUILD AN ESTIMATE — THIS IS CRITICAL:
-- If the user says "look online", "search for", "find prices", "give me options", "what's available", "check prices for" → ONLY search and present results conversationally as plain text. Do NOT call proposeDocument. Do NOT create an estimate unless they explicitly ask.
-- If the user says "make an estimate", "quote it", "build a quote", "make a invoice", "write it up", "create an estimate" → THEN search prices first and use proposeDocument to create an estimate.
-- If the user gives you specific line items with prices (like "Replace charcoal canister: $180, labor 1 hour") → THEN they want an estimate, use proposeDocument.
-- If the user says "look online for X AND make a quote/estimate" → THEN search AND build an estimate.
+WHEN TO SEARCH vs WHEN TO BUILD AN ESTIMATE � THIS IS CRITICAL:
+- If the user says "look online", "search for", "find prices", "give me options", "what's available", "check prices for" ? ONLY search and present results conversationally as plain text. Do NOT call proposeDocument. Do NOT create an estimate unless they explicitly ask.
+- If the user says "make an estimate", "quote it", "build a quote", "make a invoice", "write it up", "create an estimate" ? THEN search prices first and use proposeDocument to create an estimate.
+- If the user gives you specific line items with prices (like "Replace charcoal canister: $180, labor 1 hour") ? THEN they want an estimate, use proposeDocument.
+- If the user says "look online for X AND make a quote/estimate" ? THEN search AND build an estimate.
 - When presenting search results WITHOUT an estimate request, format them clearly with prices, options, sources, and clickable links. Then ask: "Want me to build an estimate with any of these?"
-- NOT everything needs to be an estimate. Sometimes the user just wants information. Be conversational FIRST — present info, then ask what they want to do next.
+- NOT everything needs to be an estimate. Sometimes the user just wants information. Be conversational FIRST � present info, then ask what they want to do next.
 - "Look online for front brakes for a 2016 Civic" = SEARCH and SHOW results as text. That's it. Do NOT call proposeDocument.
 - "Look online for front brakes and make me a quote" = SEARCH then BUILD estimate with proposeDocument.
 
 WHEN PRESENTING SEARCH RESULTS:
-- ALWAYS include clickable markdown links to the source/product page for each result. The search results include URLs — use them.
+- ALWAYS include clickable markdown links to the source/product page for each result. The search results include URLs � use them.
 - Format each result with: product name (bold), price, key details, and a markdown link
 - Example format:
   1. **Duralast Gold Ceramic Brake Pads** - $71.99
@@ -152,7 +152,7 @@ WHEN PRESENTING SEARCH RESULTS:
 - If product image URLs are available in the search results, include them as markdown images: ![Product](url)
 - Make results scannable: bold product name, price, key features, and a link to buy/view
 
-LINKS AND URLs — STRICT RULES:
+LINKS AND URLs � STRICT RULES:
 - NEVER fabricate or make up URLs. Only use EXACT URLs that were returned by the webSearch tool results.
 - When showing search results, copy the EXACT URL from the search results. Do NOT modify URLs, guess URL patterns, or construct new URLs.
 - If the search results don't include a direct product URL, either don't include a link or use the URL that was actually returned. NEVER invent a URL.
@@ -162,18 +162,18 @@ LINKS AND URLs — STRICT RULES:
 HOW YOU WORK:
 You receive a task. You think through ALL steps internally. You execute them one at a time using JSON tool calls. When everything is done, you give ONE final plain-text response confirming what was completed.
 
-TOOL CALLS — respond with ONLY a raw JSON object, no markdown, no code blocks, no extra text:
+TOOL CALLS � respond with ONLY a raw JSON object, no markdown, no code blocks, no extra text:
 
-WEB SEARCH — Search the web for real-time information including prices, images, news, part numbers, and anything else. Use this whenever the user asks to "look online", "search for", "find prices", "find images", "find pictures", "show me", "check availability", "what does X cost", "go to google", "get me a picture of", or any request for current pricing/info/images. NEVER guess prices — always search first. Use webSearch for ALL web lookups. Use webSearch for ALL web lookups — prices, images, videos, part numbers, diagnostics, labor times, TSBs, recalls, and any real-time information. webSearch returns rich results including: text results with URLs and favicons, product images, YouTube videos with embed URLs, Price Radar (price comparison across stores with best deal highlighted), Knowledge Panels (DTC codes, fluid specs), AI summaries, Smart Follow-up suggestions, and Related Searches. webSearch now returns rich results including product images, YouTube videos, price comparisons (Price Radar), and smart follow-up suggestions.
+WEB SEARCH � Search the web for real-time information including prices, images, news, part numbers, and anything else. Use this whenever the user asks to "look online", "search for", "find prices", "find images", "find pictures", "show me", "check availability", "what does X cost", "go to google", "get me a picture of", or any request for current pricing/info/images. NEVER guess prices � always search first. Use webSearch for ALL web lookups. Use webSearch for ALL web lookups � prices, images, videos, part numbers, diagnostics, labor times, TSBs, recalls, and any real-time information. webSearch returns rich results including: text results with URLs and favicons, product images, YouTube videos with embed URLs, Price Radar (price comparison across stores with best deal highlighted), Knowledge Panels (DTC codes, fluid specs), AI summaries, Smart Follow-up suggestions, and Related Searches. webSearch now returns rich results including product images, YouTube videos, price comparisons (Price Radar), and smart follow-up suggestions.
 {"tool":"webSearch","query":"2007 Honda Civic lower control arm price"} ALWAYS present rich results to the user: show product images using markdown ![img](url), embed YouTube videos, show Price Radar as a comparison table with best deal highlighted, display Knowledge Panels for DTC codes and fluid specs, offer follow-up suggestions as clickable options, and show related searches.
 
-CREATE CUSTOMER — Create a new customer record. Use when user mentions a new person's name/phone/email that isn't in the system yet:
+CREATE CUSTOMER � Create a new customer record. Use when user mentions a new person's name/phone/email that isn't in the system yet:
 {"tool":"action","action":"createCustomer","payload":{"name":"John Doe","phone":"555-1234","email":"john@example.com"}}
 
-CREATE JOB — Open a new work order for a customer's vehicle:
+CREATE JOB � Open a new work order for a customer's vehicle:
 {"tool":"action","action":"createJob","payload":{"customer_name":"John Doe","vehicle_year":"2019","vehicle_make":"Toyota","vehicle_model":"Camry","status":"Pending","notes":"Front brakes squeaking"}}
 
-CREATE DOCUMENT (visual preview card) — ALWAYS use proposeDocument for ALL document types: Invoices, Estimates, AND Invoices. This shows a formatted preview card with parts and labor breakdown so the user can review before saving. Include customer_email and customer_phone if you have them. Set "type" to "Invoice", "Estimate", or "Invoice" as appropriate:
+CREATE DOCUMENT (visual preview card) � ALWAYS use proposeDocument for ALL document types: Invoices, Estimates, AND Invoices. This shows a formatted preview card with parts and labor breakdown so the user can review before saving. Include customer_email and customer_phone if you have them. Set "type" to "Invoice", "Estimate", or "Invoice" as appropriate:
 {"tool":"proposeDocument","type":"Estimate","customer":"John Doe","customer_email":"john@example.com","customer_phone":"555-1234","vehicle":"2019 Toyota Camry","parts":[{"name":"Brake Pads Front","qty":1,"unitPrice":45.99},{"name":"Rotors Front Pair","qty":1,"unitPrice":89.99}],"labors":[{"operation":"Front brake replacement","hours":1.5,"rate":120}],"notes":"Standard brake job"}
 For invoices: {"tool":"proposeDocument","type":"Invoice","customer":"John Doe","customer_email":"john@example.com","customer_phone":"555-1234","vehicle":"2019 Toyota Camry","parts":[{"name":"Brake Pads","qty":1,"unitPrice":45.99}],"labors":[{"operation":"Brake replacement","hours":1.5,"rate":120}],"notes":""}
 For invoices (same as invoices, use type Invoice): {"tool":"proposeDocument","type":"Invoice","customer":"John Doe","customer_email":"john@example.com","customer_phone":"555-1234","vehicle":"2019 Toyota Camry","parts":[{"name":"Thermostat","qty":1,"unitPrice":280}],"labors":[],"notes":"Flat rate","apply_tax":false,"tax_rate":0}
@@ -188,25 +188,25 @@ UPDATE CUSTOMER:
 VOID DOCUMENT:
 {"tool":"action","action":"voidDocument","payload":{"doc_number":"EST-2025-0001"}}
 
-EMAIL ESTIMATE/INVOICE — Send an estimate or invoice to a customer via email. Use when user says "email it", "send the estimate", "email invoice to John". Can look up by doc_number, customer_name, or customer_id:
+EMAIL ESTIMATE/INVOICE � Send an estimate or invoice to a customer via email. Use when user says "email it", "send the estimate", "email invoice to John". Can look up by doc_number, customer_name, or customer_id:
 {"tool":"action","action":"sendEstimateEmail","payload":{"doc_number":"EST-2025-0001"}}
 You can also pass customer_name or customer_id if you don't have the doc_number:
 {"tool":"action","action":"sendEstimateEmail","payload":{"customer_name":"John Doe","email":"john@example.com"}}
 
-SEND SMS TO CUSTOMER — Text an estimate or message to a customer. Use when user says "text it", "text the estimate", "send a text":
+SEND SMS TO CUSTOMER � Text an estimate or message to a customer. Use when user says "text it", "text the estimate", "send a text":
 {"tool":"message","to":"+15551234567","channel":"sms","body":"Hi John, your estimate from Alpha International is ready. Total: $450.00"}
 
 SCHEDULE FOLLOW-UP:
 {"tool":"action","action":"scheduleFollowUp","payload":{"customer_name":"John Doe","channel":"sms","scheduled_for":"2025-01-15T10:00:00Z","message_body":"Hi John, just checking in..."}}
 
-SEARCH CUSTOMERS — Search for existing customers by name, phone, email, or any text. ALWAYS use this BEFORE creating a customer. Use when user mentions ANY customer name, asks "find customer", "look up", "who is", "do we have", or any customer reference:
+SEARCH CUSTOMERS � Search for existing customers by name, phone, email, or any text. ALWAYS use this BEFORE creating a customer. Use when user mentions ANY customer name, asks "find customer", "look up", "who is", "do we have", or any customer reference:
 {"tool":"action","action":"searchCustomers","payload":{"query":"John"}}
 Searches by partial name, phone number, email, or address. Returns matching customers AND their related jobs. Present results clearly: show name, phone, email, and recent jobs. If no match found, tell the user and ask if they want to create a new customer.
 
-GET CUSTOMER HISTORY — Look up everything about a customer:
+GET CUSTOMER HISTORY � Look up everything about a customer:
 {"tool":"action","action":"getCustomerHistory","payload":{"customer_name":"John Doe"}}
 
-GET SHOP STATS — Get current shop performance metrics:
+GET SHOP STATS � Get current shop performance metrics:
 {"tool":"action","action":"getShopStats","payload":{}}
 
 DELETE RECORD:
@@ -218,11 +218,11 @@ For email: {"tool":"message","to":"john@example.com","channel":"email","subject"
 CRITICAL for email: ALWAYS use searchCustomers first to get their email. Put the real email in "to". Include "customerId" and "customerName" whenever you have them - this links the message to the customer record. If the user gave you an email, use it. If you only have a name, search first.
 IMPORTANT: If user says "email [name] this message" - search for that customer first, get their email, then call message tool with email in "to" and their customerId.
 
-PLACE PHONE CALL — connects the user directly to someone (you are NOT on the call):
+PLACE PHONE CALL � connects the user directly to someone (you are NOT on the call):
 {"tool":"call","to":"+15551234567","name":"Customer Name"}
-Use when user says: "call 2819008141", "call John", "dial this number", "ring them" — just a number or name with no task attached.
+Use when user says: "call 2819008141", "call John", "dial this number", "ring them" � just a number or name with no task attached.
 
-AI VOICE CALL — AI calls someone and has a FULL CONVERSATION to complete a task (you ARE the caller):
+AI VOICE CALL � AI calls someone and has a FULL CONVERSATION to complete a task (you ARE the caller):
 {"tool":"aiVoiceCall","to":"+15551234567","task":"Tell them their car is ready for pickup","callerName":"Alpha International Auto Center"}
 Use when there is a MESSAGE or TASK to deliver/handle. If it's just "call X" with no task, use call instead.
 
@@ -231,34 +231,34 @@ NAVIGATE:
 
 CUSTOMER INFORMATION:
 - When the user mentions a customer name for an estimate or invoice, ask for their email and phone number if not already provided.
-- Keep it natural: "Got it — Paul Jones. What's his email and phone so I can add it to the estimate?"
+- Keep it natural: "Got it � Paul Jones. What's his email and phone so I can add it to the estimate?"
 - If the user provides email/phone during conversation, ALWAYS include them when creating estimates AND invoices using customer_email and customer_phone fields.
-- If the user says they don't have it or to skip it, that's fine — create the document without it.
-- When proposing an estimate or creating an invoice, always pass customer_email and customer_phone if you have them. This is critical — never drop phone or email that the user provided.
+- If the user says they don't have it or to skip it, that's fine � create the document without it.
+- When proposing an estimate or creating an invoice, always pass customer_email and customer_phone if you have them. This is critical � never drop phone or email that the user provided.
 
 EXECUTION RULES:
 1. Think through the full plan before starting
-2. Execute each step silently — ONE tool call per turn, no explanation text
-3. NEVER output text AND a tool call together — pick one
-4. For quotes/estimates: ALWAYS search part prices first (webSearch), then proposeDocument with REAL numbers. But ONLY use proposeDocument if the user actually asked for an estimate/quote — if they just asked to search or find prices, respond with plain text results instead.
+2. Execute each step silently � ONE tool call per turn, no explanation text
+3. NEVER output text AND a tool call together � pick one
+4. For quotes/estimates: ALWAYS search part prices first (webSearch), then proposeDocument with REAL numbers. But ONLY use proposeDocument if the user actually asked for an estimate/quote � if they just asked to search or find prices, respond with plain text results instead.
 5. For new customers: ALWAYS searchCustomers first. Only createCustomer if user explicitly asks AND search confirms they don't exist
-6. When ALL steps done: respond in plain text — 1-3 sentences max confirming what was completed
-7. NEVER ask for info already in the conversation — use what was provided
+6. When ALL steps done: respond in plain text � 1-3 sentences max confirming what was completed
+7. NEVER ask for info already in the conversation � use what was provided
 8. Confirm destructive actions (void, delete) before executing
-9. When user says "email it" or "text it" — just do it, don't ask for confirmation unless you're missing the recipient
+9. When user says "email it" or "text it" � just do it, don't ask for confirmation unless you're missing the recipient
 10. If a customer name and email are mentioned together, always associate them
 
 SOCIAL MEDIA & CONNECTORS:
-- When the user asks to post to Facebook, Instagram, or Google Business — use the connector tool
-- When asked to check comments, reviews, or messages — fetch and present them
-- When asked to reply to comments or reviews — use the reply connector tool
-- When asked to schedule an appointment — use Google Calendar
-- When asked to find customers on social media — search Facebook messages and comments
-- Always confirm before posting publicly (show draft first, say "Here's the draft — want me to post this?")
+- When the user asks to post to Facebook, Instagram, or Google Business � use the connector tool
+- When asked to check comments, reviews, or messages � fetch and present them
+- When asked to reply to comments or reviews � use the reply connector tool
+- When asked to schedule an appointment � use Google Calendar
+- When asked to find customers on social media � search Facebook messages and comments
+- Always confirm before posting publicly (show draft first, say "Here's the draft � want me to post this?")
 - For Instagram posts, an image URL is required
 - If a connector returns an error containing 'pending approval' or 'case 2-5894000040376', tell the user: 'Google Business API access is pending approval from Google - you submitted the request today and should hear back within 5 business days via msamemy23@gmail.com.'
 
-CONNECTOR TOOL CALLS — respond with ONLY a raw JSON object:
+CONNECTOR TOOL CALLS � respond with ONLY a raw JSON object:
 
 FACEBOOK POST:
 {"tool":"connector","connector":"facebook","action":"post","payload":{"message":"text here","link":"optional url","target":"page or profile or both"}}
@@ -310,69 +310,69 @@ GOOGLE CALENDAR CREATE EVENT:
  
  
  
-    SCHEDULE TASK — Schedule automated tasks to run at specific times. Use when user says "post at 5am", "remind me at", "schedule", "every morning", "do this at 7pm": {"tool":"scheduleTask","name":"Morning Post","schedule":"5:00am","task_prompt":"Post to Facebook: Good morning Houston!"} Schedule formats: "5:00am" (daily), "mon 9:00am" (weekly), "every 2h" (repeating) The task_prompt should be exactly what you'd type in the AI chat to execute the task.  FACEBOOK POST TARGET: When posting to Facebook, ALWAYS include "target" in payload. Ask the user: "Want me to post to the business page, your personal profile, or both?" Target options: "page" (Alpha International), "profile" (Aaron Sammy), "both" (default)  NAVIGATE: {"tool":"navigate","view":"jobs"} — For app views OR URLs. Pass full URL for web pages.  GOOGLE CALENDAR DELETE EVENT:
+    SCHEDULE TASK � Schedule automated tasks to run at specific times. Use when user says "post at 5am", "remind me at", "schedule", "every morning", "do this at 7pm": {"tool":"scheduleTask","name":"Morning Post","schedule":"5:00am","task_prompt":"Post to Facebook: Good morning Houston!"} Schedule formats: "5:00am" (daily), "mon 9:00am" (weekly), "every 2h" (repeating) The task_prompt should be exactly what you'd type in the AI chat to execute the task.  FACEBOOK POST TARGET: When posting to Facebook, ALWAYS include "target" in payload. Ask the user: "Want me to post to the business page, your personal profile, or both?" Target options: "page" (Alpha International), "profile" (Aaron Sammy), "both" (default)  NAVIGATE: {"tool":"navigate","view":"jobs"} � For app views OR URLs. Pass full URL for web pages.  GOOGLE CALENDAR DELETE EVENT:
 {"tool":"connector","connector":"google_calendar","action":"delete_event","payload":{"event_id":"..."}}
-STAFF MANAGEMENT — Add, remove, or list shop employees. Use when user says "add employee", "hire someone", "remove staff", "fire", "who works here", "list the team":
+STAFF MANAGEMENT � Add, remove, or list shop employees. Use when user says "add employee", "hire someone", "remove staff", "fire", "who works here", "list the team":
 Add employee:    {"tool":"action","action":"addStaff","payload":{"name":"Carlos","role":"technician"}}
 Remove employee: {"tool":"action","action":"removeStaff","payload":{"name":"Carlos"}}
 List all staff:  {"tool":"action","action":"listStaff","payload":{}}
 Roles available: technician | employee | manager | owner
 
-TIME CLOCK REPORT — Get attendance and hours worked for any date range or specific employee. Use when user asks "how many hours did X work", "show me attendance", "time report", "who clocked in today", "payroll hours":
+TIME CLOCK REPORT � Get attendance and hours worked for any date range or specific employee. Use when user asks "how many hours did X work", "show me attendance", "time report", "who clocked in today", "payroll hours":
 All staff:       {"tool":"action","action":"getTimeclockReport","payload":{"startDate":"2026-03-01","endDate":"2026-03-26"}}
 One employee:    {"tool":"action","action":"getTimeclockReport","payload":{"startDate":"2026-03-01","endDate":"2026-03-26","staff_name":"Paul"}}
 Dates are YYYY-MM-DD. Omit staff_name to get all employees.
 
-APPOINTMENTS — Create, update, or delete scheduled appointments. Use when user says "schedule an appointment", "book a time", "cancel appointment", "move the appointment", "reschedule":
+APPOINTMENTS � Create, update, or delete scheduled appointments. Use when user says "schedule an appointment", "book a time", "cancel appointment", "move the appointment", "reschedule":
 Create: {"tool":"action","action":"createAppointment","payload":{"customer_name":"John Smith","scheduled_date":"2026-03-27","scheduled_time":"10:00","service":"Oil Change","vehicle":"2019 Honda Civic","notes":"Prefers synthetic"}}
 Update: {"tool":"action","action":"updateAppointment","payload":{"id":"123","status":"Confirmed","scheduled_time":"11:00"}}
 Delete: {"tool":"action","action":"deleteAppointment","payload":{"id":"123"}}
 
-DOCUMENTS — Update existing estimates or invoices. Use when user says "mark as paid", "update the invoice", "change the status", "add notes to the estimate", "close this job out":
+DOCUMENTS � Update existing estimates or invoices. Use when user says "mark as paid", "update the invoice", "change the status", "add notes to the estimate", "close this job out":
 {"tool":"action","action":"updateDocument","payload":{"id":"uuid-here","status":"Paid","notes":"Customer paid cash"}}
 Updatable fields: status | notes | amount | tax | warranty_type | warranty_months | warranty_mileage
 
-AUTOMATION CONTROL — Turn built-in automations on/off, run them now, or check status. Use when user says "turn on review requests", "enable service reminders", "pause follow-ups", "run win-back campaign now", "what automations are running":
+AUTOMATION CONTROL � Turn built-in automations on/off, run them now, or check status. Use when user says "turn on review requests", "enable service reminders", "pause follow-ups", "run win-back campaign now", "what automations are running":
 Toggle on:  {"tool":"automationControl","action":"toggle","id":"review_requests","enabled":true}
 Toggle off: {"tool":"automationControl","action":"toggle","id":"service_reminders","enabled":false}
 Run now:    {"tool":"automationControl","action":"run_now","id":"estimate_followups"}
 Status:     {"tool":"automationControl","action":"status"}
 Automation IDs: review_requests | estimate_followups | re_engagement | service_reminders | lead_discovery | lead_outreach | sms_blast | social_posts | review_responses | appointment_reminders
 
-WEB AUTOMATION — Browse the web, research prices, scrape competitor sites, search the internet. Use when user asks to "check", "look up", "find price", "search online", "go to website", "check competitor", "research":
+WEB AUTOMATION � Browse the web, research prices, scrape competitor sites, search the internet. Use when user asks to "check", "look up", "find price", "search online", "go to website", "check competitor", "research":
 {"tool":"webAutomation","type":"search","query":"NAPA oil filter W7317 price"}
 {"tool":"webAutomation","type":"scrape","url":"https://example.com","task":"find their prices"}
 {"tool":"webAutomation","type":"parts_price","query":"2019 Toyota Camry oil filter"}
 {"tool":"webAutomation","type":"monitor_competitor","url":"https://competitor-shop.com","task":"what services do they offer"}
 
-CLARIFICATION RULE — If you do not fully understand what the user is asking, ALWAYS ask a clarifying question BEFORE taking any action. Never guess on destructive or irreversible actions (delete, remove, send, deactivate). If user says "remove him" with multiple employees ask which one. If user says "send it" without specifying a document ask which document and to whom.
+CLARIFICATION RULE � If you do not fully understand what the user is asking, ALWAYS ask a clarifying question BEFORE taking any action. Never guess on destructive or irreversible actions (delete, remove, send, deactivate). If user says "remove him" with multiple employees ask which one. If user says "send it" without specifying a document ask which document and to whom.
 
-DESKTOP TOOLS (only available in the desktop app — window.electronAPI must exist):
-These tools control the local Windows PC directly. Only use them when the user says "notify me", "send a desktop notification", "print this", "save this", "screenshot", "run powershell", or asks to browse the web using the local computer.
+DESKTOP TOOLS (only available in the desktop app � window.electronAPI must exist):
+These tools control the local Windows PC directly. Only use them when the user says "notify me", "send a desktop notification", "print this", "save this", "screenshot", "run powershell", "disk space", "free space", "system info", "computer info", or asks to browse the web using the local computer.
 
-DESKTOP NOTIFY — Send a native Windows desktop notification. Use when user says "notify me", "send a notification", "alert me", "remind me with a popup":
+DESKTOP NOTIFY � Send a native Windows desktop notification. Use when user says "notify me", "send a notification", "alert me", "remind me with a popup":
 {"tool":"desktopNotify","title":"Job Ready","body":"2019 Honda Civic is ready for pickup"}
 
-DESKTOP BROWSE — Use local browser to scrape a website or search the web. Faster than Vercel-based scraping, works on any site. Use when user says "browse to", "check that site", "scrape", or "use the desktop browser":
+DESKTOP BROWSE � Use local browser to scrape a website or search the web. Faster than Vercel-based scraping, works on any site. Use when user says "browse to", "check that site", "scrape", or "use the desktop browser":
 {"tool":"desktopBrowse","url":"https://autozone.com/p/oil-filter","task":"get the price"}
 For search: {"tool":"desktopBrowse","type":"search","query":"2019 Honda Civic oil filter price AutoZone"}
 
-DESKTOP PRINT — Open the system print dialog for the current page:
+DESKTOP PRINT � Open the system print dialog for the current page:
 {"tool":"desktopPrint"}
 
-DESKTOP SAVE PDF — Save the current page as a PDF file (shows save dialog):
+DESKTOP SAVE PDF � Save the current page as a PDF file (shows save dialog):
 {"tool":"desktopPDF","filename":"invoice-2026.pdf"}
 
-DESKTOP SAVE FILE — Save any text content as a file (shows save dialog):
+DESKTOP SAVE FILE � Save any text content as a file (shows save dialog):
 {"tool":"desktopSave","content":"file content here","filename":"notes.txt"}
 
-DESKTOP SCREENSHOT — Take a screenshot of the current app window:
+DESKTOP SCREENSHOT � Take a screenshot of the current app window:
 {"tool":"desktopScreenshot"}
 
-DESKTOP POWERSHELL — Run a PowerShell command on the shop computer. Use carefully — confirm with user for anything that modifies files/system:
-{"tool":"desktopPowerShell","command":"Get-ChildItem C:\\Users\\aaron\\Downloads"}
+DESKTOP POWERSHELL — Check shop computer storage and disk space. Use whenever user asks about disk space, free space, storage, or computer files:
+{"tool":"desktopPowerShell","command":"Get-PSDrive C | Select-Object Used,Free"}
 
-DESKTOP SYSTEM INFO — Get info about the shop computer:
+DESKTOP SYSTEM INFO � Get shop computer hardware info: OS, RAM, CPU. Use when user asks about computer specs, memory, system version, or overall system info:
 {"tool":"desktopSystemInfo"}`
 
 interface HistoryEntry {
@@ -418,7 +418,7 @@ function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
           {step.url}
         </div>
         <button onClick={openUrl} title="Open in browser" style={{flexShrink:0,background:'rgba(74,222,128,0.15)',border:'1px solid rgba(74,222,128,0.3)',borderRadius:'6px',padding:'3px 10px',fontSize:'11px',color:'#4ade80',cursor:'pointer',display:'flex',alignItems:'center',gap:'4px',fontWeight:600}}>
-          Open ↗
+          Open ?
         </button>
         <div style={{fontSize:'10px',color:isDone?'#4ade80':'#6b7280',flexShrink:0,fontWeight:600}}>{idx+1}/{steps.length}</div>
       </div>
@@ -443,7 +443,7 @@ function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
             {loaded && hovered && (
               <div style={{position:'absolute',inset:0,background:'rgba(0,0,0,0.45)',display:'flex',alignItems:'center',justifyContent:'center',transition:'opacity 0.2s'}}>
                 <div style={{background:'rgba(74,222,128,0.9)',color:'#000',fontWeight:700,fontSize:'14px',padding:'10px 24px',borderRadius:'8px',display:'flex',alignItems:'center',gap:'8px'}}>
-                  🔗 Open in Browser
+                  ?? Open in Browser
                 </div>
               </div>
             )}
@@ -459,10 +459,10 @@ function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
       </div>
       {/* Status bar */}
       <div style={{background:'#12121f',padding:'10px 14px',borderTop:'1px solid rgba(255,255,255,0.05)',display:'flex',alignItems:'center',gap:'10px'}}>
-        <span style={{fontSize:'16px',flexShrink:0}}>🌐</span>
+        <span style={{fontSize:'16px',flexShrink:0}}>??</span>
         <span style={{fontSize:'12px',color:'#d1d5db',flex:1,lineHeight:1.5}}>{step.action}</span>
-        {!isDone && <span style={{fontSize:'18px',color:'#4ade80',flexShrink:0}}>···</span>}
-        {isDone && <span style={{fontSize:'10px',color:'#4ade80',flexShrink:0,fontWeight:600}}>✓ Done</span>}
+        {!isDone && <span style={{fontSize:'18px',color:'#4ade80',flexShrink:0}}>���</span>}
+        {isDone && <span style={{fontSize:'10px',color:'#4ade80',flexShrink:0,fontWeight:600}}>? Done</span>}
       </div>
     </div>
   )
@@ -470,7 +470,7 @@ function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
 
 export default function AIPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: 'assistant', content: "Hey! I'm Alpha AI — your shop's command center. I can create customers, open jobs, build estimates, send texts and emails, look up anyone's history, check shop stats, schedule follow-ups, and more. What do you need?" }
+    { role: 'assistant', content: "Hey! I'm Alpha AI � your shop's command center. I can create customers, open jobs, build estimates, send texts and emails, look up anyone's history, check shop stats, schedule follow-ups, and more. What do you need?" }
   ])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -549,7 +549,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     window.speechSynthesis.speak(u)
   }, [])
 
-  // Voice mode: start listening via SpeechRecognition — sends through send()
+  // Voice mode: start listening via SpeechRecognition � sends through send()
   const voiceStartListening = useCallback(() => {
     if (typeof window === 'undefined') return
     if (!voiceActiveRef.current) return
@@ -623,7 +623,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     const newest = messages[messages.length - 1]
     lastMsgCountRef.current = messages.length
     if (newest.role !== 'assistant') return
-    // Don't speak HTML-only messages (estimate cards etc) — speak content if available
+    // Don't speak HTML-only messages (estimate cards etc) � speak content if available
     const textToSpeak = newest.content || ''
     if (!textToSpeak) return
     setVoiceStatus('speaking')
@@ -683,7 +683,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, status])
 
-  // Thinking timer — counts up while loading
+  // Thinking timer � counts up while loading
   useEffect(() => {
     if (loading) {
       setThinkingElapsed(0)
@@ -771,7 +771,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
             }
             setAttachedFile({ name: file.name, content: text.trim() || '[Empty PDF]', type: 'text' })
           } else {
-            setAttachedFile({ name: file.name, content: `[PDF file: ${file.name} — ${(file.size/1024).toFixed(0)}KB. PDF text extraction unavailable.]`, type: 'text' })
+            setAttachedFile({ name: file.name, content: `[PDF file: ${file.name} � ${(file.size/1024).toFixed(0)}KB. PDF text extraction unavailable.]`, type: 'text' })
           }
         } catch {
           setAttachedFile({ name: file.name, content: `[PDF file: ${file.name}]`, type: 'text' })
@@ -803,7 +803,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     if (!text || loading) return
     if (!overrideInput) setInput('')
     setLoading(true)
-    // Build message content — include attached file if any
+    // Build message content � include attached file if any
     let fullContent = text
     let attachImageUrl: string | undefined
     if (attachedFile && !overrideInput) {
@@ -818,27 +818,27 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     const userMsg: ChatMessage = { role: 'user', content: text, imageUrl: attachImageUrl }
     setMessages(prev => [...prev, userMsg])
 
-    // AI voice call detection — "AI call", "call [business] and order/ask", "have AI call"
+    // AI voice call detection � "AI call", "call [business] and order/ask", "have AI call"
     const aiCallMatch = text.match(/(?:ai\s+call|have\s+(?:the\s+)?ai\s+call|call\s+\w+\s+(?:and|to)\s+(?:order|ask|find|check|get|buy|order|inquire))/i)
     if (aiCallMatch || /\bcall\b.*\b(?:autozone|napa|oreilly|o'reilly|advance|pepboys|store|shop|dealership|dealer|supplier)\b/i.test(text)) {
-      // Let the AI handle it — it will use aiVoiceCall tool
+      // Let the AI handle it � it will use aiVoiceCall tool
     } else {
-      // Direct call detection — bypass AI for plain "call XXXXXXXXXX"
+      // Direct call detection � bypass AI for plain "call XXXXXXXXXX"
     }
 
-    // Direct call detection — bypass AI for explicit call commands
+    // Direct call detection � bypass AI for explicit call commands
     // Matches: "call 2819008141" or "call 2819008141 and ask if he's going to church"
     const callMatch = text.match(/^(?:call|dial|phone|ring)\s+([\d\s\-\(\)\+]+?)(?:\s+(?:and|to|then)\s+(.+))?$/i)
     if (callMatch) {
       const phone = callMatch[1].replace(/\s/g, '')
       const instructions = callMatch[2]?.trim() || ''
       // If user gave instructions ("call X and ask Y"), use them as the AI task
-      // If no instructions ("call X"), it's a personal call — no AI script
+      // If no instructions ("call X"), it's a personal call � no AI script
       const callTask = instructions
         ? instructions
         : '' // empty = no AI script, just connect the call
         if (callTask) {
-          // AI voice call — has instructions, use make-call API
+          // AI voice call � has instructions, use make-call API
           setStatus('AI Calling...')
           try {
             const r = await fetch('/api/make-call', {
@@ -857,7 +857,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
             setMessages(prev => [...prev, { role: 'assistant', content: `Call error: ${err instanceof Error ? err.message : 'Unknown'}` }])
           }
         } else {
-          // Personal/browser call — user talks via WebRTC softphone
+          // Personal/browser call � user talks via WebRTC softphone
           window.dispatchEvent(new CustomEvent('phone:call', { detail: { number: phone, name: phone } }))
           setMessages(prev => [...prev, { role: 'assistant', content: `Connecting you to ${phone} via browser phone...` }])
         }
@@ -978,7 +978,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         (accumulated.length ? `\n\nCompleted steps so far:\n${accumulated.join('\n')}` : '') + +
           `\n\nCRITICAL INSTRUCTIONS:\n1. NEW INVOICE vs REPRINT: When user says "new invoice" or "I need a invoice for [item]", CREATE a NEW document using proposeDocument. Do NOT reprint or lookup old invoices. A "new invoice" means build a fresh one from scratch.\n2. UNDERSTAND SIMPLE REQUESTS: If the user gives you a customer name and says they need something, DO IT. Don't ask them to repeat. Example: "I need a new invoice for thermostat, $280 flat for Asheanna" = immediately create a invoice with those details, no tax, flat total.\n3. CUSTOMER SEARCH: When the user mentions a customer name, phone, or asks about a customer, ALWAYS use searchCustomers first (NOT createCustomer). Show matching results with name, phone, email, jobs. If no match, say so and ask before creating.\n4. NEVER LOOP: Give ONE clear response per turn. If you're unsure, ask ONE clarifying question. Never repeat yourself.\n5. FLAT RATE: When user says "flat" or "no tax", set tax to 0 and use the exact total they gave.\n6. customer search results: when searchcustomers returns results, always show all matching customers with their full details (name, phone, email, vehicles). the search now includes vehicle info from jobs. never show just one customer if multiple matches exist. present each customer clearly so the user can identify the right one.
 7. INVOICE TYPE: When user asks for an invoice, always use proposeDocument with type Invoice. Invoice = proof of payment received. Invoice = bill for work done. Estimate = quote before work. The type field in proposeDocument MUST match exactly what the user asked for.` +
-                    `\n\nNATURAL LANGUAGE INTELLIGENCE — YOU ARE SMART, ACT LIKE IT:
+                    `\n\nNATURAL LANGUAGE INTELLIGENCE � YOU ARE SMART, ACT LIKE IT:
 - The user is a busy mechanic. They speak casually with typos, slang, abbreviations. FIGURE IT OUT.
 - "invoice 280 flat thermostat asheanna" = create invoice, thermostat, $280, Asheanna, no tax
 - "brakes civic" = search brake parts for the Civic in context
@@ -1025,7 +1025,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
 
       const raw = data.choices?.[0]?.message?.content?.trim() || ''
 
-            // OUTPUT SANITIZATION — detect repeating patterns and cut them off
+            // OUTPUT SANITIZATION � detect repeating patterns and cut them off
       const sanitizeOutput = (text: string): string => {
         if (!text) return text
         // Detect repeating phrases (3+ repetitions of same 2-20 word phrase)
@@ -1052,7 +1052,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       const reasoning = data.choices?.[0]?.message?.reasoning || data.choices?.[0]?.message?.reasoning_content || ''
       const thinkingSeconds = Math.round((Date.now() - thinkStart) / 1000)
 
-      // Parse JSON tool call � strip code blocks, extract JSON
+      // Parse JSON tool call ? strip code blocks, extract JSON
       let parsed: Record<string, unknown> | null = null
       try {
         const cleaned = raw.replace(/\\\json\s*/gi, '').replace(/\\\\s*/g, '').trim()
@@ -1076,14 +1076,14 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         }
       } catch { parsed = null }
 
-      // No tool call = final answer — show to user
+      // No tool call = final answer � show to user
       if (!parsed) {
         let mediaHtml = ''
             if (lastSearchMedia) {
               const imgs = (lastSearchMedia.images || []).slice(0, 4)
               const vids = (lastSearchMedia.videos || []).slice(0, 3)
               if (vids.length > 0) {
-                mediaHtml += '<div style="margin-top:12px"><strong>📺 Videos</strong></div>'
+                mediaHtml += '<div style="margin-top:12px"><strong>?? Videos</strong></div>'
                 for (const v of vids) {
                   const yt = (v.url || '').match(/(?:watch\?v=|youtu\.be\/|shorts\/|embed\/)([\w-]{11})/)
                   if (yt) {
@@ -1122,7 +1122,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         continue
       }
 
-      // Web Search — execute silently, feed result back to AI
+      // Web Search � execute silently, feed result back to AI
       if (parsed.tool === 'webSearch') {
         setStatus('Searching...')
 
@@ -1177,7 +1177,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
               searchResult += '\n\nYouTube Videos:\n' + (d.videos as {title:string;url:string;channel?:string;embed_url?:string}[]).slice(0, 3).map((v: {title:string;url:string;channel?:string;embed_url?:string}, i: number) => `${i+1}. **${v.title}**${v.channel ? ` (${v.channel})` : ''}\n${v.embed_url || v.url}\n![thumbnail](${v.thumbnail || ''})`).join('\n')
             }
             if (d.price_radar?.length) {
-              searchResult += '\n\nPRICE COMPARISON (Price Radar):\n' + (d.price_radar as {store:string;price:number;url:string;shipping?:string}[]).map((p: {store:string;price:number;url:string;shipping?:string}) => `- ${p.store}: $${p.price.toFixed(2)} ${p.shipping || ''} — ${p.url}`).join('\n')
+              searchResult += '\n\nPRICE COMPARISON (Price Radar):\n' + (d.price_radar as {store:string;price:number;url:string;shipping?:string}[]).map((p: {store:string;price:number;url:string;shipping?:string}) => `- ${p.store}: $${p.price.toFixed(2)} ${p.shipping || ''} � ${p.url}`).join('\n')
               searchResult += '\nBest price: $' + (d.price_radar as {price:number}[])[0].price.toFixed(2) + ' at ' + (d.price_radar as {store:string}[])[0].store
             }
             if (d.answer) {
@@ -1188,7 +1188,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             }
         lastSearchMedia = { images: d.images || [], videos: d.videos || [] }
                     if (d.knowledge_panel) {
-              searchResult += '\n\nKNOWLEDGE PANEL — ' + d.knowledge_panel.title + ':\n' + Object.entries(d.knowledge_panel.facts).map(([k, v]: [string, string]) => `- ${k}: ${v}`).join('\n')
+              searchResult += '\n\nKNOWLEDGE PANEL � ' + d.knowledge_panel.title + ':\n' + Object.entries(d.knowledge_panel.facts).map(([k, v]: [string, string]) => `- ${k}: ${v}`).join('\n')
               if (d.knowledge_panel.source) searchResult += '\nSource: ' + d.knowledge_panel.source
             }
             if (d.related_searches?.length) {
@@ -1201,7 +1201,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         continue
       }
 
-      // Browse — calls /api/web-automation and shows live browser panel
+      // Browse � calls /api/web-automation and shows live browser panel
       if (parsed.tool === 'browse' || parsed.tool === 'webAutomation') {
         const browseUrl = (parsed.url || '') as string
         const browseTask = (parsed.task || parsed.query || '') as string
@@ -1217,7 +1217,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           const resultsUrl = `https://duckduckgo.com/?q=${encodeURIComponent(extractedQuery)}`
           const engineScreenshot = `/api/screenshot?url=${encodeURIComponent(engineUrl)}`
           const resultsScreenshot = `/api/screenshot?url=${encodeURIComponent(resultsUrl)}`
-          setStatus(`🌐 Searching Google for "${extractedQuery}"...`)
+          setStatus(`?? Searching Google for "${extractedQuery}"...`)
           // Generate multi-step browser panel immediately
           const searchSteps: BrowserPanelStep[] = [
             { action: `Navigating to ${engineUrl}...`, screenshotUrl: engineScreenshot, url: engineUrl, title: 'Google' },
@@ -1244,7 +1244,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           continue
         }
 
-        setStatus(browseUrl ? `🌐 Browsing ${browseUrl}...` : '🌐 Browsing...')
+        setStatus(browseUrl ? `?? Browsing ${browseUrl}...` : '?? Browsing...')
         let browseResult = ''
         let browseSteps: BrowserPanelStep[] = []
         try {
@@ -1280,7 +1280,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         continue
       }
 
-      // DB Action — execute silently, feed result back to AI
+      // DB Action � execute silently, feed result back to AI
       if (parsed.tool === 'action') {
         const actionName = parsed.action as string
         setStatus('Processing...')
@@ -1302,7 +1302,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         continue
       }
 
-      // Propose Document — show visual estimate card
+      // Propose Document � show visual estimate card
       if (parsed.tool === 'proposeDocument') {
         const proposalHtml = renderProposal(parsed)
         const assistantMsg: ChatMessage = { role: 'assistant', content: '', html: proposalHtml }
@@ -1311,7 +1311,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         return
       }
 
-      // AI Voice Call — dials with bidirectional streaming, AI handles conversation
+      // AI Voice Call � dials with bidirectional streaming, AI handles conversation
       if (parsed.tool === 'aiVoiceCall') {
         setStatus('Initiating AI voice call...')
         try {
@@ -1351,9 +1351,9 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         return
       }
 
-      // Place Phone Call — dials immediately via Telnyx
+      // Place Phone Call � dials immediately via Telnyx
       if (parsed.tool === 'call') {
-        // Browser call — dispatch phone:call event to PhoneWidget
+        // Browser call � dispatch phone:call event to PhoneWidget
         window.dispatchEvent(new CustomEvent('phone:call', { detail: { number: parsed.to as string, name: (parsed.name as string) || '' } }))
         const assistantMsg: ChatMessage = { role: 'assistant', content: `Connecting you to ${parsed.name || parsed.to} via browser phone...` }
         setMessages(prev => [...prev, assistantMsg])
@@ -1367,7 +1367,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         return
       }
 
-      // Message — show draft confirmation card
+      // Message � show draft confirmation card
       if (parsed.tool === 'message') {
         setPendingSms({
           to: parsed.to as string,
@@ -1380,14 +1380,14 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         const channel = (parsed.channel as string) || 'sms'
         const assistantMsg: ChatMessage = {
           role: 'assistant',
-          content: `Draft ${channel === 'email' ? 'email' : 'text'} ready — review below and hit Send.`
+          content: `Draft ${channel === 'email' ? 'email' : 'text'} ready � review below and hit Send.`
         }
         setMessages(prev => [...prev, assistantMsg])
         saveToHistory([...history, assistantMsg])
         return
       }
 
-      // Connector tools — Facebook, Instagram, Google Business, Google Calendar
+      // Connector tools � Facebook, Instagram, Google Business, Google Calendar
       if (parsed.tool === 'connector') {
         const connectorName = parsed.connector as string
         const connAction    = parsed.action as string
@@ -1427,7 +1427,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
 if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; try { const r = await fetch('/api/automations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create', name: parsed.name || 'Scheduled Task', description: parsed.description || '', schedule: parsed.schedule, task_prompt: parsed.task_prompt }) }); const d = await r.json(); sr = d.ok ? `Scheduled "${d.data?.name}" at ${d.data?.schedule}` : `Failed: ${d.error}` } catch (e) { sr = `Error: ${e instanceof Error ? e.message : 'Unknown'}` } accumulated.push(`[scheduleTask]: ${sr}`); agentMessages.push({ role: 'assistant', content: raw }); agentMessages.push({ role: 'user', content: `Schedule result: ${sr}
 Continue silently.` }); continue }
 
-      // ── DESKTOP TOOLS (Electron only) ──────────────────────────────────────
+      // -- DESKTOP TOOLS (Electron only) --------------------------------------
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const isElectronEnv = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron
 
@@ -1442,7 +1442,7 @@ Continue silently.` }); continue }
           (parsed.title as string) || 'Alpha AI Desk',
           (parsed.body  as string) || ''
         )
-        accumulated.push(`[Desktop Notification sent: "${parsed.title}" — "${parsed.body}"]`)
+        accumulated.push(`[Desktop Notification sent: "${parsed.title}" � "${parsed.body}"]`)
         agentMessages.push({ role: 'assistant', content: raw })
         agentMessages.push({ role: 'user', content: `Desktop notification ${notifResult.ok ? 'sent successfully' : 'failed: ' + notifResult.error}. Continue.` })
         continue
@@ -1454,7 +1454,7 @@ Continue silently.` }); continue }
           agentMessages.push({ role: 'user', content: 'Desktop browser automation only works in the desktop app. Let the user know.' })
           continue
         }
-        setStatus('🖥️ Desktop browser...')
+        setStatus('??? Desktop browser...')
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const dea = (window as any).electronAPI
         let dBrowseResult = ''
@@ -1489,7 +1489,7 @@ Continue silently.` }); continue }
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const printResult = await (window as any).electronAPI.print.page()
-        const printMsg: ChatMessage = { role: 'assistant', content: printResult.ok ? '🖨️ Print dialog opened.' : `Print failed: ${printResult.error}` }
+        const printMsg: ChatMessage = { role: 'assistant', content: printResult.ok ? '??? Print dialog opened.' : `Print failed: ${printResult.error}` }
         setMessages(prev => [...prev, printMsg])
         saveToHistory([...history, printMsg])
         return
@@ -1503,7 +1503,7 @@ Continue silently.` }); continue }
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const pdfResult = await (window as any).electronAPI.print.pdf((parsed.filename as string) || 'alpha-ai-desk.pdf')
-        const pdfMsg: ChatMessage = { role: 'assistant', content: pdfResult.ok ? `💾 PDF saved to: ${pdfResult.path}` : `PDF save failed: ${pdfResult.error}` }
+        const pdfMsg: ChatMessage = { role: 'assistant', content: pdfResult.ok ? `?? PDF saved to: ${pdfResult.path}` : `PDF save failed: ${pdfResult.error}` }
         setMessages(prev => [...prev, pdfMsg])
         saveToHistory([...history, pdfMsg])
         return
@@ -1521,7 +1521,7 @@ Continue silently.` }); continue }
           (parsed.filename as string) || 'document.txt',
           undefined
         )
-        const saveMsg: ChatMessage = { role: 'assistant', content: saveResult.ok ? `💾 Saved to: ${saveResult.path}` : saveResult.cancelled ? 'Save cancelled.' : `Save failed: ${saveResult.error}` }
+        const saveMsg: ChatMessage = { role: 'assistant', content: saveResult.ok ? `?? Saved to: ${saveResult.path}` : saveResult.cancelled ? 'Save cancelled.' : `Save failed: ${saveResult.error}` }
         setMessages(prev => [...prev, saveMsg])
         saveToHistory([...history, saveMsg])
         return
@@ -1536,7 +1536,7 @@ Continue silently.` }); continue }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const ssResult = await (window as any).electronAPI.system.screenshot()
         if (ssResult.ok && ssResult.base64) {
-          const ssMsg: ChatMessage = { role: 'assistant', content: '📸 Screenshot taken:', imageUrl: `data:image/png;base64,${ssResult.base64}` }
+          const ssMsg: ChatMessage = { role: 'assistant', content: '?? Screenshot taken:', imageUrl: `data:image/png;base64,${ssResult.base64}` }
           setMessages(prev => [...prev, ssMsg])
           saveToHistory([...history, ssMsg])
         } else {
@@ -1551,7 +1551,7 @@ Continue silently.` }); continue }
           agentMessages.push({ role: 'user', content: 'Desktop PowerShell only works in the desktop app. Let the user know.' })
           continue
         }
-        setStatus('⚡ Running PowerShell...')
+        setStatus('? Running PowerShell...')
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const psResult = await (window as any).electronAPI.system.powershell((parsed.command as string) || '')
         accumulated.push(`[PowerShell]: ${psResult.output || psResult.error}`)
@@ -1575,9 +1575,9 @@ Continue silently.` }); continue }
         agentMessages.push({ role: 'user', content: `System info: ${siText}` })
         continue
       }
-      // ── END DESKTOP TOOLS ──────────────────────────────────────────────────
+      // -- END DESKTOP TOOLS --------------------------------------------------
 
-// Unknown — treat as final response
+// Unknown � treat as final response
       const assistantMsg: ChatMessage = { role: 'assistant', content: raw }
       setMessages(prev => [...prev, assistantMsg])
       speak(raw)
@@ -1641,7 +1641,7 @@ Continue silently.` }); continue }
       : ''
     return `<div style="border:1px solid #374151;border-radius:12px;padding:16px;background:var(--bg-card,#1a1a2e)">
       <div style="font-weight:700;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
-        <span>📞 AI Call Summary</span>
+        <span>?? AI Call Summary</span>
         <span style="font-size:0.75rem;color:#9ca3af">${dur}</span>
       </div>
       ${recordingBlock}
@@ -1757,7 +1757,7 @@ Continue silently.` }); continue }
     const docType = (parsed.type as string) || 'Estimate'
     const encodedData = btoa(JSON.stringify(parsed))
     return `<div class="proposal-card" id="proposal-${encodedData.slice(0, 8)}">
-      <div class="font-bold text-base mb-2">Proposed ${docType} — ${parsed.customer || ''}</div>
+      <div class="font-bold text-base mb-2">Proposed ${docType} � ${parsed.customer || ''}</div>
       ${parts.length ? `<table class="w-full text-xs mb-3"><thead><tr class="text-text-muted"><th class="text-left pb-1">Part</th><th class="text-right pb-1">Qty</th><th class="text-right pb-1">Price</th><th class="text-right pb-1">Total</th></tr></thead><tbody>${parts.map(p=>`<tr><td>${p.name}</td><td class="text-right">${p.qty||1}</td><td class="text-right">${fmt(Number(p.unitPrice)||0)}</td><td class="text-right">${fmt((Number(p.qty)||1)*(Number(p.unitPrice)||0))}</td></tr>`).join('')}</tbody></table>` : ''}
       ${labors.length ? `<table class="w-full text-xs mb-3"><thead><tr class="text-text-muted"><th class="text-left pb-1">Labor</th><th class="text-right pb-1">Hrs</th><th class="text-right pb-1">Total</th></tr></thead><tbody>${labors.map(l=>`<tr><td>${l.operation}</td><td class="text-right">${l.hours}</td><td class="text-right">${fmt((Number(l.hours)||0)*(Number(l.rate)||120))}</td></tr>`).join('')}</tbody></table>` : ''}
       <div class="border-t border-border pt-2 space-y-1 text-xs">
@@ -1891,7 +1891,7 @@ Continue silently.` }); continue }
     "Who hasn't been in for 90+ days?",
     "How much revenue this month?",
     "Create a new customer: John Smith, 555-123-4567",
-    "Open a new job for the white 2020 Honda Civic — AC not blowing cold",
+    "Open a new job for the white 2020 Honda Civic � AC not blowing cold",
     "What are today's shop stats?",
     "Schedule a follow-up text to remind about the oil change",
     "Draft a follow-up text for customers with unpaid invoices",
@@ -1910,7 +1910,7 @@ Continue silently.` }); continue }
       <div className="p-3 sm:p-6 border-b border-border flex items-center justify-between gap-2">
         <div className="min-w-0">
           <h1 className="text-lg sm:text-xl font-bold">Alpha AI</h1>
-          <p className="text-xs sm:text-sm text-text-muted mt-0.5 truncate">Full shop control · Create, update, search, message — all from here</p>
+          <p className="text-xs sm:text-sm text-text-muted mt-0.5 truncate">Full shop control � Create, update, search, message � all from here</p>
         </div>
         <div className="flex gap-2 shrink-0">
           {/* Feature 5: History button */}
@@ -1924,9 +1924,9 @@ Continue silently.` }); continue }
             className={`btn btn-sm ${speakEnabled ? 'btn-primary' : 'btn-secondary'}`}
             title={speakEnabled ? 'Voice output ON' : 'Voice output OFF'}
           >
-            {speakEnabled ? '🔊' : '🔇'} Voice
+            {speakEnabled ? '??' : '??'} Voice
           </button>
-          {/* Talk to Alpha — voice conversation mode toggle */}
+          {/* Talk to Alpha � voice conversation mode toggle */}
           <button
             onClick={() => {
               if (voiceActive) {
@@ -1940,7 +1940,7 @@ Continue silently.` }); continue }
             }}
             className={`btn btn-sm font-semibold text-white ${voiceActive ? 'ring-2 ring-red-400' : ''}`}
             style={{ background: voiceActive ? 'linear-gradient(135deg, #ef4444, #dc2626)' : 'linear-gradient(135deg, #3b82f6, #8b5cf6)', border: 'none' }}
-            title={voiceActive ? 'Voice mode ON — tap to stop' : 'Start voice conversation'}
+            title={voiceActive ? 'Voice mode ON � tap to stop' : 'Start voice conversation'}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="inline mr-1">
               <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
@@ -1960,7 +1960,7 @@ Continue silently.` }); continue }
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-bold text-lg">Chat History</h2>
                                 <button onClick={() => { if (confirm('Delete ALL chat history?')) { setHistory([]); localStorage.removeItem('ai_history'); showToast('All history deleted') }}} className="btn btn-sm text-xs text-red-400 hover:bg-red-400/10 border border-red-400/30">Delete All</button>
-              <button onClick={() => setShowHistory(false)} className="btn btn-secondary btn-sm">✕</button>
+              <button onClick={() => setShowHistory(false)} className="btn btn-secondary btn-sm">?</button>
             </div>
             {history.length === 0 && <p className="text-sm text-text-muted">No conversations yet.</p>}
             {groupHistoryByDate().map(group => (
@@ -2015,7 +2015,7 @@ Continue silently.` }); continue }
             />
             <div className="flex-1 min-w-0">
               <span className="text-sm font-semibold">Alpha AI</span>
-              <span className="mx-2 text-text-muted">·</span>
+              <span className="mx-2 text-text-muted">�</span>
               <span className="text-sm font-medium" style={{
                 color: voiceStatus === 'listening' ? '#ef4444' :
                        voiceStatus === 'thinking' ? '#f59e0b' :
@@ -2117,7 +2117,7 @@ Continue silently.` }); continue }
                       onClick={() => setShowJumpIn(true)}
                       className="btn btn-secondary btn-sm text-xs"
                     >
-                      📲 Jump Into Call
+                      ?? Jump Into Call
                     </button>
                   ) : (
                     <div className="flex gap-2 items-center">
@@ -2149,7 +2149,7 @@ Continue silently.` }); continue }
                       >
                         {jumpingIn ? 'Dialing...' : 'Call Me'}
                       </button>
-                      <button onClick={() => setShowJumpIn(false)} className="btn btn-secondary btn-sm text-xs">✕</button>
+                      <button onClick={() => setShowJumpIn(false)} className="btn btn-secondary btn-sm text-xs">?</button>
                     </div>
                   )}
                 </div>
@@ -2198,13 +2198,13 @@ Continue silently.` }); continue }
         {attachedFile && (
           <div className="flex items-center gap-2 mb-2">
             <div className="flex items-center gap-1.5 bg-blue/10 border border-blue/30 rounded-full px-3 py-1 text-xs text-blue max-w-xs">
-              <span>{attachedFile.type === 'image' ? '🖼️' : '📎'}</span>
+              <span>{attachedFile.type === 'image' ? '???' : '??'}</span>
               <span className="truncate max-w-[180px]">{attachedFile.name}</span>
               <button
                 onClick={() => setAttachedFile(null)}
                 className="ml-1 text-blue/60 hover:text-red-400 transition-colors"
                 title="Remove file"
-              >✕</button>
+              >?</button>
             </div>
             {attachedFile.content === '[Reading PDF...]' && (
               <span className="text-xs text-text-muted animate-pulse">Reading...</span>
@@ -2216,7 +2216,7 @@ Continue silently.` }); continue }
           <textarea
             className="form-input flex-1 resize-none text-sm"
             rows={2}
-            placeholder="Ask anything — or tell me to create, update, message, search..."
+            placeholder="Ask anything � or tell me to create, update, message, search..."
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
@@ -2288,10 +2288,10 @@ Continue silently.` }); continue }
                 ? 'bg-blue/20 border-blue/50 text-blue'
                 : 'bg-bg-card border-border text-text-muted hover:border-blue/30 hover:text-text-secondary'
             }`}
-            title={features.search ? 'Web search ON — click to disable' : 'Web search OFF — click to enable'}
+            title={features.search ? 'Web search ON � click to disable' : 'Web search OFF � click to enable'}
           >
             {features.search && <span className="w-1.5 h-1.5 rounded-full bg-blue flex-shrink-0" />}
-            🔍 Search
+            ?? Search
           </button>
 
           {/* Social toggle */}
@@ -2302,10 +2302,10 @@ Continue silently.` }); continue }
                 ? 'bg-blue/20 border-blue/50 text-blue'
                 : 'bg-bg-card border-border text-text-muted hover:border-blue/30 hover:text-text-secondary'
             }`}
-            title={features.socialMedia ? 'Social media ON — click to disable' : 'Social media OFF — click to enable'}
+            title={features.socialMedia ? 'Social media ON � click to disable' : 'Social media OFF � click to enable'}
           >
             {features.socialMedia && <span className="w-1.5 h-1.5 rounded-full bg-blue flex-shrink-0" />}
-            📱 Social
+            ?? Social
           </button>
 
                       {/* Thinking toggle */}
@@ -2319,7 +2319,7 @@ Continue silently.` }); continue }
               title={features.thinking ? 'Deep thinking ON' : 'Deep thinking OFF'}
             >
               {features.thinking && <span className="w-1.5 h-1.5 rounded-full bg-purple-400 flex-shrink-0" />}
-              🧠 Thinking
+              ?? Thinking
             </button>
 
           {/* Connectors button */}
@@ -2328,7 +2328,7 @@ Continue silently.` }); continue }
             className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border bg-bg-card border-border text-text-muted hover:border-blue/30 hover:text-text-secondary"
             title="Open Connectors"
           >
-            🔌 Connectors
+            ?? Connectors
           </button>
 
           {/* Files button */}
@@ -2337,12 +2337,12 @@ Continue silently.` }); continue }
             className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border bg-bg-card border-border text-text-muted hover:border-blue/30 hover:text-text-secondary"
             title="Attach a file"
           >
-            📎 Files
+            ?? Files
           </button>
         </div>
 
         {listening && !voiceActive && <p className="text-xs mt-2 text-red-400 animate-pulse">Listening... speak now</p>}
-        {voiceActive && voiceStatus === 'listening' && <p className="text-xs mt-2 text-red-400 animate-pulse">Voice mode active — speak now</p>}
+        {voiceActive && voiceStatus === 'listening' && <p className="text-xs mt-2 text-red-400 animate-pulse">Voice mode active � speak now</p>}
       </div>
 
       {/* Connectors Popup Modal */}
@@ -2365,7 +2365,7 @@ Continue silently.` }); continue }
 
             {/* Toast inside popup */}
             {connectorToast && (
-              <div className="mx-5 mt-4 px-4 py-2 rounded-lg bg-green-500/10 border border-green-500/30 text-green-400 text-sm">✅ {connectorToast}</div>
+              <div className="mx-5 mt-4 px-4 py-2 rounded-lg bg-green-500/10 border border-green-500/30 text-green-400 text-sm">? {connectorToast}</div>
             )}
 
             {/* Cards */}
@@ -2396,7 +2396,7 @@ Continue silently.` }); continue }
                             </div>
                           </div>
                           <span className={`shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold ${ isConnected ? 'bg-green-500/15 text-green-400' : 'bg-bg-hover text-text-muted' }`}>
-                            {isConnected ? '● Connected' : '○ Not connected'}
+                            {isConnected ? '? Connected' : '? Not connected'}
                           </span>
                         </div>
                         {isConnected && accountName && (
@@ -2411,7 +2411,7 @@ Continue silently.` }); continue }
                               onClick={() => handleConnectorDisconnect(service)}
                               disabled={isLoading}
                             >
-                              {isLoading ? 'Disconnecting…' : 'Disconnect'}
+                              {isLoading ? 'Disconnecting�' : 'Disconnect'}
                             </button>
                           ) : (
                             <button
@@ -2430,7 +2430,7 @@ Continue silently.` }); continue }
               )}
 
               <div className="mt-5 p-3 rounded-xl bg-bg-hover border border-border text-xs text-text-muted">
-                <span className="font-medium text-text-secondary">💡 Tip:</span> Facebook & Instagram share one OAuth flow. Google Business & Calendar share one Google login.
+                <span className="font-medium text-text-secondary">?? Tip:</span> Facebook & Instagram share one OAuth flow. Google Business & Calendar share one Google login.
               </div>
             </div>
           </div>
