@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 
@@ -131,7 +131,7 @@ export default function ReportsPage() {
       ])
     }
     const pLabel = period === 'ytd' ? 'YTD' : period === '7d' ? '7days' : period === '30d' ? '30days' : '90days'
-    exportCsv(rows, `alpha_tax_report_${pLabel}_${new Date().toISOString().slice(0,10)}.csv`)
+    exportCsv(rows, `tax_report_${pLabel}_${new Date().toISOString().slice(0,10)}.csv`)
   }
 
   if (loading) return <div className="p-8 text-center text-text-muted animate-pulse">Loading reports...</div>
@@ -305,7 +305,7 @@ export default function ReportsPage() {
           <div className="card p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h2 className="text-lg font-bold">Tax & Revenue Export</h2>
-              <p className="text-sm text-text-muted mt-0.5">{filteredInvoices.length} invoices · {fmtCur(totalRevenue)} collected in selected period</p>
+              <p className="text-sm text-text-muted mt-0.5">{filteredInvoices.length} invoices Â· {fmtCur(totalRevenue)} collected in selected period</p>
             </div>
             <button className="btn btn-primary" onClick={exportTaxCsv}>
               Download CSV
@@ -382,3 +382,4 @@ export default function ReportsPage() {
     </div>
   )
 }
+

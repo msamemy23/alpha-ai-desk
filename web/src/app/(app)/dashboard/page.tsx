@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { supabase, calcTotals, formatCurrency, getShopProfile, getShopId } from '@/lib/supabase'
@@ -184,7 +184,7 @@ export default function DashboardPage() {
     finally { setSlowDaySending(false) }
   }
 
-  if (loading) return <div className="p-8 text-text-muted">Loading…</div>
+  if (loading) return <div className="p-8 text-text-muted">Loadingâ€¦</div>
 
   const STATUS_COLOR: Record<string,string> = {
     'New': 'bg-blue', 'In Progress': 'bg-amber', 'Completed': 'bg-green',
@@ -212,7 +212,7 @@ export default function DashboardPage() {
   const techs = Object.entries(techMap).sort((a, b) => b[1].revenue - a[1].revenue)
 
   const isSlowDay = stats!.openJobs < 3
-  const shopName = shopProfile?.shop_name || 'Alpha International Auto Center'
+  const shopName = shopProfile?.shop_name || 'My Shop'
   const hasProfile = profileLoaded && shopProfile && shopProfile.shop_name
 
   // Helper: extract caller number from task string or caller field
@@ -237,11 +237,11 @@ export default function DashboardPage() {
         <p className="text-text-muted text-sm mt-1">{shopName}</p>
       </div>
 
-      {/* Onboarding banner — show if profile is missing */}
+      {/* Onboarding banner â€” show if profile is missing */}
       {profileLoaded && !hasProfile && (
         <div className="card border-amber/40 bg-amber/5 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <span className="text-xl">🚀</span>
+            <span className="text-xl">ðŸš€</span>
             <div>
               <p className="text-sm font-semibold">Finish setting up your shop</p>
               <p className="text-xs text-text-muted">Add your shop name, phone, and services to get started.</p>
@@ -256,8 +256,8 @@ export default function DashboardPage() {
         <div className="card border-blue/30 bg-blue/5">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-3">
             <div className="flex items-center gap-2">
-              <span className="text-xl">☀️</span>
-              <h2 className="text-sm font-bold uppercase tracking-wider text-blue">{(() => { const h = new Date().getHours(); return h < 5 ? 'Good Night' : h < 12 ? 'Good Morning' : h < 17 ? 'Good Afternoon' : h < 21 ? 'Good Evening' : 'Good Night' })()} — Daily Briefing</h2>
+              <span className="text-xl">â˜€ï¸</span>
+              <h2 className="text-sm font-bold uppercase tracking-wider text-blue">{(() => { const h = new Date().getHours(); return h < 5 ? 'Good Night' : h < 12 ? 'Good Morning' : h < 17 ? 'Good Afternoon' : h < 21 ? 'Good Evening' : 'Good Night' })()} â€” Daily Briefing</h2>
             </div>
             <div className="flex gap-2">
               <button className="btn btn-secondary btn-sm" onClick={() => setBriefingExpanded(!briefingExpanded)}>
@@ -296,10 +296,10 @@ export default function DashboardPage() {
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Open Jobs', value: stats!.openJobs, color: 'text-blue', icon: '🔧' },
-          { label: 'Unpaid Balance', value: formatCurrency(stats!.unpaidTotal), color: 'text-red', icon: '💰' },
-          { label: 'Total Customers', value: stats!.customersCount, color: 'text-green', icon: '👤' },
-          { label: 'Month Revenue', value: formatCurrency(stats!.monthRevenue), color: 'text-amber', icon: '📈' },
+          { label: 'Open Jobs', value: stats!.openJobs, color: 'text-blue', icon: 'ðŸ”§' },
+          { label: 'Unpaid Balance', value: formatCurrency(stats!.unpaidTotal), color: 'text-red', icon: 'ðŸ’°' },
+          { label: 'Total Customers', value: stats!.customersCount, color: 'text-green', icon: 'ðŸ‘¤' },
+          { label: 'Month Revenue', value: formatCurrency(stats!.monthRevenue), color: 'text-amber', icon: 'ðŸ“ˆ' },
         ].map(s => (
           <div key={s.label} className="card">
             <div className="text-2xl mb-2">{s.icon}</div>
@@ -312,7 +312,7 @@ export default function DashboardPage() {
       {/* AI Alert Card */}
       {aiAlerts.length > 0 && (
         <div className="card border-amber/30 bg-amber/5">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-amber mb-3">🤖 AI Alerts</h2>
+          <h2 className="text-sm font-bold uppercase tracking-wider text-amber mb-3">ðŸ¤– AI Alerts</h2>
           <div className="space-y-3">
             {aiAlerts.map(alert => (
               <div key={alert.id} className="flex items-start justify-between gap-3 bg-bg-card border border-border rounded-lg p-3">
@@ -339,9 +339,9 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="card">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-2">
-            <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary">🧠 AI Business Insights</h2>
+            <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary">ðŸ§  AI Business Insights</h2>
             <button className="btn btn-primary btn-sm" onClick={generateInsight} disabled={insightLoading}>
-              {insightLoading ? 'Analyzing…' : 'Generate Insight'}
+              {insightLoading ? 'Analyzingâ€¦' : 'Generate Insight'}
             </button>
           </div>
           {aiInsight ? (
@@ -353,7 +353,7 @@ export default function DashboardPage() {
 
         {isSlowDay && (
           <div className="card border-amber/30 bg-amber/5">
-            <h2 className="text-sm font-bold uppercase tracking-wider text-amber mb-3">📣 Slow Day — Send Outreach?</h2>
+            <h2 className="text-sm font-bold uppercase tracking-wider text-amber mb-3">ðŸ“£ Slow Day â€” Send Outreach?</h2>
             <p className="text-sm text-text-muted mb-3">Only {stats!.openJobs} open jobs today. Reach out to customers who haven&apos;t visited in 60+ days.</p>
             <textarea
               className="form-textarea mb-3"
@@ -363,7 +363,7 @@ export default function DashboardPage() {
               onChange={e => setSlowDayMsg(e.target.value)}
             />
             <button className="btn btn-primary w-full" onClick={sendSlowDayOutreach} disabled={slowDaySending}>
-              {slowDaySending ? 'Sending…' : '🚀 Send Outreach SMS'}
+              {slowDaySending ? 'Sendingâ€¦' : 'ðŸš€ Send Outreach SMS'}
             </button>
             {slowDayResult && (
               <div className="mt-3 bg-green/10 border border-green/30 rounded-lg p-3 text-sm text-green">
@@ -400,7 +400,7 @@ export default function DashboardPage() {
             {stats!.recentMessages.length === 0 && <p className="text-text-muted text-sm">No messages yet</p>}
             {stats!.recentMessages.map((m: Record<string,unknown>) => (
               <div key={m.id as string} className={`flex items-start gap-3 p-3 rounded-lg ${!m.read && m.direction === 'inbound' ? 'bg-blue/5 border border-blue/20' : 'bg-bg-hover'}`}>
-                <span className="text-lg">{m.channel === 'sms' ? '💬' : '📧'}</span>
+                <span className="text-lg">{m.channel === 'sms' ? 'ðŸ’¬' : 'ðŸ“§'}</span>
                 <div className="flex-1 min-w-0">
                   <div className="text-xs font-semibold text-text-secondary">{m.direction === 'inbound' ? m.from_address as string : `To: ${m.to_address as string}`}</div>
                   <div className="text-sm truncate mt-0.5">{m.body as string}</div>
@@ -418,8 +418,8 @@ export default function DashboardPage() {
       {stats!.recentCalls.length > 0 && (
         <div className="card">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary">📞 Recent Calls</h2>
-            <Link href="/voicemail" className="text-xs text-blue hover:underline">View all →</Link>
+            <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary">ðŸ“ž Recent Calls</h2>
+            <Link href="/voicemail" className="text-xs text-blue hover:underline">View all â†’</Link>
           </div>
           <div className="space-y-3">
             {stats!.recentCalls.map((call: Record<string,unknown>) => {
@@ -428,7 +428,7 @@ export default function DashboardPage() {
               const summary = (call.summary as string) || ''
               return (
                 <div key={call.id as string} className={`flex items-start gap-3 p-3 rounded-lg border ${status === 'ringing' ? 'bg-amber/5 border-amber/30 animate-pulse' : status === 'active' ? 'bg-green/5 border-green/30' : 'bg-bg-hover border-border'}`}>
-                  <span className="text-lg shrink-0">{status === 'ringing' ? '📲' : status === 'active' ? '📞' : '📵'}</span>
+                  <span className="text-lg shrink-0">{status === 'ringing' ? 'ðŸ“²' : status === 'active' ? 'ðŸ“ž' : 'ðŸ“µ'}</span>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-semibold">{caller}</span>
@@ -447,7 +447,7 @@ export default function DashboardPage() {
       {/* Feature 18: Tech Performance Dashboard */}
       {techs.length > 0 && (
         <div className="card">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary mb-4">👨‍🔧 Technician Performance</h2>
+          <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary mb-4">ðŸ‘¨â€ðŸ”§ Technician Performance</h2>
           <div className="overflow-x-auto">
             <table className="data-table w-full">
               <thead>
@@ -471,3 +471,4 @@ export default function DashboardPage() {
     </div>
   )
 }
+
