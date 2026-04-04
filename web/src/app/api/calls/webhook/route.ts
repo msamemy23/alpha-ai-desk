@@ -99,11 +99,19 @@ export async function POST(req: NextRequest) {
   const payload   = body?.data?.payload    as Record<string, unknown>
   const callId    = payload?.call_control_id as string
 
-  // ── call.initiated — inbound call ringing ────────────────────────────────────
+  // ── call.initiated — inbound call ringing — write to DB IMMEDIATELY ──────────
   if (eventType === 'call.initiated') {
     const direction = payload?.direction as string
     if (direction === 'incoming') {
-      // Answer the call immediately
+      const from = (payload?.from as string) || 'unknown'
+      // Write to Supabase immediately so it appears live on the dashboard
+      await dbUpsert(callId, {
+        task:       `Inbound call from ${from}. Act as AI receptionist for Alpha International Auto Center.`,
+        status:     'ringing',
+        caller:     from,
+        started_at: Date.now(),
+      })
+      // Answer the call
       await telnyxPost(`/calls/${callId}/actions/answer`, {})
     }
     return NextResponse.json('OK')
@@ -113,10 +121,11 @@ export async function POST(req: NextRequest) {
   if (eventType === 'call.answered') {
     const from = (payload?.from as string) || 'unknown'
 
-    // Create record in Supabase (only columns that exist in the table)
+    // Update record — call is now active
     await dbUpsert(callId, {
       task:       `Inbound call from ${from}. Act as AI receptionist for Alpha International Auto Center.`,
       status:     'active',
+      caller:     from,
       started_at: Date.now(),
       greeted:    false,
       processing: true,
@@ -139,8 +148,7 @@ export async function POST(req: NextRequest) {
     // Generate greeting
     const greeting = await aiChat([{
       role:    'user',
-      content: `You are the receptionist for Alpha International Auto Center, an auto repair shop at 10710 S Main St, Houston TX 77025.
-A customer is calling. Write a SHORT warm greeting (1-2 sentences). Plain conversational speech only - no markdown, no asterisks, no quotes around the text.`,
+      content: `You are the receptionist for Alpha International Auto Center, an auto repair shop at 10710 S Main St, Houston TX 77025.\nA customer is calling. Write a SHORT warm greeting (1-2 sentences). Plain conversational speech only - no markdown, no asterisks, no quotes around the text.`,
     }], 60) || "Thank you for calling Alpha International Auto Center, how can I help you today?"
 
     await dbUpdate(callId, {
@@ -188,13 +196,7 @@ A customer is calling. Write a SHORT warm greeting (1-2 sentences). Plain conver
     transcript.push({ speaker: 'customer', text })
     await dbUpdate(callId, { transcript })
 
-    const system = `You are the AI phone receptionist for Alpha International Auto Center, an auto repair shop at 10710 S Main St, Houston TX 77025. Phone: (713) 663-6979. Hours: Mon-Fri 8am-6pm, Sat 9am-3pm.
-
-RULES:
-- Live phone call. Keep replies SHORT — 1-3 sentences max. Natural and friendly.
-- Help with: appointments, vehicle questions, pricing, directions, hours.
-- If caller wants to leave a message, acknowledge you will pass it along.
-- Speak like a real, warm human receptionist. Never say you are AI unless directly asked.`
+    const system = `You are the AI phone receptionist for Alpha International Auto Center, an auto repair shop at 10710 S Main St, Houston TX 77025. Phone: (713) 663-6979. Hours: Mon-Fri 8am-6pm, Sat 9am-3pm.\n\nRULES:\n- Live phone call. Keep replies SHORT — 1-3 sentences max. Natural and friendly.\n- Help with: appointments, vehicle questions, pricing, directions, hours.\n- If caller wants to leave a message, acknowledge you will pass it along.\n- Speak like a real, warm human receptionist. Never say you are AI unless directly asked.`
 
     const messages = [
       { role: 'system', content: system },

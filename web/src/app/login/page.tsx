@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 import { useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
@@ -65,13 +65,22 @@ export default function LoginPage() {
   }
 
   const handleGoogle = async () => {
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: {
-        redirectTo: `${window.location.origin}/auth/callback`
-      }
-    })
-    if (error) setError(error.message)
+    const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron
+    if (isElectron) {
+      // In Electron: navigate main window directly to OAuth URL - avoids Google blocking embedded browsers
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: `${window.location.origin}/auth/callback`, skipBrowserRedirect: true }
+      })
+      if (error) { setError(error.message); return }
+      if (data?.url) window.location.href = data.url
+    } else {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: `${window.location.origin}/auth/callback` }
+      })
+      if (error) setError(error.message)
+    }
   }
 
   const inputStyle: React.CSSProperties = {
@@ -109,7 +118,7 @@ export default function LoginPage() {
             border: '1px solid rgba(245,158,11,0.3)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: '28px', margin: '0 auto 16px'
-          }}>🔧</div>
+          }}>ðŸ”§</div>
           <h1 style={{ color: '#f59e0b', fontSize: '22px', fontWeight: '700', margin: '0 0 6px', letterSpacing: '-0.3px' }}>
             Alpha Desktop AI
           </h1>
@@ -166,7 +175,7 @@ export default function LoginPage() {
             <div style={{ marginBottom: '20px' }}>
               <label style={{ display: 'block', color: '#9ca3af', fontSize: '13px', fontWeight: '500', marginBottom: '6px' }}>Password</label>
               <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-                placeholder="••••••••" required style={inputStyle}
+                placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢" required style={inputStyle}
                 onFocus={e => (e.target.style.borderColor = 'rgba(245,158,11,0.5)')}
                 onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.1)')} />
             </div>
@@ -192,7 +201,7 @@ export default function LoginPage() {
             fontSize: '15px', fontWeight: '700',
             cursor: loading ? 'not-allowed' : 'pointer', transition: 'all 0.2s'
           }}>
-            {loading ? 'Please wait…' : mode === 'login' ? 'Sign In' : mode === 'signup' ? 'Create Account' : 'Send Reset Link'}
+            {loading ? 'Please waitâ€¦' : mode === 'login' ? 'Sign In' : mode === 'signup' ? 'Create Account' : 'Send Reset Link'}
           </button>
         </form>
 

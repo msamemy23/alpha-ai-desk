@@ -21,6 +21,7 @@ interface Stats {
   allDocs: Record<string, unknown>[]
   staleJobs: Record<string, unknown>[]
   overdueInvoices: Record<string, unknown>[]
+  recentCalls: Record<string, unknown>[]
 }
 
 export default function DashboardPage() {
@@ -55,11 +56,12 @@ export default function DashboardPage() {
   const load = useCallback(async () => {
     const shopId = await getShopId()
 
-    const [{ data: jobs }, { data: docs }, { data: customers }, { data: messages }] = await Promise.all([
+    const [{ data: jobs }, { data: docs }, { data: customers }, { data: messages }, { data: calls }] = await Promise.all([
       supabase.from('jobs').select('*').eq('shop_id', shopId ?? '').order('created_at', { ascending: false }),
       supabase.from('documents').select('*').eq('shop_id', shopId ?? '').order('created_at', { ascending: false }),
       supabase.from('customers').select('id').eq('shop_id', shopId ?? ''),
       supabase.from('messages').select('*').eq('shop_id', shopId ?? '').order('created_at', { ascending: false }).limit(5),
+      supabase.from('ai_calls').select('*').eq('shop_id', shopId ?? '').order('started_at', { ascending: false }).limit(5),
     ])
 
     const openJobs = (jobs || []).filter((j: Record<string,unknown>) => !['Paid','Closed'].includes(j.status as string)).length
@@ -102,6 +104,7 @@ export default function DashboardPage() {
       staleJobs,
       overdueInvoices,
       chartDays,
+      recentCalls: (calls || []) as Record<string,unknown>[],
     })
     setLoading(false)
   }, [])
@@ -112,6 +115,7 @@ export default function DashboardPage() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs' }, () => load())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'documents' }, () => load())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, () => load())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ai_calls' }, () => load())
       .subscribe()
     return () => { supabase.removeChannel(channel) }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -187,6 +191,12 @@ export default function DashboardPage() {
     'Ready for Pickup': 'bg-green', 'Waiting on Parts': 'bg-amber', 'Paid': 'bg-bg-hover', 'Closed': 'bg-bg-hover'
   }
 
+  const CALL_STATUS_COLOR: Record<string,string> = {
+    'ringing': 'text-amber',
+    'active':  'text-green',
+    'ended':   'text-text-muted',
+  }
+
   const techMap: Record<string, { jobs: number; hours: number; revenue: number }> = {}
   stats!.allJobs.forEach(j => {
     const labors = (j.labors as Record<string,unknown>[]) || []
@@ -204,6 +214,21 @@ export default function DashboardPage() {
   const isSlowDay = stats!.openJobs < 3
   const shopName = shopProfile?.shop_name || 'Alpha International Auto Center'
   const hasProfile = profileLoaded && shopProfile && shopProfile.shop_name
+
+  // Helper: extract caller number from task string or caller field
+  const getCallerDisplay = (call: Record<string,unknown>) => {
+    if (call.caller) return call.caller as string
+    const task = (call.task as string) || ''
+    const match = task.match(/Inbound call from ([^\s.]+)/)
+    return match ? match[1] : 'Unknown'
+  }
+
+  const formatCallTime = (call: Record<string,unknown>) => {
+    const ts = call.started_at as number
+    if (!ts) return ''
+    const d = new Date(ts)
+    return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
+  }
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-6 lg:space-y-8 animate-fade-in">
@@ -388,6 +413,36 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {/* Live Calls */}
+      {stats!.recentCalls.length > 0 && (
+        <div className="card">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary">📞 Recent Calls</h2>
+            <Link href="/voicemail" className="text-xs text-blue hover:underline">View all →</Link>
+          </div>
+          <div className="space-y-3">
+            {stats!.recentCalls.map((call: Record<string,unknown>) => {
+              const status = (call.status as string) || 'ended'
+              const caller = getCallerDisplay(call)
+              const summary = (call.summary as string) || ''
+              return (
+                <div key={call.id as string} className={`flex items-start gap-3 p-3 rounded-lg border ${status === 'ringing' ? 'bg-amber/5 border-amber/30 animate-pulse' : status === 'active' ? 'bg-green/5 border-green/30' : 'bg-bg-hover border-border'}`}>
+                  <span className="text-lg shrink-0">{status === 'ringing' ? '📲' : status === 'active' ? '📞' : '📵'}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold">{caller}</span>
+                      <span className={`text-xs font-bold uppercase ${CALL_STATUS_COLOR[status] || 'text-text-muted'}`}>{status}</span>
+                    </div>
+                    <div className="text-xs text-text-muted mt-0.5">{formatCallTime(call)}</div>
+                    {summary && <div className="text-xs text-text-muted mt-1 truncate">{summary}</div>}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Feature 18: Tech Performance Dashboard */}
       {techs.length > 0 && (
