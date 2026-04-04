@@ -32,7 +32,6 @@ function getCallerDisplay(call: AiCall): string {
 
 function getOutboundTarget(call: AiCall): string {
   const task = call.task || ''
-  // Extract name from task if it mentions someone
   const nameMatch = task.match(/(?:with|call|ask|check.*with|calling)\s+([A-Z][a-z]+(?: [A-Z][a-z]+)?)/i)
   if (nameMatch) return nameMatch[1]
   return task.slice(0, 50) || 'AI Call'
@@ -75,7 +74,6 @@ export default function VoicemailPage() {
   const [tab, setTab] = useState<'inbound' | 'outbound'>('inbound')
 
   const load = useCallback(async () => {
-    // No shop_id filter — ai_calls webhooks don't set shop_id, all calls belong to this shop
     const { data } = await supabase
       .from('ai_calls')
       .select('*')
@@ -109,7 +107,6 @@ export default function VoicemailPage() {
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-6 animate-fade-in">
-      {/* Header */}
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-amber">AI Calls & Voicemail</h1>
@@ -121,7 +118,6 @@ export default function VoicemailPage() {
         </div>
       </div>
 
-      {/* Active / Ringing Calls — always shown regardless of tab */}
       {activeCalls.length > 0 && (
         <div className="card border-green/40 bg-green/5">
           <h2 className="text-sm font-bold uppercase tracking-wider text-green mb-4 flex items-center gap-2">
@@ -154,7 +150,6 @@ export default function VoicemailPage() {
         </div>
       )}
 
-      {/* Tabs */}
       <div className="flex gap-4 border-b border-border">
         <button
           className={`pb-2 px-1 text-sm font-semibold border-b-2 transition-colors ${tab === 'inbound' ? 'border-amber text-amber' : 'border-transparent text-text-muted hover:text-text-primary'}`}
@@ -170,7 +165,6 @@ export default function VoicemailPage() {
         </button>
       </div>
 
-      {/* Call List */}
       <div>
         {loading && <p className="text-text-muted text-sm animate-pulse">Loading calls…</p>}
 
@@ -183,7 +177,7 @@ export default function VoicemailPage() {
             <p className="text-text-muted text-sm">
               {tab === 'inbound'
                 ? 'When someone calls (713) 663-6979, it appears here instantly with live transcript.'
-                : 'Use Alpha AI to make outbound calls — they\'ll appear here with full transcripts.'}
+                : "Use Alpha AI to make outbound calls — they'll appear here with full transcripts."}
             </p>
           </div>
         )}
@@ -254,7 +248,6 @@ export default function VoicemailPage() {
                   </div>
                 </div>
 
-                {/* Expanded: full transcript */}
                 {isOpen && transcript.length > 0 && (
                   <div className="mt-4 border-t border-border pt-4 space-y-3">
                     <p className="text-xs font-semibold text-text-muted uppercase tracking-wider">Full Transcript</p>
@@ -292,7 +285,6 @@ export default function VoicemailPage() {
         </div>
       </div>
 
-      {/* How it works */}
       <div className="card border-border bg-bg-hover/30 text-sm">
         <h2 className="text-xs font-bold uppercase tracking-wider text-text-muted mb-3">How Live Call Tracking Works</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-text-muted">
