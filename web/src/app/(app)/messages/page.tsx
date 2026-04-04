@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { supabase, markMessageRead } from '@/lib/supabase'
 
@@ -31,7 +31,7 @@ interface Message {
 interface Thread { contact: string; messages: Message[]; unread: number; lastMsg: Message }
 interface Customer { id: string; name: string; phone: string; email: string }
 
-const SHOP_NUM = '+17136636979'
+// SHOP_NUM is now fetched dynamically from settings (see useEffect below)
 
 function formatPhone(p: string) {
   if (!p) return ''
@@ -82,6 +82,7 @@ function DirectionBadge({ dir }: { dir: string }) {
 
 export default function MessagesPage() {
   const [tab, setTab] = useState<'calls'|'sms'>('calls')
+  const [shopPhone, setShopPhone] = useState('+17136636979') // default until settings load
   const [calls, setCalls] = useState<CallRecord[]>([])
   const [messages, setMessages] = useState<Message[]>([])
   const [customers, setCustomers] = useState<Customer[]>([])
@@ -108,7 +109,7 @@ export default function MessagesPage() {
       .order('start_time', { ascending: false })
       .limit(1500)
 
-    // ALSO load directly from ai_calls — catches new inbound calls before cron syncs them
+    // ALSO load directly from ai_calls â€” catches new inbound calls before cron syncs them
     const { data: aiData } = await supabase
       .from('ai_calls')
       .select('id, task, status, started_at, transcript, summary, recording_url')
@@ -126,8 +127,8 @@ export default function MessagesPage() {
       return {
         id: `ai-${a.id}`, call_id: `ai-${a.id}`,
         direction: isInbound ? 'inbound' : 'outbound',
-        from_number: isInbound ? (fromMatch?.[1] || '') : '+17136636979',
-        to_number: isInbound ? '+17136636979' : '',
+        from_number: isInbound ? (fromMatch?.[1] || '') : shopPhone,
+        to_number: isInbound ? shopPhone : '',
         duration_secs: 0, status: a.status,
         start_time: isNaN(ts.getTime()) ? new Date().toISOString() : ts.toISOString(),
         end_time: '', matched_customer_name: null, transcript: txText,
@@ -160,6 +161,10 @@ export default function MessagesPage() {
 
   useEffect(() => {
     setLoading(true)
+    // Fetch shop phone from settings
+    supabase.from('settings').select('shop_phone').limit(1).single().then(({ data }) => {
+      if (data?.shop_phone) setShopPhone(data.shop_phone.startsWith('+') ? data.shop_phone : '+1' + data.shop_phone.replace(/\D/g, ''))
+    })
     Promise.all([loadCalls(), loadMessages(), loadCustomers()]).finally(() => setLoading(false))
 
     // Background sync: pull latest Telnyx recordings into call_history (fire and forget)
@@ -273,7 +278,7 @@ export default function MessagesPage() {
     })
   }
 
-  // ─── RENDER ───
+  // â”€â”€â”€ RENDER â”€â”€â”€
   return (
     <div className="p-6 max-w-[1400px] mx-auto">
       <audio ref={audioRef} onEnded={() => setPlaying(false)} className="hidden" />
@@ -317,7 +322,7 @@ export default function MessagesPage() {
       {loading ? <div className="text-center py-20 text-gray-400">Loading...</div> : (
         <div className="flex gap-4" style={{ minHeight: '70vh' }}>
 
-          {/* ─── LEFT: List ─── */}
+          {/* â”€â”€â”€ LEFT: List â”€â”€â”€ */}
           <div className={`${selectedCall || selectedThread ? 'w-1/2' : 'w-full'} transition-all`}>
 
             {tab === 'calls' && (
@@ -396,7 +401,7 @@ export default function MessagesPage() {
 
           </div>
 
-          {/* ─── RIGHT: Detail Panel ─── */}
+          {/* â”€â”€â”€ RIGHT: Detail Panel â”€â”€â”€ */}
           {selectedCall && (
             <div className="w-1/2 bg-white/5 rounded-xl p-5 overflow-y-auto max-h-[80vh] border border-white/10">
               <div className="flex items-center justify-between mb-4">
@@ -482,7 +487,7 @@ export default function MessagesPage() {
                 <div className="mb-5">
                   <div className="text-sm font-semibold mb-2">Transcript</div>
                   <div className="bg-black/30 rounded-lg p-4 text-sm text-gray-500 italic">
-                    {selectedCall.transcript === '[transcription_failed]' ? 'Recording expired — transcription unavailable' : 'Pending transcription...'}
+                    {selectedCall.transcript === '[transcription_failed]' ? 'Recording expired â€” transcription unavailable' : 'Pending transcription...'}
                   </div>
                 </div>
               )}
@@ -596,4 +601,5 @@ export default function MessagesPage() {
     </div>
   )
 }
+
 

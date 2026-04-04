@@ -666,12 +666,25 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
 
   useEffect(() => {
     const loadContext = async () => {
-      const [{ data: jobs }, { data: customers }, { data: msgs }] = await Promise.all([
+      const [{ data: jobs }, { data: customers }, { data: msgs }, { data: settings }] = await Promise.all([
         supabase.from('jobs').select('customer_name,concern,status').not('status','in','("Paid","Closed")').limit(10),
         supabase.from('customers').select('id,name').order('created_at',{ascending:false}).limit(5),
         supabase.from('messages').select('from_address,body,direction').order('created_at',{ascending:false}).limit(5),
+        supabase.from('settings').select('shop_name,shop_address,shop_phone,labor_rate,tax_rate,payment_methods').limit(1).single(),
       ])
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const s = settings as any
+      const shopInfoOverride = s ? [
+        `SHOP INFO (use these exact values, overriding any defaults):`,
+        `- Name: ${s.shop_name || 'Alpha International Auto Center'}`,
+        `- Address: ${s.shop_address || '10710 S Main St, Houston TX 77025'}`,
+        `- Phone: ${s.shop_phone || '(713) 663-6979'}`,
+        `- Labor Rate: $${s.labor_rate || 120}/hr`,
+        `- Tax Rate: ${s.tax_rate || 8.25}%`,
+        s.payment_methods?.length ? `- Payment: ${Array.isArray(s.payment_methods) ? s.payment_methods.join(', ') : s.payment_methods}` : '',
+      ].filter(Boolean).join('\n') : ''
       const ctx = [
+        shopInfoOverride,
         jobs?.length ? `Open jobs: ${jobs.map((j:Record<string,string>)=>`${j.customer_name}: ${j.status}`).join(', ')}` : '',
         customers?.length ? `Recent customers: ${customers.map((c:Record<string,string>)=>c.name).join(', ')}` : '',
         msgs?.length ? `Recent messages: ${msgs.filter((m:Record<string,string>)=>m.direction==='inbound').slice(0,3).map((m:Record<string,string>)=>`"${(m.body||'').slice(0,60)}"`).join('; ')}` : '',

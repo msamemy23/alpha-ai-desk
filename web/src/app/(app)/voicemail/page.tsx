@@ -1,13 +1,13 @@
-'use client'
+﻿'use client'
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 
 const SB_URL = 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-// Publishable anon key — goes in apikey header to identify the project
+// Publishable anon key â€” goes in apikey header to identify the project
 const SB_ANON = 'sb_publishable_EwRdKR6toaGlqbtoqQVbzw_nhXJwa8h'
 
 // Build fetch headers: anon key identifies project, user JWT authorizes the request.
-// Reading directly from localStorage bypasses GoTrue's lock — instant, no 5s delays.
+// Reading directly from localStorage bypasses GoTrue's lock â€” instant, no 5s delays.
 function buildHeaders(): Record<string, string> {
   const base = { apikey: SB_ANON, Accept: 'application/json', 'Content-Type': 'application/json' }
   try {
@@ -17,7 +17,7 @@ function buildHeaders(): Record<string, string> {
       if (token) return { ...base, Authorization: `Bearer ${token}` }
     }
   } catch {}
-  // Unauthenticated fallback (anon role — RLS may restrict results)
+  // Unauthenticated fallback (anon role â€” RLS may restrict results)
   return { ...base, Authorization: `Bearer ${SB_ANON}` }
 }
 
@@ -126,13 +126,14 @@ export default function VoicemailPage() {
   const [calls, setCalls] = useState<AiCall[]>([])
   const [callHistory, setCallHistory] = useState<CallRecord[]>([])
   const [loading, setLoading] = useState(true)
+  const [shopPhone, setShopPhone] = useState('(713) 663-6979')
   const [expanded, setExpanded] = useState<string | null>(null)
   const [tab, setTab] = useState<'inbound' | 'outbound' | 'history'>('history')
   const [histPage, setHistPage] = useState(0)
   const HIST_PAGE_SIZE = 50
 
   // Raw fetch: anon key as apikey, user JWT as Authorization.
-  // This bypasses GoTrue's localStorage lock — no 5000ms delays ever.
+  // This bypasses GoTrue's localStorage lock â€” no 5000ms delays ever.
   const load = useCallback(async () => {
     try {
       const headers = buildHeaders()
@@ -257,7 +258,7 @@ export default function VoicemailPage() {
           {callHistory.length === 0 && (
             <div className="card text-center py-12">
               <p className="font-semibold mb-1">No inbound calls recorded yet</p>
-              <p className="text-text-muted text-sm">When someone calls (713) 663-6979, it appears here instantly.</p>
+              <p className="text-text-muted text-sm">When someone calls {shopPhone}, it appears here instantly.</p>
             </div>
           )}
 
@@ -442,7 +443,7 @@ export default function VoicemailPage() {
       <div className="card border-border bg-bg-hover/30 text-sm">
         <h2 className="text-xs font-bold uppercase tracking-wider text-text-muted mb-3">How It Works</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-text-muted text-xs">
-          <div>Inbound Calls -- every call to (713) 663-6979 with recording. Click Listen to hear it.</div>
+          <div>Inbound Calls -- every call to {shopPhone} with recording. Click Listen to hear it.</div>
           <div>AI Inbound -- calls where AI answered and built a transcript.</div>
           <div>AI Outbound -- calls you initiated via Alpha AI, with full transcript and summary.</div>
           <div>Live -- new calls appear instantly via real-time connection.</div>
@@ -451,3 +452,4 @@ export default function VoicemailPage() {
     </div>
   )
 }
+
