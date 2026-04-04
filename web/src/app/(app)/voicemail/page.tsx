@@ -2,6 +2,11 @@
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 
+// Direct REST constants — bypass GoTrue auth lock for instant loading
+const SB_URL = 'https://fztnsqrhjesqcnsszqdb.supabase.co'
+const SB_KEY = 'sb_publishable_EwRdKR6toaGlqbtoqQVbzw_nhXJwa8h'
+const SB_HEADERS = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, Accept: 'application/json' }
+
 interface AiCall {
   id: string
   task: string
@@ -112,31 +117,33 @@ export default function VoicemailPage() {
   const [histPage, setHistPage] = useState(0)
   const HIST_PAGE_SIZE = 50
 
+  // Use raw fetch — bypasses Supabase GoTrue auth lock that causes infinite loading
   const load = useCallback(async () => {
-    const { data } = await supabase
-      .from('ai_calls')
-      .select('*')
-      .not('status', 'in', '("testing","test")')
-      .not('task', 'eq', 'test')
-      .not('task', 'eq', 'test insert permissions')
-      .order('started_at', { ascending: false, nullsFirst: false })
-      .limit(200)
-    setCalls((data as AiCall[]) || [])
-
-    const { data: histData } = await supabase
-      .from('call_history')
-      .select('*')
-      .eq('direction', 'inbound')
-      .order('start_time', { ascending: false })
-      .limit(500)
-    setCallHistory((histData as CallRecord[]) || [])
-
+    try {
+      const [r1, r2] = await Promise.all([
+        fetch(
+          `${SB_URL}/rest/v1/ai_calls?status=not.in.(testing,test)&task=not.eq.test&task=not.eq.test%20insert%20permissions&order=started_at.desc.nullslast&limit=200`,
+          { headers: SB_HEADERS }
+        ),
+        fetch(
+          `${SB_URL}/rest/v1/call_history?direction=eq.inbound&order=start_time.desc&limit=500`,
+          { headers: SB_HEADERS }
+        ),
+      ])
+      const aiData = r1.ok ? await r1.json() : []
+      const histData = r2.ok ? await r2.json() : []
+      setCalls(Array.isArray(aiData) ? aiData : [])
+      setCallHistory(Array.isArray(histData) ? histData : [])
+    } catch (e) {
+      console.error('[voicemail] load error', e)
+    }
     setLoading(false)
   }, [])
 
   useEffect(() => {
     load()
-    const channel = supabase.channel('voicemail-v5')
+    // Realtime subscription via Supabase client
+    const channel = supabase.channel('voicemail-v6')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ai_calls' }, () => load())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'call_history' }, () => load())
       .subscribe()
