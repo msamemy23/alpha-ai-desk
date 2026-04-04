@@ -1,6 +1,25 @@
 'use client'
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+
+const SB_URL = 'https://fztnsqrhjesqcnsszqdb.supabase.co'
+// Publishable anon key — goes in apikey header to identify the project
+const SB_ANON = 'sb_publishable_EwRdKR6toaGlqbtoqQVbzw_nhXJwa8h'
+
+// Build fetch headers: anon key identifies project, user JWT authorizes the request.
+// Reading directly from localStorage bypasses GoTrue's lock — instant, no 5s delays.
+function buildHeaders(): Record<string, string> {
+  const base = { apikey: SB_ANON, Accept: 'application/json', 'Content-Type': 'application/json' }
+  try {
+    const raw = localStorage.getItem('sb-fztnsqrhjesqcnsszqdb-auth-token')
+    if (raw) {
+      const token = JSON.parse(raw)?.access_token
+      if (token) return { ...base, Authorization: `Bearer ${token}` }
+    }
+  } catch {}
+  // Unauthenticated fallback (anon role — RLS may restrict results)
+  return { ...base, Authorization: `Bearer ${SB_ANON}` }
+}
 
 interface AiCall {
   id: string
@@ -111,45 +130,40 @@ export default function VoicemailPage() {
   const [tab, setTab] = useState<'inbound' | 'outbound' | 'history'>('history')
   const [histPage, setHistPage] = useState(0)
   const HIST_PAGE_SIZE = 50
-  const loadingRef = useRef(false)
 
+  // Raw fetch: anon key as apikey, user JWT as Authorization.
+  // This bypasses GoTrue's localStorage lock — no 5000ms delays ever.
   const load = useCallback(async () => {
-    if (loadingRef.current) return
-    loadingRef.current = true
     try {
+      const headers = buildHeaders()
       const [r1, r2] = await Promise.all([
-        supabase
-          .from('ai_calls')
-          .select('id,task,caller,status,started_at,transcript,summary,recording_url,read')
-          .not('status', 'in', '("testing","test")')
-          .neq('task', 'test')
-          .neq('task', 'test insert permissions')
-          .order('started_at', { ascending: false, nullsFirst: false })
-          .limit(200),
-        supabase
-          .from('call_history')
-          .select('id,call_id,direction,from_number,to_number,duration_secs,status,start_time,matched_customer_name,raw_data')
-          .eq('direction', 'inbound')
-          .order('start_time', { ascending: false })
-          .limit(500),
+        fetch(
+          `${SB_URL}/rest/v1/ai_calls?status=not.in.(testing,test)&task=not.eq.test&task=not.eq.test%20insert%20permissions&order=started_at.desc.nullslast&limit=200`,
+          { headers }
+        ),
+        fetch(
+          `${SB_URL}/rest/v1/call_history?direction=eq.inbound&order=start_time.desc&limit=500`,
+          { headers }
+        ),
       ])
-      if (r1.data) setCalls(r1.data)
-      if (r2.data) setCallHistory(r2.data)
+      const aiData = r1.ok ? await r1.json() : []
+      const histData = r2.ok ? await r2.json() : []
+      setCalls(Array.isArray(aiData) ? aiData : [])
+      setCallHistory(Array.isArray(histData) ? histData : [])
     } catch (e) {
       console.error('[voicemail] load error', e)
     }
-    loadingRef.current = false
     setLoading(false)
   }, [])
 
   useEffect(() => {
-    // Safety net: force stop loading after 8 seconds no matter what
+    // Safety net: never stuck at "Loading calls..." forever
     const timeout = setTimeout(() => setLoading(false), 8000)
 
     load().finally(() => clearTimeout(timeout))
 
     // Realtime: page updates the instant new calls come in
-    const channel = supabase.channel('voicemail-v8')
+    const channel = supabase.channel('voicemail-v9')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ai_calls' }, () => load())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'call_history' }, () => load())
       .subscribe()
