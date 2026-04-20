@@ -252,7 +252,19 @@ export default function JobsPage() {
                       <td className="text-text-muted text-sm">{[j.vehicle_year,j.vehicle_make,j.vehicle_model].filter(Boolean).join(' ')||'—'}</td>
                       <td className="text-text-muted max-w-xs truncate text-sm">{j.concern||'—'}</td>
                       <td className="text-text-muted text-sm">{j.tech||'—'}</td>
-                      <td><span className={`tag ${STATUS_COLOR[j.status]||'tag-gray'}`}>{j.status}</span></td>
+                      <td>
+                        <div className="flex items-center gap-2">
+                          <span className={`tag ${STATUS_COLOR[j.status]||'tag-gray'}`}>{j.status}</span>
+                          {j.status !== 'Paid' && j.status !== 'Closed' && (
+                            <button
+                              className="btn btn-sm"
+                              style={{background:'#16a34a',color:'white',fontSize:'11px',padding:'3px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}}
+                              onClick={async (e) => { e.stopPropagation(); await supabase.from('jobs').update({ status: 'Paid', updated_at: new Date().toISOString() }).eq('id', j.id); await load() }}
+                              title="Mark job as Paid"
+                            >💰 Paid</button>
+                          )}
+                        </div>
+                      </td>
                       <td className={`text-sm ${j.promise_date&&new Date(j.promise_date)<new Date()&&!['Paid','Closed','Completed'].includes(j.status)?'text-red font-semibold':'text-text-muted'}`}>{fmt(j.promise_date)}</td>
                     </tr>
                   ))}
