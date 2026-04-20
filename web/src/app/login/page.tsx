@@ -1,11 +1,6 @@
 ﻿'use client'
 import { useState } from 'react'
-import { createClient } from '@supabase/supabase-js'
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co',
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ6dG5zcXJoamVzcWNuc3N6cWRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMwMTM3MDIsImV4cCI6MjA1ODU4OTcwMn0.4_MNwSmqTU_dlPWtqY9HGqFlrxL_50y0_C1e3KeQ4Fo'
-)
+import { supabase } from '@/lib/supabase'
 
 function setCookie(name: string, value: string, days = 30) {
   const expires = new Date(Date.now() + days * 864e5).toUTCString()
@@ -28,14 +23,35 @@ export default function LoginPage() {
     setMessage('')
     try {
       if (mode === 'login') {
-        const { error } = await supabase.auth.signInWithPassword({ email, password })
-        if (error) throw error
+        const { error } = await supabase.auth.signInWithPassword({
+          email: email.trim().toLowerCase(),
+          password,
+        })
+        if (error) {
+          if (error.message.includes('Invalid login credentials') || error.message.includes('invalid_credentials')) {
+            throw new Error('Incorrect email or password. If you signed up with Google, use the "Continue with Google" button instead.')
+          }
+          if (error.message.includes('Email not confirmed')) {
+            throw new Error('Please confirm your email before signing in. Check your inbox for a confirmation link.')
+          }
+          throw error
+        }
         setCookie('alpha_authed', 'true')
         window.location.href = '/dashboard'
       } else if (mode === 'signup') {
-        const { data, error } = await supabase.auth.signUp({ email, password })
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim().toLowerCase(),
+          password,
+        })
         if (error) throw error
-        // Create shop_profiles row for the new user
+        // If email confirmation is required, session will be null — tell user to confirm first.
+        if (!data.session) {
+          setMessage('Account created! Check your email for a confirmation link, then sign in.')
+          setMode('login')
+          setLoading(false)
+          return
+        }
+        // Session exists → create shop_profiles row (RLS allows it now)
         if (data.user) {
           await supabase.from('shop_profiles').insert({
             user_id: data.user.id,

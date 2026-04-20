@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
-const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '1736123851-r05fmhp9eb9pv7cn3t7joihcdjf1tl0m.apps.googleusercontent.com'
+const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || ''
 const CALLBACK  = 'https://alpha-ai-desk.vercel.app/api/auth/google/callback'
 
 const SCOPES = [
@@ -13,6 +13,11 @@ const SCOPES = [
 
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl
+  if (!CLIENT_ID) {
+    return NextResponse.redirect(
+      `https://alpha-ai-desk.vercel.app/connectors?error=google_not_configured&detail=${encodeURIComponent('Set GOOGLE_CLIENT_ID in Vercel env')}`
+    )
+  }
   // optional ?scope=calendar or ?scope=business to restrict
   const url =
     `https://accounts.google.com/o/oauth2/v2/auth` +

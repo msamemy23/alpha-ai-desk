@@ -199,7 +199,7 @@ GENERAL PROVISIONS: Should any tampering or alteration to the warranted repair o
 function getStatuses(type: string) {
   if (type === 'Receipt') return ['Draft','Paid']
   if (type === 'Invoice') return ['Draft','Sent','Unpaid','Partial','Paid']
-  return ['Draft','Sent','Approved']
+  return ['Draft','Sent','Approved','Paid']
 }
 
 export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Receipt' }) {

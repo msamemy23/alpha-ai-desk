@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
     .select('*, documents(*)')
     .eq('token', token)
     .single()
-  if (error || !sig) return NextResponse.json({ error: 'Invalid or expired link' }, { status: 404 })
+  if (error || !sig) return NextResponse.json({ error: 'This signing link is invalid.' }, { status: 404 })
   if (sig.signed_at)
     return NextResponse.json({ already_signed: true, signed_at: sig.signed_at, signer_name: sig.signer_name })
   if (sig.expires_at && new Date(sig.expires_at) < new Date()) {
@@ -42,12 +42,13 @@ export async function POST(req: NextRequest) {
     }
     if (!email) return NextResponse.json({ error: 'No email address on file for this customer' }, { status: 400 })
 
-    // Deactivate any existing unsigned tokens for this doc
-    await db.from('signatures').update({ expires_at: new Date().toISOString() })
-      .eq('document_id', documentId).is('signed_at', null)
+    // Previously this deactivated ALL prior unsigned tokens for the doc, which
+    // caused customers who clicked an earlier email (from a resend) to see
+    // "link expired". Multiple valid tokens for the same document are fine —
+    // whichever the customer clicks marks the document signed.
 
     const token = crypto.randomUUID()
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
     const { error: insertErr } = await db.from('signatures').insert({
       token,
       document_id: documentId,
@@ -82,7 +83,7 @@ export async function POST(req: NextRequest) {
     <p style="text-align:center;margin:24px 0">
       <a href="${signUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:14px 32px;border-radius:6px;font-size:16px;font-weight:600">Review and Sign</a>
     </p>
-    <p style="font-size:12px;color:#888">This link expires in 7 days. Questions? Call us at ${settings?.shop_phone || ''}.</p>
+    <p style="font-size:12px;color:#888">Questions? Call us at ${settings?.shop_phone || ''}.</p>
   </div>
   <div style="border-top:1px solid #eee;padding:16px;text-align:center;font-size:12px;color:#888">${shopName} · ${settings?.shop_address || ''}</div>
 </div>
