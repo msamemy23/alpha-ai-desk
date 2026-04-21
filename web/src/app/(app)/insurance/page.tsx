@@ -114,7 +114,7 @@ export default function InsurancePage() {
     setClaimLoading(true)
     try {
       const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
-      const apiKey = (settings?.ai_api_key as string) || ''
+      const apiKey = (settings?.ai_api_key as string) || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || ''
       const model = (settings?.ai_model as string) || 'meta-llama/llama-3.3-70b-instruct:free'
       const baseUrl = (settings?.ai_base_url as string) || 'https://openrouter.ai/api/v1'
       if (!apiKey) { setClaimChat([...updated, { role: 'assistant', content: 'Please configure your AI API key in Settings first.' }]); return }

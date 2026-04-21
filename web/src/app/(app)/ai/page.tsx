@@ -886,7 +886,12 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       ? { role: 'user', content: fullContent, imageUrl: attachImageUrl }
       : userMsg
     const history2 = [...messages, msgForHistory]
-    await agentLoop(history2, features)
+    try {
+      await agentLoop(history2, features)
+    } catch (err) {
+      const errText = err instanceof Error ? err.message : 'Something went wrong'
+      setMessages(prev => [...prev, { role: 'assistant', content: `Ran into an issue: ${errText}. Try again.` }])
+    }
     setLoading(false)
     setStatus('')
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -937,9 +942,9 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       const hist = [...messages, userMsg]
 
       const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
-      const apiKey = settings?.ai_api_key
+      const apiKey = (settings?.ai_api_key as string) || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || ''
       if (!apiKey) {
-        setMessages(prev => [...prev, { role: 'assistant', content: 'No AI API key configured.' }])
+        setMessages(prev => [...prev, { role: 'assistant', content: 'No AI API key configured. Go to Settings > AI to add your OpenRouter key.' }])
         setLoading(false); return
       }
       setStatus('Analyzing image...')
@@ -976,7 +981,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     const agentLoop = async (history: ChatMessage[], featureFlags?: { search: boolean;  socialMedia: boolean; thinking: boolean }) => {
         const activeFeatures = featureFlags || { search: true, socialMedia: true, thinking: false }
     const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
-    const apiKey = settings?.ai_api_key
+    const apiKey = (settings?.ai_api_key as string) || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || ''
     if (!apiKey) {
       setMessages(prev => [...prev, { role: 'assistant', content: 'No AI API key configured. Go to Settings > AI to add your OpenRouter key.' }])
       return
@@ -988,9 +993,9 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     const agentMessages: {role: string; content: string}[] = history.map(m => ({ role: m.role, content: m.content }))
 
     for (let step = 0; step < 10; step++) {
-      const systemWithContext = SYSTEM_PROMPT + (isDesktop && features.desktopTools ? ('`n`n' + DESKTOP_TOOLS_PROMPT) : '') +
+      const systemWithContext = SYSTEM_PROMPT + (isDesktop && features.desktopTools ? ('\n\n' + DESKTOP_TOOLS_PROMPT) : '') +
         (shopContext ? `\n\nLive shop context:\n${shopContext}` : '') +
-        (accumulated.length ? `\n\nCompleted steps so far:\n${accumulated.join('\n')}` : '') + +
+        (accumulated.length ? `\n\nCompleted steps so far:\n${accumulated.join('\n')}` : '') +
           `\n\nCRITICAL INSTRUCTIONS:\n1. NEW INVOICE vs REPRINT: When user says "new invoice" or "I need a invoice for [item]", CREATE a NEW document using proposeDocument. Do NOT reprint or lookup old invoices. A "new invoice" means build a fresh one from scratch.\n2. UNDERSTAND SIMPLE REQUESTS: If the user gives you a customer name and says they need something, DO IT. Don't ask them to repeat. Example: "I need a new invoice for thermostat, $280 flat for Asheanna" = immediately create a invoice with those details, no tax, flat total.\n3. CUSTOMER SEARCH: When the user mentions a customer name, phone, or asks about a customer, ALWAYS use searchCustomers first (NOT createCustomer). Show matching results with name, phone, email, jobs. If no match, say so and ask before creating.\n4. NEVER LOOP: Give ONE clear response per turn. If you're unsure, ask ONE clarifying question. Never repeat yourself.\n5. FLAT RATE: When user says "flat" or "no tax", set tax to 0 and use the exact total they gave.\n6. customer search results: when searchcustomers returns results, always show all matching customers with their full details (name, phone, email, vehicles). the search now includes vehicle info from jobs. never show just one customer if multiple matches exist. present each customer clearly so the user can identify the right one.
 7. INVOICE TYPE: When user asks for an invoice, always use proposeDocument with type Invoice. Invoice = proof of payment received. Invoice = bill for work done. Estimate = quote before work. The type field in proposeDocument MUST match exactly what the user asked for.` +
                     `\n\nNATURAL LANGUAGE INTELLIGENCE � YOU ARE SMART, ACT LIKE IT:
@@ -1017,12 +1022,17 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       setStatus(step === 0 ? 'Thinking...' : 'Working...')
 
       const thinkStart = Date.now()
+      // Context overflow fix: keep only the last 30 messages to stay within model context limits.
+      // Always keep the first message (original user request) + last 29 for continuity.
+      const trimmedMsgs = agentMessages.length > 30
+        ? [agentMessages[0], ...agentMessages.slice(-29)]
+        : agentMessages
       const res = await fetch(`${settings?.ai_base_url || 'https://openrouter.ai/api/v1'}/chat/completions`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: settings?.ai_model || 'deepseek/deepseek-v3.2',
-          messages: [{ role: 'system', content: systemWithContext }, ...agentMessages],
+          messages: [{ role: 'system', content: systemWithContext }, ...trimmedMsgs],
           max_tokens: 1500,
           temperature: 0.2,
           frequency_penalty: 0.6,
@@ -1439,8 +1449,46 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         continue
       }
 
-if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; try { const r = await fetch('/api/automations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create', name: parsed.name || 'Scheduled Task', description: parsed.description || '', schedule: parsed.schedule, task_prompt: parsed.task_prompt }) }); const d = await r.json(); sr = d.ok ? `Scheduled "${d.data?.name}" at ${d.data?.schedule}` : `Failed: ${d.error}` } catch (e) { sr = `Error: ${e instanceof Error ? e.message : 'Unknown'}` } accumulated.push(`[scheduleTask]: ${sr}`); agentMessages.push({ role: 'assistant', content: raw }); agentMessages.push({ role: 'user', content: `Schedule result: ${sr}
-Continue silently.` }); continue }
+if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; try { const r = await fetch('/api/automations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create', name: parsed.name || 'Scheduled Task', description: parsed.description || '', schedule: parsed.schedule, task_prompt: parsed.task_prompt }) }); const d = await r.json(); sr = d.ok ? `Scheduled "${d.data?.name}" at ${d.data?.schedule}` : `Failed: ${d.error}` } catch (e) { sr = `Error: ${e instanceof Error ? e.message : 'Unknown'}` } accumulated.push(`[scheduleTask]: ${sr}`); agentMessages.push({ role: 'assistant', content: raw }); agentMessages.push({ role: 'user', content: `Schedule result: ${sr}\nContinue silently.` }); continue }
+
+      // -- Automation Control -----------------------------------------------
+      if (parsed.tool === 'automationControl') {
+        setStatus('Checking automations...')
+        let acResult = ''
+        try {
+          const acAction = parsed.action as string
+          if (acAction === 'status') {
+            const r = await fetch('/api/automations')
+            const d = await r.json()
+            acResult = d.ok ? `Automations: ${JSON.stringify((d.data || []).map((a: Record<string,unknown>) => ({ name: a.name, enabled: a.enabled, last_run: a.last_run }))).slice(0, 600)}` : `Failed: ${d.error}`
+          } else if (acAction === 'toggle') {
+            const r = await fetch('/api/automations', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'toggle', id: parsed.id, enabled: parsed.enabled }),
+            })
+            const d = await r.json()
+            acResult = d.ok ? `Automation ${parsed.enabled ? 'enabled' : 'disabled'}: ${d.data?.name || parsed.id}` : `Failed: ${d.error}`
+          } else if (acAction === 'run_now') {
+            const r = await fetch('/api/automations', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'run_now', id: parsed.id }),
+            })
+            const d = await r.json()
+            acResult = d.ok ? `Automation triggered: ${d.data?.name || parsed.id}` : `Failed: ${d.error}`
+          } else {
+            acResult = `Unknown automationControl action: ${acAction}`
+          }
+        } catch (err) {
+          acResult = `Error: ${err instanceof Error ? err.message : 'Unknown'}`
+        }
+        accumulated.push(`[automationControl.${parsed.action}]: ${acResult}`)
+        agentMessages.push({ role: 'assistant', content: raw })
+        agentMessages.push({ role: 'user', content: `Automation result: ${acResult}\n\nContinue silently.` })
+        setStatus('')
+        continue
+      }
 
       // -- DESKTOP TOOLS (Electron only) --------------------------------------
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
