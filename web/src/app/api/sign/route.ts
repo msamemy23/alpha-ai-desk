@@ -4,6 +4,102 @@ import { getServiceClient } from '@/lib/supabase'
 import { sendEmail } from '@/lib/email'
 import crypto from 'crypto'
 
+// ─────────────────────────────────────────────────────────────────────────────
+// normalizeDocForSigning
+// The shop editor persists documents using `parts[]` + `labors[]` (with
+// `unitPrice`, `qty`, `hours`, `rate`) and does NOT persist a top-level
+// `total` column — totals are computed on the fly by calcTotals() in
+// @/lib/supabase. The customer-facing sign page and sign emails, however,
+// read `doc.line_items[]` and `doc.total`. Without this normalizer the
+// customer sees "$0.00" and no line items. Mirrors calcTotals() exactly.
+// ─────────────────────────────────────────────────────────────────────────────
+function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & {
+  line_items: Array<{ description: string; qty: number; unit_price: number; unitPrice: number; total: number }>
+  total: number
+  parts_total: number
+  labor_total: number
+  tax_amount: number
+  balance_due: number
+} {
+  if (!doc) return doc as never
+  const parts = (doc.parts as Record<string, unknown>[]) || []
+  const labors = (doc.labors as Record<string, unknown>[]) || []
+  const taxRate = Number(doc.tax_rate) || 8.25
+  const applyTax = doc.apply_tax !== false
+  const shopSupplies = Number(doc.shop_supplies) || 0
+  const sublet = Number(doc.sublet) || 0
+  const deposit = Number(doc.deposit) || 0
+
+  const partsTotal = parts.reduce(
+    (s, p) => s + (Number(p.qty) || 1) * (Number(p.unitPrice) || 0),
+    0
+  )
+  const laborTotal = labors.reduce(
+    (s, l) => s + (Number(l.hours) || 0) * (Number(l.rate) || 0),
+    0
+  )
+  const taxableBase = applyTax
+    ? parts
+        .filter((p) => p.taxable !== false)
+        .reduce((s, p) => s + (Number(p.qty) || 1) * (Number(p.unitPrice) || 0), 0) +
+      shopSupplies +
+      sublet
+    : 0
+  const taxAmount = taxableBase * (taxRate / 100)
+  const subtotal = laborTotal + partsTotal + shopSupplies + sublet
+  // Prefer an explicitly persisted total if present and non-zero, otherwise compute.
+  const persistedTotal = Number(doc.total) || 0
+  const total = persistedTotal > 0 ? persistedTotal : subtotal + taxAmount
+  const balanceDue = Math.max(total - deposit, 0)
+
+  // Build line_items from parts + labors so the sign page renders rows.
+  // Keep any existing line_items if already populated.
+  const existingLineItems = (doc.line_items as unknown[]) || []
+  const built = [
+    ...parts.map((p) => {
+      const qty = Number(p.qty) || 1
+      const unitPrice = Number(p.unitPrice) || 0
+      return {
+        description: (p.name as string) || (p.description as string) || (p.brand ? `${p.brand} part` : 'Part'),
+        qty,
+        unit_price: unitPrice,
+        unitPrice,
+        total: qty * unitPrice,
+      }
+    }),
+    ...labors.map((l) => {
+      const hours = Number(l.hours) || 0
+      const rate = Number(l.rate) || 0
+      const opName = (l.operation as string) || (l.description as string) || 'Labor'
+      return {
+        description: `${opName} (${hours}h @ $${rate}/h)`,
+        qty: hours,
+        unit_price: rate,
+        unitPrice: rate,
+        total: hours * rate,
+      }
+    }),
+  ]
+  const line_items = existingLineItems.length > 0 ? (existingLineItems as typeof built) : built
+
+  return {
+    ...doc,
+    line_items,
+    total,
+    parts_total: partsTotal,
+    labor_total: laborTotal,
+    tax_amount: taxAmount,
+    balance_due: balanceDue,
+  } as T & {
+    line_items: typeof built
+    total: number
+    parts_total: number
+    labor_total: number
+    tax_amount: number
+    balance_due: number
+  }
+}
+
 export async function GET(req: NextRequest) {
   const token = req.nextUrl.searchParams.get('token')
   if (!token) return NextResponse.json({ error: 'Token required' }, { status: 400 })
@@ -19,7 +115,9 @@ export async function GET(req: NextRequest) {
   if (sig.expires_at && new Date(sig.expires_at) < new Date()) {
     return NextResponse.json({ error: 'This signing link has expired' }, { status: 410 })
   }
-  return NextResponse.json({ doc: sig.documents, signature_id: sig.id })
+  // Normalize so the sign page sees line_items + total, not $0.00.
+  const normalized = sig.documents ? normalizeDocForSigning(sig.documents) : sig.documents
+  return NextResponse.json({ doc: normalized, signature_id: sig.id })
 }
 
 export async function POST(req: NextRequest) {
@@ -29,13 +127,14 @@ export async function POST(req: NextRequest) {
   // ── SEND signature request ────────────────────────────────────────────────
   if (body.action === 'send') {
     const { documentId } = body as { documentId: string }
-    const [{ data: doc }, { data: settings }] = await Promise.all([
+    const [{ data: docRaw }, { data: settings }] = await Promise.all([
       db.from('documents').select('*').eq('id', documentId).single(),
       db.from('settings').select('*').limit(1).single(),
     ])
-    if (!doc) return NextResponse.json({ error: 'Document not found' }, { status: 404 })
+    if (!docRaw) return NextResponse.json({ error: 'Document not found' }, { status: 404 })
+    const doc = normalizeDocForSigning(docRaw)
 
-    let email = doc.customer_email || ''
+    let email = (doc.customer_email as string) || ''
     if (!email && doc.customer_id) {
       const { data: cust } = await db.from('customers').select('email').eq('id', doc.customer_id).single()
       email = cust?.email || ''
@@ -63,6 +162,26 @@ export async function POST(req: NextRequest) {
     const total = Number(doc.total || 0).toFixed(2)
     const vehicle = [doc.vehicle_year, doc.vehicle_make, doc.vehicle_model].filter(Boolean).join(' ') || ''
 
+    // Build a small line-item table for the email so the customer sees the
+    // breakdown right in the inbox, not just a button to click.
+    const itemsTable = doc.line_items.length
+      ? `<table style="width:100%;border-collapse:collapse;font-size:13px;margin:12px 0 16px">
+          <thead><tr style="background:#f9fafb;text-align:left;border-bottom:1px solid #e5e7eb">
+            <th style="padding:6px 8px">Description</th>
+            <th style="padding:6px 8px;text-align:center">Qty/Hrs</th>
+            <th style="padding:6px 8px;text-align:right">Amount</th>
+          </tr></thead>
+          <tbody>
+            ${doc.line_items
+              .map(
+                (li) =>
+                  `<tr style="border-bottom:1px solid #f3f4f6"><td style="padding:6px 8px">${li.description}</td><td style="padding:6px 8px;text-align:center">${li.qty}</td><td style="padding:6px 8px;text-align:right">$${Number(li.total).toFixed(2)}</td></tr>`
+              )
+              .join('')}
+          </tbody>
+        </table>`
+      : ''
+
     const html = `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="font-family:Arial,sans-serif;margin:0;padding:20px;background:#f4f4f4">
@@ -76,8 +195,18 @@ export async function POST(req: NextRequest) {
     <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px">
       <tr><td style="padding:6px 0"><strong>Document:</strong></td><td style="padding:6px 0">${doc.type} #${doc.doc_number}</td></tr>
       ${vehicle ? `<tr><td style="padding:6px 0"><strong>Vehicle:</strong></td><td style="padding:6px 0">${vehicle}</td></tr>` : ''}
-      <tr><td style="padding:6px 0"><strong>Total:</strong></td><td style="padding:6px 0">$${total}</td></tr>
       <tr><td style="padding:6px 0"><strong>Date:</strong></td><td style="padding:6px 0">${doc.doc_date || ''}</td></tr>
+    </table>
+    ${itemsTable}
+    <table style="width:260px;margin-left:auto;font-size:13px;margin-bottom:16px">
+      ${doc.parts_total > 0 ? `<tr><td style="padding:3px 8px">Parts</td><td style="padding:3px 8px;text-align:right">$${doc.parts_total.toFixed(2)}</td></tr>` : ''}
+      ${doc.labor_total > 0 ? `<tr><td style="padding:3px 8px">Labor</td><td style="padding:3px 8px;text-align:right">$${doc.labor_total.toFixed(2)}</td></tr>` : ''}
+      ${Number(doc.shop_supplies) > 0 ? `<tr><td style="padding:3px 8px">Shop Supplies</td><td style="padding:3px 8px;text-align:right">$${Number(doc.shop_supplies).toFixed(2)}</td></tr>` : ''}
+      ${doc.tax_amount > 0 ? `<tr><td style="padding:3px 8px">Tax</td><td style="padding:3px 8px;text-align:right">$${doc.tax_amount.toFixed(2)}</td></tr>` : ''}
+      <tr style="font-size:15px;font-weight:bold;border-top:2px solid #111">
+        <td style="padding:6px 8px">Total</td>
+        <td style="padding:6px 8px;text-align:right">$${total}</td>
+      </tr>
     </table>
     <p>Click below to review the full document and sign electronically:</p>
     <p style="text-align:center;margin:24px 0">
@@ -126,7 +255,7 @@ export async function POST(req: NextRequest) {
       ip_address: ip,
     }).eq('token', token)
 
-    const doc = sig.documents
+    const doc = normalizeDocForSigning(sig.documents)
     await db.from('documents').update({
       signature_signed_at: now,
       signature_signer_name: signerName,
@@ -182,7 +311,7 @@ body{font-family:Arial,sans-serif;background:#f0f0f0;margin:0;padding:20px}
       await sendEmail({
         to: settings.shop_email,
         subject: `Customer signed ${doc.type} #${doc.doc_number} — ${signerName}`,
-        html: `<p><strong>${signerName}</strong> signed <strong>${doc.type} #${doc.doc_number}</strong> for ${vehicle} on ${new Date(now).toLocaleString()}.</p>`,
+        html: `<p><strong>${signerName}</strong> signed <strong>${doc.type} #${doc.doc_number}</strong> for ${vehicle} on ${new Date(now).toLocaleString()} — Total: $${total}.</p>`,
         replyTo: settings.shop_email,
       }).catch(() => {})
     }
