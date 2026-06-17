@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
 const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_EwRdKR6toaGlqbtoqQVbzw_nhXJwa8h'
+const SUPABASE_AUTH_COOKIE = `sb-${new URL(SUPABASE_URL).hostname.split('.')[0]}-auth-token`
 
 const PUBLIC_API_PREFIXES = [
   '/api/auth/',
@@ -24,6 +25,63 @@ function hasInternalApiSecret(req: NextRequest) {
 
 function isPublicApiPath(pathname: string) {
   return PUBLIC_API_PREFIXES.some(prefix => pathname === prefix || pathname.startsWith(prefix))
+}
+
+function decodeBase64Url(value: string) {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+  const binary = atob(padded)
+  const bytes = Uint8Array.from(binary, char => char.charCodeAt(0))
+  return new TextDecoder().decode(bytes)
+}
+
+function getCookieValue(req: NextRequest, key: string) {
+  const direct = req.cookies.get(key)?.value
+  if (direct) return direct
+
+  const chunks: string[] = []
+  for (let index = 0; ; index += 1) {
+    const chunk = req.cookies.get(`${key}.${index}`)?.value
+    if (!chunk) break
+    chunks.push(chunk)
+  }
+
+  return chunks.length ? chunks.join('') : null
+}
+
+function getAccessTokenFromCookie(req: NextRequest) {
+  const cookieValue = getCookieValue(req, SUPABASE_AUTH_COOKIE)
+  if (!cookieValue) return null
+
+  try {
+    const sessionJson = cookieValue.startsWith('base64-')
+      ? decodeBase64Url(cookieValue.slice('base64-'.length))
+      : cookieValue
+    const session = JSON.parse(sessionJson) as { access_token?: unknown }
+    return typeof session.access_token === 'string' ? session.access_token : null
+  } catch {
+    return null
+  }
+}
+
+async function verifyUserFromCookie(req: NextRequest) {
+  const accessToken = getAccessTokenFromCookie(req)
+  if (!accessToken) return null
+
+  try {
+    const response = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: {
+        apikey: SUPABASE_ANON,
+        authorization: `Bearer ${accessToken}`,
+      },
+      cache: 'no-store',
+    })
+
+    if (!response.ok) return null
+    return await response.json()
+  } catch {
+    return null
+  }
 }
 
 export async function middleware(req: NextRequest) {
@@ -51,7 +109,8 @@ export async function middleware(req: NextRequest) {
     },
   })
 
-  const { data: { user } } = await supabase.auth.getUser()
+  const { data: { user: supabaseUser } } = await supabase.auth.getUser()
+  const user = supabaseUser || await verifyUserFromCookie(req)
 
   if (pathname.startsWith('/api/')) {
     if (isPublicApiPath(pathname) || hasInternalApiSecret(req)) return res
