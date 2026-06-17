@@ -2,6 +2,9 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 
+type SpeechRecognition = any
+type SpeechRecognitionEvent = any
+
 // Connector info for popup
 const CONNECTOR_SERVICE_INFO: Record<string, { icon: string; name: string; description: string; color: string; bgColor: string; oauthPath: string }> = {
   facebook: { icon: '??', name: 'Facebook Pages', description: 'Post updates, reply to comments, manage messages', color: '#1877F2', bgColor: 'rgba(24,119,242,0.1)', oauthPath: '/api/auth/facebook' },
@@ -349,7 +352,7 @@ CLARIFICATION RULE � If you do not fully understand what the user is asking, A
 `
 
 const DESKTOP_TOOLS_PROMPT = `DESKTOP TOOLS (only available in the desktop app � window.electronAPI must exist):
-These tools control the local Windows PC directly. Only use them when the user says "notify me", "send a desktop notification", "print this", "save this", "screenshot", "run powershell", "disk space", "free space", "system info", "computer info", or asks to browse the web using the local computer.
+These tools control limited desktop features. Only use them when the user says "notify me", "send a desktop notification", "print this", "save this", "screenshot", "system info", "computer info", or asks to browse the web using the local computer.
 
 DESKTOP NOTIFY � Send a native Windows desktop notification. Use when user says "notify me", "send a notification", "alert me", "remind me with a popup":
 {"tool":"desktopNotify","title":"Job Ready","body":"2019 Honda Civic is ready for pickup"}
@@ -370,10 +373,7 @@ DESKTOP SAVE FILE � Save any text content as a file (shows save dialog):
 DESKTOP SCREENSHOT � Take a screenshot of the current app window:
 {"tool":"desktopScreenshot"}
 
-DESKTOP POWERSHELL — Check shop computer storage and disk space. Use whenever user asks about disk space, free space, storage, or computer files:
-{"tool":"desktopPowerShell","command":"Get-PSDrive C | Select-Object Used,Free"}
-
-DESKTOP SYSTEM INFO � Get shop computer hardware info: OS, RAM, CPU. Use when user asks about computer specs, memory, system version, or overall system info:
+DESKTOP SYSTEM INFO � Get non-identifying shop computer hardware info: OS, RAM, CPU. Use when user asks about computer specs, memory, system version, or overall system info:
 {"tool":"desktopSystemInfo"}`
 
 
@@ -941,17 +941,11 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       setMessages(prev => [...prev, userMsg])
       const hist = [...messages, userMsg]
 
-      const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
-      const apiKey = (settings?.ai_api_key as string) || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || ''
-      if (!apiKey) {
-        setMessages(prev => [...prev, { role: 'assistant', content: 'No AI API key configured. Go to Settings > AI to add your OpenRouter key.' }])
-        setLoading(false); return
-      }
       setStatus('Analyzing image...')
       try {
-        const res = await fetch(`${settings?.ai_base_url || 'https://openrouter.ai/api/v1'}/chat/completions`, {
+        const res = await fetch('/api/ai-completions', {
           method: 'POST',
-          headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             model: 'meta-llama/llama-3.2-11b-vision-instruct:free',
             messages: [
@@ -965,6 +959,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
           })
         })
         const data = await res.json()
+        if (!res.ok) throw new Error(data.error || 'Image analysis failed')
         const raw = data.choices?.[0]?.message?.content?.trim() || 'Could not analyze the image.'
         const assistantMsg: ChatMessage = { role: 'assistant', content: raw }
         setMessages(prev => [...prev, assistantMsg])
@@ -980,12 +975,6 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
 
     const agentLoop = async (history: ChatMessage[], featureFlags?: { search: boolean;  socialMedia: boolean; thinking: boolean }) => {
         const activeFeatures = featureFlags || { search: true, socialMedia: true, thinking: false }
-    const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
-    const apiKey = (settings?.ai_api_key as string) || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || ''
-    if (!apiKey) {
-      setMessages(prev => [...prev, { role: 'assistant', content: 'No AI API key configured. Go to Settings > AI to add your OpenRouter key.' }])
-      return
-    }
 
     const accumulated: string[] = []
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1027,11 +1016,10 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       const trimmedMsgs = agentMessages.length > 30
         ? [agentMessages[0], ...agentMessages.slice(-29)]
         : agentMessages
-      const res = await fetch(`${settings?.ai_base_url || 'https://openrouter.ai/api/v1'}/chat/completions`, {
+      const res = await fetch('/api/ai-completions', {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: settings?.ai_model || 'deepseek/deepseek-v3.2',
           messages: [{ role: 'system', content: systemWithContext }, ...trimmedMsgs],
           max_tokens: 1500,
           temperature: 0.2,
@@ -1199,7 +1187,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
               searchResult += '\n\nProduct images:\n' + (d.images as {url:string}[]).slice(0, 4).map((img: {url:string}) => `![Product](${img.url})`).join('\n')
             }
             if (d.videos?.length) {
-              searchResult += '\n\nYouTube Videos:\n' + (d.videos as {title:string;url:string;channel?:string;embed_url?:string}[]).slice(0, 3).map((v: {title:string;url:string;channel?:string;embed_url?:string}, i: number) => `${i+1}. **${v.title}**${v.channel ? ` (${v.channel})` : ''}\n${v.embed_url || v.url}\n![thumbnail](${v.thumbnail || ''})`).join('\n')
+              searchResult += '\n\nYouTube Videos:\n' + (d.videos as {title:string;url:string;channel?:string;embed_url?:string;thumbnail?:string}[]).slice(0, 3).map((v: {title:string;url:string;channel?:string;embed_url?:string;thumbnail?:string}, i: number) => `${i+1}. **${v.title}**${v.channel ? ` (${v.channel})` : ''}\n${v.embed_url || v.url}\n![thumbnail](${v.thumbnail || ''})`).join('\n')
             }
             if (d.price_radar?.length) {
               searchResult += '\n\nPRICE COMPARISON (Price Radar):\n' + (d.price_radar as {store:string;price:number;url:string;shipping?:string}[]).map((p: {store:string;price:number;url:string;shipping?:string}) => `- ${p.store}: $${p.price.toFixed(2)} ${p.shipping || ''} � ${p.url}`).join('\n')
@@ -1609,17 +1597,9 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
       }
 
       if (parsed.tool === 'desktopPowerShell') {
-        if (!isElectronEnv) {
-          agentMessages.push({ role: 'assistant', content: raw })
-          agentMessages.push({ role: 'user', content: 'Desktop PowerShell only works in the desktop app. Let the user know.' })
-          continue
-        }
-        setStatus('? Running PowerShell...')
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const psResult = await (window as any).electronAPI.system.powershell((parsed.command as string) || '')
-        accumulated.push(`[PowerShell]: ${psResult.output || psResult.error}`)
+        accumulated.push('[PowerShell]: Disabled for security. The desktop app no longer exposes shell execution.')
         agentMessages.push({ role: 'assistant', content: raw })
-        agentMessages.push({ role: 'user', content: `PowerShell output:\n${psResult.output || psResult.error || 'No output'}\n\nPresent this to the user.` })
+        agentMessages.push({ role: 'user', content: 'PowerShell execution is disabled for security. Tell the user that Alpha AI Desk can provide non-identifying system info, screenshots, printing, PDF, and dialog-gated file save/open actions, but it cannot run shell commands or inspect files directly.' })
         setStatus('')
         continue
       }
@@ -1788,19 +1768,33 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
     } catch { showToast('Failed to save document') }
   }
 
-  // Render markdown links, images, and bold in chat messages
+  const escapeHtml = (value: string): string => value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+
+  const safeUrl = (value: string): string => {
+    try {
+      const url = new URL(value, window.location.origin)
+      if (!['http:', 'https:'].includes(url.protocol)) return '#'
+      return escapeHtml(url.href)
+    } catch {
+      return '#'
+    }
+  }
+
+  // Render a small safe markdown subset for chat messages.
   const renderMarkdown = (text: string): string => {
-    const escaped = text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
+    const escaped = escapeHtml(text)
     return escaped
       // YouTube embeds: [YouTube](embed_url) or bare embed URLs
-      .replace(/(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([\w-]{11})/g, '<div style="margin:8px 0;border-radius:12px;overflow:hidden;max-width:480px"><iframe width="100%" height="270" src="https://www.youtube.com/embed/$1" frameborder="0" allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture" allowfullscreen style="border-radius:12px"></iframe></div>')
+      .replace(/(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([\w-]{11})/g, (_m, id) => `<div style="margin:8px 0;border-radius:12px;overflow:hidden;max-width:480px"><iframe width="100%" height="270" src="https://www.youtube.com/embed/${id}" frameborder="0" allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture" allowfullscreen style="border-radius:12px"></iframe></div>`)
             // Images: ![alt](url)
-      .replace(/!\[([^\]]*)]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="rounded-lg max-w-[300px] max-h-[300px] object-cover my-1 inline-block" />')
+      .replace(/!\[([^\]]*)]\(([^)]+)\)/g, (_m, alt, url) => `<img src="${safeUrl(url)}" alt="${escapeHtml(alt)}" class="rounded-lg max-w-[300px] max-h-[300px] object-cover my-1 inline-block" />`)
       // Links: [text](url)
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue underline hover:text-blue/80">$1</a>')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, url) => `<a href="${safeUrl(url)}" target="_blank" rel="noopener noreferrer" class="text-blue underline hover:text-blue/80">${escapeHtml(label)}</a>`)
       // Bold: **text**
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       // Newlines
