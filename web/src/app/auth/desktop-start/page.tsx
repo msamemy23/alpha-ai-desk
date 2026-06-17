@@ -1,7 +1,17 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@supabase/supabase-js'
+import { supabaseBrowserAnonKey, supabaseBrowserUrl } from '@/lib/supabase'
+
+const desktopOAuthClient = createClient(supabaseBrowserUrl, supabaseBrowserAnonKey, {
+  auth: {
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
+    flowType: 'implicit',
+    persistSession: false,
+  },
+})
 
 function validPort(value: string | null) {
   if (!value || !/^\d{2,5}$/.test(value)) return null
@@ -30,7 +40,7 @@ export default function DesktopOAuthStart() {
       }
 
       const redirectTo = `${window.location.origin}/auth/callback?desktop_port=${encodeURIComponent(port)}&desktop_state=${encodeURIComponent(state)}`
-      const { error: oauthError } = await supabase.auth.signInWithOAuth({
+      const { error: oauthError } = await desktopOAuthClient.auth.signInWithOAuth({
         provider: 'google',
         options: {
           redirectTo,

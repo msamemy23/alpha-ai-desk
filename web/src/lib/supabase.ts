@@ -5,6 +5,8 @@ import { createBrowserClient } from '@supabase/ssr'
 // by RLS, not by hiding this key).
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_EwRdKR6toaGlqbtoqQVbzw_nhXJwa8h'
+export const supabaseBrowserUrl = supabaseUrl
+export const supabaseBrowserAnonKey = supabaseAnonKey
 export const supabaseAuthStorageKey = `sb-${new URL(supabaseUrl).hostname.split('.')[0]}-auth-token`
 
 // Browser client that stores the auth session in COOKIES (not localStorage) so

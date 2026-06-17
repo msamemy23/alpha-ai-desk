@@ -123,7 +123,23 @@ export default function AuthCallback() {
     const processAuth = async () => {
       try {
         const params = new URLSearchParams(window.location.search)
+        const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''))
         const code = params.get('code')
+        const hashAccessToken = hash.get('access_token')
+        const hashRefreshToken = hash.get('refresh_token')
+
+        if (hashAccessToken && hashRefreshToken) {
+          window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+          const { data, error: sessionError } = await supabase.auth.setSession({
+            access_token: hashAccessToken,
+            refresh_token: hashRefreshToken,
+          })
+          if (sessionError) throw sessionError
+          if (data.session) {
+            await finish(data.session)
+            return
+          }
+        }
 
         if (code) {
           const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
