@@ -63,11 +63,12 @@ function getCookieValue(req: NextRequest, key: string) {
   return chunks.length ? chunks.join('') : null
 }
 
-function getAccessTokenFromCookie(req: NextRequest) {
+function getAccessTokenFromCookie(req: NextRequest, debug?: string[]) {
   const cookieValue = SUPABASE_AUTH_COOKIES
     .map(cookieName => getCookieValue(req, cookieName))
     .find(Boolean)
 
+  debug?.push(cookieValue ? 'cookie:found' : 'cookie:missing')
   if (!cookieValue) return null
 
   try {
@@ -75,14 +76,17 @@ function getAccessTokenFromCookie(req: NextRequest) {
       ? decodeBase64Url(cookieValue.slice('base64-'.length))
       : cookieValue
     const session = JSON.parse(sessionJson) as { access_token?: unknown }
-    return typeof session.access_token === 'string' ? session.access_token : null
+    const accessToken = typeof session.access_token === 'string' ? session.access_token : null
+    debug?.push(accessToken ? 'token:found' : 'token:missing')
+    return accessToken
   } catch {
+    debug?.push('cookie:decode-failed')
     return null
   }
 }
 
-async function verifyUserFromCookie(req: NextRequest) {
-  const accessToken = getAccessTokenFromCookie(req)
+async function verifyUserFromCookie(req: NextRequest, debug?: string[]) {
+  const accessToken = getAccessTokenFromCookie(req, debug)
   if (!accessToken) return null
 
   try {
@@ -95,17 +99,25 @@ async function verifyUserFromCookie(req: NextRequest) {
         cache: 'no-store',
       })
 
+      debug?.push(`${new URL(target.url).hostname}:${response.status}`)
       if (response.ok) return await response.json()
     }
 
     return null
   } catch {
+    debug?.push('verify:fetch-failed')
     return null
   }
 }
 
+function withAuthDebug(response: NextResponse, debug: string[] | null) {
+  if (debug) response.headers.set('x-alpha-auth-debug', debug.join('|'))
+  return response
+}
+
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl
+  const authDebug = req.nextUrl.searchParams.get('auth_debug') === '1' ? [] as string[] : null
 
   if (
     pathname.startsWith('/login') ||
@@ -114,7 +126,7 @@ export async function middleware(req: NextRequest) {
     pathname.startsWith('/_next/') ||
     pathname === '/favicon.ico'
   ) {
-    return NextResponse.next()
+    return withAuthDebug(NextResponse.next(), authDebug)
   }
 
   const res = NextResponse.next({ request: req })
@@ -130,21 +142,23 @@ export async function middleware(req: NextRequest) {
   })
 
   const { data: { user: supabaseUser } } = await supabase.auth.getUser()
-  const user = supabaseUser || await verifyUserFromCookie(req)
+  authDebug?.push(supabaseUser ? 'ssr:user' : 'ssr:none')
+  const user = supabaseUser || await verifyUserFromCookie(req, authDebug)
+  authDebug?.push(user ? 'auth:user' : 'auth:none')
 
   if (pathname.startsWith('/api/')) {
-    if (isPublicApiPath(pathname) || hasInternalApiSecret(req)) return res
+    if (isPublicApiPath(pathname) || hasInternalApiSecret(req)) return withAuthDebug(res, authDebug)
     if (!user) {
-      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 })
+      return withAuthDebug(NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 }), authDebug)
     }
-    return res
+    return withAuthDebug(res, authDebug)
   }
 
   if (!user) {
-    return NextResponse.redirect(new URL('/login', req.url))
+    return withAuthDebug(NextResponse.redirect(new URL('/login', req.url)), authDebug)
   }
 
-  return res
+  return withAuthDebug(res, authDebug)
 }
 
 export const config = {
