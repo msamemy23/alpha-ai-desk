@@ -3,7 +3,21 @@ import { NextResponse, type NextRequest } from 'next/server'
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
 const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_EwRdKR6toaGlqbtoqQVbzw_nhXJwa8h'
-const SUPABASE_AUTH_COOKIE = `sb-${new URL(SUPABASE_URL).hostname.split('.')[0]}-auth-token`
+const FALLBACK_SUPABASE_URL = 'https://fztnsqrhjesqcnsszqdb.supabase.co'
+const FALLBACK_SUPABASE_ANON = 'sb_publishable_EwRdKR6toaGlqbtoqQVbzw_nhXJwa8h'
+const SUPABASE_AUTH_COOKIES = Array.from(
+  new Set(
+    [SUPABASE_URL, FALLBACK_SUPABASE_URL].map(url => `sb-${new URL(url).hostname.split('.')[0]}-auth-token`)
+  )
+)
+const SUPABASE_AUTH_TARGETS = Array.from(
+  new Map(
+    [
+      [SUPABASE_URL, SUPABASE_ANON],
+      [FALLBACK_SUPABASE_URL, FALLBACK_SUPABASE_ANON],
+    ].map(([url, key]) => [url, { url, key }])
+  ).values()
+)
 
 const PUBLIC_API_PREFIXES = [
   '/api/auth/',
@@ -50,7 +64,10 @@ function getCookieValue(req: NextRequest, key: string) {
 }
 
 function getAccessTokenFromCookie(req: NextRequest) {
-  const cookieValue = getCookieValue(req, SUPABASE_AUTH_COOKIE)
+  const cookieValue = SUPABASE_AUTH_COOKIES
+    .map(cookieName => getCookieValue(req, cookieName))
+    .find(Boolean)
+
   if (!cookieValue) return null
 
   try {
@@ -69,16 +86,19 @@ async function verifyUserFromCookie(req: NextRequest) {
   if (!accessToken) return null
 
   try {
-    const response = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: {
-        apikey: SUPABASE_ANON,
-        authorization: `Bearer ${accessToken}`,
-      },
-      cache: 'no-store',
-    })
+    for (const target of SUPABASE_AUTH_TARGETS) {
+      const response = await fetch(`${target.url}/auth/v1/user`, {
+        headers: {
+          apikey: target.key,
+          authorization: `Bearer ${accessToken}`,
+        },
+        cache: 'no-store',
+      })
 
-    if (!response.ok) return null
-    return await response.json()
+      if (response.ok) return await response.json()
+    }
+
+    return null
   } catch {
     return null
   }
