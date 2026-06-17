@@ -127,10 +127,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         lg:static lg:translate-x-0 lg:w-60
       `}>
         <div className="flex items-center gap-3 px-4 py-5 border-b border-border">
-          <div className="w-9 h-9 rounded-lg bg-blue/20 flex items-center justify-center text-lg">🔧</div>
+          <div className="w-9 h-9 rounded-lg bg-blue/20 flex items-center justify-center text-sm font-black text-blue">A</div>
           <div>
-            <div className="text-sm font-bold text-text-primary leading-tight">Alpha Desktop AI</div>
-            <div className="text-xs text-text-muted">Auto Center</div>
+            <div className="text-sm font-bold text-text-primary leading-tight">Alpha AI Desk</div>
+            <div className="text-xs text-text-muted">Auto Center Command</div>
           </div>
           <button className="ml-auto p-1 rounded-lg hover:bg-bg-hover lg:hidden" onClick={() => setSidebarOpen(false)}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -189,11 +189,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               className="p-1.5 rounded-lg hover:bg-bg-hover transition-colors text-text-muted hover:text-text-primary"
               title="Sign Out"
               onClick={async () => {
-                try {
-                  const { createClient } = await import('@supabase/supabase-js')
-                  const sb = createClient('https://fztnsqrhjesqcnsszqdb.supabase.co','eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ6dG5zcXJoamVzcWNuc3N6cWRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMwMTM3MDIsImV4cCI6MjA1ODU4OTcwMn0.4_MNwSmqTU_dlPWtqY9HGqFlrxL_50y0_C1e3KeQ4Fo')
-                  await sb.auth.signOut()
-                } catch {}
+                try { await supabase.auth.signOut() } catch {}
                 document.cookie = 'alpha_authed=; max-age=0; path=/'
                 window.location.href = '/login'
               }}
