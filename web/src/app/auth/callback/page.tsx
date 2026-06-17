@@ -10,6 +10,40 @@ function isRecoveryUrl() {
   return params.get('type') === 'recovery' || hash.get('type') === 'recovery'
 }
 
+function getDesktopHandoff() {
+  const params = new URLSearchParams(window.location.search)
+  const port = params.get('desktop_port')
+  const state = params.get('desktop_state')
+  if (!port || !/^\d{2,5}$/.test(port)) return null
+  const portNumber = Number(port)
+  if (portNumber < 1024 || portNumber > 65535) return null
+  if (!state || !/^[a-f0-9]{48}$/i.test(state)) return null
+  return { port: String(portNumber), state }
+}
+
+function submitDesktopSession({ port, state }: { port: string; state: string }, session: Session) {
+  const form = document.createElement('form')
+  form.method = 'POST'
+  form.action = `http://127.0.0.1:${port}/auth/callback`
+
+  const fields: Record<string, string> = {
+    state,
+    access_token: session.access_token,
+    refresh_token: session.refresh_token,
+  }
+
+  Object.entries(fields).forEach(([name, value]) => {
+    const input = document.createElement('input')
+    input.type = 'hidden'
+    input.name = name
+    input.value = value
+    form.appendChild(input)
+  })
+
+  document.body.appendChild(form)
+  form.submit()
+}
+
 async function ensureShopProfileAndRedirect(session: Session) {
   const userId = session.user.id
   const { data: profile, error: profileError } = await supabase
@@ -71,6 +105,13 @@ export default function AuthCallback() {
       if (isRecoveryUrl()) {
         setRecovery(true)
         setStatus('Choose a new password')
+        return
+      }
+
+      const desktopHandoff = getDesktopHandoff()
+      if (desktopHandoff) {
+        setStatus('Returning sign-in to the desktop app...')
+        submitDesktopSession(desktopHandoff, session)
         return
       }
 

@@ -198,6 +198,8 @@ export default function LoginPage() {
       if (window.electronAPI?.isElectron && window.electronAPI.auth?.openOAuth) {
         const result = await window.electronAPI.auth.openOAuth(data.url)
         if (result?.ok === false) throw new Error(result.error || 'Desktop Google sign-in could not open.')
+        setMessage('Finish Google sign-in in your browser. Alpha AI Desk will update automatically.')
+        setLoading(null)
         return
       }
 
