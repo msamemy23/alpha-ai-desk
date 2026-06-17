@@ -30,6 +30,7 @@ function submitDesktopSession({ port, state }: { port: string; state: string }, 
     state,
     access_token: session.access_token,
     refresh_token: session.refresh_token,
+    session_json: JSON.stringify(session),
   }
 
   Object.entries(fields).forEach(([name, value]) => {

@@ -1,10 +1,15 @@
 import { createClient } from '@supabase/supabase-js'
+import { createBrowserClient } from '@supabase/ssr'
 
-// Fallback URL and key hardcoded so the app works even without Vercel env vars
+// Publishable URL + anon key (safe to ship to the browser; access is governed
+// by RLS, not by hiding this key).
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_EwRdKR6toaGlqbtoqQVbzw_nhXJwa8h'
+export const supabaseAuthStorageKey = `sb-${new URL(supabaseUrl).hostname.split('.')[0]}-auth-token`
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+// Browser client that stores the auth session in COOKIES (not localStorage) so
+// the server (middleware + API routes) can read and verify the real session.
+export const supabase = createBrowserClient(supabaseUrl, supabaseAnonKey, {
   realtime: { params: { eventsPerSecond: 10 } }
 })
 

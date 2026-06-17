@@ -2,7 +2,69 @@
 
 import { useEffect, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { supabase } from '@/lib/supabase'
+import { supabase, supabaseAuthStorageKey } from '@/lib/supabase'
+
+const COOKIE_MAX_AGE = 400 * 24 * 60 * 60
+const MAX_COOKIE_CHUNK_SIZE = 3180
+const AUTH_COOKIE_PREFIX = 'base64-'
+
+function toBase64Url(value: string) {
+  const bytes = new TextEncoder().encode(value)
+  let binary = ''
+  bytes.forEach(byte => {
+    binary += String.fromCharCode(byte)
+  })
+
+  return window
+    .btoa(binary)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '')
+}
+
+function createCookieChunks(name: string, value: string) {
+  let encodedValue = encodeURIComponent(value)
+
+  if (encodedValue.length <= MAX_COOKIE_CHUNK_SIZE) {
+    return [{ name, value }]
+  }
+
+  const values: string[] = []
+  while (encodedValue.length > 0) {
+    let encodedHead = encodedValue.slice(0, MAX_COOKIE_CHUNK_SIZE)
+    const lastEscapePos = encodedHead.lastIndexOf('%')
+
+    if (lastEscapePos > MAX_COOKIE_CHUNK_SIZE - 3) {
+      encodedHead = encodedHead.slice(0, lastEscapePos)
+    }
+
+    values.push(decodeURIComponent(encodedHead))
+    encodedValue = encodedValue.slice(encodedHead.length)
+  }
+
+  return values.map((chunk, index) => ({ name: `${name}.${index}`, value: chunk }))
+}
+
+function setCookie(name: string, value: string, maxAge: number) {
+  const secure = window.location.protocol === 'https:' ? '; Secure' : ''
+  document.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${maxAge}; Path=/; SameSite=Lax${secure}`
+}
+
+function removeCookie(name: string) {
+  setCookie(name, '', 0)
+}
+
+function persistSupabaseSessionCookie(session: Session) {
+  for (let index = 0; index < 10; index += 1) {
+    removeCookie(`${supabaseAuthStorageKey}.${index}`)
+  }
+  removeCookie(supabaseAuthStorageKey)
+
+  const encodedSession = `${AUTH_COOKIE_PREFIX}${toBase64Url(JSON.stringify(session))}`
+  createCookieChunks(supabaseAuthStorageKey, encodedSession).forEach(({ name, value }) => {
+    setCookie(name, value, COOKIE_MAX_AGE)
+  })
+}
 
 async function ensureShopProfileAndRedirect(session: Session) {
   const userId = session.user.id
@@ -60,7 +122,9 @@ export default function DesktopOAuthComplete() {
         if (sessionError) throw sessionError
         if (!data.session) throw new Error('No desktop session was created.')
 
+        persistSupabaseSessionCookie(data.session)
         setStatus('Opening your dashboard...')
+        await new Promise(resolve => window.setTimeout(resolve, 100))
         await ensureShopProfileAndRedirect(data.session)
       } catch (err) {
         setStatus('Desktop sign-in failed.')
