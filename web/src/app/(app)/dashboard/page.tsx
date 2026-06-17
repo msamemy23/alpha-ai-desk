@@ -22,6 +22,7 @@ interface Stats {
   staleJobs: Record<string, unknown>[]
   overdueInvoices: Record<string, unknown>[]
   recentCalls: Record<string, unknown>[]
+  chartDays: { label: string; revenue: number }[]
 }
 
 export default function DashboardPage() {
@@ -129,12 +130,6 @@ export default function DashboardPage() {
     if (!stats) return
     setInsightLoading(true)
     try {
-      const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
-      const apiKey = (settings?.ai_api_key as string) || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || ''
-      const model = (settings?.ai_model as string) || 'meta-llama/llama-3.3-70b-instruct:free'
-      const baseUrl = (settings?.ai_base_url as string) || 'https://openrouter.ai/api/v1'
-      if (!apiKey) { setAiInsight('Configure your AI API key in Settings to use AI insights.'); return }
-
       const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString()
       const recentJobs = stats.allJobs.filter(j => (j.created_at as string) >= thirtyDaysAgo)
       const recentDocs = stats.allDocs.filter(d => (d.created_at as string) >= thirtyDaysAgo)
@@ -147,11 +142,11 @@ export default function DashboardPage() {
 
       const summary = `Last 30 days: ${recentJobs.length} jobs, ${formatCurrency(revenue)} revenue, avg ticket ${formatCurrency(avgJobValue)}. Status breakdown: ${Object.entries(statusCounts).map(([k,v]) => `${k}:${v}`).join(', ')}. ${stats.staleJobs.length} stale jobs, ${stats.overdueInvoices.length} overdue invoices, ${stats.customersCount} total customers.`
 
-      const res = await fetch(`${baseUrl}/chat/completions`, {
+      const res = await fetch('/api/ai-completions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model,
+          model: 'meta-llama/llama-3.3-70b-instruct:free',
           messages: [
             { role: 'system', content: 'You are a business analyst for an auto repair shop. Give 2-3 brief, actionable insights based on the data. Keep it under 150 words. Be specific with numbers.' },
             { role: 'user', content: summary }
@@ -160,6 +155,7 @@ export default function DashboardPage() {
         })
       })
       const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'AI request failed')
       setAiInsight(data.choices?.[0]?.message?.content || 'Unable to generate insight.')
     } catch { setAiInsight('Failed to generate insight. Check your AI settings.') }
     finally { setInsightLoading(false) }
@@ -184,7 +180,7 @@ export default function DashboardPage() {
     finally { setSlowDaySending(false) }
   }
 
-  if (loading) return <div className="p-8 text-text-muted">Loadingâ€¦</div>
+  if (loading) return <div className="p-8 text-text-muted">Loading...</div>
 
   const STATUS_COLOR: Record<string,string> = {
     'New': 'bg-blue', 'In Progress': 'bg-amber', 'Completed': 'bg-green',
@@ -237,11 +233,11 @@ export default function DashboardPage() {
         <p className="text-text-muted text-sm mt-1">{shopName}</p>
       </div>
 
-      {/* Onboarding banner â€” show if profile is missing */}
+      {/* Onboarding banner - show if profile is missing */}
       {profileLoaded && !hasProfile && (
         <div className="card border-amber/40 bg-amber/5 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <span className="text-xl">ðŸš€</span>
+            <span className="grid h-9 w-9 place-items-center rounded-lg bg-amber/15 text-[10px] font-black text-amber">SET</span>
             <div>
               <p className="text-sm font-semibold">Finish setting up your shop</p>
               <p className="text-xs text-text-muted">Add your shop name, phone, and services to get started.</p>
@@ -256,8 +252,8 @@ export default function DashboardPage() {
         <div className="card border-blue/30 bg-blue/5">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-3">
             <div className="flex items-center gap-2">
-              <span className="text-xl">â˜€ï¸</span>
-              <h2 className="text-sm font-bold uppercase tracking-wider text-blue">{(() => { const h = new Date().getHours(); return h < 5 ? 'Good Night' : h < 12 ? 'Good Morning' : h < 17 ? 'Good Afternoon' : h < 21 ? 'Good Evening' : 'Good Night' })()} â€” Daily Briefing</h2>
+              <span className="grid h-8 w-8 place-items-center rounded-lg bg-blue/15 text-[10px] font-black text-blue">NOW</span>
+              <h2 className="text-sm font-bold uppercase tracking-wider text-blue">{(() => { const h = new Date().getHours(); return h < 5 ? 'Good Night' : h < 12 ? 'Good Morning' : h < 17 ? 'Good Afternoon' : h < 21 ? 'Good Evening' : 'Good Night' })()} - Daily Briefing</h2>
             </div>
             <div className="flex gap-2">
               <button className="btn btn-secondary btn-sm" onClick={() => setBriefingExpanded(!briefingExpanded)}>
@@ -296,13 +292,13 @@ export default function DashboardPage() {
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Open Jobs', value: stats!.openJobs, color: 'text-blue', icon: 'ðŸ”§' },
-          { label: 'Unpaid Balance', value: formatCurrency(stats!.unpaidTotal), color: 'text-red', icon: 'ðŸ’°' },
-          { label: 'Total Customers', value: stats!.customersCount, color: 'text-green', icon: 'ðŸ‘¤' },
-          { label: 'Month Revenue', value: formatCurrency(stats!.monthRevenue), color: 'text-amber', icon: 'ðŸ“ˆ' },
+          { label: 'Open Jobs', value: stats!.openJobs, color: 'text-blue', icon: 'JOB' },
+          { label: 'Unpaid Balance', value: formatCurrency(stats!.unpaidTotal), color: 'text-red', icon: 'DUE' },
+          { label: 'Total Customers', value: stats!.customersCount, color: 'text-green', icon: 'CUS' },
+          { label: 'Month Revenue', value: formatCurrency(stats!.monthRevenue), color: 'text-amber', icon: 'REV' },
         ].map(s => (
-          <div key={s.label} className="card">
-            <div className="text-2xl mb-2">{s.icon}</div>
+          <div key={s.label} className="card relative overflow-hidden">
+            <div className="absolute right-4 top-4 grid h-9 w-9 place-items-center rounded-lg bg-white/5 text-[10px] font-black text-text-secondary">{s.icon}</div>
             <div className={`text-lg sm:text-2xl font-bold ${s.color}`}>{s.value}</div>
             <div className="text-xs text-text-muted mt-1">{s.label}</div>
           </div>
@@ -312,7 +308,7 @@ export default function DashboardPage() {
       {/* AI Alert Card */}
       {aiAlerts.length > 0 && (
         <div className="card border-amber/30 bg-amber/5">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-amber mb-3">ðŸ¤– AI Alerts</h2>
+          <h2 className="text-sm font-bold uppercase tracking-wider text-amber mb-3">AI Alerts</h2>
           <div className="space-y-3">
             {aiAlerts.map(alert => (
               <div key={alert.id} className="flex items-start justify-between gap-3 bg-bg-card border border-border rounded-lg p-3">
@@ -339,9 +335,9 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="card">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-2">
-            <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary">ðŸ§  AI Business Insights</h2>
+            <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary">AI Business Insights</h2>
             <button className="btn btn-primary btn-sm" onClick={generateInsight} disabled={insightLoading}>
-              {insightLoading ? 'Analyzingâ€¦' : 'Generate Insight'}
+              {insightLoading ? 'Analyzing...' : 'Generate Insight'}
             </button>
           </div>
           {aiInsight ? (
@@ -353,7 +349,7 @@ export default function DashboardPage() {
 
         {isSlowDay && (
           <div className="card border-amber/30 bg-amber/5">
-            <h2 className="text-sm font-bold uppercase tracking-wider text-amber mb-3">ðŸ“£ Slow Day â€” Send Outreach?</h2>
+            <h2 className="text-sm font-bold uppercase tracking-wider text-amber mb-3">Slow Day - Send Outreach?</h2>
             <p className="text-sm text-text-muted mb-3">Only {stats!.openJobs} open jobs today. Reach out to customers who haven&apos;t visited in 60+ days.</p>
             <textarea
               className="form-textarea mb-3"
@@ -363,7 +359,7 @@ export default function DashboardPage() {
               onChange={e => setSlowDayMsg(e.target.value)}
             />
             <button className="btn btn-primary w-full" onClick={sendSlowDayOutreach} disabled={slowDaySending}>
-              {slowDaySending ? 'Sendingâ€¦' : 'ðŸš€ Send Outreach SMS'}
+              {slowDaySending ? 'Sending...' : 'Send Outreach SMS'}
             </button>
             {slowDayResult && (
               <div className="mt-3 bg-green/10 border border-green/30 rounded-lg p-3 text-sm text-green">
@@ -400,7 +396,7 @@ export default function DashboardPage() {
             {stats!.recentMessages.length === 0 && <p className="text-text-muted text-sm">No messages yet</p>}
             {stats!.recentMessages.map((m: Record<string,unknown>) => (
               <div key={m.id as string} className={`flex items-start gap-3 p-3 rounded-lg ${!m.read && m.direction === 'inbound' ? 'bg-blue/5 border border-blue/20' : 'bg-bg-hover'}`}>
-                <span className="text-lg">{m.channel === 'sms' ? 'ðŸ’¬' : 'ðŸ“§'}</span>
+                <span className="grid h-7 w-7 place-items-center rounded bg-white/5 text-[10px] font-black text-text-secondary">{m.channel === 'sms' ? 'SMS' : 'EML'}</span>
                 <div className="flex-1 min-w-0">
                   <div className="text-xs font-semibold text-text-secondary">{m.direction === 'inbound' ? m.from_address as string : `To: ${m.to_address as string}`}</div>
                   <div className="text-sm truncate mt-0.5">{m.body as string}</div>
@@ -418,8 +414,8 @@ export default function DashboardPage() {
       {stats!.recentCalls.length > 0 && (
         <div className="card">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary">ðŸ“ž Recent Calls</h2>
-            <Link href="/voicemail" className="text-xs text-blue hover:underline">View all â†’</Link>
+            <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary">Recent Calls</h2>
+            <Link href="/voicemail" className="text-xs text-blue hover:underline">View all -&gt;</Link>
           </div>
           <div className="space-y-3">
             {stats!.recentCalls.map((call: Record<string,unknown>) => {
@@ -428,7 +424,7 @@ export default function DashboardPage() {
               const summary = (call.summary as string) || ''
               return (
                 <div key={call.id as string} className={`flex items-start gap-3 p-3 rounded-lg border ${status === 'ringing' ? 'bg-amber/5 border-amber/30 animate-pulse' : status === 'active' ? 'bg-green/5 border-green/30' : 'bg-bg-hover border-border'}`}>
-                  <span className="text-lg shrink-0">{status === 'ringing' ? 'ðŸ“²' : status === 'active' ? 'ðŸ“ž' : 'ðŸ“µ'}</span>
+                  <span className="grid h-7 w-7 shrink-0 place-items-center rounded bg-white/5 text-[10px] font-black text-text-secondary">{status === 'ringing' ? 'IN' : status === 'active' ? 'LIVE' : 'END'}</span>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-semibold">{caller}</span>
@@ -447,7 +443,7 @@ export default function DashboardPage() {
       {/* Feature 18: Tech Performance Dashboard */}
       {techs.length > 0 && (
         <div className="card">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary mb-4">ðŸ‘¨â€ðŸ”§ Technician Performance</h2>
+          <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary mb-4">Technician Performance</h2>
           <div className="overflow-x-auto">
             <table className="data-table w-full">
               <thead>
