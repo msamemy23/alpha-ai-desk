@@ -434,6 +434,50 @@ MCP safety rules:
 - Prefer read-only tools first: windows Snapshot/Screenshot/Scrape and kapture list_tabs/tab_detail/dom/elements/screenshot/console_logs/network_requests.
 - If Kapture says no tabs are connected, tell the user to install/open the Kapture Chrome extension, open DevTools, and connect the tab.`
 
+function cleanDesktopQuery(value: string) {
+  return value
+    .replace(/\b(open|launch|start)\s+(google\s+)?chrome\b/gi, ' ')
+    .replace(/\b(search|look\s+up|look\s+online\s+for|find|get|grab|download|save)\b/gi, ' ')
+    .replace(/\b(a|an|the|picture|image|photo|png|jpg|jpeg|webp|gif|of|for|online|onto|on|to|my|desktop|file|it|and)\b/gi, ' ')
+    .replace(/[^\w\s-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function parseDesktopImageRequest(text: string) {
+  const lower = text.toLowerCase()
+  const wantsImage = /\b(image|picture|photo|png|jpe?g|webp|gif)\b/.test(lower)
+  const wantsFetch = /\b(download|save|grab|get|find|search|look\s+up|look\s+online)\b/.test(lower)
+  if (!wantsImage || !wantsFetch) return null
+
+  const directMatch =
+    text.match(/\b(?:picture|image|photo)\s+of\s+(.+?)(?:[.!?]|$)/i) ||
+    text.match(/\b(?:search|find|get|download|save|grab).*?\b(?:for|of)\s+(.+?)(?:[.!?]|$)/i)
+  const query = cleanDesktopQuery(directMatch?.[1] || text)
+  if (!query) return null
+
+  const filename = `${query.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64) || 'downloaded-image'}.png`
+  return { query, filename, open: /\b(open|show|view)\b.*\b(file|image|picture|photo|it)\b/i.test(text) }
+}
+
+function parseChromeRequest(text: string) {
+  if (!/\b(open|launch|start)\s+(google\s+)?chrome\b/i.test(text)) return null
+  const searchMatch = text.match(/\bsearch\s+(?:for\s+)?(.+?)(?:[.!?]|$)/i)
+  const query = searchMatch?.[1]?.trim()
+  return {
+    url: query ? `https://www.google.com/search?q=${encodeURIComponent(query)}` : '',
+    query: query || '',
+  }
+}
+
+function wantsOpenPreviousDesktopFile(text: string) {
+  return /^(?:open|show|view|launch)\s+(?:the\s+)?(?:last\s+)?(?:file|download|image|picture|photo|it)\s*$/i.test(text.trim())
+}
+
+function wantsKaptureSetup(text: string) {
+  return /\bkapture\b/i.test(text) && /\b(set\s*up|install|connect|extension|chrome)\b/i.test(text)
+}
+
 
 interface HistoryEntry {
   id: string
@@ -561,6 +605,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   const bottomRef = useRef<HTMLDivElement>(null)
   const [shopContext, setShopContext] = useState('')
   const prefillHandled = useRef(false)
+  const lastDesktopFileRef = useRef<string | null>(null)
 
   // Feature 1: TTS helper
   const speak = useCallback((text: string) => {
@@ -871,6 +916,94 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     }
   })
 
+  const runDirectDesktopCommand = useCallback(async (text: string, userMsg: ChatMessage) => {
+    if (!features.desktopTools || !isDesktop || typeof window === 'undefined') return false
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const desktopApi = (window as any).electronAPI
+    if (!desktopApi) return false
+
+    const finish = (assistantMsg: ChatMessage) => {
+      setMessages(prev => [...prev, assistantMsg])
+      saveToHistory([...messages, userMsg, assistantMsg])
+      speak(assistantMsg.content)
+      return true
+    }
+
+    try {
+      if (wantsOpenPreviousDesktopFile(text)) {
+        const filePath = lastDesktopFileRef.current
+        if (!filePath) {
+          return finish({ role: 'assistant', content: 'I do not have a saved file from this desktop session yet.' })
+        }
+        setStatus('Opening file...')
+        const result = await desktopApi.files.openApproved(filePath)
+        return finish({
+          role: 'assistant',
+          content: result?.ok
+            ? `Opened ${filePath}.`
+            : `Could not open ${filePath}: ${result?.error || 'Unknown error'}`,
+        })
+      }
+
+      const imageRequest = parseDesktopImageRequest(text)
+      if (imageRequest) {
+        const chromeRequest = parseChromeRequest(text)
+        let chromeResult: Record<string, unknown> | null = null
+        if (chromeRequest) {
+          setStatus('Opening Chrome...')
+          chromeResult = await desktopApi.system.openApp('chrome', `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(imageRequest.query)}`)
+        }
+
+        setStatus('Downloading image...')
+        const result = await desktopApi.files.downloadImage({
+          query: imageRequest.query,
+          filename: imageRequest.filename,
+          open: imageRequest.open,
+        })
+
+        if (result?.ok && result.path) {
+          lastDesktopFileRef.current = String(result.path)
+          const chromeNote = chromeResult && chromeResult.ok === false ? ` Chrome did not open: ${chromeResult.error || 'Unknown error'}.` : ''
+          return finish({
+            role: 'assistant',
+            content: `Downloaded ${imageRequest.query} to ${result.path}${result.opened ? ' and opened it' : ''}.${chromeNote}`,
+          })
+        }
+
+        return finish({ role: 'assistant', content: `Image download failed: ${result?.error || 'Unknown error'}` })
+      }
+
+      const chromeRequest = parseChromeRequest(text)
+      if (chromeRequest) {
+        setStatus('Opening Chrome...')
+        const result = await desktopApi.system.openApp('chrome', chromeRequest.url)
+        return finish({
+          role: 'assistant',
+          content: result?.ok
+            ? `Chrome is open${chromeRequest.query ? ` with a search for "${chromeRequest.query}"` : ''}.`
+            : `Chrome did not open: ${result?.error || 'Unknown error'}`,
+        })
+      }
+
+      if (wantsKaptureSetup(text)) {
+        setStatus('Opening Kapture setup...')
+        const result = await desktopApi.kapture.openSetup()
+        return finish({
+          role: 'assistant',
+          content: result?.ok
+            ? `Opened the Kapture setup page in Chrome. Install the extension, open the tab you want to automate, then connect it from Kapture.`
+            : `Kapture setup did not open: ${result?.error || 'Unknown error'}`,
+        })
+      }
+    } catch (err) {
+      return finish({ role: 'assistant', content: `Desktop action failed: ${err instanceof Error ? err.message : 'Unknown error'}` })
+    } finally {
+      setStatus('')
+    }
+
+    return false
+  }, [features.desktopTools, isDesktop, messages, saveToHistory, speak])
+
   const send = useCallback(async (overrideInput?: string) => {
     const text = (overrideInput || input).trim()
     if (!text || loading) return
@@ -890,6 +1023,12 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     }
     const userMsg: ChatMessage = { role: 'user', content: text, imageUrl: attachImageUrl }
     setMessages(prev => [...prev, userMsg])
+
+    if (await runDirectDesktopCommand(text, userMsg)) {
+      setLoading(false)
+      setStatus('')
+      return
+    }
 
     // AI voice call detection - "AI call", "call [business] and order/ask", "have AI call"
     const aiCallMatch = text.match(/(?:ai\s+call|have\s+(?:the\s+)?ai\s+call|call\s+\w+\s+(?:and|to)\s+(?:order|ask|find|check|get|buy|order|inquire))/i)
@@ -953,7 +1092,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     setLoading(false)
     setStatus('')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [input, loading, messages, shopContext, attachedFile, features])
+  }, [input, loading, messages, shopContext, attachedFile, features, runDirectDesktopCommand])
 
   // Poll for voice call status/summary
   const startVoicePoll = useCallback((callId: string) => {
@@ -1577,6 +1716,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
             filename: (parsed.filename as string) || (parsed.name as string) || 'downloaded-image.png',
             open: parsed.open === true,
           })
+          if (result?.ok && result.path) lastDesktopFileRef.current = String(result.path)
           accumulated.push(`[Desktop image download]: ${JSON.stringify(result)}`)
           agentMessages.push({ role: 'assistant', content: raw })
           agentMessages.push({ role: 'user', content: `Desktop image download result:\n${JSON.stringify(result, null, 2)}\n\nIf ok:true, tell the user the exact saved path and whether it opened. If ok:false, report the exact error. The saved path can be used later with desktopOpenFile.` })
@@ -1702,6 +1842,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const pdfResult = await (window as any).electronAPI.print.pdf((parsed.filename as string) || 'alpha-ai-desk.pdf')
+        if (pdfResult?.ok && pdfResult.path) lastDesktopFileRef.current = String(pdfResult.path)
         const pdfMsg: ChatMessage = { role: 'assistant', content: pdfResult.ok ? `PDF saved to: ${pdfResult.path}` : `PDF save failed: ${pdfResult.error}` }
         setMessages(prev => [...prev, pdfMsg])
         saveToHistory([...history, pdfMsg])
@@ -1720,6 +1861,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
           (parsed.filename as string) || 'document.txt',
           undefined
         )
+        if (saveResult?.ok && saveResult.path) lastDesktopFileRef.current = String(saveResult.path)
         const saveMsg: ChatMessage = { role: 'assistant', content: saveResult.ok ? `Saved to: ${saveResult.path}` : saveResult.cancelled ? 'Save cancelled.' : `Save failed: ${saveResult.error}` }
         setMessages(prev => [...prev, saveMsg])
         saveToHistory([...history, saveMsg])
