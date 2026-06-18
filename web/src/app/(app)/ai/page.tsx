@@ -375,7 +375,23 @@ CLARIFICATION RULE - If you do not fully understand what the user is asking, ALW
 `
 
 const DESKTOP_TOOLS_PROMPT = `DESKTOP TOOLS (only available in the desktop app - window.electronAPI must exist):
-These tools control limited desktop features. Only use them when the user says "notify me", "send a desktop notification", "print this", "save this", "screenshot", "system info", "computer info", or asks to browse the web using the local computer.
+These tools control limited desktop features. If the user asks to open Chrome, download an image/file, open a file that Alpha AI saved, use Kapture, notify, print, save, screenshot, get system info, or browse using the local computer, you MUST use one of these tools. Never claim a desktop action succeeded until the tool result says ok:true.
+
+DESKTOP OPEN APP - Open an allowlisted Windows app. Currently supports Google Chrome:
+{"tool":"desktopOpenApp","app":"chrome"}
+Open Chrome to a URL:
+{"tool":"desktopOpenApp","app":"chrome","url":"https://www.google.com/search?q=pikachu"}
+
+DESKTOP DOWNLOAD IMAGE - Search for or download a public image and save it to the Desktop. Use when the user asks for a picture/image/photo to be downloaded:
+{"tool":"desktopDownloadImage","query":"Pikachu","filename":"pikachu.png","open":true}
+If you already have an exact image URL from webSearch, pass it:
+{"tool":"desktopDownloadImage","url":"https://example.com/image.png","filename":"image.png","open":true}
+
+DESKTOP OPEN FILE - Open a file that Alpha AI saved/downloaded/selected in this desktop session. Use the exact path returned by desktopSave, desktopPDF, or desktopDownloadImage:
+{"tool":"desktopOpenFile","path":"C:\\\\Users\\\\aaron\\\\Desktop\\\\pikachu.png"}
+
+DESKTOP KAPTURE SETUP - Open Chrome to the Kapture extension/setup page and explain the connection steps:
+{"tool":"desktopKaptureSetup"}
 
 DESKTOP NOTIFY - Send a native Windows desktop notification. Use when user says "notify me", "send a notification", "alert me", "remind me with a popup":
 {"tool":"desktopNotify","title":"Job Ready","body":"2019 Honda Civic is ready for pickup"}
@@ -1525,6 +1541,95 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const isElectronEnv = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron
 
+      if (parsed.tool === 'desktopOpenApp') {
+        if (!isElectronEnv) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: 'Desktop app launching only works in the Alpha AI Desk desktop app. Let the user know.' })
+          continue
+        }
+        setStatus('Opening app...')
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const result = await (window as any).electronAPI.system.openApp((parsed.app || parsed.appName || 'chrome') as string, (parsed.url as string) || '')
+          accumulated.push(`[Desktop open app]: ${JSON.stringify(result)}`)
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: `Desktop open app result:\n${JSON.stringify(result, null, 2)}\n\nIf ok:true, tell the user it opened. If ok:false, report the exact error.` })
+        } catch (e) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: `Desktop open app failed: ${e instanceof Error ? e.message : 'Unknown error'}` })
+        }
+        setStatus('')
+        continue
+      }
+
+      if (parsed.tool === 'desktopDownloadImage') {
+        if (!isElectronEnv) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: 'Desktop image download only works in the Alpha AI Desk desktop app. Let the user know.' })
+          continue
+        }
+        setStatus('Downloading image...')
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const result = await (window as any).electronAPI.files.downloadImage({
+            url: (parsed.url as string) || '',
+            query: (parsed.query as string) || (parsed.search as string) || '',
+            filename: (parsed.filename as string) || (parsed.name as string) || 'downloaded-image.png',
+            open: parsed.open === true,
+          })
+          accumulated.push(`[Desktop image download]: ${JSON.stringify(result)}`)
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: `Desktop image download result:\n${JSON.stringify(result, null, 2)}\n\nIf ok:true, tell the user the exact saved path and whether it opened. If ok:false, report the exact error. The saved path can be used later with desktopOpenFile.` })
+        } catch (e) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: `Desktop image download failed: ${e instanceof Error ? e.message : 'Unknown error'}` })
+        }
+        setStatus('')
+        continue
+      }
+
+      if (parsed.tool === 'desktopOpenFile') {
+        if (!isElectronEnv) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: 'Desktop file opening only works in the Alpha AI Desk desktop app. Let the user know.' })
+          continue
+        }
+        setStatus('Opening file...')
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const result = await (window as any).electronAPI.files.openApproved((parsed.path || parsed.filePath) as string)
+          accumulated.push(`[Desktop open file]: ${JSON.stringify(result)}`)
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: `Desktop open file result:\n${JSON.stringify(result, null, 2)}\n\nIf ok:true, tell the user the file opened. If ok:false, report the exact error and say Alpha AI can only open files it saved/downloaded/selected in this desktop session.` })
+        } catch (e) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: `Desktop open file failed: ${e instanceof Error ? e.message : 'Unknown error'}` })
+        }
+        setStatus('')
+        continue
+      }
+
+      if (parsed.tool === 'desktopKaptureSetup') {
+        if (!isElectronEnv) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: 'Kapture setup only works in the Alpha AI Desk desktop app. Let the user know.' })
+          continue
+        }
+        setStatus('Opening Kapture setup...')
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const result = await (window as any).electronAPI.kapture.openSetup()
+          accumulated.push(`[Kapture setup]: ${JSON.stringify(result)}`)
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: `Kapture setup result:\n${JSON.stringify(result, null, 2)}\n\nTell the user exactly what opened and what still has to be connected. Do not claim Kapture tabs are connected unless desktopMcpStatus or a Kapture tool result proves it.` })
+        } catch (e) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: `Kapture setup failed: ${e instanceof Error ? e.message : 'Unknown error'}` })
+        }
+        setStatus('')
+        continue
+      }
+
       if (parsed.tool === 'desktopNotify') {
         if (!isElectronEnv) {
           agentMessages.push({ role: 'assistant', content: raw })
@@ -1655,7 +1760,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const si = await (window as any).electronAPI.system.info()
-        const siText = `Platform: ${si.platform} ${si.release} | User: ${si.username} | CPU: ${si.cpus} cores | RAM: ${Math.round(si.memory?.free/1024/1024/1024)}GB free / ${Math.round(si.memory?.total/1024/1024/1024)}GB total`
+        const siText = `Platform: ${si.platform} ${si.release} | CPU: ${si.cpus} cores | RAM: ${Math.round(si.memory?.free/1024/1024/1024)}GB free / ${Math.round(si.memory?.total/1024/1024/1024)}GB total`
         accumulated.push(`[SystemInfo]: ${siText}`)
         agentMessages.push({ role: 'assistant', content: raw })
         agentMessages.push({ role: 'user', content: `System info: ${siText}` })
