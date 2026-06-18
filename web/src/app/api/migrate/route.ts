@@ -1,10 +1,14 @@
-﻿import { NextResponse } from 'next/server'
+﻿import { NextRequest, NextResponse } from 'next/server'
+import { requireAdmin } from '@/lib/admin-guard'
 
 export const dynamic = 'force-dynamic'
 
-// One-time migration to add missing columns to Supabase tables
-// Call GET /api/migrate to run
-export async function GET() {
+// One-time migration to add missing columns to Supabase tables.
+// Gated: requires the x-admin-secret header (and ADMIN_SECRET to be set).
+export async function GET(req: NextRequest) {
+  const denied = requireAdmin(req)
+  if (denied) return denied
+
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
   const projectRef = process.env.NEXT_PUBLIC_SUPABASE_URL?.match(/https:\/\/([^.]+)/)?.[1]
 

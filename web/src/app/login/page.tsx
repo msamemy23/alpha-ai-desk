@@ -462,9 +462,10 @@ export default function LoginPage() {
           max-width: 560px;
           margin: 0;
           font-size: clamp(42px, 7vw, 72px);
-          line-height: 0.95;
+          line-height: 1.1;
           font-weight: 900;
           letter-spacing: 0;
+          padding-bottom: 8px;
         }
 
         .desk-preview {

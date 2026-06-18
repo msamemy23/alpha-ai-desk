@@ -31,15 +31,16 @@ async function dbGet(callId: string) {
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { callId: string } }
+  { params }: { params: Promise<{ callId: string }> }
 ) {
   try {
+    const { callId } = await params
     const { ownerPhone } = await req.json()
     if (!ownerPhone) {
       return NextResponse.json({ ok: false, error: 'ownerPhone required' }, { status: 400 })
     }
 
-    const state = await dbGet(params.callId)
+    const state = await dbGet(callId)
     if (!state || state.status === 'ended') {
       return NextResponse.json({ ok: false, error: 'Call not active or not found' }, { status: 404 })
     }
@@ -48,10 +49,10 @@ export async function POST(
     const e164   = digits.length === 10 ? `+1${digits}` : `+${digits}`
 
     // Step 1: Transfer the active call leg to a conference room named after the callId
-    const confName = `conf_${params.callId.slice(0, 16)}`
+    const confName = `conf_${callId.slice(0, 16)}`
 
     const transferRes = await fetch(
-      `https://api.telnyx.com/v2/calls/${encodeURIComponent(params.callId)}/actions/transfer`,
+      `https://api.telnyx.com/v2/calls/${encodeURIComponent(callId)}/actions/transfer`,
       {
         method:  'POST',
         headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}`, 'Content-Type': 'application/json' },

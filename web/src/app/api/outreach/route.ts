@@ -1,11 +1,15 @@
 export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { sendSMS, formatPhone } from '@/lib/telnyx'
 import { sendEmail } from '@/lib/email'
 
 export async function POST(req: NextRequest) {
   try {
+    const auth = await getAuthedShop()
+    if (!auth) return unauthorized()
+
     const { type, filter, template, channel } = await req.json()
     // type: 'follow_up_cold' | 'oil_change_reminder' | 'custom'
     // filter: { daysSinceLastVisit, status, tags }
@@ -13,7 +17,7 @@ export async function POST(req: NextRequest) {
     // channel: 'sms' | 'email'
 
     const db = getServiceClient()
-    const { data: settings } = await db.from('settings').select('*').limit(1).single()
+    const { data: settings } = await db.from('settings').select('*').eq('shop_id', auth.shopId).limit(1).single()
     const shopName = settings?.shop_name || 'Alpha International Auto Center'
 
     let customers: Record<string, unknown>[] = []
@@ -25,10 +29,11 @@ export async function POST(req: NextRequest) {
       const { data: recentCustomerIds } = await db
         .from('jobs')
         .select('customer_id')
+        .eq('shop_id', auth.shopId)
         .gte('created_at', cutoff)
       const activeIds = (recentCustomerIds || []).map((j: Record<string,unknown>) => j.customer_id).filter(Boolean)
 
-      const query = db.from('customers').select('id,name,phone,email').not('id', 'in', `(${activeIds.map((id: unknown) => `"${id}"`).join(',') || '"00000000-0000-0000-0000-000000000000"'})`)
+      const query = db.from('customers').select('id,name,phone,email').eq('shop_id', auth.shopId).not('id', 'in', `(${activeIds.map((id: unknown) => `"${id}"`).join(',') || '"00000000-0000-0000-0000-000000000000"'})`)
       if (channel === 'sms') query.not('phone', 'is', null)
       if (channel === 'email') query.not('email', 'is', null)
       const { data } = await query.limit(500)
@@ -37,6 +42,7 @@ export async function POST(req: NextRequest) {
       const { data: jobs } = await db
         .from('jobs')
         .select('customer_id, customer_name, customer:customers(id,name,phone,email)')
+        .eq('shop_id', auth.shopId)
         .eq('status', filter.status)
       customers = (jobs || []).map((j: Record<string,unknown>) => j.customer as Record<string,unknown>).filter(Boolean)
     }
@@ -54,6 +60,7 @@ export async function POST(req: NextRequest) {
         if (channel === 'sms' && c.phone) {
           await sendSMS(formatPhone(c.phone as string), msg)
           await db.from('messages').insert({
+            shop_id: auth.shopId,
             direction: 'outbound', channel: 'sms',
             from_address: settings?.telnyx_phone_number,
             to_address: c.phone,
@@ -70,6 +77,7 @@ export async function POST(req: NextRequest) {
             from: settings?.from_email,
           })
           await db.from('messages').insert({
+            shop_id: auth.shopId,
             direction: 'outbound', channel: 'email',
             from_address: settings?.from_email,
             to_address: c.email,

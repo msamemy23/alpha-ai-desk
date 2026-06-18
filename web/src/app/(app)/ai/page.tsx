@@ -944,7 +944,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     if (voicePollRef.current) clearInterval(voicePollRef.current)
     voicePollRef.current = setInterval(async () => {
       try {
-        const r = await fetch(`/api/call-summary/${callId}`)
+        const r = await fetch(`/api/call-summary/${callId}`, { headers: await getAuthJsonHeaders() })
         const d = await r.json()
         if (d.ok) {
           setVoiceCall(prev => prev ? {
@@ -1813,7 +1813,8 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
     setSendingSms(true)
     try {
       const res = await fetch('/api/send-message', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: await getAuthJsonHeaders(),
         body: JSON.stringify({
           to: pendingSms.to,
           body: pendingSms.body,
@@ -1843,7 +1844,8 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
   const saveProposal = async (parsed: Record<string, unknown>) => {
     try {
       const res = await fetch('/api/create-estimate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: await getAuthJsonHeaders(),
         body: JSON.stringify({
           customer: parsed.customer,
           customer_email: parsed.customer_email,

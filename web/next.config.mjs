@@ -1,1 +1,9 @@
-// Deploy trigger: Fri Mar 13 22:55:19 UTC 2026
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
+  turbopack: {
+    root: process.cwd(),
+  },
+}
+
+export default nextConfig

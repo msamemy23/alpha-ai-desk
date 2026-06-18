@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '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'
+const TAVILY_API_KEY = process.env.TAVILY_API_KEY || ''
 
 const SEARXNG_INSTANCES = [
   'https://search.sapti.me',

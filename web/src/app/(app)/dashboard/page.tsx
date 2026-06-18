@@ -25,6 +25,18 @@ interface Stats {
   chartDays: { label: string; revenue: number }[]
 }
 
+async function getAuthJsonHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  try {
+    const { data } = await supabase.auth.getSession()
+    const token = data.session?.access_token
+    if (token) headers.Authorization = `Bearer ${token}`
+  } catch {
+    // Cookie auth can still succeed; the API will return the real error if not.
+  }
+  return headers
+}
+
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(true)
@@ -144,7 +156,7 @@ export default function DashboardPage() {
 
       const res = await fetch('/api/ai-completions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await getAuthJsonHeaders(),
         body: JSON.stringify({
           model: 'meta-llama/llama-3.3-70b-instruct:free',
           messages: [
@@ -162,11 +174,12 @@ export default function DashboardPage() {
   }
 
   const sendSlowDayOutreach = async () => {
+    if (!window.confirm('Send this outreach to matching customers now?')) return
     setSlowDaySending(true); setSlowDayResult(null)
     try {
       const res = await fetch('/api/outreach', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await getAuthJsonHeaders(),
         body: JSON.stringify({
           type: 'follow_up_cold',
           filter: { daysSinceLastVisit: 60 },

@@ -1,18 +1,20 @@
 ﻿export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { sendEmail, estimateEmailHtml } from '@/lib/email'
 
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
 function fail(error: string, status = 400) { return NextResponse.json({ ok: false, error }, { status }) }
 
 export async function POST(req: NextRequest) {
+  // Require a real session and act only on the authenticated caller's shop.
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
+  const shopId = auth.shopId
+
   const sb = getServiceClient()
   const { action, payload } = await req.json() as { action: string; payload: Record<string, unknown> }
-
-  // Resolve shop_id for all insert operations — required for RLS to pass
-  const { data: _shopProfile } = await sb.from('shop_profiles').select('id').limit(1).single()
-  const shopId: string | null = _shopProfile?.id ?? null
 
   try {
     switch (action) {
@@ -52,7 +54,7 @@ export async function POST(req: NextRequest) {
         const docType = (payload.type as string) || 'Invoice'
         const prefix = docType === 'Estimate' ? 'EST' : docType === 'Receipt' ? 'REC' : 'INV'
         const year = new Date().getFullYear()
-        const { data: existing } = await sb.from('documents').select('doc_number').eq('type', docType).like('doc_number', `${prefix}-${year}-%`)
+        const { data: existing } = await sb.from('documents').select('doc_number').eq('shop_id', shopId).eq('type', docType).like('doc_number', `${prefix}-${year}-%`)
         const nums = (existing || []).map((d: Record<string, string>) => parseInt(d.doc_number.split('-').pop() || '0'))
         const next = Math.max(0, ...nums) + 1
         const doc_number = `${prefix}-${year}-${String(next).padStart(4, '0')}`
@@ -82,7 +84,7 @@ export async function POST(req: NextRequest) {
         if (!id || !newStatus) return fail('id and status are required')
         const { data, error } = await sb.from('jobs').update({
           status: newStatus, updated_at: new Date().toISOString(),
-        }).eq('id', id).select().single()
+        }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
         return ok(data)
       }
@@ -93,7 +95,7 @@ export async function POST(req: NextRequest) {
         if (!id) return fail('Customer id is required')
         const { data, error } = await sb.from('customers').update({
           ...updates, updated_at: new Date().toISOString(),
-        }).eq('id', id).select().single()
+        }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
         return ok(data)
       }
@@ -104,7 +106,7 @@ export async function POST(req: NextRequest) {
         if (!id) return fail('Document id is required')
         const { data, error } = await sb.from('documents').update({
           status: 'Void', updated_at: new Date().toISOString(),
-        }).eq('id', id).select().single()
+        }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
         return ok(data)
       }
@@ -115,7 +117,8 @@ export async function POST(req: NextRequest) {
         const allowed = ['customers', 'jobs', 'documents', 'messages']
         if (!allowed.includes(table)) return fail(`Cannot delete from table: ${table}`)
         if (!id) return fail('Record id is required')
-        const { error } = await sb.from(table).delete().eq('id', id)
+        // Scope the delete to the caller's shop so one shop can't delete another's row.
+        const { error } = await sb.from(table).delete().eq('id', id).eq('shop_id', shopId)
         if (error) return fail(error.message, 500)
         return ok({ deleted: true, table, id })
       }
@@ -131,6 +134,7 @@ export async function POST(req: NextRequest) {
           message_body: message_body || '',
           subject: subject || null,
           status: 'pending',
+          shop_id: shopId,
           created_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
@@ -146,9 +150,9 @@ export async function POST(req: NextRequest) {
 
         if (customer_id) {
           const [jRes, dRes, mRes] = await Promise.all([
-            sb.from('jobs').select('*').eq('customer_id', customer_id).order('created_at', { ascending: false }).limit(20),
-            sb.from('documents').select('*').eq('customer_id', customer_id).order('created_at', { ascending: false }).limit(20),
-            sb.from('messages').select('*').eq('customer_id', customer_id).order('created_at', { ascending: false }).limit(20),
+            sb.from('jobs').select('*').eq('shop_id', shopId).eq('customer_id', customer_id).order('created_at', { ascending: false }).limit(20),
+            sb.from('documents').select('*').eq('shop_id', shopId).eq('customer_id', customer_id).order('created_at', { ascending: false }).limit(20),
+            sb.from('messages').select('*').eq('shop_id', shopId).eq('customer_id', customer_id).order('created_at', { ascending: false }).limit(20),
           ])
           jobs = jRes.data || []
           docs = dRes.data || []
@@ -156,8 +160,8 @@ export async function POST(req: NextRequest) {
         } else if (customer_name) {
           const name = customer_name as string
           const [jRes, dRes] = await Promise.all([
-            sb.from('jobs').select('*').ilike('customer_name', `%${name}%`).order('created_at', { ascending: false }).limit(20),
-            sb.from('documents').select('*').ilike('customer_name', `%${name}%`).order('created_at', { ascending: false }).limit(20),
+            sb.from('jobs').select('*').eq('shop_id', shopId).ilike('customer_name', `%${name}%`).order('created_at', { ascending: false }).limit(20),
+            sb.from('documents').select('*').eq('shop_id', shopId).ilike('customer_name', `%${name}%`).order('created_at', { ascending: false }).limit(20),
           ])
           jobs = jRes.data || []
           docs = dRes.data || []
@@ -176,10 +180,10 @@ export async function POST(req: NextRequest) {
 
         // Search customers + jobs in parallel
         const [custRes, jobsRes, docsRes, msgsRes] = await Promise.all([
-          sb.from('customers').select('*').or(`name.ilike.%${q}%,phone.ilike.%${q}%,email.ilike.%${q}%,address.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
-          sb.from('jobs').select('*').or(`customer_name.ilike.%${q}%,notes.ilike.%${q}%,vin.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
-          sb.from('documents').select('*').or(`customer_name.ilike.%${q}%,doc_number.ilike.%${q}%,notes.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
-          sb.from('messages').select('*').or(`body.ilike.%${q}%,from_address.ilike.%${q}%,to_address.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
+          sb.from('customers').select('*').eq('shop_id', shopId).or(`name.ilike.%${q}%,phone.ilike.%${q}%,email.ilike.%${q}%,address.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
+          sb.from('jobs').select('*').eq('shop_id', shopId).or(`customer_name.ilike.%${q}%,notes.ilike.%${q}%,vin.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
+          sb.from('documents').select('*').eq('shop_id', shopId).or(`customer_name.ilike.%${q}%,doc_number.ilike.%${q}%,notes.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
+          sb.from('messages').select('*').eq('shop_id', shopId).or(`body.ilike.%${q}%,from_address.ilike.%${q}%,to_address.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
         ])
 
         // Enrich customers with their jobs/vehicle info
@@ -210,7 +214,7 @@ export async function POST(req: NextRequest) {
             if (docWithEmail) {
               resolvedEmail = docWithEmail.customer_email as string
               // Save email back to customers table so future searches find it directly
-              sb.from('customers').update({ email: resolvedEmail }).eq('id', c.id as string).then(() => {})
+              sb.from('customers').update({ email: resolvedEmail }).eq('id', c.id as string).eq('shop_id', shopId).then(() => {})
             }
           }
           return { ...c, email: resolvedEmail, vehicles: uniqueVehicles, recent_jobs: custJobs.slice(0, 5) }
@@ -247,10 +251,10 @@ export async function POST(req: NextRequest) {
         const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0]
 
         const [jobsRes, docsRes, msgsRes, custRes] = await Promise.all([
-          sb.from('jobs').select('*').gte('created_at', weekAgo),
-          sb.from('documents').select('*').gte('created_at', weekAgo),
-          sb.from('messages').select('*', { count: 'exact', head: true }).eq('read', false).eq('direction', 'inbound'),
-          sb.from('customers').select('*', { count: 'exact', head: true }),
+          sb.from('jobs').select('*').eq('shop_id', shopId).gte('created_at', weekAgo),
+          sb.from('documents').select('*').eq('shop_id', shopId).gte('created_at', weekAgo),
+          sb.from('messages').select('*', { count: 'exact', head: true }).eq('shop_id', shopId).eq('read', false).eq('direction', 'inbound'),
+          sb.from('customers').select('*', { count: 'exact', head: true }).eq('shop_id', shopId),
         ])
 
         const jobs = jobsRes.data || []
@@ -289,7 +293,7 @@ export async function POST(req: NextRequest) {
       case 'sendEstimateEmail': {
         const { doc_number, customer_name, customer_id, email: overrideEmail } = payload
         // Find the document
-        let docQuery = sb.from('documents').select('*')
+        let docQuery = sb.from('documents').select('*').eq('shop_id', shopId)
         if (doc_number) docQuery = docQuery.eq('doc_number', doc_number)
         else if (customer_name) docQuery = docQuery.ilike('customer_name', `%${customer_name}%`).order('created_at', { ascending: false }).limit(1)
         else if (customer_id) docQuery = docQuery.eq('customer_id', customer_id).order('created_at', { ascending: false }).limit(1)
@@ -303,13 +307,13 @@ export async function POST(req: NextRequest) {
         let toEmail = overrideEmail as string | undefined
         if (!toEmail && doc.customer_email) toEmail = doc.customer_email
         if (!toEmail && doc.customer_id) {
-          const { data: cust } = await sb.from('customers').select('email').eq('id', doc.customer_id).single()
+          const { data: cust } = await sb.from('customers').select('email').eq('id', doc.customer_id).eq('shop_id', shopId).single()
           toEmail = cust?.email
         }
         if (!toEmail) return fail('No email on file for this customer. Ask the user to add an email first.')
 
         // Get settings for email template
-        const { data: settings } = await sb.from('settings').select('*').limit(1).single()
+        const { data: settings } = await sb.from('settings').select('*').eq('shop_id', shopId).limit(1).single()
         const html = estimateEmailHtml(doc, settings || {})
         const fromEmail = settings?.from_email || 'Alpha Auto <onboarding@resend.dev>'
         const shopName = settings?.shop_name || 'Alpha International Auto Center'
@@ -332,11 +336,12 @@ export async function POST(req: NextRequest) {
           body: `${doc.type} #${doc.doc_number} sent via AI`,
           document_id: doc.id,
           customer_id: doc.customer_id,
+          shop_id: shopId,
           status: 'sent', read: true,
         })
 
         // Mark doc as sent
-        await sb.from('documents').update({ sent_at: new Date().toISOString() }).eq('id', doc.id)
+        await sb.from('documents').update({ sent_at: new Date().toISOString() }).eq('id', doc.id).eq('shop_id', shopId)
 
         return ok({ sent: true, to: toEmail, doc_number: doc.doc_number, type: doc.type })
       }
@@ -346,11 +351,11 @@ export async function POST(req: NextRequest) {
         case 'convertEstimateToInvoice': {
           const { id: estId } = payload
           if (!estId) return fail('Estimate id is required')
-          const { data: est, error: estErr } = await sb.from('documents').select('*').eq('id', estId).single()
+          const { data: est, error: estErr } = await sb.from('documents').select('*').eq('id', estId).eq('shop_id', shopId).single()
           if (estErr || !est) return fail('Estimate not found')
           const invPrefix = 'INV'
           const invYear = new Date().getFullYear()
-          const { data: invExisting } = await sb.from('documents').select('doc_number').eq('type', 'Invoice').like('doc_number', `${invPrefix}-${invYear}-%`)
+          const { data: invExisting } = await sb.from('documents').select('doc_number').eq('shop_id', shopId).eq('type', 'Invoice').like('doc_number', `${invPrefix}-${invYear}-%`)
           const invNums = (invExisting || []).map((d: Record<string, string>) => parseInt(d.doc_number.split('-').pop() || '0'))
           const invNext = Math.max(0, ...invNums) + 1
           const invDocNumber = `${invPrefix}-${invYear}-${String(invNext).padStart(4, '0')}`
@@ -374,6 +379,7 @@ export async function POST(req: NextRequest) {
           name: String(name).trim(),
           role: (role as string) || 'technician',
           emoji: (emoji as string) || ((role === 'technician') ? '🔧' : '👤'),
+          shop_id: shopId,
           active: true,
           created_at: new Date().toISOString(),
         }).select().single()
@@ -384,9 +390,9 @@ export async function POST(req: NextRequest) {
       // ── Remove Staff Member ──────────────────────────────────
       case 'removeStaff': {
         const { name, id } = payload
-        let query = sb.from('staff').update({ active: false })
-        if (id) query = (query as ReturnType<typeof sb.from>).eq('id', id)
-        else if (name) query = (query as ReturnType<typeof sb.from>).ilike('name', `%${String(name)}%`)
+        let query: any = sb.from('staff').update({ active: false }).eq('shop_id', shopId)
+        if (id) query = query.eq('id', id)
+        else if (name) query = query.ilike('name', `%${String(name)}%`)
         else return fail('Provide staff name or id')
         const { data, error } = await query.select().single()
         if (error) return fail(error.message, 500)
@@ -395,7 +401,7 @@ export async function POST(req: NextRequest) {
 
       // ── List Staff ───────────────────────────────────────────
       case 'listStaff': {
-        const { data } = await sb.from('staff').select('*').eq('active', true).order('name')
+        const { data } = await sb.from('staff').select('*').eq('shop_id', shopId).eq('active', true).order('name')
         return ok({ staff: data || [] })
       }
 
@@ -405,7 +411,7 @@ export async function POST(req: NextRequest) {
         if (!id) return fail('Document id is required')
         const { data, error } = await sb.from('documents').update({
           ...updates, updated_at: new Date().toISOString(),
-        }).eq('id', id).select().single()
+        }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
         return ok(data)
       }
@@ -425,6 +431,7 @@ export async function POST(req: NextRequest) {
           notes: notes || '',
           phone: phone || null,
           email: email || null,
+          shop_id: shopId,
           created_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
@@ -437,6 +444,7 @@ export async function POST(req: NextRequest) {
         const start = (startDate as string) || new Date().toISOString().split('T')[0]
         const end   = (endDate as string) || start
         let query = sb.from('timeclock').select('*')
+          .eq('shop_id', shopId)
           .gte('clock_in', start + 'T00:00:00')
           .lte('clock_in', end + 'T23:59:59')
           .order('clock_in', { ascending: true })
@@ -457,7 +465,7 @@ export async function POST(req: NextRequest) {
       case 'deleteAppointment': {
         const { id } = payload
         if (!id) return fail('Appointment id is required')
-        const { error } = await sb.from('appointments').delete().eq('id', id)
+        const { error } = await sb.from('appointments').delete().eq('id', id).eq('shop_id', shopId)
         if (error) return fail(error.message, 500)
         return ok({ deleted: true, id })
       }
@@ -466,7 +474,7 @@ export async function POST(req: NextRequest) {
       case 'updateAppointment': {
         const { id, ...updates } = payload
         if (!id) return fail('Appointment id is required')
-        const { data, error } = await sb.from('appointments').update(updates).eq('id', id).select().single()
+        const { data, error } = await sb.from('appointments').update(updates).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
         return ok(data)
       }
@@ -474,7 +482,7 @@ export async function POST(req: NextRequest) {
       // ── Get Inventory ────────────────────────────────────────
       case 'getInventory': {
         const { query: q } = payload
-        let dbQuery = sb.from('inventory').select('*').order('name')
+        let dbQuery = sb.from('inventory').select('*').eq('shop_id', shopId).order('name')
         if (q) dbQuery = dbQuery.ilike('name', `%${String(q)}%`)
         const { data } = await dbQuery.limit(50)
         return ok({ inventory: data || [] })
@@ -486,7 +494,7 @@ export async function POST(req: NextRequest) {
         if (!id) return fail('Inventory item id is required')
         const { data, error } = await sb.from('inventory').update({
           ...updates, updated_at: new Date().toISOString(),
-        }).eq('id', id).select().single()
+        }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
         return ok(data)
       }

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { getServiceClient } from '@/lib/supabase'
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const TELNYX_PHONE   = process.env.TELNYX_PHONE   || '+17136636979'
@@ -9,8 +11,12 @@ const APP_URL = 'https://alpha-ai-desk.vercel.app'
 
 export async function POST(req: NextRequest) {
   try {
+    const auth = await getAuthedShop()
+    if (!auth) return unauthorized()
+
     const { to, task, callerName } = await req.json()
     if (!to) return NextResponse.json({ ok: false, error: 'Missing to' }, { status: 400 })
+    if (!TELNYX_API_KEY) return NextResponse.json({ ok: false, error: 'Telnyx is not configured' }, { status: 500 })
 
     const digits = to.replace(/\D/g, '')
     const e164   = digits.length === 10 ? `+1${digits}` : `+${digits}`
@@ -47,24 +53,14 @@ export async function POST(req: NextRequest) {
 
     const callId = data.data.call_control_id
 
-    // Store initial state in Supabase immediately
-    const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-    const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY     || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
-    await fetch(`${SUPABASE_URL}/rest/v1/ai_calls`, {
-      method:  'POST',
-      headers: {
-        'apikey':        SUPABASE_KEY,
-        'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'Content-Type':  'application/json',
-      },
-      body: JSON.stringify({
-        id:         callId,
-        task:       task || 'Have a helpful conversation',
-        status:     'dialing',
-        started_at: Date.now(),
-        greeted:    false,
-        processing: false,
-      }),
+    await getServiceClient().from('ai_calls').insert({
+      id: callId,
+      shop_id: auth.shopId,
+      task: task || 'Have a helpful conversation',
+      status: 'dialing',
+      started_at: Date.now(),
+      greeted: false,
+      processing: false,
     })
 
     return NextResponse.json({ ok: true, callId, to: e164 })

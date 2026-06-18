@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requireAdmin } from '@/lib/admin-guard'
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || ''
 
-export async function POST(_req: NextRequest) {
+export async function POST(req: NextRequest) {
+  const denied = requireAdmin(req)
+  if (denied) return denied
   // Create connectors table via Supabase direct SQL
   // We do this by inserting and catching errors — actual table creation
   // happens through the Supabase management API or manually

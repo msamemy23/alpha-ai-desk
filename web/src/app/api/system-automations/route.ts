@@ -4,7 +4,7 @@ import { getServiceClient } from '@/lib/supabase'
 export const dynamic = 'force-dynamic'
 
 // Pre-built system automations — these execute real actions, not just AI prompts
-export const SYSTEM_AUTOMATIONS = [
+const SYSTEM_AUTOMATIONS = [
   {
     id: 'review_requests',
     name: 'Review Requests',
@@ -221,10 +221,11 @@ export async function POST(req: NextRequest) {
       const baseUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
       const userConfig = config[id].config || {}
       const mergedBody = { ...auto.endpointBody, ...userConfig }
+      const cookie = req.headers.get('cookie')
 
       const res = await fetch(`${baseUrl}${auto.endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(cookie ? { cookie } : {}) },
         body: JSON.stringify(mergedBody),
       })
       const data = await res.json()
@@ -249,6 +250,7 @@ export async function POST(req: NextRequest) {
   if (action === 'run_all_due') {
     const results: Record<string, unknown> = {}
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+    const cookie = req.headers.get('cookie')
 
     for (const auto of SYSTEM_AUTOMATIONS) {
       const state = config[auto.id]
@@ -263,7 +265,7 @@ export async function POST(req: NextRequest) {
         const mergedBody = { ...auto.endpointBody, ...userConfig }
         const res = await fetch(`${baseUrl}${auto.endpoint}`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...(cookie ? { cookie } : {}) },
           body: JSON.stringify(mergedBody),
         })
         const data = await res.json()

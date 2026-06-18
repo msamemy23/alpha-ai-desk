@@ -10,6 +10,16 @@ function Toast({ message, type, onClose }: { message: string; type: 'success' | 
   return (<div className={`fixed top-4 right-4 z-[100] ${bg} text-white px-5 py-3 rounded-xl shadow-2xl flex items-center gap-3 text-sm font-medium animate-slide-in`}>{message}<button onClick={onClose} className="ml-2 opacity-70 hover:opacity-100">x</button></div>)
 }
 function timeAgo(d: string) { if (!d) return 'Never'; const days = Math.floor((Date.now() - new Date(d).getTime()) / 86400000); if (days === 0) return 'Today'; if (days === 1) return 'Yesterday'; if (days < 30) return `${days}d ago`; if (days < 365) return `${Math.floor(days / 30)}mo ago`; return `${Math.floor(days / 365)}y ago` }
+
+async function getAuthJsonHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  try {
+    const { data } = await supabase.auth.getSession()
+    const token = data.session?.access_token
+    if (token) headers.Authorization = `Bearer ${token}`
+  } catch {}
+  return headers
+}
 function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
   return (<div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}><div className={`bg-[#1a2332] rounded-2xl shadow-2xl ${wide ? 'max-w-4xl' : 'max-w-lg'} w-full max-h-[85vh] overflow-y-auto p-6`} onClick={e => e.stopPropagation()}><div className="flex items-center justify-between mb-4"><h2 className="text-lg font-bold text-white">{title}</h2><button onClick={onClose} className="text-gray-400 hover:text-white text-xl">x</button></div>{children}</div></div>)
 }
@@ -162,7 +172,7 @@ export default function GrowthPage() {
     return daysSince > 60 // 60 days = 2 months inactive
   })
   const logActivity = async (action: string, target: string, details: string, status: string) => { await supabase.from('growth_activity').insert({ action, target, details, status, created_at: new Date().toISOString() }) }
-  const sendSms = async (to: string, message: string) => { const res = await fetch('/api/send-sms', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to, message }) }); if (!res.ok) throw new Error('SMS failed'); return res.json() }
+  const sendSms = async (to: string, message: string) => { const res = await fetch('/api/send-sms', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify({ to, message }) }); if (!res.ok) throw new Error('SMS failed'); return res.json() }
   const doOutreach = async (leadId: string, method: string) => { setSending(leadId); try { const res = await fetch('/api/growth/outreach', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lead_id: leadId, method, ai_mode: aiMode }) }); const d = await res.json(); if (d.success) { notify(`${method.toUpperCase()} sent!`, 'success'); await load() } else notify(d.error || 'Failed', 'error') } catch { notify('Outreach failed', 'error') } setSending(null) }
   const sendFollowUp = async (c: Rec) => { if (!c.phone) return notify('No phone', 'error'); setSending(c.id); try { await sendSms(c.phone, `Hi ${c.name?.split(' ')[0] || 'there'}! It's Alpha International Auto Center. Time for a checkup? Reply YES or call (713) 663-6979!`); await supabase.from('customers').update({ last_contact: new Date().toISOString() }).eq('id', c.id); await logActivity('follow_up_sms', c.name, `Sent to ${c.phone}`, 'sent'); notify(`Follow-up sent to ${c.name}`, 'success'); await load() } catch { notify('Failed', 'error') } setSending(null) }
   const bulkFollowUp = async () => { const eligible = staleCustomers.filter(c => c.phone); if (!eligible.length) return notify('No customers with phone', 'error'); if (!confirm(`Send follow-up to ${eligible.length} customers?`)) return; let sent = 0; for (const c of eligible) { try { await sendFollowUp(c); sent++ } catch {} } notify(`Sent ${sent} of ${eligible.length}`, 'success') }
@@ -289,4 +299,3 @@ export default function GrowthPage() {
 
     </div>)
 }
-

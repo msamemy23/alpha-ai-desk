@@ -186,31 +186,38 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-screen overflow-hidden bg-bg-base text-text-primary">
       {sidebarOpen && (
-        <div className="fixed inset-0 bg-black/70 z-40 lg:hidden" onClick={() => setSidebarOpen(false)} />
+        <div className="fixed inset-0 bg-black/70 z-40 backdrop-blur-sm lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
       <aside className={`
         fixed inset-y-0 left-0 z-50 w-72 border-r border-white/10 flex flex-col shrink-0
-        bg-[#0b1018]/95 backdrop-blur-xl shadow-2xl shadow-black/30
+        bg-[#111318]/98 backdrop-blur-xl shadow-2xl shadow-black/35
         transform transition-transform duration-200 ease-in-out
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         lg:static lg:translate-x-0 lg:w-64
       `}>
         <div className="px-4 py-4 border-b border-white/10">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-blue to-green flex items-center justify-center text-sm font-black text-white shadow-lg shadow-blue/20">A</div>
+            <div className="grid h-10 w-10 place-items-center rounded-lg bg-blue text-sm font-black text-[#061114] shadow-lg shadow-blue/10">A</div>
             <div className="min-w-0">
               <div className="text-sm font-bold leading-tight truncate">Alpha AI Desk</div>
               <div className="text-xs text-text-secondary truncate">Shop command center</div>
             </div>
-            <button className="ml-auto p-2 rounded-lg hover:bg-white/10 lg:hidden" onClick={() => setSidebarOpen(false)} aria-label="Close menu">
+            <button className="ml-auto grid h-9 w-9 place-items-center rounded-lg border border-white/10 bg-white/[0.03] hover:bg-white/10 lg:hidden" onClick={() => setSidebarOpen(false)} aria-label="Close menu">
               <Icon name="close" className="h-5 w-5" />
             </button>
+          </div>
+          <div className="mt-3 flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.035] px-3 py-2">
+            <div className="text-[11px] font-bold uppercase text-text-muted">Desktop AI</div>
+            <div className="flex items-center gap-2 text-[11px] font-bold text-green">
+              <span className="h-1.5 w-1.5 rounded-full bg-green shadow-[0_0_10px_rgba(52,211,153,0.8)]" />
+              MCP ready
+            </div>
           </div>
         </div>
 
         <div className="px-3 pt-3">
-          <select className="form-select text-xs w-full bg-white/5 border-white/10" value={location} onChange={e => switchLocation(e.target.value)}>
+          <select className="form-select text-xs w-full bg-white/[0.04] border-white/10" value={location} onChange={e => switchLocation(e.target.value)}>
             <option value="main">{shopProfile?.address || 'Set address in Settings'}</option>
             <option value="south">South - Coming Soon</option>
             <option value="north">North - Coming Soon</option>
@@ -222,7 +229,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
             const active = pathname.startsWith(item.href)
             return (
               <Link key={item.href} href={item.href} className={`nav-item group ${active ? 'active' : ''}`}>
-                <span className={`grid h-7 w-7 place-items-center rounded-md shrink-0 ${active ? 'bg-blue/15 text-blue' : 'bg-white/5 text-text-secondary group-hover:text-text-primary'}`}>
+                <span className={`grid h-7 w-7 place-items-center rounded-md shrink-0 transition-colors ${active ? 'bg-blue/20 text-blue' : 'bg-white/[0.04] text-text-secondary group-hover:bg-white/[0.08] group-hover:text-text-primary'}`}>
                   <Icon name={item.icon} className="h-4 w-4" />
                 </span>
                 <span className="flex-1 truncate">{item.label}</span>
@@ -237,25 +244,35 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         </nav>
 
         <div className="p-4 border-t border-white/10">
-          <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
-            <div className="text-xs font-semibold truncate">{shopName}</div>
-            <div className="text-xs text-text-secondary mt-1">{shopPhone}</div>
+          <div className="rounded-lg border border-white/10 bg-white/[0.035] p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-xs font-semibold truncate">{shopName}</div>
+              <span className="rounded-full border border-green/30 bg-green/10 px-2 py-0.5 text-[10px] font-bold text-green">Open</span>
+            </div>
+            <div className="text-xs text-text-secondary mt-1 truncate">{shopPhone}</div>
           </div>
         </div>
       </aside>
 
       <div className="flex-1 flex flex-col overflow-hidden w-full">
-        <div className="h-14 border-b border-border/80 flex items-center justify-between px-3 sm:px-5 shrink-0 bg-bg-card/90 backdrop-blur">
+        <div className="h-16 border-b border-border/80 flex items-center justify-between px-3 sm:px-5 shrink-0 bg-bg-card/90 backdrop-blur">
           <div className="flex items-center gap-3 min-w-0">
-            <button className="p-2 rounded-lg hover:bg-bg-hover transition-colors lg:hidden" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
+            <button className="grid h-10 w-10 place-items-center rounded-lg border border-border bg-bg-hover/60 hover:border-blue/40 transition-colors lg:hidden" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
               <Icon name="menu" className="h-5 w-5" />
             </button>
             <div className="min-w-0">
-              <div className="text-sm font-bold truncate">{pageTitle}</div>
+              <div className="text-base font-black truncate">{pageTitle}</div>
               <div className="hidden sm:block text-xs text-text-muted truncate">{shopName}</div>
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Link
+              href="/ai"
+              className="hidden sm:inline-flex min-h-9 items-center gap-2 rounded-lg border border-blue/25 bg-blue/10 px-3 text-xs font-bold text-blue transition-colors hover:bg-blue/15"
+            >
+              <Icon name="spark" className="h-4 w-4" />
+              Ask Alpha
+            </Link>
             <button
               className="grid h-9 w-9 place-items-center rounded-lg border border-border bg-bg-hover/60 text-text-secondary hover:text-text-primary hover:border-blue/40 transition-colors"
               onClick={toggleLightMode}
@@ -279,7 +296,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
                 )}
               </button>
               {notifOpen && (
-                <div className="absolute right-0 top-full mt-2 w-80 max-w-[calc(100vw-2rem)] bg-bg-card border border-border rounded-lg shadow-xl z-50 max-h-96 overflow-y-auto">
+                <div className="absolute right-0 top-full mt-2 w-80 max-w-[calc(100vw-2rem)] bg-bg-card border border-border rounded-lg shadow-xl shadow-black/30 z-50 max-h-96 overflow-y-auto">
                   <div className="px-4 py-3 border-b border-border flex items-center justify-between">
                     <span className="text-sm font-bold">Notifications</span>
                     <button className="text-xs text-text-muted hover:text-text-primary" onClick={() => setNotifOpen(false)}>Close</button>

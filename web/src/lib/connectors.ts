@@ -5,9 +5,8 @@
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID     || '1736123851-r05fmhp9eb9pv7cn3t7joihcdjf1tl0m.apps.googleusercontent.com'
-// Must match the secret used in auth/google/callback to refresh tokens correctly
-const _GS = ['GOCSPX','Cfcui9gkMx3b8iV','Nd3pLv206PtY']
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET_V2 || process.env.GOOGLE_CLIENT_SECRET || _GS.join('-')
+// Secret comes only from env — never hardcode it in source.
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET_V2 || process.env.GOOGLE_CLIENT_SECRET || ''
 
 export interface Connector {
   id: string

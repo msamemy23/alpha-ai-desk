@@ -6,6 +6,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
+import { verifyTelnyxSignature } from '@/lib/telnyx-verify'
 
 const TELNYX_API_KEY     = process.env.TELNYX_API_KEY     || ''
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
@@ -94,7 +95,14 @@ async function aiChat(messages: Array<{role: string; content: string}>, maxToken
 
 // ── Main webhook handler ───────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
-  const body      = await req.json()
+  const rawBody = await req.text()
+  const sig = req.headers.get('telnyx-signature-ed25519')
+  const ts = req.headers.get('telnyx-timestamp')
+  if (!verifyTelnyxSignature(rawBody, sig, ts)) {
+    return NextResponse.json({ ok: false, error: 'Invalid signature' }, { status: 401 })
+  }
+
+  const body      = JSON.parse(rawBody)
   const eventType = body?.data?.event_type as string
   const payload   = body?.data?.payload    as Record<string, unknown>
   const callId    = payload?.call_control_id as string

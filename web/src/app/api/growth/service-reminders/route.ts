@@ -75,13 +75,15 @@ export async function POST(req: NextRequest) {
 
       if (!dry_run) {
         const result = await sendSMS(customer.phone, msg)
-        await sb.from('service_reminders_sent').insert({
-          vehicle_id: vehicle.id,
-          customer_id: vehicle.customer_id,
-          message: msg,
-          sent: result.success,
-          created_at: new Date().toISOString(),
-        }).catch(() => {}) // table may not exist yet, ignore
+        try {
+          await sb.from('service_reminders_sent').insert({
+            vehicle_id: vehicle.id,
+            customer_id: vehicle.customer_id,
+            message: msg,
+            sent: result.success,
+            created_at: new Date().toISOString(),
+          })
+        } catch { /* table may not exist yet */ }
         results.push({ vehicle: `${vehicle.year} ${vehicle.make} ${vehicle.model}`, customer: customer.name, sent: result.success })
       } else {
         results.push({ vehicle: `${vehicle.year} ${vehicle.make} ${vehicle.model}`, customer: customer.name, sent: false, dry_run: true, message: msg })

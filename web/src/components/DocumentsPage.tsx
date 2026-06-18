@@ -3,7 +3,19 @@ import { useEffect, useState, useCallback } from 'react'
 import { supabase, calcTotals, formatCurrency } from '@/lib/supabase'
 
 interface Customer { id: string; name: string; phone: string; email: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin: string; vehicle_plate: string; vehicle_mileage: string }
-interface Doc { id: string; type: string; doc_number: string; status: string; doc_date: string; customer_name: string; customer_id: string; customer_phone?: string; customer_email?: string; signature_requested_at?: string; signature_signed_at?: string; signature_signer_name?: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; warranty_months: number | null; warranty_mileage: number | null; warranty_start: string | null; warranty_exclusions: string | null; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
+interface Doc { id: string; type: string; doc_number: string; status: string; doc_date: string; customer_name: string; customer_id: string; customer_phone?: string; customer_email?: string; signature_requested_at?: string; signature_signed_at?: string; signature_signer_name?: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin?: string; vehicle_plate?: string; vehicle_mileage?: string | number; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; warranty_months: number | null; warranty_mileage: number | null; warranty_start: string | null; warranty_exclusions: string | null; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
+
+async function getAuthJsonHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  try {
+    const { data } = await supabase.auth.getSession()
+    const token = data.session?.access_token
+    if (token) headers.Authorization = `Bearer ${token}`
+  } catch {
+    // Cookie auth can still succeed; the API will return the real error if not.
+  }
+  return headers
+}
 
 const WARRANTY_PRESETS = [
   {
@@ -292,7 +304,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   }
 
   const save = async (keepOpen = false) => {
-    const VALID_COLS = new Set(['type','doc_number','status','doc_date','due_date','expires_date','customer_id','customer_name','job_id','vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage','parts','labors','shop_supplies','sublet','tax_rate','apply_tax','deposit','amount_paid','payment_method','cashier','payment_terms','payment_methods','warranty_type','warranty_months','warranty_mileage','warranty_start','warranty_exclusions','warranty_claim','notes','locked','sent_at','created_at','updated_at','customer_phone','customer_email','signature_signed_at','signature_signer_name','signature_requested_at','line_items','payment_plan'])
+    const VALID_COLS = new Set(['type','doc_number','status','doc_date','due_date','expires_date','customer_id','customer_name','job_id','vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage','parts','labors','shop_supplies','sublet','tax_rate','apply_tax','deposit','amount_paid','payment_method','cashier','payment_terms','payment_methods','warranty_type','warranty_months','warranty_mileage','warranty_start','warranty_exclusions','warranty_claim','notes','internal_notes','locked','sent_at','created_at','updated_at','customer_phone','customer_email','signature_signed_at','signature_signer_name','signature_requested_at','line_items','payment_plan'])
     const raw = { ...form, type, updated_at: new Date().toISOString() } as Record<string,unknown>
     const data: Record<string,unknown> = {}
     for (const k of Object.keys(raw)) { if (VALID_COLS.has(k)) data[k] = raw[k] }
@@ -318,7 +330,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
           // RLS blocked the update — refresh shop_id and retry with service route
           const resp = await fetch('/api/save-document', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: await getAuthJsonHeaders(),
             body: JSON.stringify({ id: editing, data })
           })
           if (!resp.ok) {
@@ -375,7 +387,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     setForm(f => ({ ...f, [k]: e.target.value }))
 
   const filtered = docs.filter(d => !search || [d.doc_number, d.customer_name, d.status, d.vehicle_year, d.vehicle_make, d.vehicle_model, d.vehicle_plate, d.vehicle_vin].some(v => (v||'').toLowerCase().includes(search.toLowerCase())))
-  const totals = form ? calcTotals(form as Record<string,unknown>) : null
+  const totals = form ? calcTotals(form as unknown as Record<string,unknown>) : null
   const fmt = (d: string) => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—'
 
   const statusColor: Record<string,string> = { Draft:'tag-gray', Sent:'tag-blue', Approved:'tag-green', Unpaid:'tag-red', Partial:'tag-amber', Paid:'tag-green' }
@@ -385,14 +397,15 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     setSendError(''); setSendSuccess('')
     const customer = customers.find(c => c.id === sendModal.customer_id)
     // Try all sources: customer table, document fields, form phone/email fields
-    const emailAddr = customer?.email || sendModal.customer_email || (sendModal as Record<string,unknown>).customer_email || ''
-    const phoneAddr = customer?.phone || sendModal.customer_phone || (sendModal as Record<string,unknown>).customer_phone || ''
+    const sendModalRecord = sendModal as unknown as Record<string,unknown>
+    const emailAddr = customer?.email || sendModal.customer_email || sendModalRecord.customer_email || ''
+    const phoneAddr = customer?.phone || sendModal.customer_phone || sendModalRecord.customer_phone || ''
     const to = channel === 'sms' ? phoneAddr : emailAddr
     setSendingDoc(true)
     try {
       // Send with whatever we have — API will also look up from document/customer as fallback
       const res = await fetch('/api/send-document', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: await getAuthJsonHeaders(),
         body: JSON.stringify({ documentId: sendModal.id, channel, ...(emailAddr ? { email: emailAddr } : {}), ...(phoneAddr ? { phone: phoneAddr } : {}) })
       })
       if (!res.ok) {
@@ -414,7 +427,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     setEmailSending(doc.id)
     try {
       await fetch('/api/send-document', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: await getAuthJsonHeaders(),
         body: JSON.stringify({ documentId: doc.id, channel: 'email', email })
       })
     } catch { alert('Failed to send email') }
@@ -449,12 +462,12 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               <h1 className="text-xl sm:text-2xl font-bold">{editing === 'new' ? `New ${type}` : `Edit ${type}`}</h1>
               <div className="flex flex-wrap gap-2">
                 <button className="btn btn-secondary" onClick={()=>{setEditing(null);setForm({})}}>← Back</button>
-                <button className="btn btn-primary" onClick={save}>Save {type}</button>
+                <button className="btn btn-primary" onClick={() => save()}>Save {type}</button>
                 {editing !== 'new' && <button className="btn btn-danger" onClick={del}>Delete</button>}
                 {editing !== 'new' && <button className="btn btn-secondary" onClick={async () => { await save(true); setSendModal(form as Doc) }}>Send</button>} <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={async () => { if (form.id) { await save(true); setSigModal(form as Doc); setSigResult(null) } }}>✍️ Sign</button>
               {editing !== 'new' && form.status !== 'Paid' && <button type="button" className="btn btn-sm" style={{background:'#16a34a',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={async () => {
                 if (!form.id) return;
-                const t = calcTotals(form as Record<string,unknown>);
+                const t = calcTotals(form as unknown as Record<string,unknown>);
                 setForm(f => ({...f, status: 'Paid', deposit: t.total, amount_paid: t.total}));
                 await supabase.from('documents').update({ status: 'Paid', deposit: t.total, amount_paid: t.total, updated_at: new Date().toISOString() }).eq('id', form.id);
                 await load();
@@ -520,7 +533,8 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Parts</div>
               <div className="space-y-2 min-w-[600px]">
                 {((form.parts||[]) as Record<string,unknown>[]).map((p,i) => (
-                  <div key={i} className="grid grid-cols-12 gap-2 items-center min-w-[600px]">
+                  <div key={i} className="space-y-1 pb-2 border-b border-border/30 last:border-0">
+                  <div className="grid grid-cols-12 gap-2 items-center min-w-[600px]">
                     <input className="form-input col-span-4" placeholder="Part name" value={p.name as string||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],name:e.target.value}; setForm(f=>({...f,parts:p2})) }} />
                     <input className="form-input col-span-2" placeholder="Brand" value={p.brand as string||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],brand:e.target.value}; setForm(f=>({...f,parts:p2})) }} />
                     <input className="form-input col-span-1" type="number" placeholder="Qty" value={p.qty as number||1} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],qty:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
@@ -528,6 +542,18 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                     <div className="col-span-1 flex items-center gap-1"><input type="checkbox" checked={p.taxable !== false} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],taxable:e.target.checked}; setForm(f=>({...f,parts:p2})) }} /><span className="text-xs">Tax</span></div>
                     <div className="col-span-1 text-right text-sm">{formatCurrency((Number(p.qty)||1)*(Number(p.unitPrice)||0))}</div>
                     <button className="col-span-1 btn btn-danger btn-sm" onClick={() => setForm(f=>({...f,parts:((f.parts||[]) as Record<string,unknown>[]).filter((_,j)=>j!==i)}))}>✕</button>
+                  </div>
+                  <div className="flex items-center gap-2 pl-1 text-xs flex-wrap">
+                    <span className="text-text-muted">Warranty</span>
+                    <input className="form-input !py-1 w-32" placeholder="12mo / 12k mi" value={p.warranty as string||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],warranty:e.target.value}; setForm(f=>({...f,parts:p2})) }} />
+                    <span className="text-text-muted ml-2">Status</span>
+                    <select className="form-select !py-1 w-32" value={p.status as string||'Ordered'} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],status:e.target.value}; setForm(f=>({...f,parts:p2})) }}>
+                      {['Ordered','Backordered','Received','Installed','Returned'].map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                    <span className="text-text-muted ml-2" title="Your cost — internal, never prints">Cost</span>
+                    <input className="form-input !py-1 w-20" type="number" step="0.01" placeholder="0.00" value={p.cost as number||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],cost:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
+                    {Number(p.cost) > 0 && Number(p.unitPrice) > 0 ? <span className="text-green" title="Profit on this line">margin {formatCurrency((Number(p.unitPrice) - Number(p.cost)) * (Number(p.qty) || 1))}</span> : null}
+                  </div>
                   </div>
                 ))}
                 <button className="btn btn-secondary btn-sm mt-2" onClick={() => setForm(f=>({...f,parts:[...((f.parts||[]) as Record<string,unknown>[]),{name:'',brand:'',qty:1,unitPrice:0,taxable:true,status:'Ordered'}]}))}>+ Add Part</button>
@@ -557,7 +583,8 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
             <div className="card grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div><label className="form-label">Shop Supplies $</label><input className="form-input" type="number" step="0.01" value={form.shop_supplies||0} onChange={sf('shop_supplies')} /></div>
               <div><label className="form-label">Deposit $</label><input className="form-input" type="number" step="0.01" value={form.deposit||0} onChange={sf('deposit')} /></div>
-              <div className="sm:col-span-2"><label className="form-label">Notes</label><textarea className="form-textarea" rows={3} value={form.notes||''} onChange={sf('notes')} /></div>
+              <div className="sm:col-span-2"><label className="form-label">Notes <span className="text-xs text-text-muted">(prints on the invoice)</span></label><textarea className="form-textarea" rows={3} value={form.notes||''} onChange={sf('notes')} /></div>
+              <div className="sm:col-span-2"><label className="form-label">🔒 Shop Notes <span className="text-xs text-text-muted">(internal — never shown to the customer)</span></label><textarea className="form-textarea" rows={3} placeholder="Private: cost, customer warnings, declined work, what the tech found…" value={(form as Record<string,unknown>).internal_notes as string||''} onChange={sf('internal_notes')} /></div>
             </div>
 
             {/* Warranty Section */}
@@ -663,7 +690,8 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                       filename: `${form.doc_number || type}.pdf`,
                       image: { type: 'jpeg', quality: 0.98 },
                       html2canvas: { scale: 2, useCORS: true },
-                      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+                      jsPDF: { unit: 'mm', format: 'letter', orientation: 'portrait' },
+                      pagebreak: { mode: ['avoid-all', 'css'] }
                     }).save()
                   }
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -687,15 +715,49 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               </button>
               <button
                 onClick={() => {
-                  // Print just the preview panel
+                  // Print the preview, forced onto a SINGLE letter page.
                   const el = document.getElementById('doc-preview-panel')
                   if (!el) return
-                  const w = window.open('', '_blank', 'width=800,height=1000')
+                  const w = window.open('', '_blank', 'width=850,height=1100')
                   if (!w) { window.print(); return }
-                  w.document.write(`<!DOCTYPE html><html><head><title>${form.doc_number || type}</title><style>body{margin:0;padding:16px;font-family:Arial,Helvetica,sans-serif;background:#fff;color:#111;}</style></head><body>${el.innerHTML}</body></html>`)
+                  const doc = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${form.doc_number || type}</title><style>
+@page { size: letter portrait; margin: 0.35in; }
+* { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: #fff; }
+body { font-family: Arial, Helvetica, sans-serif; color: #111; }
+table { border-collapse: collapse; }
+tr, td, th, thead, table { break-inside: avoid; }
+#print-root { margin: 0 auto; }
+#print-wrap { width: 7.8in; }
+</style></head><body><div id="print-root"><div id="print-wrap">${el.innerHTML}</div></div><script>
+(function(){
+  var printed = false;
+  function fit(){
+    var root = document.getElementById('print-root');
+    var wrap = document.getElementById('print-wrap');
+    var maxH = 10.2 * 96, maxW = 7.8 * 96;
+    var h = wrap.scrollHeight, ww = wrap.scrollWidth;
+    // Shrink long docs to fit; also grow short receipts (up to 1.5x) so they
+    // fill the page instead of sitting tiny in the corner.
+    var scale = Math.min(1.5, maxH / h, maxW / ww);
+    wrap.style.transformOrigin = 'top left';
+    wrap.style.transform = 'scale(' + scale + ')';
+    root.style.height = Math.ceil(h * scale) + 'px';
+    root.style.width = Math.ceil(ww * scale) + 'px';
+  }
+  function go(){ if (printed) return; printed = true; fit(); setTimeout(function(){ window.focus(); window.print(); window.close(); }, 200); }
+  var imgs = document.images, n = imgs.length, done = 0;
+  if (!n) { go(); } else {
+    for (var i = 0; i < n; i++) {
+      if (imgs[i].complete) { if (++done === n) go(); }
+      else { imgs[i].onload = imgs[i].onerror = function(){ if (++done === n) go(); }; }
+    }
+  }
+  setTimeout(go, 1500);
+})();
+<\/script></body></html>`
+                  w.document.write(doc)
                   w.document.close()
-                  w.focus()
-                  setTimeout(() => { w.print(); w.close() }, 300)
                 }}
                 className="btn btn-secondary btn-sm flex items-center gap-1.5"
               >
@@ -728,6 +790,8 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                   <div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'#999',marginBottom:'2px'}}>Vehicle</div>
                   <div style={{fontWeight:600,color:'#111'}}>{[form.vehicle_year,form.vehicle_make,form.vehicle_model].filter(Boolean).join(' ') || '—'}</div>
                   {form.vehicle_mileage && <div style={{color:'#666',fontSize:'11px'}}>{Number(form.vehicle_mileage).toLocaleString()} miles</div>}
+                  {(form as Record<string,string>).vehicle_vin && <div style={{color:'#666',fontSize:'11px'}}>VIN: {(form as Record<string,string>).vehicle_vin}</div>}
+                  {(form as Record<string,string>).vehicle_plate && <div style={{color:'#666',fontSize:'11px'}}>Plate: {(form as Record<string,string>).vehicle_plate}</div>}
                 </div>
               </div>
 
@@ -747,7 +811,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                     <tbody>
                       {((form.parts||[]) as Record<string,unknown>[]).map((p,i) => (
                         <tr key={i} style={{background:i%2===1?'#fafafa':'transparent'}}>
-                          <td style={{padding:'6px 8px',color:'#111'}}>{(p.name as string) || '—'}{p.brand ? <span style={{color:'#999',fontSize:'10px',marginLeft:'4px'}}>({p.brand as string})</span> : ''}</td>
+                          <td style={{padding:'6px 8px',color:'#111'}}>{(p.name as string) || '—'}{p.brand ? <span style={{color:'#999',fontSize:'10px',marginLeft:'4px'}}>({p.brand as string})</span> : ''}{p.warranty ? <span style={{color:'#2563eb',fontSize:'9px',display:'block',fontWeight:600}}>Warranty: {p.warranty as string}</span> : ''}</td>
                           <td style={{padding:'6px 8px',textAlign:'center',color:'#666'}}>{(p.qty as number)||1}</td>
                           <td style={{padding:'6px 8px',textAlign:'right',color:'#666'}}>{formatCurrency(Number(p.unitPrice)||0)}</td>
                           <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600,color:'#111'}}>{formatCurrency((Number(p.qty)||1)*(Number(p.unitPrice)||0))}</td>

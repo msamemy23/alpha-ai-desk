@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
+
   const sb = getServiceClient()
   const { searchParams } = new URL(req.url)
   const startDate = searchParams.get('startDate')
@@ -11,7 +15,7 @@ export async function GET(req: NextRequest) {
   const date = searchParams.get('date') || new Date().toISOString().split('T')[0]
 
   try {
-    let query = sb.from('timeclock').select('*').order('clock_in', { ascending: true })
+    let query = sb.from('timeclock').select('*').eq('shop_id', auth.shopId).order('clock_in', { ascending: true })
 
     if (startDate && endDate) {
       query = query
@@ -31,6 +35,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
+
   const sb = getServiceClient()
   const body = await req.json()
   const { action, staff_name, staff_id, note } = body
@@ -40,6 +47,7 @@ export async function POST(req: NextRequest) {
       const { data: existing } = await sb
         .from('timeclock')
         .select('id')
+        .eq('shop_id', auth.shopId)
         .eq('staff_name', staff_name)
         .is('clock_out', null)
         .limit(1)
@@ -49,6 +57,7 @@ export async function POST(req: NextRequest) {
       }
 
       const { data, error } = await sb.from('timeclock').insert({
+        shop_id: auth.shopId,
         staff_name,
         staff_id: staff_id || null,
         clock_in: new Date().toISOString(),
@@ -64,6 +73,7 @@ export async function POST(req: NextRequest) {
       const { data: open } = await sb
         .from('timeclock')
         .select('id, clock_in')
+        .eq('shop_id', auth.shopId)
         .eq('staff_name', staff_name)
         .is('clock_out', null)
         .order('clock_in', { ascending: false })
@@ -78,7 +88,7 @@ export async function POST(req: NextRequest) {
       const { data, error } = await sb.from('timeclock').update({
         clock_out: clockOut,
         hours_worked: Math.round(hours * 100) / 100,
-      }).eq('id', open.id).select().single()
+      }).eq('id', open.id).eq('shop_id', auth.shopId).select().single()
 
       if (error) throw error
       return NextResponse.json({ ok: true, entry: data, hours_worked: hours })

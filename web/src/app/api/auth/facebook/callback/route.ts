@@ -2,14 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
 
 const APP_ID     = process.env.FACEBOOK_APP_ID     || '1379263117302106'
-const APP_SECRET = process.env.FACEBOOK_APP_SECRET || 'f7c21374d2d0b34fc00f9061dae5d286'
+const APP_SECRET = process.env.FACEBOOK_APP_SECRET || ''
 const CALLBACK   = 'https://alpha-ai-desk.vercel.app/api/auth/facebook/callback'
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
 const SUPABASE_KEY = (
   process.env.SUPABASE_SERVICE_KEY ||
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.NEXT_PUBLIC_SUPABASE_SERVICE_KEY ||
-  'sb_secret_mWF8aie41hs0Kf-BzAU2mA_zE25LCHT'
+  ''
 )
 const BASE = 'https://alpha-ai-desk.vercel.app'
 

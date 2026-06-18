@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -15,12 +16,15 @@ const DEFAULT_STAFF = [
 ]
 
 export async function GET(req: NextRequest) {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
+
   const sb = getServiceClient()
   const { searchParams } = new URL(req.url)
   const role = searchParams.get('role') // 'technician', 'employee', or null for all
 
   try {
-    let query = sb.from('staff').select('*').eq('active', true).order('name')
+    let query = sb.from('staff').select('*').eq('shop_id', auth.shopId).eq('active', true).order('name')
     if (role) query = query.eq('role', role)
     const { data, error } = await query
 
@@ -29,10 +33,9 @@ export async function GET(req: NextRequest) {
       // Try to seed
       try {
         await sb.from('staff').upsert(
-          DEFAULT_STAFF.map((s, i) => ({ id: i + 1, ...s, created_at: new Date().toISOString() })),
-          { onConflict: 'id' }
+          DEFAULT_STAFF.map((s) => ({ ...s, shop_id: auth.shopId, created_at: new Date().toISOString() }))
         )
-        const { data: seeded } = await sb.from('staff').select('*').eq('active', true).order('name')
+        const { data: seeded } = await sb.from('staff').select('*').eq('shop_id', auth.shopId).eq('active', true).order('name')
         return NextResponse.json({ ok: true, staff: seeded || DEFAULT_STAFF })
       } catch {
         // Table doesn't exist yet — return defaults
@@ -47,6 +50,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
+
   const sb = getServiceClient()
   const body = await req.json()
   const { action, id, name, role, emoji, active } = body
@@ -54,6 +60,7 @@ export async function POST(req: NextRequest) {
   try {
     if (action === 'add') {
       const { data, error } = await sb.from('staff').insert({
+        shop_id: auth.shopId,
         name, role: role || 'technician', emoji: emoji || '🔧', active: true,
         created_at: new Date().toISOString()
       }).select().single()
@@ -67,13 +74,13 @@ export async function POST(req: NextRequest) {
       if (role !== undefined) updates.role = role
       if (emoji !== undefined) updates.emoji = emoji
       if (active !== undefined) updates.active = active
-      const { data, error } = await sb.from('staff').update(updates).eq('id', id).select().single()
+      const { data, error } = await sb.from('staff').update(updates).eq('id', id).eq('shop_id', auth.shopId).select().single()
       if (error) throw error
       return NextResponse.json({ ok: true, staff: data })
     }
 
     if (action === 'deactivate') {
-      await sb.from('staff').update({ active: false }).eq('id', id)
+      await sb.from('staff').update({ active: false }).eq('id', id).eq('shop_id', auth.shopId)
       return NextResponse.json({ ok: true })
     }
 

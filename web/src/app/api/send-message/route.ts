@@ -1,26 +1,42 @@
 export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { sendSMS, formatPhone } from '@/lib/telnyx'
 import { sendEmail } from '@/lib/email'
 
 export async function POST(req: NextRequest) {
   try {
+    const auth = await getAuthedShop()
+    if (!auth) return unauthorized()
+
     const { to, body, channel, subject, customerId: rawCustomerId, jobId, documentId, customerName } = await req.json()
 
     if (!to || !body) return NextResponse.json({ error: 'Missing to or body' }, { status: 400 })
 
     const db = getServiceClient()
-    const { data: settings } = await db.from('settings').select('*').limit(1).single()
+    const { data: settings } = await db.from('settings').select('*').eq('shop_id', auth.shopId).limit(1).single()
 
     // Resolve customerId - if not provided but customerName is, search by name
     let resolvedCustomerId: string | null = rawCustomerId || null
     let resolvedEmail = channel === 'email' ? to : null
 
+    if (resolvedCustomerId) {
+      const { data: allowedCustomer } = await db
+        .from('customers')
+        .select('id,email')
+        .eq('id', resolvedCustomerId)
+        .eq('shop_id', auth.shopId)
+        .maybeSingle()
+      if (!allowedCustomer) return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
+      if (!resolvedEmail && allowedCustomer.email) resolvedEmail = allowedCustomer.email
+    }
+
     if (!resolvedCustomerId && customerName) {
       const { data: found } = await db
         .from('customers')
         .select('id, email')
+        .eq('shop_id', auth.shopId)
         .ilike('name', `%${customerName}%`)
         .limit(1)
         .single()
@@ -32,9 +48,14 @@ export async function POST(req: NextRequest) {
 
     // If we have a customerId and an email, save the email to the customer record if they don't have one
     if (resolvedCustomerId && resolvedEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(resolvedEmail)) {
-      const { data: cust } = await db.from('customers').select('email').eq('id', resolvedCustomerId).single()
+      const { data: cust } = await db
+        .from('customers')
+        .select('email')
+        .eq('id', resolvedCustomerId)
+        .eq('shop_id', auth.shopId)
+        .single()
       if (cust && !cust.email) {
-        await db.from('customers').update({ email: resolvedEmail }).eq('id', resolvedCustomerId)
+        await db.from('customers').update({ email: resolvedEmail }).eq('id', resolvedCustomerId).eq('shop_id', auth.shopId)
       }
     }
 
@@ -60,6 +81,7 @@ export async function POST(req: NextRequest) {
 
     // Log to DB
     const { data: msg } = await db.from('messages').insert({
+      shop_id: auth.shopId,
       direction: 'outbound',
       channel: channel || 'sms',
       from_address: channel === 'sms' ? (settings?.telnyx_phone_number || process.env.TELNYX_PHONE_NUMBER) : (settings?.from_email || process.env.FROM_EMAIL),

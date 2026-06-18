@@ -65,20 +65,22 @@ export async function POST(req: NextRequest) {
           await sendEmail({
             to: customer.email,
             subject: `Following up on your estimate — Alpha International`,
-            body: `<p>Hi ${customer.name},</p><p>We wanted to follow up on the estimate we sent you. We're ready to help get your vehicle taken care of!</p><p>Total estimate: <strong>${total}</strong></p><p>Call us at <strong>(713) 663-6979</strong> or reply to this email to schedule your appointment.</p><p>Alpha International Auto Center<br>10710 S Main St, Houston TX</p>`,
+            html: `<p>Hi ${customer.name},</p><p>We wanted to follow up on the estimate we sent you. We're ready to help get your vehicle taken care of!</p><p>Total estimate: <strong>${total}</strong></p><p>Call us at <strong>(713) 663-6979</strong> or reply to this email to schedule your appointment.</p><p>Alpha International Auto Center<br>10710 S Main St, Houston TX</p>`,
           })
           sent = true
         } catch { /* ignore */ }
       }
 
       // Log it
-      await sb.from('estimate_followups_sent').insert({
-        estimate_id: est.id,
-        customer_id: est.customer_id,
-        method: customer.phone ? 'sms' : 'email',
-        sent,
-        created_at: new Date().toISOString(),
-      }).catch(() => {})
+      try {
+        await sb.from('estimate_followups_sent').insert({
+          estimate_id: est.id,
+          customer_id: est.customer_id,
+          method: customer.phone ? 'sms' : 'email',
+          sent,
+          created_at: new Date().toISOString(),
+        })
+      } catch { /* table may not exist yet */ }
     }
 
     results.push({

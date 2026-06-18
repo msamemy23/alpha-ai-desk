@@ -1,22 +1,28 @@
 import { NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
+    const auth = await getAuthedShop()
+    if (!auth) return unauthorized()
+
     const db = getServiceClient()
 
     // Use select with count instead of HEAD (HEAD was causing 503s)
     const [{ data: unreadMsgs }, { data: missedCalls }] = await Promise.all([
       db.from('messages')
         .select('id, body, from_address, created_at')
+        .eq('shop_id', auth.shopId)
         .eq('direction', 'inbound')
         .eq('read', false)
         .order('created_at', { ascending: false })
         .limit(10),
       db.from('calls')
         .select('id, from_number, start_time, duration_secs, matched_customer_name')
+        .eq('shop_id', auth.shopId)
         .eq('direction', 'inbound')
         .lt('duration_secs', 15)
         .order('start_time', { ascending: false })

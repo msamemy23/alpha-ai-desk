@@ -3,7 +3,7 @@ import { getServiceClient } from '@/lib/supabase'
 
 export const dynamic = 'force-dynamic'
 
-const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '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'
+const TAVILY_API_KEY = process.env.TAVILY_API_KEY || ''
 
 interface PartResult {
   position: string

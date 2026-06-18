@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -10,10 +11,17 @@ function fail(msg: string, status = 400) { return NextResponse.json({ ok: false,
 // Table: automations { id, name, description, schedule, task_prompt, enabled, last_run, next_run, run_count, status, created_at }
 // schedule examples: '05:00' (daily at 5am), 'mon 09:00' (mondays at 9am), 'every 2h'
 
-async function getTimezone(): Promise<string> {
+function hasInternalSecret(req: NextRequest) {
+  const secret = process.env.CRON_SECRET || process.env.INTERNAL_API_SECRET
+  return !!secret && req.headers.get('authorization') === `Bearer ${secret}`
+}
+
+async function getTimezone(shopId?: string): Promise<string> {
   try {
     const sb = getServiceClient()
-    const { data } = await sb.from('settings').select('timezone').limit(1).single()
+    let query = sb.from('settings').select('timezone').limit(1)
+    if (shopId) query = query.eq('shop_id', shopId)
+    const { data } = await query.single()
     return data?.timezone || 'America/Chicago'
   } catch { return 'America/Chicago' }
 }
@@ -74,10 +82,14 @@ function parseNextRun(schedule: string, tz: string = 'America/Chicago'): string 
 }
 
 export async function GET() {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
+
   const sb = getServiceClient()
   const { data, error } = await sb
     .from('automations')
     .select('*')
+    .eq('shop_id', auth.shopId)
     .order('created_at', { ascending: false })
   if (error) return fail(error.message)
   return ok(data)
@@ -87,6 +99,11 @@ export async function POST(req: NextRequest) {
   const body = await req.json() as Record<string, unknown>
   const { action } = body
   const sb = getServiceClient()
+  const internal = hasInternalSecret(req)
+  const auth = internal && action === 'check_due' ? null : await getAuthedShop()
+  if (!internal && !auth) return unauthorized()
+  if (action !== 'check_due' && !auth) return unauthorized()
+  const shopId = auth?.shopId
 
   if (!action || action === 'create') {
     // Create new automation
@@ -99,9 +116,10 @@ export async function POST(req: NextRequest) {
     if (!name || !schedule || !task_prompt) {
       return fail('name, schedule, and task_prompt are required')
     }
-    const tz = await getTimezone()
+    const tz = await getTimezone(shopId)
     const next_run = parseNextRun(schedule, tz)
     const { data, error } = await sb.from('automations').insert({
+      shop_id: shopId,
       name,
       description: description || '',
       schedule,
@@ -120,13 +138,13 @@ export async function POST(req: NextRequest) {
     const { id, ...updates } = body as Record<string, unknown>
     if (!id) return fail('id required')
     if (updates.schedule) {
-      const tz = await getTimezone()
+      const tz = await getTimezone(shopId)
       updates.next_run = parseNextRun(updates.schedule as string, tz)
     }
     const { data, error } = await sb.from('automations').update({
       ...updates,
       updated_at: new Date().toISOString()
-    }).eq('id', id).select().single()
+    }).eq('id', id).eq('shop_id', shopId).select().single()
     if (error) return fail(error.message)
     return ok(data)
   }
@@ -134,7 +152,7 @@ export async function POST(req: NextRequest) {
   if (action === 'delete') {
     const { id } = body as { id: string }
     if (!id) return fail('id required')
-    const { error } = await sb.from('automations').delete().eq('id', id)
+    const { error } = await sb.from('automations').delete().eq('id', id).eq('shop_id', shopId)
     if (error) return fail(error.message)
     return ok({ deleted: true })
   }
@@ -145,13 +163,13 @@ export async function POST(req: NextRequest) {
     const updates: Record<string, unknown> = { enabled }
     if (enabled) {
       // Re-calculate next_run when re-enabling
-      const { data: existing } = await sb.from('automations').select('schedule').eq('id', id).single()
+      const { data: existing } = await sb.from('automations').select('schedule').eq('id', id).eq('shop_id', shopId).single()
       if (existing?.schedule) {
-        const tz = await getTimezone()
+        const tz = await getTimezone(shopId)
         updates.next_run = parseNextRun(existing.schedule, tz)
       }
     }
-    const { data, error } = await sb.from('automations').update(updates).eq('id', id).select().single()
+    const { data, error } = await sb.from('automations').update(updates).eq('id', id).eq('shop_id', shopId).select().single()
     if (error) return fail(error.message)
     return ok(data)
   }
@@ -160,12 +178,12 @@ export async function POST(req: NextRequest) {
     // Trigger an automation immediately
     const { id } = body as { id: string }
     if (!id) return fail('id required')
-    const { data: automation } = await sb.from('automations').select('*').eq('id', id).single()
+    const { data: automation } = await sb.from('automations').select('*').eq('id', id).eq('shop_id', shopId).single()
     if (!automation) return fail('Automation not found')
 
     // Execute via the AI
     try {
-      const { data: settings } = await sb.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
+      const { data: settings } = await sb.from('settings').select('ai_api_key,ai_model,ai_base_url').eq('shop_id', shopId).limit(1).single()
       const apiKey = settings?.ai_api_key
       if (!apiKey) return fail('No AI API key configured')
 
@@ -185,18 +203,18 @@ export async function POST(req: NextRequest) {
       const aiData = await res.json()
       const result = aiData.choices?.[0]?.message?.content || 'Automation executed'
 
-      const tz = await getTimezone()
+      const tz = await getTimezone(shopId)
       await sb.from('automations').update({
         last_run: new Date().toISOString(),
         run_count: (automation.run_count || 0) + 1,
         last_result: result.slice(0, 500),
         next_run: parseNextRun(automation.schedule, tz),
         status: 'completed',
-      }).eq('id', id)
+      }).eq('id', id).eq('shop_id', shopId)
 
       return ok({ executed: true, result })
     } catch (err) {
-      await sb.from('automations').update({ status: 'error', last_result: String(err) }).eq('id', id)
+      await sb.from('automations').update({ status: 'error', last_result: String(err) }).eq('id', id).eq('shop_id', shopId)
       return fail(err instanceof Error ? err.message : 'Execution failed')
     }
   }
@@ -204,22 +222,27 @@ export async function POST(req: NextRequest) {
   // Auto-run check: called by a cron or polling — runs all due automations
   if (action === 'check_due') {
     const now = new Date().toISOString()
-    const { data: dueItems } = await sb
+    let dueQuery = sb
       .from('automations')
       .select('*')
       .eq('enabled', true)
       .lte('next_run', now)
       .limit(10)
+    if (shopId) dueQuery = dueQuery.eq('shop_id', shopId)
+    const { data: dueItems } = await dueQuery
 
     if (!dueItems?.length) return ok({ ran: 0 })
-
-    const { data: settings } = await sb.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
-    const apiKey = settings?.ai_api_key
-    if (!apiKey) return fail('No AI API key')
 
     let ran = 0
     for (const automation of dueItems) {
       try {
+        const targetShopId = automation.shop_id || shopId
+        let settingsQuery = sb.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1)
+        if (targetShopId) settingsQuery = settingsQuery.eq('shop_id', targetShopId)
+        const { data: settings } = await settingsQuery.single()
+        const apiKey = settings?.ai_api_key
+        if (!apiKey) throw new Error('No AI API key')
+
         const res = await fetch(`${settings?.ai_base_url || 'https://openrouter.ai/api/v1'}/chat/completions`, {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -235,17 +258,22 @@ export async function POST(req: NextRequest) {
         })
         const aiData = await res.json()
         const result = aiData.choices?.[0]?.message?.content || 'Done'
-        const tz = await getTimezone()
-        await sb.from('automations').update({
+        const tz = await getTimezone(targetShopId)
+        let updateQuery = sb.from('automations').update({
           last_run: new Date().toISOString(),
           run_count: (automation.run_count || 0) + 1,
           last_result: result.slice(0, 500),
           next_run: parseNextRun(automation.schedule, tz),
           status: 'completed',
         }).eq('id', automation.id)
+        if (targetShopId) updateQuery = updateQuery.eq('shop_id', targetShopId)
+        await updateQuery
         ran++
       } catch (err) {
-        await sb.from('automations').update({ status: 'error', last_result: String(err) }).eq('id', automation.id)
+        const targetShopId = automation.shop_id || shopId
+        let updateQuery = sb.from('automations').update({ status: 'error', last_result: String(err) }).eq('id', automation.id)
+        if (targetShopId) updateQuery = updateQuery.eq('shop_id', targetShopId)
+        await updateQuery
       }
     }
 

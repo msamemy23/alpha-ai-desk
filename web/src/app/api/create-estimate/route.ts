@@ -1,14 +1,15 @@
 ﻿export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 
 export async function POST(req: NextRequest) {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
+
   const sb = getServiceClient()
   const body = await req.json()
-
-  // Resolve shop_id so new records pass RLS — look up the single shop profile
-  const { data: shopProfile } = await sb.from('shop_profiles').select('id').limit(1).single()
-  const shopId: string | null = shopProfile?.id ?? null
+  const shopId = auth.shopId
 
   // Accept both "customer" (from proposeDocument) and "customer_name"
   const customerName: string = body.customer || body.customer_name || ''
@@ -38,6 +39,7 @@ export async function POST(req: NextRequest) {
     const { data: existing } = await sb
       .from('customers')
       .select('id, email, phone')
+      .eq('shop_id', shopId)
       .ilike('name', customerName)
       .limit(1)
 
@@ -47,7 +49,7 @@ export async function POST(req: NextRequest) {
       if (customerEmail && !existing[0].email) updates.email = customerEmail
       if (customerPhone && !existing[0].phone) updates.phone = customerPhone
       if (Object.keys(updates).length > 0) {
-        await sb.from('customers').update(updates).eq('id', customer_id)
+        await sb.from('customers').update(updates).eq('id', customer_id).eq('shop_id', shopId)
       }
     } else {
       const insertData: Record<string, string | null> = {
@@ -68,7 +70,12 @@ export async function POST(req: NextRequest) {
 
   // Generate doc number using correct prefix for type
   const year = new Date().getFullYear()
-  const { data: existingDocs } = await sb.from('documents').select('doc_number').eq('type', docType).like('doc_number', `${prefix}-${year}-%`)
+  const { data: existingDocs } = await sb
+    .from('documents')
+    .select('doc_number')
+    .eq('shop_id', shopId)
+    .eq('type', docType)
+    .like('doc_number', `${prefix}-${year}-%`)
   const nums = (existingDocs || []).map((d: Record<string, string>) => parseInt(d.doc_number.split('-').pop() || '0'))
   const next = Math.max(0, ...nums) + 1
   const doc_number = `${prefix}-${year}-${String(next).padStart(4, '0')}`

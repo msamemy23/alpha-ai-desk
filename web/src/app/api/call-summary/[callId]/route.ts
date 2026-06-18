@@ -1,21 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server'
-
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { getServiceClient } from '@/lib/supabase'
 
 export async function GET(
   _req: NextRequest,
-  { params }: { params: { callId: string } }
+  { params }: { params: Promise<{ callId: string }> }
 ) {
   try {
-    const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/ai_calls?id=eq.${encodeURIComponent(params.callId)}&limit=1`,
-      { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
-    )
-    const rows = await r.json()
-    const state = Array.isArray(rows) && rows.length > 0 ? rows[0] : null
+    const auth = await getAuthedShop()
+    if (!auth) return unauthorized()
 
-    if (!state) {
+    const { callId } = await params
+    const { data: state, error } = await getServiceClient()
+      .from('ai_calls')
+      .select('*')
+      .eq('id', callId)
+      .eq('shop_id', auth.shopId)
+      .maybeSingle()
+
+    if (error || !state) {
       return NextResponse.json({ ok: false, error: 'Not found' }, { status: 404 })
     }
 

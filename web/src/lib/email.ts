@@ -4,7 +4,7 @@ import nodemailer from 'nodemailer'
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: process.env.GMAIL_USER || 'msamemy23@gmail.com',
+    user: process.env.GMAIL_USER || process.env.FROM_EMAIL,
     pass: process.env.GMAIL_APP_PASSWORD,
   },
 })
@@ -13,21 +13,26 @@ export async function sendEmail({
   to,
   subject,
   html,
+  body,
   from,
   replyTo,
+  apiKey: _apiKey,
 }: {
   to: string
   subject: string
-  html: string
+  html?: string
+  body?: string
   from?: string
   replyTo?: string
+  apiKey?: string
 }): Promise<void> {
+  const fromAddress = process.env.GMAIL_USER || process.env.FROM_EMAIL || 'onboarding@resend.dev'
   await transporter.sendMail({
-    from: from || `"Alpha International Auto Center" <${process.env.GMAIL_USER || 'msamemy23@gmail.com'}>`,
+    from: from || `"Alpha International Auto Center" <${fromAddress}>`,
     to,
     subject,
-    html,
-    replyTo: replyTo || process.env.GMAIL_USER || 'msamemy23@gmail.com',
+    html: html || body || '',
+    replyTo: replyTo || fromAddress,
   })
 }
 
