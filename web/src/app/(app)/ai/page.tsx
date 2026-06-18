@@ -385,7 +385,26 @@ DESKTOP SCREENSHOT - Take a screenshot of the current app window:
 {"tool":"desktopScreenshot"}
 
 DESKTOP SYSTEM INFO - Get non-identifying shop computer hardware info: OS, RAM, CPU. Use when user asks about computer specs, memory, system version, or overall system info:
-{"tool":"desktopSystemInfo"}`
+{"tool":"desktopSystemInfo"}
+
+DESKTOP MCP STATUS - Discover advanced local MCP agents, skills, resources, prompts, and tools. Use this before any MCP action, or when the user asks what desktop/browser tools are available:
+{"tool":"desktopMcpStatus"}
+
+DESKTOP MCP TOOL - Call an allowlisted local MCP tool. Servers:
+- windows: Windows-MCP for Windows apps, UI snapshots, screenshots, app control, and desktop automation.
+- kapture: Kapture Chrome DevTools browser automation. Requires the Kapture Chrome extension and a connected tab.
+
+Always discover tools first with desktopMcpStatus, then call exact tool names from the result:
+{"tool":"desktopMcpTool","server":"windows","name":"Snapshot","arguments":{}}
+{"tool":"desktopMcpTool","server":"windows","name":"Screenshot","arguments":{}}
+{"tool":"desktopMcpTool","server":"kapture","name":"list_tabs","arguments":{}}
+{"tool":"desktopMcpTool","server":"kapture","name":"dom","arguments":{"tabId":"TAB_ID"}}
+
+MCP safety rules:
+- Ask the user for confirmation before changing Windows apps, typing, clicking, sending data, closing tabs, changing files/settings, using PowerShell, registry, process, clipboard, or any destructive action.
+- If a native confirmation dialog appears, tell the user exactly what action is being requested.
+- Prefer read-only tools first: windows Snapshot/Screenshot/Scrape and kapture list_tabs/tab_detail/dom/elements/screenshot/console_logs/network_requests.
+- If Kapture says no tabs are connected, tell the user to install/open the Kapture Chrome extension, open DevTools, and connect the tab.`
 
 
 interface HistoryEntry {
@@ -1628,6 +1647,77 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
         accumulated.push(`[SystemInfo]: ${siText}`)
         agentMessages.push({ role: 'assistant', content: raw })
         agentMessages.push({ role: 'user', content: `System info: ${siText}` })
+        continue
+      }
+
+      if (parsed.tool === 'desktopMcpStatus') {
+        if (!isElectronEnv) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: 'Desktop MCP only works in the Alpha AI Desk desktop app. Let the user know.' })
+          continue
+        }
+        setStatus('Discovering MCP tools...')
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const desktopApi = (window as any).electronAPI
+          const mcpResult = await desktopApi.mcp.tools()
+          const serverIds = Array.isArray(mcpResult?.servers)
+            ? mcpResult.servers.filter((item: { ok?: boolean; id?: string }) => item.ok && item.id).map((item: { id: string }) => item.id)
+            : []
+          const extras = await Promise.all(serverIds.map(async (id: string) => {
+            const [resources, prompts] = await Promise.all([
+              desktopApi.mcp.resources(id).catch((e: Error) => ({ ok: false, error: e.message, resources: [] })),
+              desktopApi.mcp.prompts(id).catch((e: Error) => ({ ok: false, error: e.message, prompts: [] })),
+            ])
+            return { id, resources, prompts }
+          }))
+          const mcpText = JSON.stringify({ tools: mcpResult, extras }, null, 2).slice(0, 14000)
+          accumulated.push(`[Desktop MCP status]: ${mcpText}`)
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({
+            role: 'user',
+            content: `Desktop MCP discovery result:\n${mcpText}\n\nUse exact server ids and tool names from this result. Resources and prompts are MCP skills/context where available. If the user asked what is available, summarize it clearly. If you need to act, choose the next MCP tool call.`,
+          })
+        } catch (e) {
+          const errText = e instanceof Error ? e.message : 'Unknown MCP error'
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: `Desktop MCP discovery failed: ${errText}` })
+        }
+        setStatus('')
+        continue
+      }
+
+      if (parsed.tool === 'desktopMcpTool') {
+        if (!isElectronEnv) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: 'Desktop MCP tools only work in the Alpha AI Desk desktop app. Let the user know.' })
+          continue
+        }
+        const server = (parsed.server as string) || ''
+        const name = (parsed.name || parsed.toolName) as string
+        const args = (parsed.arguments || parsed.args || {}) as Record<string, unknown>
+        if (!server || !name) {
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: 'Desktop MCP call is missing server or name. Discover tools and try again.' })
+          continue
+        }
+        setStatus(`MCP: ${server}.${name}...`)
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const mcpCallResult = await (window as any).electronAPI.mcp.callTool(server, name, args, parsed.approved === true)
+          const mcpCallText = JSON.stringify(mcpCallResult, null, 2).slice(0, 14000)
+          accumulated.push(`[Desktop MCP ${server}.${name}]: ${mcpCallText}`)
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({
+            role: 'user',
+            content: `Desktop MCP tool result for ${server}.${name}:\n${mcpCallText}\n\nContinue with the next step if needed, or summarize the result for the user.`,
+          })
+        } catch (e) {
+          const errText = e instanceof Error ? e.message : 'Unknown MCP tool error'
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: `Desktop MCP tool failed for ${server}.${name}: ${errText}` })
+        }
+        setStatus('')
         continue
       }
       // -- END DESKTOP TOOLS --------------------------------------------------
