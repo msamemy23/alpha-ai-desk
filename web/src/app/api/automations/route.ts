@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 
 export const dynamic = 'force-dynamic'
 
@@ -186,12 +187,14 @@ export async function POST(req: NextRequest) {
       const { data: settings } = await sb.from('settings').select('ai_api_key,ai_model,ai_base_url').eq('shop_id', shopId).limit(1).single()
       const apiKey = settings?.ai_api_key
       if (!apiKey) return fail('No AI API key configured')
+      const aiBaseUrl = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
+      const aiModel = normalizeAiModel(settings?.ai_model, aiBaseUrl)
 
-      const res = await fetch(`${settings?.ai_base_url || 'https://openrouter.ai/api/v1'}/chat/completions`, {
+      const res = await fetch(`${aiBaseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: settings?.ai_model || 'deepseek/deepseek-v3.2',
+          model: aiModel,
           messages: [
             { role: 'system', content: 'You are Alpha AI for Alpha International Auto Center. Execute the requested automation task. Be concise in your response.' },
             { role: 'user', content: automation.task_prompt }
@@ -242,12 +245,14 @@ export async function POST(req: NextRequest) {
         const { data: settings } = await settingsQuery.single()
         const apiKey = settings?.ai_api_key
         if (!apiKey) throw new Error('No AI API key')
+        const aiBaseUrl = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
+        const aiModel = normalizeAiModel(settings?.ai_model, aiBaseUrl)
 
-        const res = await fetch(`${settings?.ai_base_url || 'https://openrouter.ai/api/v1'}/chat/completions`, {
+        const res = await fetch(`${aiBaseUrl}/chat/completions`, {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: settings?.ai_model || 'deepseek/deepseek-v3.2',
+            model: aiModel,
             messages: [
               { role: 'system', content: 'You are Alpha AI for Alpha International Auto Center. Execute the scheduled automation task concisely.' },
               { role: 'user', content: automation.task_prompt }

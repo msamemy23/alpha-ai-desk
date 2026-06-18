@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { requireAdmin } from '@/lib/admin-guard'
+import { AI_BASE_URLS, DEFAULT_OPENROUTER_MODEL } from '@/lib/ai-config'
 
 export async function POST(req: NextRequest) {
   const denied = requireAdmin(req)
@@ -24,8 +25,8 @@ export async function POST(req: NextRequest) {
       warranty_months: 12,
       payment_methods: ['Cash', 'Card', 'Zelle', 'Cash App'],
       ai_api_key: process.env.OPENROUTER_API_KEY || '',
-      ai_model: 'deepseek/deepseek-v3.2',
-      ai_base_url: 'https://openrouter.ai/api/v1',
+      ai_model: DEFAULT_OPENROUTER_MODEL,
+      ai_base_url: AI_BASE_URLS.OPENROUTER,
       telnyx_api_key: process.env.TELNYX_API_KEY || '',
       telnyx_phone_number: process.env.TELNYX_PHONE_NUMBER || '',
       resend_api_key: process.env.RESEND_API_KEY || '',

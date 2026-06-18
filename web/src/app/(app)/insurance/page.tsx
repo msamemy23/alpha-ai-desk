@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+import { AI_BASE_URLS, DEFAULT_OPENROUTER_MODEL, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 
 const STATUSES = ['New', 'Estimate Sent', 'Approved', 'In Repair', 'Supplement', 'Waiting on Customer', 'Ready for Pickup', 'Paid', 'Closed']
 const STATUS_COLORS: Record<string, string> = {
@@ -115,8 +116,8 @@ export default function InsurancePage() {
     try {
       const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
       const apiKey = (settings?.ai_api_key as string) || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || ''
-      const model = (settings?.ai_model as string) || 'meta-llama/llama-3.3-70b-instruct:free'
-      const baseUrl = (settings?.ai_base_url as string) || 'https://openrouter.ai/api/v1'
+      const baseUrl = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
+      const model = normalizeAiModel(settings?.ai_model || DEFAULT_OPENROUTER_MODEL, baseUrl)
       if (!apiKey) { setClaimChat([...updated, { role: 'assistant', content: 'Please configure your AI API key in Settings first.' }]); return }
       const jobContext = `Insurance job context: Customer: ${claimJob.customer_name}, Vehicle: ${[claimJob.vehicle_year, claimJob.vehicle_make, claimJob.vehicle_model].filter(Boolean).join(' ')}, Insurance: ${claimJob.insurance_company || 'unknown'}, Claim #: ${claimJob.claim_number || 'N/A'}, Adjuster: ${claimJob.adjuster || 'N/A'}, Adjuster Phone: ${claimJob.adjuster_phone || 'N/A'}, Adjuster Email: ${claimJob.adjuster_email || 'N/A'}, Approved: ${fmt(claimJob.approved_amount)}, Deductible: ${fmt(claimJob.deductible)}, Supplement status: ${claimJob.supplement_status || 'None'}, Supplement requested: ${fmt(claimJob.supplement_amount_requested)}, Status: ${claimJob.status}, Loss date: ${claimJob.loss_date || 'N/A'}, Notes: ${claimJob.inspection_notes || 'none'}`
       const res = await fetch(`${baseUrl}/chat/completions`, {

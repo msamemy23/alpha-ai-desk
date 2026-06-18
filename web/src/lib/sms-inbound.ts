@@ -9,6 +9,7 @@
 import { getServiceClient } from '@/lib/supabase'
 import { sendSMS } from '@/lib/sms'
 import { isOptOut } from '@/lib/sms-normalize'
+import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 
 const SHOP_PHONE = process.env.TELNYX_PHONE_NUMBER || '+17136636979'
 
@@ -136,11 +137,13 @@ Reply in 1-2 sentences under 160 characters. Warm, professional, brief.`
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 8000)
     try {
-      const res = await fetch(`${settings.ai_base_url || 'https://openrouter.ai/api/v1'}/chat/completions`, {
+      const aiBaseUrl = normalizeAiBaseUrl(settings.ai_base_url || AI_BASE_URLS.OPENROUTER)
+      const aiModel = normalizeAiModel(settings.ai_model, aiBaseUrl)
+      const res = await fetch(`${aiBaseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${settings.ai_api_key}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: settings.ai_model || 'deepseek/deepseek-v3.2',
+          model: aiModel,
           messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: message }],
           max_tokens: 80,
           temperature: 0.4,

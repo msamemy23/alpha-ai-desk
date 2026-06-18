@@ -1,6 +1,7 @@
 'use client'
 import { useState } from 'react'
 import { formatCurrency } from '@/lib/supabase'
+import { AI_BASE_URLS, DEFAULT_OPENROUTER_MODEL, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 
 interface PartResult {
   name: string
@@ -25,8 +26,8 @@ export default function PartsLookupPage() {
     try {
       const { data: settings } = await (await import('@/lib/supabase')).supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
       const apiKey = (settings?.ai_api_key as string) || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || ''
-      const model = (settings?.ai_model as string) || 'meta-llama/llama-3.3-70b-instruct:free'
-      const baseUrl = (settings?.ai_base_url as string) || 'https://openrouter.ai/api/v1'
+      const baseUrl = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
+      const model = normalizeAiModel(settings?.ai_model || DEFAULT_OPENROUTER_MODEL, baseUrl)
 
       if (!apiKey) {
         setResults([])

@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
+import { AI_BASE_URLS, normalizeAiModel } from '@/lib/ai-config'
 export const maxDuration = 300
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
-const AI_MODEL = process.env.AI_MODEL || 'deepseek/deepseek-v3.2'
+const AI_MODEL = normalizeAiModel(process.env.AI_MODEL, AI_BASE_URLS.OPENROUTER)
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
 
 async function getFreshWavUrl(rid: string, callSessionId?: string): Promise<string|null> {

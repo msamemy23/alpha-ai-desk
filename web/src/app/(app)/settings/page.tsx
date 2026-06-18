@@ -1,6 +1,13 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
 import { supabase, updateSettings, getSettings, getShopProfile, getShopId } from '@/lib/supabase'
+import {
+  AI_BASE_URLS,
+  DEEPSEEK_PRO_OPENROUTER_MODEL,
+  DEFAULT_OPENROUTER_MODEL,
+  normalizeAiBaseUrl,
+  normalizeAiModel,
+} from '@/lib/ai-config'
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Record<string,unknown>>({})
@@ -21,7 +28,13 @@ export default function SettingsPage() {
   const load = useCallback(async () => {
     // Load settings filtered by shop_id
     const settingsData = await getSettings()
-    if (settingsData) setSettings(settingsData as Record<string,unknown>)
+    if (settingsData) {
+      const normalized = { ...(settingsData as Record<string, unknown>) }
+      const aiBase = normalizeAiBaseUrl(normalized.ai_base_url || AI_BASE_URLS.OPENROUTER)
+      normalized.ai_base_url = aiBase
+      normalized.ai_model = normalizeAiModel(normalized.ai_model || DEFAULT_OPENROUTER_MODEL, aiBase)
+      setSettings(normalized)
+    }
     // Also load shop profile to populate shop info fields
     const profile = await getShopProfile()
     if (profile) {
@@ -78,8 +91,8 @@ export default function SettingsPage() {
     setReviewLoading(true); setReviewDraft('')
     try {
       const apiKey = (settings.ai_api_key as string) || ''
-      const model = (settings.ai_model as string) || 'meta-llama/llama-3.3-70b-instruct:free'
-      const baseUrl = (settings.ai_base_url as string) || 'https://openrouter.ai/api/v1'
+      const baseUrl = normalizeAiBaseUrl(settings.ai_base_url || AI_BASE_URLS.OPENROUTER)
+      const model = normalizeAiModel(settings.ai_model || DEFAULT_OPENROUTER_MODEL, baseUrl)
       if (!apiKey) { setReviewDraft('Please configure your AI API key in the AI Config tab first.'); return }
       const shopName = (settings.shop_name as string) || 'our shop'
       const tone = reviewStars >= 4 ? 'grateful and warm' : reviewStars >= 3 ? 'appreciative and constructive' : 'empathetic, apologetic, and professional'
@@ -168,20 +181,21 @@ export default function SettingsPage() {
         <div className="card space-y-4">
           <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">AI Configuration</div>
           <div className="bg-blue/10 border border-blue/30 rounded-lg p-3 text-sm text-blue">
-            💡 Get a free API key at <strong>openrouter.ai</strong> — works with Llama, GPT-4, Claude, and more.
+            Get an API key at <strong>openrouter.ai</strong> or DeepSeek. DeepSeek V4 Flash is the default for Alpha AI.
           </div>
-          <div><label className="form-label">OpenRouter API Key</label><input className="form-input font-mono" type="password" value={settings.ai_api_key as string||''} onChange={sf('ai_api_key')} placeholder="sk-or-v1-..." /></div>
+          <div><label className="form-label">AI API Key</label><input className="form-input font-mono" type="password" value={settings.ai_api_key as string||''} onChange={sf('ai_api_key')} placeholder="sk-or-v1-... or sk-..." /></div>
           <div><label className="form-label">Model</label>
             <select className="form-select" value={settings.ai_model as string||''} onChange={sf('ai_model')}>
+              <option value={DEFAULT_OPENROUTER_MODEL}>DeepSeek V4 Flash (Latest)</option>
+              <option value={DEEPSEEK_PRO_OPENROUTER_MODEL}>DeepSeek V4 Pro</option>
               <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B (Free)</option>
-              <option value="deepseek/deepseek-v3.2">DeepSeek V3.2</option>
               <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
               <option value="openai/gpt-4o">GPT-4o</option>
               <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet</option>
               <option value="google/gemini-flash-1.5">Gemini Flash 1.5</option>
             </select>
           </div>
-          <div><label className="form-label">Base URL</label><input className="form-input font-mono" value={settings.ai_base_url as string||'https://openrouter.ai/api/v1'} onChange={sf('ai_base_url')} /></div>
+          <div><label className="form-label">Base URL</label><input className="form-input font-mono" value={settings.ai_base_url as string||AI_BASE_URLS.OPENROUTER} onChange={sf('ai_base_url')} /></div>
         </div>
       )}
 

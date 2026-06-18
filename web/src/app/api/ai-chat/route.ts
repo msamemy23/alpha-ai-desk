@@ -8,6 +8,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { AI_BASE_URLS, isOpenRouterBaseUrl, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
@@ -91,12 +92,17 @@ export async function POST(req: NextRequest) {
     }
 
     const settings = await getSettings()
-    const apiKey = settings.ai_api_key || process.env.OPENROUTER_API_KEY || ''
-    const model = settings.ai_model || 'deepseek/deepseek-v3.2'
-    const baseUrl = settings.ai_base_url || 'https://openrouter.ai/api/v1'
+    const settingsKey = settings.ai_api_key || ''
+    const openRouterKey = process.env.OPENROUTER_API_KEY || ''
+    const deepSeekKey = process.env.DEEPSEEK_API_KEY || ''
+    const baseUrl = normalizeAiBaseUrl(
+      settings.ai_base_url || (settingsKey || openRouterKey ? AI_BASE_URLS.OPENROUTER : deepSeekKey ? AI_BASE_URLS.DEEPSEEK : AI_BASE_URLS.OPENROUTER)
+    )
+    const apiKey = settingsKey || openRouterKey || deepSeekKey
+    const model = normalizeAiModel(settings.ai_model || process.env.AI_MODEL, baseUrl)
 
     if (!apiKey) {
-      return NextResponse.json({ reply: 'AI is not configured yet. Please add an OpenRouter API key in Settings on the web dashboard.' })
+      return NextResponse.json({ reply: 'AI is not configured yet. Please add an OpenRouter or DeepSeek API key in Settings on the web dashboard.' })
     }
 
     // Build conversation
@@ -117,6 +123,10 @@ export async function POST(req: NextRequest) {
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
+          ...(isOpenRouterBaseUrl(baseUrl) ? {
+            'HTTP-Referer': 'https://alpha-ai-desk.vercel.app',
+            'X-Title': 'Alpha AI Desk',
+          } : {}),
         },
         body: JSON.stringify({
           model,

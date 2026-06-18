@@ -1,6 +1,7 @@
 export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 
 // Scan competitor auto shops in Houston for low-rated reviews
 // Uses Google Places API (Text Search + Place Details)
@@ -84,8 +85,8 @@ export async function POST(req: NextRequest) {
     } else {
       // === FALLBACK: Use AI + web search to find competitors ===
       const aiKey = (settings?.ai_api_key as string) || ''
-      const aiModel = (settings?.ai_model as string) || 'deepseek/deepseek-v3.2'
-      const aiBase = (settings?.ai_base_url as string) || 'https://openrouter.ai/api/v1'
+      const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
+      const aiModel = normalizeAiModel(settings?.ai_model, aiBase)
 
       if (!aiKey) {
         return NextResponse.json({ error: 'No Google Maps API key or AI API key configured. Add GOOGLE_MAPS_API_KEY to env or configure AI in Settings.' }, { status: 400 })

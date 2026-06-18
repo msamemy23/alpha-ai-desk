@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { DEFAULT_OPENROUTER_MODEL } from '@/lib/ai-config'
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
@@ -61,7 +62,7 @@ export async function POST(req: NextRequest) {
         'HTTP-Referer': 'https://alpha-ai-desk.vercel.app',
       },
       body: JSON.stringify({
-        model: 'deepseek/deepseek-v3.2',
+        model: DEFAULT_OPENROUTER_MODEL,
         messages: [
           {
             role: 'system',

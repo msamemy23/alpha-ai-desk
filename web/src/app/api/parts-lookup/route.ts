@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 
 export const dynamic = 'force-dynamic'
 
@@ -251,8 +252,8 @@ export async function POST(req: NextRequest) {
     const { data: settings } = await sb.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
     const aiKey = settings?.ai_api_key
     if (!aiKey) return NextResponse.json({ ok: false, error: 'No AI API key configured' }, { status: 400 })
-    const aiBase = settings?.ai_base_url || 'https://openrouter.ai/api/v1'
-    const aiModel = settings?.ai_model || 'deepseek/deepseek-v3.2'
+    const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
+    const aiModel = normalizeAiModel(settings?.ai_model, aiBase)
 
     // Step 1: Decompose the request
     const decomposed = await decomposeRequest(query, aiKey, aiBase, aiModel)

@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
+import { AI_BASE_URLS, normalizeAiModel } from '@/lib/ai-config'
 
 const SERPER_KEY = process.env.SERPER_API_KEY || ''
 const AI_KEY = process.env.OPENROUTER_API_KEY || ''
 const AI_URL = 'https://openrouter.ai/api/v1/chat/completions'
-const AI_MODEL = process.env.AI_MODEL || 'deepseek/deepseek-v3.2'
+const AI_MODEL = normalizeAiModel(process.env.AI_MODEL, AI_BASE_URLS.OPENROUTER)
 
 const BUSINESS_CATEGORIES = [
   'plumbing company', 'HVAC company', 'electrician company', 'landscaping company',

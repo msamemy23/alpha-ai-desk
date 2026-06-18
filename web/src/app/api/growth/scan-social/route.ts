@@ -1,6 +1,7 @@
 export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 
 // Scan social media / web for people in Houston posting about car trouble
 // Uses SearXNG (if configured) or direct web search via AI
@@ -11,8 +12,8 @@ export async function POST(req: NextRequest) {
     const { data: settings } = await db.from('settings').select('*').limit(1).single()
 
     const aiKey = (settings?.ai_api_key as string) || ''
-    const aiModel = (settings?.ai_model as string) || 'deepseek/deepseek-v3.2'
-    const aiBase = (settings?.ai_base_url as string) || 'https://openrouter.ai/api/v1'
+    const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
+    const aiModel = normalizeAiModel(settings?.ai_model, aiBase)
 
     if (!aiKey) {
       return NextResponse.json({ error: 'AI API key not configured in Settings' }, { status: 400 })
