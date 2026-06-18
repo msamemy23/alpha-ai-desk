@@ -1,5 +1,6 @@
-import { cookies } from 'next/headers'
+import { cookies, headers } from 'next/headers'
 import { createServerClient } from '@supabase/ssr'
+import { createClient } from '@supabase/supabase-js'
 import { getServiceClient } from '@/lib/supabase'
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
@@ -11,6 +12,18 @@ const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishab
  * Use inside API route handlers (App Router).
  */
 export async function getSessionUser() {
+  const headerStore = await headers()
+  const authHeader = headerStore.get('authorization') || ''
+  const bearerToken = authHeader.toLowerCase().startsWith('bearer ')
+    ? authHeader.slice(7).trim()
+    : ''
+
+  if (bearerToken) {
+    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON, { auth: { persistSession: false } })
+    const { data: { user } } = await supabase.auth.getUser(bearerToken)
+    if (user) return user
+  }
+
   const cookieStore = await cookies()
   const supabase = createServerClient(SUPABASE_URL, SUPABASE_ANON, {
     cookies: {

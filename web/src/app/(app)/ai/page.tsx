@@ -41,6 +41,18 @@ function getAIErrorMessage(data: unknown, fallback = 'AI request failed') {
   try { return JSON.stringify(error) } catch { return fallback }
 }
 
+async function getAuthJsonHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  try {
+    const { data } = await supabase.auth.getSession()
+    const token = data.session?.access_token
+    if (token) headers.Authorization = `Bearer ${token}`
+  } catch {
+    // Cookie auth may still work; let the server return the real error if not.
+  }
+  return headers
+}
+
 const SYSTEM_PROMPT = `You are Alpha AI, the intelligent assistant for Alpha International Auto Center, an auto repair shop in Houston, TX.
 
 SHOP INFO:
@@ -975,7 +987,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       try {
         const res = await fetch('/api/ai-completions', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: await getAuthJsonHeaders(),
           body: JSON.stringify({
             model: 'meta-llama/llama-3.2-11b-vision-instruct:free',
             messages: [
@@ -1049,7 +1061,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         : agentMessages
       const res = await fetch('/api/ai-completions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await getAuthJsonHeaders(),
         body: JSON.stringify({
           messages: [{ role: 'system', content: systemWithContext }, ...trimmedMsgs],
           max_tokens: 1500,
@@ -1332,7 +1344,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         try {
           const r = await fetch('/api/ai-action', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: await getAuthJsonHeaders(),
             body: JSON.stringify({ action: actionName, payload: parsed.payload || {} })
           })
           const d = await r.json()
@@ -1361,7 +1373,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         try {
           const r = await fetch('/api/ai-voice-call', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: await getAuthJsonHeaders(),
             body: JSON.stringify({
               to: parsed.to,
               task: parsed.task || 'Have a helpful conversation',
@@ -1969,7 +1981,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
     w.__sendSavedDoc = async (docId: string, channel: string, to: string) => {
       try {
         const res = await fetch('/api/send-document', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: await getAuthJsonHeaders(),
           body: JSON.stringify({ documentId: docId, channel, [channel === 'sms' ? 'phone' : 'email']: to })
         })
         if (!res.ok) throw new Error('Send failed')
