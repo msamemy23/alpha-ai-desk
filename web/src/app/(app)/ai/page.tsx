@@ -377,8 +377,9 @@ CLARIFICATION RULE - If you do not fully understand what the user is asking, ALW
 const DESKTOP_TOOLS_PROMPT = `DESKTOP TOOLS (only available in the desktop app - window.electronAPI must exist):
 These tools control limited desktop features. If the user asks to open Chrome, download an image/file, open a file that Alpha AI saved, use Kapture, notify, print, save, screenshot, get system info, or browse using the local computer, you MUST use one of these tools. Never claim a desktop action succeeded until the tool result says ok:true.
 
-DESKTOP OPEN APP - Open an allowlisted Windows app. Currently supports Google Chrome:
+DESKTOP OPEN APP - Open an allowlisted Windows app. Currently supports Google Chrome and Comet:
 {"tool":"desktopOpenApp","app":"chrome"}
+{"tool":"desktopOpenApp","app":"comet"}
 Open Chrome to a URL:
 {"tool":"desktopOpenApp","app":"chrome","url":"https://www.google.com/search?q=pikachu"}
 
@@ -460,13 +461,20 @@ function parseDesktopImageRequest(text: string) {
   return { query, filename, open: /\b(open|show|view)\b.*\b(file|image|picture|photo|it)\b/i.test(text) }
 }
 
-function parseChromeRequest(text: string) {
-  if (!/\b(open|launch|start)\s+(google\s+)?chrome\b/i.test(text)) return null
-  const searchMatch = text.match(/\bsearch\s+(?:for\s+)?(.+?)(?:[.!?]|$)/i)
-  const query = searchMatch?.[1]?.trim()
+function parseBrowserRequest(text: string) {
+  const browserMatch = text.match(/\b(open|launch|start)\s+(?:(google)\s+)?(chrome|comet)(?:\s+browser)?\b/i)
+  if (!browserMatch) return null
+  const app = browserMatch[3].toLowerCase() === 'comet' ? 'comet' : 'chrome'
+  const urlMatch = text.match(/\bhttps?:\/\/[^\s]+/i)
+  const searchMatch =
+    text.match(/\b(?:search|find|look\s+up|look\s+online\s+for)\s+(?:for\s+)?(.+?)(?:[.!?]|$)/i) ||
+    text.match(/\bgo\s+to\s+([a-z0-9.-]+\.[a-z]{2,})(?:\s+and\s+(.+?))?(?:[.!?]|$)/i)
+  const rawQuery = searchMatch?.[2] || searchMatch?.[1] || ''
+  const query = cleanDesktopQuery(rawQuery)
   return {
-    url: query ? `https://www.google.com/search?q=${encodeURIComponent(query)}` : '',
-    query: query || '',
+    app,
+    url: urlMatch?.[0] || (query ? `https://www.google.com/search?q=${encodeURIComponent(query)}` : ''),
+    query,
   }
 }
 
@@ -476,6 +484,72 @@ function wantsOpenPreviousDesktopFile(text: string) {
 
 function wantsKaptureSetup(text: string) {
   return /\bkapture\b/i.test(text) && /\b(set\s*up|install|connect|extension|chrome)\b/i.test(text)
+}
+
+const PART_TERMS = /\b(brake|brakes|rotor|rotors|pad|pads|control\s+arm|control\s+arms|strut|struts|shock|shocks|bearing|hub|alternator|starter|water\s+pump|thermostat|timing\s+belt|a\/c|ac\s+compressor|tie\s+rod|ball\s+joint|axle|cv\s+axle|caliper|muffler|catalytic|spark\s+plug|coil|fuel\s+pump|radiator|belt|hose|filter|battery|part|parts)\b/i
+const VEHICLE_TERMS = /\b(?:19|20)?\d{2}\b|\b(civic|accord|camry|corolla|altima|sentra|silverado|sierra|f-?150|escape|explorer|tacoma|tundra|pilot|cr-v|rav4|malibu|impala|charger|ram)\b/i
+
+function looksLikePartsRequest(text: string) {
+  return PART_TERMS.test(text) && VEHICLE_TERMS.test(text) && /\b(find|search|look\s+up|look\s+online|price|prices|cost|how\s+much|get|need|quote)\b/i.test(text)
+}
+
+function normalizePartsQuery(text: string) {
+  let query = text
+    .replace(/\b(open|launch|start)\s+(?:(?:google)\s+)?(?:chrome|comet)(?:\s+browser)?\b/gi, ' ')
+    .replace(/\bgo\s+to\s+(autozone|auto\s*zone|oreilly|o'reilly|napa|advance|advance\s+auto|rockauto|pepboys|pep\s+boys)\b/gi, '$1')
+    .replace(/\b(find|search|look\s+up|look\s+online\s+for|get|need|me|for|please|now|do\s+it)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  query = query.replace(/\b(\d{2})\s+(civic|accord)\b/gi, (_match, year, model) => `20${year} Honda ${model}`)
+  query = query.replace(/\b(19|20\d{2})\s+(civic|accord)\b/gi, (_match, year, model) => `${year} Honda ${model}`)
+  query = query.replace(/\b(\d{4})\s+(civic|accord)\b/gi, (_match, year, model) => `${year} Honda ${model}`)
+  query = query.replace(/\bfront\s+ones\s+both\s+sides\b/gi, 'front left and front right')
+  query = query.replace(/\bboth\s+sides\b/gi, 'left and right')
+  return query || text
+}
+
+function formatPartsLookupText(query: string, data: any, browserResult?: { ok?: boolean; app?: string; error?: string; url?: string }) {
+  const opened = browserResult
+    ? browserResult.ok
+      ? `Opened ${browserResult.app || 'browser'}${browserResult.url ? ` to ${browserResult.url}` : ''}.\n\n`
+      : `Browser open failed: ${browserResult.error || 'unknown error'}.\n\n`
+    : ''
+  const options = Array.isArray(data?.options) ? data.options : []
+  const kits = Array.isArray(data?.kits) ? data.kits : []
+  const sourceUrls = Array.isArray(data?.searchUrls) ? data.searchUrls : []
+  const positions = Array.isArray(data?.positions) ? data.positions : []
+  let text = `${opened}Parts lookup for ${data?.vehicle || query}`
+  if (positions.length) text += `\nPositions: ${positions.join(', ')}`
+  text += '\n'
+
+  if (!options.length && !kits.length) {
+    text += '\nI could not verify exact prices from the parts lookup. I am not going to make up numbers.'
+    if (sourceUrls.length) {
+      text += '\n\nReal source links found:\n' + sourceUrls.slice(0, 8).map((item: { store?: string; url?: string }) => `- ${item.store || 'source'}: ${item.url}`).join('\n')
+    }
+    return text
+  }
+
+  for (const option of options.slice(0, 3)) {
+    text += `\n**${option.brand || 'Option'}${option.tier ? ` (${option.tier})` : ''}**\n`
+    for (const part of (option.parts || [])) {
+      const price = typeof part.price === 'number' ? `$${part.price.toFixed(2)}` : 'price not verified'
+      text += `- ${part.position || 'Part'}: ${part.name || 'Unnamed part'}${part.partNumber ? ` #${part.partNumber}` : ''} - ${price} x${part.quantity || 1}${part.store ? ` [${part.store}]` : ''}${part.url ? `\n  ${part.url}` : ''}\n`
+    }
+    if (typeof option.partsTotal === 'number') text += `Parts total: $${option.partsTotal.toFixed(2)}\n`
+  }
+
+  for (const kit of kits.slice(0, 3)) {
+    const price = typeof kit.price === 'number' ? `$${kit.price.toFixed(2)}` : 'price not verified'
+    text += `\n**Kit option: ${kit.name || 'Kit'}** - ${price}${kit.includes ? ` (${kit.includes})` : ''}${kit.store ? ` [${kit.store}]` : ''}${kit.url ? `\n${kit.url}` : ''}\n`
+  }
+
+  if (data?.laborHours && data?.laborRate) {
+    text += `\nLabor reference: ${data.laborHours} hrs x $${data.laborRate}/hr = $${(data.laborHours * data.laborRate).toFixed(2)}`
+  }
+  if (data?.taxRate) text += `\nTax rate: ${data.taxRate}% on parts`
+  return text
 }
 
 function wantsDesktopMcpCheck(text: string) {
@@ -1008,13 +1082,53 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         })
       }
 
+      if (looksLikePartsRequest(text)) {
+        const browserRequest = parseBrowserRequest(text)
+        const partsQuery = normalizePartsQuery(text)
+        let browserResult: { ok?: boolean; app?: string; error?: string; url?: string } | undefined
+        if (browserRequest) {
+          setStatus(`Opening ${browserRequest.app === 'comet' ? 'Comet' : 'Chrome'}...`)
+          const browserUrl = `https://www.google.com/search?q=${encodeURIComponent(partsQuery)}`
+          browserResult = await desktopApi.system.openApp(browserRequest.app, browserUrl)
+        }
+
+        setStatus('Looking up parts...')
+        const pr = await fetch('/api/parts-lookup', {
+          method: 'POST',
+          headers: await getAuthJsonHeaders(),
+          body: JSON.stringify({ query: partsQuery }),
+          signal: AbortSignal.timeout(45000),
+        })
+        const pd = await pr.json().catch(() => ({}))
+        if (pr.ok && pd?.ok && pd.data) {
+          return finish({ role: 'assistant', content: formatPartsLookupText(partsQuery, pd.data, browserResult) })
+        }
+
+        const search = await fetch(`/api/ai-search?q=${encodeURIComponent(partsQuery)}`, { signal: AbortSignal.timeout(20000) })
+        const searchData = await search.json().catch(() => ({}))
+        const links = Array.isArray(searchData?.results)
+          ? searchData.results.slice(0, 6).map((item: { title?: string; url?: string; snippet?: string }, index: number) => (
+            `${index + 1}. ${item.title || 'Result'}\n${item.url || ''}${item.snippet ? `\n${item.snippet}` : ''}`
+          )).join('\n\n')
+          : ''
+        const prefix = browserResult
+          ? browserResult.ok
+            ? `Opened ${browserResult.app || 'browser'} for "${partsQuery}".\n\n`
+            : `Browser open failed: ${browserResult.error || 'unknown error'}.\n\n`
+          : ''
+        return finish({
+          role: 'assistant',
+          content: `${prefix}I could not verify exact part prices from the lookup API, so I am not going to make up prices.${links ? `\n\nReal search results:\n${links}` : ''}`,
+        })
+      }
+
       const imageRequest = parseDesktopImageRequest(text)
       if (imageRequest) {
-        const chromeRequest = parseChromeRequest(text)
+        const chromeRequest = parseBrowserRequest(text)
         let chromeResult: Record<string, unknown> | null = null
         if (chromeRequest) {
-          setStatus('Opening Chrome...')
-          chromeResult = await desktopApi.system.openApp('chrome', `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(imageRequest.query)}`)
+          setStatus(`Opening ${chromeRequest.app === 'comet' ? 'Comet' : 'Chrome'}...`)
+          chromeResult = await desktopApi.system.openApp(chromeRequest.app, `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(imageRequest.query)}`)
         }
 
         setStatus('Downloading image...')
@@ -1036,15 +1150,15 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         return finish({ role: 'assistant', content: `Image download failed: ${result?.error || 'Unknown error'}` })
       }
 
-      const chromeRequest = parseChromeRequest(text)
+      const chromeRequest = parseBrowserRequest(text)
       if (chromeRequest) {
-        setStatus('Opening Chrome...')
-        const result = await desktopApi.system.openApp('chrome', chromeRequest.url)
+        setStatus(`Opening ${chromeRequest.app === 'comet' ? 'Comet' : 'Chrome'}...`)
+        const result = await desktopApi.system.openApp(chromeRequest.app, chromeRequest.url)
         return finish({
           role: 'assistant',
           content: result?.ok
-            ? `Chrome is open${chromeRequest.query ? ` with a search for "${chromeRequest.query}"` : ''}.`
-            : `Chrome did not open: ${result?.error || 'Unknown error'}`,
+            ? `${chromeRequest.app === 'comet' ? 'Comet' : 'Chrome'} is open${chromeRequest.query ? ` with a search for "${chromeRequest.query}"` : ''}.`
+            : `${chromeRequest.app === 'comet' ? 'Comet' : 'Chrome'} did not open: ${result?.error || 'Unknown error'}`,
         })
       }
 
@@ -1409,7 +1523,8 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           const pr = await fetch('/api/parts-lookup', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: parsed.query }),             signal: AbortSignal.timeout(12000),
+            body: JSON.stringify({ query: parsed.query }),
+            signal: AbortSignal.timeout(45000),
           })
           const pd = await pr.json()
           if (pd.ok && pd.data) {
