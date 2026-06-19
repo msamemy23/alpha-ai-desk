@@ -26,6 +26,17 @@ interface KaptureStatus {
   lastError?: string
 }
 
+interface McpAuditEntry {
+  timestamp?: string
+  server?: string
+  tool?: string
+  ok?: boolean
+  approved?: boolean
+  approvalRequired?: boolean
+  cancelled?: boolean
+  error?: string
+}
+
 interface ToolsElectronApi {
   isElectron?: boolean
   mcp?: {
@@ -34,6 +45,7 @@ interface ToolsElectronApi {
     prompts: (server?: string) => Promise<Record<string, unknown>>
     callTool: (server: string, name: string, args?: Record<string, unknown>, approved?: boolean) => Promise<{ ok?: boolean; content?: Array<{ type?: string; text?: string }>; error?: string }>
     stop: (server?: string) => Promise<{ ok?: boolean; error?: string }>
+    auditLog?: (limit?: number) => Promise<{ ok?: boolean; path?: string; entries?: McpAuditEntry[]; error?: string }>
   }
   kapture?: { openSetup: () => Promise<{ ok?: boolean; error?: string; instructions?: string }> }
 }
@@ -71,6 +83,8 @@ export default function ToolsPage() {
   const [mcp, setMcp] = useState<McpServerState[]>([])
   const [mcpLoading, setMcpLoading] = useState(false)
   const [kaptureStatus, setKaptureStatus] = useState<KaptureStatus | null>(null)
+  const [mcpAudit, setMcpAudit] = useState<McpAuditEntry[]>([])
+  const [mcpAuditPath, setMcpAuditPath] = useState('')
   const desktopApi = getDesktopApi()
   const isDesktop = !!desktopApi?.isElectron
 
@@ -114,6 +128,11 @@ export default function ToolsPage() {
       const data = await desktopApi?.mcp?.tools()
       const servers = data?.servers || []
       setMcp(servers)
+      if (desktopApi?.mcp?.auditLog) {
+        const audit = await desktopApi.mcp.auditLog(25).catch((err: Error) => ({ ok: false, error: err.message, entries: [], path: '' }))
+        setMcpAudit(audit.entries || [])
+        setMcpAuditPath(audit.path || '')
+      }
       const kapture = servers.find(server => server.id === 'kapture')
       if (kapture?.ok) {
         try {
@@ -239,6 +258,34 @@ export default function ToolsPage() {
                   </Pill>
                 ))}
               </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-border bg-bg-card">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+          <div>
+            <h2 className="text-sm font-black">MCP Audit Log</h2>
+            {mcpAuditPath && <div className="mt-1 text-xs text-text-muted">{mcpAuditPath}</div>}
+          </div>
+          <Pill tone={mcpAudit.length ? 'green' : 'neutral'}>{mcpAudit.length} recent calls</Pill>
+        </div>
+        <div className="divide-y divide-border">
+          {mcpAudit.length === 0 ? (
+            <div className="p-4 text-sm text-text-muted">No MCP tool calls logged on this desktop yet.</div>
+          ) : mcpAudit.slice().reverse().map((entry, index) => (
+            <div key={`${entry.timestamp}-${entry.server}-${entry.tool}-${index}`} className="grid gap-2 p-4 text-sm md:grid-cols-[180px_1fr_auto]">
+              <div className="text-text-muted">{entry.timestamp ? new Date(entry.timestamp).toLocaleString() : 'Unknown time'}</div>
+              <div>
+                <div className="font-bold">{entry.server || 'server'}.{entry.tool || 'tool'}</div>
+                <div className="mt-1 text-xs text-text-secondary">
+                  approval {entry.approvalRequired ? entry.approved ? 'granted' : 'required' : 'not required'}
+                  {entry.error ? ` - ${entry.error}` : ''}
+                  {entry.cancelled ? ' - cancelled' : ''}
+                </div>
+              </div>
+              <Pill tone={entry.ok ? 'green' : 'red'}>{entry.ok ? 'ok' : 'error'}</Pill>
             </div>
           ))}
         </div>
