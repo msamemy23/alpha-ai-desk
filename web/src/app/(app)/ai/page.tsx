@@ -432,7 +432,7 @@ MCP safety rules:
 - Ask the user for confirmation before changing Windows apps, typing, clicking, sending data, closing tabs, changing files/settings, using PowerShell, registry, process, clipboard, or any destructive action.
 - If a native confirmation dialog appears, tell the user exactly what action is being requested.
 - Prefer read-only tools first: windows Snapshot/Screenshot/Scrape and kapture list_tabs/tab_detail/dom/elements/screenshot/console_logs/network_requests.
-- If Kapture says no tabs are connected, tell the user to install/open the Kapture Chrome extension, open DevTools, and connect the tab.`
+- If Kapture says no tabs are connected, tell the user to install/open the Kapture Chrome extension, click the Kapture toolbar extension, and connect the tab.`
 
 function cleanDesktopQuery(value: string) {
   return value
@@ -476,6 +476,13 @@ function wantsOpenPreviousDesktopFile(text: string) {
 
 function wantsKaptureSetup(text: string) {
   return /\bkapture\b/i.test(text) && /\b(set\s*up|install|connect|extension|chrome)\b/i.test(text)
+}
+
+function wantsDesktopMcpCheck(text: string) {
+  const lower = text.toLowerCase()
+  const mentionsLocalTools = /\b(mcp|mcps|windows-mcp|kapture|tools?|skills?|agents?)\b/.test(lower)
+  const asksCheck = /\b(check|test|verify|status|make sure|working|work|available|list|show|what)\b/.test(lower)
+  return mentionsLocalTools && asksCheck
 }
 
 
@@ -930,6 +937,62 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     }
 
     try {
+      if (wantsDesktopMcpCheck(text)) {
+        setStatus('Checking MCP tools...')
+        const mcpResult = await desktopApi.mcp.tools()
+        const servers = Array.isArray(mcpResult?.servers) ? mcpResult.servers : []
+        const okServers = servers.filter((server: { ok?: boolean }) => server.ok)
+        const extras = await Promise.all(okServers.map(async (server: { id: string }) => {
+          const [resources, prompts] = await Promise.all([
+            desktopApi.mcp.resources(server.id).catch((e: Error) => ({ ok: false, error: e.message, resources: [] })),
+            desktopApi.mcp.prompts(server.id).catch((e: Error) => ({ ok: false, error: e.message, prompts: [] })),
+          ])
+          return { id: server.id, resources, prompts }
+        }))
+
+        const shouldRunSelfTest = /\b(test|verify|make sure|working|work)\b/i.test(text)
+        let windowsTest: { ok?: boolean; error?: string } | null = null
+        let kaptureTest: { ok?: boolean; error?: string; content?: Array<{ type?: string; text?: string }> } | null = null
+
+        if (shouldRunSelfTest) {
+          setStatus('Testing MCP read-only tools...')
+          const [windowsResult, kaptureResult] = await Promise.allSettled([
+            desktopApi.mcp.callTool('windows', 'Screenshot', { use_annotation: false }, false),
+            desktopApi.mcp.callTool('kapture', 'list_tabs', {}, false),
+          ])
+          windowsTest = windowsResult.status === 'fulfilled' ? windowsResult.value : { ok: false, error: windowsResult.reason?.message || 'Windows-MCP test failed' }
+          kaptureTest = kaptureResult.status === 'fulfilled' ? kaptureResult.value : { ok: false, error: kaptureResult.reason?.message || 'Kapture test failed' }
+        }
+
+        const toolCount = (server: { tools?: unknown[] }) => Array.isArray(server.tools) ? server.tools.length : 0
+        const skillCount = extras.reduce((count, item: { resources?: { resources?: unknown[] }; prompts?: { prompts?: unknown[] } }) => (
+          count + (Array.isArray(item.resources?.resources) ? item.resources.resources.length : 0) + (Array.isArray(item.prompts?.prompts) ? item.prompts.prompts.length : 0)
+        ), 0)
+        const windowsServer = servers.find((server: { id?: string }) => server.id === 'windows')
+        const kaptureServer = servers.find((server: { id?: string }) => server.id === 'kapture')
+        const kaptureText = kaptureTest?.content?.find(item => item.type === 'text')?.text || ''
+        const connectedTabs = (() => {
+          try {
+            const parsed = JSON.parse(kaptureText)
+            return Array.isArray(parsed.tabs) ? parsed.tabs.length : null
+          } catch {
+            return null
+          }
+        })()
+
+        const lines = [
+          `Windows-MCP: ${windowsServer?.ok ? `connected (${toolCount(windowsServer)} tools)` : `not connected (${windowsServer?.error || 'unknown error'})`}${windowsTest ? (windowsTest.ok ? '; Screenshot test passed' : `; Screenshot test failed: ${windowsTest.error || 'unknown error'}`) : ''}.`,
+          `Kapture: ${kaptureServer?.ok ? `connected (${toolCount(kaptureServer)} tools)` : `not connected (${kaptureServer?.error || 'unknown error'})`}${kaptureTest ? (kaptureTest.ok ? `; list_tabs passed${connectedTabs !== null ? ` (${connectedTabs} connected tab${connectedTabs === 1 ? '' : 's'})` : ''}` : `; list_tabs failed: ${kaptureTest.error || 'unknown error'}`) : ''}.`,
+          `MCP skills/context: ${skillCount ? `${skillCount} resources/prompts exposed` : 'no extra MCP resources/prompts exposed by these servers'}.`,
+        ]
+
+        if (connectedTabs === 0) {
+          lines.push('Kapture browser automation is ready at the MCP layer, but Chrome has no connected Kapture tab yet. Install/open the extension, click the Kapture toolbar button, and connect the tab.')
+        }
+
+        return finish({ role: 'assistant', content: lines.join('\n') })
+      }
+
       if (wantsOpenPreviousDesktopFile(text)) {
         const filePath = lastDesktopFileRef.current
         if (!filePath) {
