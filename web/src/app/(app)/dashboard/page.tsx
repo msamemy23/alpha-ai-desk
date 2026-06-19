@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { supabase, calcTotals, formatCurrency, getShopProfile, getShopId } from '@/lib/supabase'
+import { laborLineTotal } from '@/lib/document-money'
 
 interface ShopProfile {
   shop_name: string
@@ -215,7 +216,7 @@ export default function DashboardPage() {
       if (!techMap[tech]) techMap[tech] = { jobs: 0, hours: 0, revenue: 0 }
       techMap[tech].jobs++
       techMap[tech].hours += Number(l.hours) || 0
-      techMap[tech].revenue += (Number(l.hours) || 0) * (Number(l.rate) || 0)
+      techMap[tech].revenue += laborLineTotal(l)
     })
   })
   const techs = Object.entries(techMap).sort((a, b) => b[1].revenue - a[1].revenue)

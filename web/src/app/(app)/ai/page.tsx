@@ -3,6 +3,8 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { AGENTS, SKILLS } from '@/lib/ai/capabilities'
 import { classifyRequest, type RouteDecision } from '@/lib/ai/router'
+import { normalizeDocumentDraft } from '@/lib/ai/document-draft'
+import { getLaborFlatAmount, laborLineTotal, partLineTotal } from '@/lib/document-money'
 
 type SpeechRecognition = any
 type SpeechRecognitionEvent = any
@@ -207,6 +209,12 @@ CREATE DOCUMENT (visual preview card) - ALWAYS use proposeDocument for ALL docum
 For invoices: {"tool":"proposeDocument","type":"Invoice","customer":"John Doe","customer_email":"john@example.com","customer_phone":"555-1234","vehicle":"2019 Toyota Camry","parts":[{"name":"Brake Pads","qty":1,"unitPrice":45.99}],"labors":[{"operation":"Brake replacement","hours":1.5,"rate":120}],"notes":""}
 For invoices (same as invoices, use type Invoice): {"tool":"proposeDocument","type":"Invoice","customer":"John Doe","customer_email":"john@example.com","customer_phone":"555-1234","vehicle":"2019 Toyota Camry","parts":[{"name":"Thermostat","qty":1,"unitPrice":280}],"labors":[],"notes":"Flat rate","apply_tax":false,"tax_rate":0}
 IMPORTANT: NEVER use createInvoice directly. ALWAYS use proposeDocument so the user can preview, edit, or delete before saving.
+DOCUMENT PRICE RULES:
+- If the user says "for $X", "total $X", "price is $X", "flat", "for everything", or "parts and labor", treat that amount as the hard final total.
+- Do not add another mentioned number unless the user clearly says it is a separate line charge.
+- Preserve itemized services as separate labor lines. For flat-total work, use labors with {"operation":"...","amount":X,"pricing":"flat"} instead of fake parts.
+- Flat/customer-supplied/parts-and-labor invoices are no tax unless the user explicitly asks for tax.
+- Never output a $0 line when the user gave a price for that work.
 
 UPDATE JOB STATUS:
 {"tool":"action","action":"updateJobStatus","payload":{"customer_name":"John Doe","status":"Ready for Pickup"}}
@@ -1415,7 +1423,8 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         (shopContext ? `\n\nLive shop context:\n${shopContext}` : '') +
         (accumulated.length ? `\n\nCompleted steps so far:\n${accumulated.join('\n')}` : '') +
           `\n\nCRITICAL INSTRUCTIONS:\n1. NEW INVOICE vs REPRINT: When user says "new invoice" or "I need a invoice for [item]", CREATE a NEW document using proposeDocument. Do NOT reprint or lookup old invoices. A "new invoice" means build a fresh one from scratch.\n2. UNDERSTAND SIMPLE REQUESTS: If the user gives you a customer name and says they need something, DO IT. Don't ask them to repeat. Example: "I need a new invoice for thermostat, $280 flat for Asheanna" = immediately create a invoice with those details, no tax, flat total.\n3. CUSTOMER SEARCH: When the user mentions a customer name, phone, or asks about a customer, ALWAYS use searchCustomers first (NOT createCustomer). Show matching results with name, phone, email, jobs. If no match, say so and ask before creating.\n4. NEVER LOOP: Give ONE clear response per turn. If you're unsure, ask ONE clarifying question. Never repeat yourself.\n5. FLAT RATE: When user says "flat" or "no tax", set tax to 0 and use the exact total they gave.\n6. customer search results: when searchcustomers returns results, always show all matching customers with their full details (name, phone, email, vehicles). the search now includes vehicle info from jobs. never show just one customer if multiple matches exist. present each customer clearly so the user can identify the right one.
-7. INVOICE TYPE: When user asks for an invoice, always use proposeDocument with type Invoice. Invoice = proof of payment received. Invoice = bill for work done. Estimate = quote before work. The type field in proposeDocument MUST match exactly what the user asked for.` +
+7. INVOICE TYPE: When user asks for an invoice, always use proposeDocument with type Invoice. Invoice = proof of payment received. Invoice = bill for work done. Estimate = quote before work. The type field in proposeDocument MUST match exactly what the user asked for.
+8. HARD TOTALS: If user gives a total/flat/final price, that amount is the final document total. Keep the work itemized, but use flat labor amounts and no tax so the total equals exactly what the user said. Do not add old context prices into a new invoice unless the user clearly asks for separate charges.` +
                     `\n\nNATURAL LANGUAGE INTELLIGENCE - YOU ARE SMART, ACT LIKE IT:
 - The user is a busy mechanic. They speak casually with typos, slang, abbreviations. FIGURE IT OUT.
 - "invoice 280 flat thermostat asheanna" = create invoice, thermostat, $280, Asheanna, no tax
@@ -1781,7 +1790,8 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
 
       // Propose Document - show visual estimate card
       if (parsed.tool === 'proposeDocument') {
-        const proposalHtml = renderProposal(parsed)
+        const latestUserText = [...history].reverse().find((message) => message.role === 'user')?.content || ''
+        const proposalHtml = renderProposal(parsed, latestUserText)
         const assistantMsg: ChatMessage = { role: 'assistant', content: '', html: proposalHtml }
         setMessages(prev => [...prev, assistantMsg])
         saveToHistory([...history, assistantMsg])
@@ -2332,29 +2342,30 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
 
   // Feature 4: Save document from proposal card (uses create-estimate which handles all types)
   const saveProposal = async (parsed: Record<string, unknown>) => {
+    const normalized = normalizeDocumentDraft(parsed)
     try {
       const res = await fetch('/api/create-estimate', {
         method: 'POST',
         headers: await getAuthJsonHeaders(),
         body: JSON.stringify({
-          customer: parsed.customer,
-          customer_email: parsed.customer_email,
-          customer_phone: parsed.customer_phone,
-          vehicle: parsed.vehicle,
-          parts: parsed.parts,
-          labors: parsed.labors,
-          notes: parsed.notes,
-          type: parsed.type || 'Estimate',
-          apply_tax: parsed.apply_tax,
-          tax_rate: parsed.tax_rate,
+          customer: normalized.customer,
+          customer_email: normalized.customer_email,
+          customer_phone: normalized.customer_phone,
+          vehicle: normalized.vehicle,
+          parts: normalized.parts,
+          labors: normalized.labors,
+          notes: normalized.notes,
+          type: normalized.type || 'Estimate',
+          apply_tax: normalized.apply_tax,
+          tax_rate: normalized.tax_rate,
         })
       })
       if (!res.ok) throw new Error('Failed')
       const data = await res.json()
-      const docType = (parsed.type as string) || 'Estimate'
+      const docType = (normalized.type as string) || 'Estimate'
       const docNum = data.doc_number || ''
-      const email = parsed.customer_email as string || ''
-      const phone = parsed.customer_phone as string || ''
+      const email = normalized.customer_email as string || ''
+      const phone = normalized.customer_phone as string || ''
       showToast(`${docType} ${docNum} saved!`)
       // Offer to send via email/SMS
       if (email || phone) {
@@ -2362,7 +2373,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
         if (email) sendOptions.push('email')
         if (phone) sendOptions.push('SMS')
         const sendHtml = `<div class="proposal-card" style="margin-top:8px">
-          <div class="font-bold text-sm mb-2">${docType} ${docNum} saved! Send to ${parsed.customer || 'customer'}?</div>
+          <div class="font-bold text-sm mb-2">${docType} ${docNum} saved! Send to ${normalized.customer || 'customer'}?</div>
           <div class="flex gap-2">
             ${email ? `<button onclick="window.__sendSavedDoc && window.__sendSavedDoc('${data.estimate?.id || ''}','email','${email.replace(/'/g, "\\'")}')" class="btn btn-primary btn-sm">Email to ${email}</button>` : ''}
             ${phone ? `<button onclick="window.__sendSavedDoc && window.__sendSavedDoc('${data.estimate?.id || ''}','sms','${phone.replace(/'/g, "\\'")}')" class="btn btn-secondary btn-sm">SMS to ${phone}</button>` : ''}
@@ -2391,6 +2402,21 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
     }
   }
 
+  const encodeProposalPayload = (value: unknown): string => {
+    const bytes = new TextEncoder().encode(JSON.stringify(value))
+    let binary = ''
+    bytes.forEach((byte) => { binary += String.fromCharCode(byte) })
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+  }
+
+  const decodeProposalPayload = (encodedData: string): Record<string, unknown> => {
+    const base64 = encodedData.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4)
+    const binary = atob(padded)
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+    return JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>
+  }
+
   // Render a small safe markdown subset for chat messages.
   const renderMarkdown = (text: string): string => {
     const escaped = escapeHtml(text)
@@ -2407,22 +2433,23 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
       .replace(/\n/g, '<br />')
   }
 
-  const renderProposal = (parsed: Record<string, unknown>): string => {
-    const parts = (parsed.parts as Record<string,unknown>[]) || []
-    const labors = (parsed.labors as Record<string,unknown>[]) || []
-    const partsTotal = parts.reduce((s,p) => s + (Number(p.qty)||1)*(Number(p.unitPrice)||0), 0)
-    const laborTotal = labors.reduce((s,l) => s + (Number(l.hours)||0)*(Number(l.rate)||120), 0)
-    const taxRate = parsed.tax_rate !== undefined ? Number(parsed.tax_rate) : 8.25
-    const applyTax = parsed.apply_tax !== undefined ? parsed.apply_tax !== false : true
+  const renderProposal = (parsed: Record<string, unknown>, userText = ''): string => {
+    const normalized = normalizeDocumentDraft(parsed, { userText })
+    const parts = (normalized.parts as Record<string,unknown>[]) || []
+    const labors = (normalized.labors as Record<string,unknown>[]) || []
+    const partsTotal = parts.reduce((s,p) => s + partLineTotal(p), 0)
+    const laborTotal = labors.reduce((s,l) => s + laborLineTotal(l), 0)
+    const taxRate = normalized.tax_rate !== undefined ? Number(normalized.tax_rate) : 8.25
+    const applyTax = normalized.apply_tax !== undefined ? normalized.apply_tax !== false : true
     const tax = applyTax ? partsTotal * (taxRate / 100) : 0
     const total = partsTotal + laborTotal + tax
     const fmt = (n: number) => '$' + n.toFixed(2)
-    const docType = (parsed.type as string) || 'Estimate'
-    const encodedData = btoa(JSON.stringify(parsed))
+    const docType = (normalized.type as string) || 'Estimate'
+    const encodedData = encodeProposalPayload(normalized)
     return `<div class="proposal-card" id="proposal-${encodedData.slice(0, 8)}">
-      <div class="font-bold text-base mb-2">Proposed ${docType} - ${parsed.customer || ''}</div>
-      ${parts.length ? `<table class="w-full text-xs mb-3"><thead><tr class="text-text-muted"><th class="text-left pb-1">Part</th><th class="text-right pb-1">Qty</th><th class="text-right pb-1">Price</th><th class="text-right pb-1">Total</th></tr></thead><tbody>${parts.map(p=>`<tr><td>${p.name}</td><td class="text-right">${p.qty||1}</td><td class="text-right">${fmt(Number(p.unitPrice)||0)}</td><td class="text-right">${fmt((Number(p.qty)||1)*(Number(p.unitPrice)||0))}</td></tr>`).join('')}</tbody></table>` : ''}
-      ${labors.length ? `<table class="w-full text-xs mb-3"><thead><tr class="text-text-muted"><th class="text-left pb-1">Labor</th><th class="text-right pb-1">Hrs</th><th class="text-right pb-1">Total</th></tr></thead><tbody>${labors.map(l=>`<tr><td>${l.operation}</td><td class="text-right">${l.hours}</td><td class="text-right">${fmt((Number(l.hours)||0)*(Number(l.rate)||120))}</td></tr>`).join('')}</tbody></table>` : ''}
+      <div class="font-bold text-base mb-2">Proposed ${escapeHtml(docType)} - ${escapeHtml(String(normalized.customer || ''))}</div>
+      ${parts.length ? `<table class="w-full text-xs mb-3"><thead><tr class="text-text-muted"><th class="text-left pb-1">Part</th><th class="text-right pb-1">Qty</th><th class="text-right pb-1">Price</th><th class="text-right pb-1">Total</th></tr></thead><tbody>${parts.map(p=>`<tr><td>${escapeHtml(String(p.name || p.description || 'Part'))}</td><td class="text-right">${escapeHtml(String(p.qty||1))}</td><td class="text-right">${fmt(Number(p.unitPrice)||0)}</td><td class="text-right">${fmt(partLineTotal(p))}</td></tr>`).join('')}</tbody></table>` : ''}
+      ${labors.length ? `<table class="w-full text-xs mb-3"><thead><tr class="text-text-muted"><th class="text-left pb-1">Labor</th><th class="text-right pb-1">Hrs</th><th class="text-right pb-1">Total</th></tr></thead><tbody>${labors.map(l=>`<tr><td>${escapeHtml(String(l.operation || l.description || 'Labor'))}</td><td class="text-right">${getLaborFlatAmount(l) !== null ? 'Flat' : escapeHtml(String(l.hours || 0))}</td><td class="text-right">${fmt(laborLineTotal(l))}</td></tr>`).join('')}</tbody></table>` : ''}
       <div class="border-t border-border pt-2 space-y-1 text-xs">
         <div class="flex justify-between"><span>Parts</span><span>${fmt(partsTotal)}</span></div>
         <div class="flex justify-between"><span>Labor</span><span>${fmt(laborTotal)}</span></div>
@@ -2444,7 +2471,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
     // Save: persist document to DB
     w.__saveProposal = (encodedData: string) => {
       try {
-        const parsed = JSON.parse(atob(encodedData))
+        const parsed = normalizeDocumentDraft(decodeProposalPayload(encodedData))
         saveProposal(parsed)
       } catch { showToast('Failed to parse document data') }
     }
@@ -2453,7 +2480,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
     // Edit: prompt user to tell AI what to change
     w.__editProposal = (encodedData: string) => {
       try {
-        const parsed = JSON.parse(atob(encodedData))
+        const parsed = normalizeDocumentDraft(decodeProposalPayload(encodedData))
         const docType = parsed.type || 'Estimate'
         const editPrompt = prompt(`What would you like to change on this ${docType}?`)
         if (editPrompt) {

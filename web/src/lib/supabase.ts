@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { laborLineTotal, partLineTotal } from '@/lib/document-money'
 import { createBrowserClient } from '@supabase/ssr'
 
 // Publishable URL + anon key (safe to ship to the browser; access is governed
@@ -163,8 +164,8 @@ export function calcTotals(doc: Record<string, unknown>) {
   const deposit = Number(doc.deposit) || 0
   const applyTax = doc.apply_tax !== false
 
-  const laborTotal = labors.reduce((s, l) => s + (Number(l.hours)||0) * (Number(l.rate)||0), 0)
-  const partsTotal = parts.reduce((s, p) => s + (Number(p.qty)||1) * (Number(p.unitPrice)||0), 0)
+  const laborTotal = labors.reduce((s, l) => s + laborLineTotal(l), 0)
+  const partsTotal = parts.reduce((s, p) => s + partLineTotal(p), 0)
   const taxableBase = applyTax ? parts.filter(p => p.taxable !== false).reduce((s,p) => s + (Number(p.qty)||1)*(Number(p.unitPrice)||0), 0) + shopSupplies + sublet : 0
   const taxAmount = taxableBase * (taxRate / 100)
   const subtotal = laborTotal + partsTotal + shopSupplies + sublet

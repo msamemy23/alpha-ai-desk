@@ -1,6 +1,7 @@
 ﻿'use client'
 import { useEffect, useState, useCallback } from 'react'
 import { supabase, calcTotals, formatCurrency } from '@/lib/supabase'
+import { getLaborFlatAmount, laborLineTotal } from '@/lib/document-money'
 
 interface Customer { id: string; name: string; phone: string; email: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin: string; vehicle_plate: string; vehicle_mileage: string }
 interface Doc { id: string; type: string; doc_number: string; status: string; doc_date: string; customer_name: string; customer_id: string; customer_phone?: string; customer_email?: string; signature_requested_at?: string; signature_signed_at?: string; signature_signer_name?: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin?: string; vehicle_plate?: string; vehicle_mileage?: string | number; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; warranty_months: number | null; warranty_mileage: number | null; warranty_start: string | null; warranty_exclusions: string | null; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
@@ -389,6 +390,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   const filtered = docs.filter(d => !search || [d.doc_number, d.customer_name, d.status, d.vehicle_year, d.vehicle_make, d.vehicle_model, d.vehicle_plate, d.vehicle_vin].some(v => (v||'').toLowerCase().includes(search.toLowerCase())))
   const totals = form ? calcTotals(form as unknown as Record<string,unknown>) : null
   const fmt = (d: string) => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—'
+  const isFlatLabor = (line: Record<string, unknown>) => getLaborFlatAmount(line) !== null
 
   const statusColor: Record<string,string> = { Draft:'tag-gray', Sent:'tag-blue', Approved:'tag-green', Unpaid:'tag-red', Partial:'tag-amber', Paid:'tag-green' }
 
@@ -570,9 +572,9 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                     <select className="form-select col-span-2" value={l.tech as string||''} onChange={e => { const l2=[...((form.labors||[]) as Record<string,unknown>[])]; l2[i]={...l2[i],tech:e.target.value}; setForm(f=>({...f,labors:l2})) }}>
                       <option value="">—</option>{['Paul','Devin','Luis','Louie'].map(t=><option key={t}>{t}</option>)}
                     </select>
-                    <input className="form-input col-span-1" type="number" step="0.5" placeholder="Hrs" value={l.hours as number||0} onChange={e => { const l2=[...((form.labors||[]) as Record<string,unknown>[])]; l2[i]={...l2[i],hours:Number(e.target.value)}; setForm(f=>({...f,labors:l2})) }} />
-                    <input className="form-input col-span-2" type="number" step="0.01" placeholder="Rate" value={l.rate as number||120} onChange={e => { const l2=[...((form.labors||[]) as Record<string,unknown>[])]; l2[i]={...l2[i],rate:Number(e.target.value)}; setForm(f=>({...f,labors:l2})) }} />
-                    <div className="col-span-1 text-right text-sm">{formatCurrency((Number(l.hours)||0)*(Number(l.rate)||0))}</div>
+                    <input className="form-input col-span-1" type={isFlatLabor(l) ? 'text' : 'number'} step="0.5" placeholder="Hrs" value={isFlatLabor(l) ? 'Flat' : (l.hours as number||0)} readOnly={isFlatLabor(l)} onChange={e => { if (isFlatLabor(l)) return; const l2=[...((form.labors||[]) as Record<string,unknown>[])]; l2[i]={...l2[i],hours:Number(e.target.value)}; setForm(f=>({...f,labors:l2})) }} />
+                    <input className="form-input col-span-2" type="number" step="0.01" placeholder={isFlatLabor(l) ? 'Amount' : 'Rate'} value={isFlatLabor(l) ? Number(getLaborFlatAmount(l) || 0) : (l.rate as number||120)} onChange={e => { const l2=[...((form.labors||[]) as Record<string,unknown>[])]; l2[i]=isFlatLabor(l) ? {...l2[i],amount:Number(e.target.value),pricing:'flat'} : {...l2[i],rate:Number(e.target.value)}; setForm(f=>({...f,labors:l2})) }} />
+                    <div className="col-span-1 text-right text-sm">{formatCurrency(laborLineTotal(l))}</div>
                     <button className="col-span-1 btn btn-danger btn-sm" onClick={() => setForm(f=>({...f,labors:((f.labors||[]) as Record<string,unknown>[]).filter((_,j)=>j!==i)}))}>✕</button>
                   </div>
                 ))}
@@ -839,9 +841,9 @@ tr, td, th, thead, table { break-inside: avoid; }
                       {((form.labors||[]) as Record<string,unknown>[]).map((l,i) => (
                         <tr key={i} style={{background:i%2===1?'#fafafa':'transparent'}}>
                           <td style={{padding:'6px 8px',color:'#111'}}>{(l.operation as string) || '—'}</td>
-                          <td style={{padding:'6px 8px',textAlign:'center',color:'#666'}}>{(l.hours as number)||0}</td>
-                          <td style={{padding:'6px 8px',textAlign:'right',color:'#666'}}>{formatCurrency(Number(l.rate)||0)}/hr</td>
-                          <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600,color:'#111'}}>{formatCurrency((Number(l.hours)||0)*(Number(l.rate)||0))}</td>
+                          <td style={{padding:'6px 8px',textAlign:'center',color:'#666'}}>{isFlatLabor(l) ? 'Flat' : ((l.hours as number)||0)}</td>
+                          <td style={{padding:'6px 8px',textAlign:'right',color:'#666'}}>{isFlatLabor(l) ? 'Flat' : `${formatCurrency(Number(l.rate)||0)}/hr`}</td>
+                          <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600,color:'#111'}}>{formatCurrency(laborLineTotal(l))}</td>
                         </tr>
                       ))}
                     </tbody>

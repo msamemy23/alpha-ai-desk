@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { sendEmail } from '@/lib/email'
+import { getLaborFlatAmount, laborLineTotal } from '@/lib/document-money'
 import crypto from 'crypto'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -34,10 +35,7 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
     (s, p) => s + (Number(p.qty) || 1) * (Number(p.unitPrice) || 0),
     0
   )
-  const laborTotal = labors.reduce(
-    (s, l) => s + (Number(l.hours) || 0) * (Number(l.rate) || 0),
-    0
-  )
+  const laborTotal = labors.reduce((s, l) => s + laborLineTotal(l), 0)
   const taxableBase = applyTax
     ? parts
         .filter((p) => p.taxable !== false)
@@ -70,13 +68,14 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
     ...labors.map((l) => {
       const hours = Number(l.hours) || 0
       const rate = Number(l.rate) || 0
+      const flatAmount = getLaborFlatAmount(l)
       const opName = (l.operation as string) || (l.description as string) || 'Labor'
       return {
-        description: `${opName} (${hours}h @ $${rate}/h)`,
-        qty: hours,
-        unit_price: rate,
-        unitPrice: rate,
-        total: hours * rate,
+        description: flatAmount !== null ? `${opName} (flat)` : `${opName} (${hours}h @ $${rate}/h)`,
+        qty: flatAmount !== null ? 1 : hours,
+        unit_price: flatAmount !== null ? flatAmount : rate,
+        unitPrice: flatAmount !== null ? flatAmount : rate,
+        total: flatAmount !== null ? flatAmount : hours * rate,
       }
     }),
   ]

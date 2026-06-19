@@ -1,5 +1,6 @@
 // Gmail SMTP email helper using nodemailer
 import nodemailer from 'nodemailer'
+import { getLaborFlatAmount, laborLineTotal } from '@/lib/document-money'
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -54,10 +55,7 @@ export function estimateEmailHtml(
     (s, p) => s + (Number(p.qty) || 1) * (Number(p.unitPrice) || 0),
     0
   )
-  const laborTotal = labors.reduce(
-    (s, l) => s + (Number(l.hours) || 0) * (Number(l.rate) || 0),
-    0
-  )
+  const laborTotal = labors.reduce((s, l) => s + laborLineTotal(l), 0)
   const tax = applyTax ? partsTotal * (taxRate / 100) : 0
   const total = partsTotal + laborTotal + shopSupplies + tax
   const balanceDue = Math.max(total - deposit, 0)
@@ -74,8 +72,11 @@ export function estimateEmailHtml(
 
   const laborRows = labors
     .map(
-      (l) =>
-        `<tr><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${l.operation || l.description || 'Labor'}</td><td style="padding:4px 8px;text-align:center;border-bottom:1px solid #f0f0f0">${l.hours || 0}h @ $${l.rate || 0}</td><td style="padding:4px 8px;text-align:right;border-bottom:1px solid #f0f0f0">$${((Number(l.hours) || 0) * (Number(l.rate) || 0)).toFixed(2)}</td></tr>`
+      (l) => {
+        const flatAmount = getLaborFlatAmount(l)
+        const qtyLabel = flatAmount !== null ? 'Flat' : `${l.hours || 0}h @ $${l.rate || 0}`
+        return `<tr><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${l.operation || l.description || 'Labor'}</td><td style="padding:4px 8px;text-align:center;border-bottom:1px solid #f0f0f0">${qtyLabel}</td><td style="padding:4px 8px;text-align:right;border-bottom:1px solid #f0f0f0">$${laborLineTotal(l).toFixed(2)}</td></tr>`
+      }
     )
     .join('')
 
