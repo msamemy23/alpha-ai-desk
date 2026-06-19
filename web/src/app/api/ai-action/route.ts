@@ -3,18 +3,66 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { sendEmail, estimateEmailHtml } from '@/lib/email'
+import { getIdempotencyKey } from '@/lib/api-response'
+import { writeAuditLog } from '@/lib/audit-log'
+import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
 
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
 function fail(error: string, status = 400) { return NextResponse.json({ ok: false, error }, { status }) }
+
+const mutatingActions = new Set([
+  'createCustomer', 'createJob', 'createInvoice', 'updateJobStatus', 'updateCustomer',
+  'voidDocument', 'deleteRecord', 'scheduleFollowUp', 'sendEstimateEmail',
+  'convertEstimateToInvoice', 'addStaff', 'removeStaff', 'updateDocument',
+  'createAppointment', 'deleteAppointment', 'updateAppointment', 'updateInventory',
+])
+const aiActionIdempotency = new Map<string, { createdAt: number; data: unknown }>()
+
+function rememberAiAction(key: string, data: unknown) {
+  const now = Date.now()
+  for (const [existingKey, value] of aiActionIdempotency) {
+    if (now - value.createdAt > 10 * 60_000) aiActionIdempotency.delete(existingKey)
+  }
+  aiActionIdempotency.set(key, { createdAt: now, data })
+}
 
 export async function POST(req: NextRequest) {
   // Require a real session and act only on the authenticated caller's shop.
   const auth = await getAuthedShop()
   if (!auth) return unauthorized()
   const shopId = auth.shopId
+  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'local'
+  const limited = checkRateLimit(rateLimitKey('ai-action', auth.userId, auth.shopId, ip), 120, 60_000)
+  if (!limited.ok) return fail('Too many AI action requests', 429)
 
   const sb = getServiceClient()
-  const { action, payload } = await req.json() as { action: string; payload: Record<string, unknown> }
+  const body = await req.json() as { action?: unknown; payload?: unknown }
+  const action = typeof body.action === 'string' ? body.action : ''
+  if (!action || typeof action !== 'string') return fail('Action is required')
+  const payload = body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload) ? body.payload as Record<string, unknown> : {}
+  const safePayload = payload
+  const idempotencyKey = getIdempotencyKey(req, [shopId, action, JSON.stringify(safePayload).slice(0, 500)])
+  const isMutation = mutatingActions.has(action)
+  const existing = isMutation ? aiActionIdempotency.get(idempotencyKey) : undefined
+  if (existing) return ok(existing.data)
+
+  const auditedOk = async (data: unknown, targetType?: string, targetId?: string) => {
+    if (isMutation) {
+      rememberAiAction(idempotencyKey, data)
+      await writeAuditLog({
+        shopId,
+        userId: auth.userId,
+        action: `ai.${action}`,
+        targetType,
+        targetId,
+        permission: action.toLowerCase().includes('delete') || action.toLowerCase().includes('void') ? 'destructive' : 'write',
+        approved: true,
+        idempotencyKey,
+        metadata: { payload: safePayload },
+      })
+    }
+    return ok(data)
+  }
 
   try {
     switch (action) {
@@ -30,7 +78,7 @@ export async function POST(req: NextRequest) {
           created_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return ok(data)
+        return auditedOk(data, 'customer', data?.id)
       }
 
       // ── Create Job ───────────────────────────────────────────
@@ -46,7 +94,7 @@ export async function POST(req: NextRequest) {
           created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return ok(data)
+        return auditedOk(data, 'job', data?.id)
       }
 
       // ── Create Invoice / Estimate ────────────────────────────
@@ -75,7 +123,7 @@ export async function POST(req: NextRequest) {
           created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return ok(data)
+        return auditedOk(data, 'document', data?.id)
       }
 
       // ── Update Job Status ────────────────────────────────────
@@ -86,7 +134,7 @@ export async function POST(req: NextRequest) {
           status: newStatus, updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return ok(data)
+        return auditedOk(data, 'job', String(id))
       }
 
       // ── Update Customer ──────────────────────────────────────
@@ -97,7 +145,7 @@ export async function POST(req: NextRequest) {
           ...updates, updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return ok(data)
+        return auditedOk(data, 'customer', String(id))
       }
 
       // ── Void Document ────────────────────────────────────────
@@ -108,7 +156,7 @@ export async function POST(req: NextRequest) {
           status: 'Void', updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return ok(data)
+        return auditedOk(data, 'document', String(id))
       }
 
       // ── Delete Record ────────────────────────────────────────
@@ -120,7 +168,7 @@ export async function POST(req: NextRequest) {
         // Scope the delete to the caller's shop so one shop can't delete another's row.
         const { error } = await sb.from(table).delete().eq('id', id).eq('shop_id', shopId)
         if (error) return fail(error.message, 500)
-        return ok({ deleted: true, table, id })
+        return auditedOk({ deleted: true, table, id }, table, id)
       }
 
       // ── Schedule Follow-Up ───────────────────────────────────
@@ -138,7 +186,7 @@ export async function POST(req: NextRequest) {
           created_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return ok(data)
+        return auditedOk(data, 'scheduled_message', data?.id)
       }
 
       // ── Get Customer History ─────────────────────────────────
@@ -343,7 +391,7 @@ export async function POST(req: NextRequest) {
         // Mark doc as sent
         await sb.from('documents').update({ sent_at: new Date().toISOString() }).eq('id', doc.id).eq('shop_id', shopId)
 
-        return ok({ sent: true, to: toEmail, doc_number: doc.doc_number, type: doc.type })
+        return auditedOk({ sent: true, to: toEmail, doc_number: doc.doc_number, type: doc.type }, 'document', doc.id)
       }
 
 
@@ -369,7 +417,7 @@ export async function POST(req: NextRequest) {
             updated_at: new Date().toISOString(),
           }).select().single()
           if (invErr) return fail(invErr.message, 500)
-          return ok(invData)
+          return auditedOk(invData, 'document', invData?.id)
         }
       // ── Add Staff Member ────────────────────────────────────
       case 'addStaff': {
@@ -384,7 +432,7 @@ export async function POST(req: NextRequest) {
           created_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return ok(data)
+        return auditedOk(data, 'staff', data?.id)
       }
 
       // ── Remove Staff Member ──────────────────────────────────
@@ -396,7 +444,7 @@ export async function POST(req: NextRequest) {
         else return fail('Provide staff name or id')
         const { data, error } = await query.select().single()
         if (error) return fail(error.message, 500)
-        return ok({ removed: true, staff: data })
+        return auditedOk({ removed: true, staff: data }, 'staff', data?.id)
       }
 
       // ── List Staff ───────────────────────────────────────────
@@ -413,7 +461,7 @@ export async function POST(req: NextRequest) {
           ...updates, updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return ok(data)
+        return auditedOk(data, 'document', String(id))
       }
 
       // ── Create Appointment ───────────────────────────────────
@@ -435,7 +483,7 @@ export async function POST(req: NextRequest) {
           created_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return ok(data)
+        return auditedOk(data, 'appointment', data?.id)
       }
 
       // ── Time Clock Report ────────────────────────────────────
@@ -467,7 +515,7 @@ export async function POST(req: NextRequest) {
         if (!id) return fail('Appointment id is required')
         const { error } = await sb.from('appointments').delete().eq('id', id).eq('shop_id', shopId)
         if (error) return fail(error.message, 500)
-        return ok({ deleted: true, id })
+        return auditedOk({ deleted: true, id }, 'appointment', String(id))
       }
 
       // ── Update Appointment ───────────────────────────────────
@@ -476,7 +524,7 @@ export async function POST(req: NextRequest) {
         if (!id) return fail('Appointment id is required')
         const { data, error } = await sb.from('appointments').update(updates).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return ok(data)
+        return auditedOk(data, 'appointment', String(id))
       }
 
       // ── Get Inventory ────────────────────────────────────────
@@ -496,7 +544,7 @@ export async function POST(req: NextRequest) {
           ...updates, updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return ok(data)
+        return auditedOk(data, 'inventory', String(id))
       }
       default:
         return fail(`Unknown action: ${action}`)

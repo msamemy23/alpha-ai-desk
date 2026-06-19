@@ -183,6 +183,11 @@ export default function SettingsPage() {
           <div className="bg-blue/10 border border-blue/30 rounded-lg p-3 text-sm text-blue">
             Get an API key at <strong>openrouter.ai</strong> or DeepSeek. DeepSeek V4 Flash is the default for Alpha AI.
           </div>
+          <div className="rounded-lg border border-border bg-bg-hover/60 p-4">
+            <div className="text-sm font-bold">Agents, MCP, and Kapture</div>
+            <p className="mt-1 text-xs text-text-muted">Check Windows-MCP, Kapture connected tabs, available tools, approval gates, and restart controls.</p>
+            <a href="/tools" className="btn btn-secondary btn-sm mt-3 inline-flex">Open Agents & Tools</a>
+          </div>
           <div><label className="form-label">AI API Key</label><input className="form-input font-mono" type="password" value={settings.ai_api_key as string||''} onChange={sf('ai_api_key')} placeholder="sk-or-v1-... or sk-..." /></div>
           <div><label className="form-label">Model</label>
             <select className="form-select" value={settings.ai_model as string||''} onChange={sf('ai_model')}>

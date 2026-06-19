@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
 import { AI_BASE_URLS, normalizeAiModel } from '@/lib/ai-config'
+import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
 
 export const dynamic = 'force-dynamic'
 
@@ -43,11 +44,17 @@ function pickProvider(settings: { ai_api_key?: unknown; ai_base_url?: unknown; a
 export async function POST(req: NextRequest) {
   const auth = await getAuthedShop()
   if (!auth) return unauthorized()
+  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'local'
+  const limited = checkRateLimit(rateLimitKey('ai-completions', auth.userId, auth.shopId, ip), 60, 60_000)
+  if (!limited.ok) return error('Too many AI requests. Wait a minute and try again.', 429)
 
   try {
     const body = await req.json()
     if (!Array.isArray(body?.messages) || body.messages.length === 0) {
       return error('AI request is missing messages')
+    }
+    if (body.messages.length > 40) {
+      return error('AI request has too many messages', 400)
     }
 
     const sb = getServiceClient()
@@ -80,6 +87,7 @@ export async function POST(req: NextRequest) {
         ...body,
         model,
       }),
+      signal: AbortSignal.timeout(120000),
     })
 
     const data = await upstream.json().catch(() => ({}))

@@ -1,6 +1,11 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { apiFail, apiOk, optionalStringArray, readJsonObject, requireString, getIdempotencyKey } from '@/lib/api-response'
+import { writeAuditLog } from '@/lib/audit-log'
+import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
+import { normalizeVehicleYear } from '@/lib/ai/router'
 
 export const dynamic = 'force-dynamic'
 
@@ -16,6 +21,7 @@ interface PartResult {
   inStock: boolean | null
   storeLocation: string | null
   quantity: number
+  sourceConfidence: 'verified_exact_product_page' | 'search_result_only'
 }
 
 interface PartOption {
@@ -33,6 +39,7 @@ interface KitOption {
   store: string
   includes: string
   positions: string
+  sourceConfidence: 'verified_exact_product_page' | 'search_result_only'
 }
 
 interface PartsLookupResult {
@@ -45,6 +52,118 @@ interface PartsLookupResult {
   laborHours: number | null
   laborRate: number
   searchUrls: { store: string; url: string }[]
+  sourceConfidence: 'verified_exact_product_page' | 'search_result_only' | 'price_unavailable'
+  warnings: string[]
+}
+
+const STORE_DOMAINS: Record<string, string> = {
+  autozone: 'autozone.com',
+  'auto zone': 'autozone.com',
+  oreilly: 'oreillyauto.com',
+  "o'reilly": 'oreillyauto.com',
+  napa: 'napaonline.com',
+  rockauto: 'rockauto.com',
+  advance: 'advanceautoparts.com',
+  'advance auto': 'advanceautoparts.com',
+  pepboys: 'pepboys.com',
+  'pep boys': 'pepboys.com',
+}
+
+function normalizePartsQuery(query: string) {
+  return normalizeVehicleYear(query)
+    .replace(/\bfront\s+ones\s+both\s+sides\b/gi, 'front left and front right')
+    .replace(/\bboth\s+sides\b/gi, 'left and right')
+    .replace(/\b04\s+honda\b/gi, '2004 Honda')
+    .replace(/\b05\s+honda\b/gi, '2005 Honda')
+    .trim()
+}
+
+function normalizeStoreFilter(stores?: string[]) {
+  const domains = (stores || [])
+    .map(store => STORE_DOMAINS[store.toLowerCase().trim()] || store.toLowerCase().trim())
+    .filter(Boolean)
+    .filter(store => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(store))
+  return Array.from(new Set(domains)).slice(0, 6)
+}
+
+function priceAppearsInEvidence(price: unknown, evidence: string) {
+  const value = typeof price === 'number' ? price : Number(price)
+  if (!Number.isFinite(value) || value <= 0) return false
+  const fixed = value.toFixed(2)
+  const withoutCents = fixed.endsWith('.00') ? fixed.slice(0, -3) : fixed
+  const normalized = evidence.replace(/,/g, '')
+  return [
+    `$${fixed}`,
+    `$${withoutCents}`,
+    fixed,
+    withoutCents,
+  ].some(candidate => normalized.includes(candidate))
+}
+
+function isExactProductUrl(url: string) {
+  return /\/(p|product|products|parts|item|detail|catalog|dp)\b/i.test(url)
+}
+
+function sanitizeParsedParts(parsed: { options?: PartOption[]; kits?: KitOption[] }, rawResults: { title: string; url: string; content: string }[]) {
+  const evidenceByUrl = new Map(rawResults.map(result => [result.url, `${result.title}\n${result.content}`]))
+  const warnings: string[] = []
+
+  const options = (parsed.options || []).map(option => {
+    const parts = (option.parts || []).flatMap(part => {
+      const evidence = evidenceByUrl.get(part.url)
+      if (!part.url || !evidence) {
+        warnings.push(`Dropped ${part.name || 'part'} because its source URL was not in the search results.`)
+        return []
+      }
+      if (!priceAppearsInEvidence(part.price, evidence)) {
+        warnings.push(`Dropped ${part.name || 'part'} because its price was not visible in the source result.`)
+        return []
+      }
+      const price = Number(part.price)
+      const sourceConfidence: PartResult['sourceConfidence'] = isExactProductUrl(part.url) ? 'verified_exact_product_page' : 'search_result_only'
+      return [{
+        ...part,
+        price,
+        quantity: Number(part.quantity || 1),
+        sourceConfidence,
+      }]
+    })
+    return {
+      ...option,
+      parts,
+      partsTotal: parts.reduce((sum, part) => sum + Number(part.price || 0) * Number(part.quantity || 1), 0),
+    }
+  }).filter(option => option.parts.length > 0).slice(0, 3)
+
+  const kits = (parsed.kits || []).flatMap(kit => {
+    const evidence = evidenceByUrl.get(kit.url)
+    if (!kit.url || !evidence) {
+      warnings.push(`Dropped ${kit.name || 'kit'} because its source URL was not in the search results.`)
+      return []
+    }
+    if (!priceAppearsInEvidence(kit.price, evidence)) {
+      warnings.push(`Dropped ${kit.name || 'kit'} because its price was not visible in the source result.`)
+      return []
+    }
+    const sourceConfidence: KitOption['sourceConfidence'] = isExactProductUrl(kit.url) ? 'verified_exact_product_page' : 'search_result_only'
+    return [{
+      ...kit,
+      price: Number(kit.price),
+      sourceConfidence,
+    }]
+  }).slice(0, 3)
+
+  const hasExactProduct = options.some(option => option.parts.some(part => part.sourceConfidence === 'verified_exact_product_page')) ||
+    kits.some(kit => kit.sourceConfidence === 'verified_exact_product_page')
+
+  return {
+    options,
+    kits,
+    warnings: warnings.slice(0, 8),
+    sourceConfidence: options.length || kits.length
+      ? hasExactProduct ? 'verified_exact_product_page' as const : 'search_result_only' as const
+      : 'price_unavailable' as const,
+  }
 }
 
 // Use DeepSeek to decompose a parts request into structured search queries
@@ -75,9 +194,13 @@ Return ONLY valid JSON with this exact structure:
 }
 
 Rules:
+- Normalize shorthand years like "04 Civic" to "2004 Honda Civic" and "05 Civic" to "2005 Honda Civic"
+- Preserve store-specific requests such as AutoZone, O'Reilly, NAPA, Advance Auto, and RockAuto in searchQueries
+- Distinguish brake pads, rotors, calipers, pads and rotors, and all 4 brakes
 - For "all 4 brakes" = front + rear rotors AND pads, positions: FL, FR, RL, RR
 - For "front brakes" = front rotors + pads, positions: FL, FR
 - For "lower control arms" both front = positions: Front Left, Front Right
+- For "front ones both sides" = Front Left and Front Right
 - Include labor hours estimate (brake job per axle=1.5, all 4=2.5-3, control arm=1.5/side, etc)
 - searchQueries should be specific enough to find exact parts with prices on auto parts stores
 - Generate 2-4 search queries covering different stores/angles
@@ -244,14 +367,29 @@ Rules:
 
 export async function POST(req: NextRequest) {
   try {
-    const { query, stores } = await req.json() as { query: string; stores?: string[] }
-    if (!query) return NextResponse.json({ ok: false, error: 'Query is required' }, { status: 400 })
+    const auth = await getAuthedShop()
+    if (!auth) return unauthorized()
+
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'local'
+    const limited = checkRateLimit(rateLimitKey('parts-lookup', auth.userId, auth.shopId, ip), 30, 60_000)
+    if (!limited.ok) return apiFail('Too many parts lookup requests', 429, 'RATE_LIMITED', { resetAt: limited.resetAt })
+
+    const parsedBody = await readJsonObject(req)
+    if (!parsedBody.ok) return apiFail(parsedBody.error, 400, 'BAD_REQUEST')
+    const queryValue = requireString(parsedBody.body, 'query', 'Query')
+    if (!queryValue.ok) return apiFail(queryValue.error, 400, 'BAD_REQUEST')
+    const storesValue = optionalStringArray(parsedBody.body, 'stores')
+    if (!storesValue.ok) return apiFail(storesValue.error, 400, 'BAD_REQUEST')
+
+    const query = normalizePartsQuery(queryValue.value).slice(0, 240)
+    const stores = normalizeStoreFilter(storesValue.value)
+    const idempotencyKey = getIdempotencyKey(req, [auth.shopId, 'parts-lookup', query])
 
     // Get AI settings
     const sb = getServiceClient()
-    const { data: settings } = await sb.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
+    const { data: settings } = await sb.from('settings').select('ai_api_key,ai_model,ai_base_url').eq('shop_id', auth.shopId).limit(1).single()
     const aiKey = settings?.ai_api_key
-    if (!aiKey) return NextResponse.json({ ok: false, error: 'No AI API key configured' }, { status: 400 })
+    if (!aiKey) return apiFail('No AI API key configured', 400, 'BAD_REQUEST')
     const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
     const aiModel = normalizeAiModel(settings?.ai_model, aiBase)
 
@@ -261,7 +399,7 @@ export async function POST(req: NextRequest) {
 
     // Step 2: Build search queries (add store filters if specified)
     let searchQueries = decomposed.searchQueries || [query]
-    if (stores && stores.length > 0) {
+    if (stores.length > 0) {
       const storeFilter = stores.map(s => `site:${s}`).join(' OR ')
       searchQueries = searchQueries.map(q => `${q} ${storeFilter}`)
     }
@@ -277,6 +415,7 @@ export async function POST(req: NextRequest) {
       decomposed.positions,
       aiKey, aiBase, aiModel
     )
+    const sanitized = sanitizeParsedParts(parsed, rawResults)
 
     // Build search URLs for reference
     const searchUrls = rawResults
@@ -291,17 +430,35 @@ export async function POST(req: NextRequest) {
       vehicle,
       query,
       positions: decomposed.positions,
-      options: parsed.options || [],
-      kits: parsed.kits || [],
+      options: sanitized.options,
+      kits: sanitized.kits,
       taxRate: 8.25,
       laborHours: decomposed.laborHours,
       laborRate: 120,
-      searchUrls
+      searchUrls,
+      sourceConfidence: sanitized.sourceConfidence,
+      warnings: sanitized.warnings,
     }
 
-    return NextResponse.json({ ok: true, data: result })
+    await writeAuditLog({
+      shopId: auth.shopId,
+      userId: auth.userId,
+      action: 'parts.lookup',
+      targetType: 'parts',
+      permission: 'read',
+      approved: true,
+      idempotencyKey,
+      metadata: {
+        query,
+        stores,
+        sourceConfidence: result.sourceConfidence,
+        verifiedItems: result.options.reduce((count, option) => count + option.parts.length, 0) + result.kits.length,
+      },
+    })
+
+    return apiOk(result)
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
-    return NextResponse.json({ ok: false, error: message }, { status: 500 })
+    return apiFail(message, 500, 'INTERNAL_ERROR')
   }
 }

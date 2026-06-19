@@ -1,6 +1,8 @@
 ﻿'use client'
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+import { AGENTS, SKILLS } from '@/lib/ai/capabilities'
+import { classifyRequest, type RouteDecision } from '@/lib/ai/router'
 
 type SpeechRecognition = any
 type SpeechRecognitionEvent = any
@@ -29,6 +31,7 @@ interface VoiceCallState {
 
 type BrowserPanelStep = {action:string;screenshot?:string;screenshotUrl?:string;url:string;title:string}
 interface ChatMessage { role: 'user'|'assistant'|'browser'; content: string; html?: string; imageUrl?: string; reasoning?: string; thinkingSeconds?: number; browserSteps?: BrowserPanelStep[] }
+type ToolActivity = { time: string; agent: string; skill?: string; tool: string; status: 'running' | 'ok' | 'error'; detail: string }
 
 function getAIErrorMessage(data: unknown, fallback = 'AI request failed') {
   if (!data || typeof data !== 'object') return fallback
@@ -96,7 +99,7 @@ When one sentence implies multiple steps, do ALL of them automatically:
 - Name mentioned ? searchCustomers FIRST ? get their vehicle
 - "make an estimate" ? use prices already found + add labor
 - "with labor" ? use standard labor times (see below)
-- "send it" ? send via email/text without asking
+- "send it" ? draft the exact email/text and use the confirmation flow before sending
 NEVER stop to ask a question if you have enough info to continue.
 
 4. LABOR TIME KNOWLEDGE:
@@ -145,7 +148,7 @@ CRITICAL BEHAVIOR RULES:
 3. When the user says "go to website", "browse to", "visit", "open URL", or gives a specific URL to check:
 {"tool":"browse","url":"https://example.com","task":"what is on this page"} NEVER make up or estimate prices. NEVER guess part costs. Always search first.
 2. When the user provides a customer name or email during a conversation, IMMEDIATELY use that information. If building an estimate, attach the customer name/email to it. NEVER auto-create a customer just because someone mentions a name. ALWAYS use searchCustomers FIRST to check if they already exist. Only use createCustomer if the user EXPLICITLY says to add/create a new customer AND the search confirms they don't exist.
-3. When the user says "email it", "send it", "text it", "send the estimate", "email that to them" - take ACTION immediately. Use sendEstimateEmail or message tool. Don't ask for confirmation unless you're missing critical info (like the recipient).
+3. When the user says "email it", "send it", "text it", "send the estimate", "email that to them" - resolve the document and recipient, then show the confirmation card before sending. Never send SMS, email, calls, external posts, payments, deletes, checkout submissions, or MCP action tools without confirmation.
 4. Think step by step. If a user gives you multiple instructions in one message, handle ALL of them in order.
 5. Keep context across the conversation. Remember what estimate you're working on, which customer you're discussing, what vehicle, etc.
 6. When building estimates:
@@ -687,6 +690,15 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   const [shopContext, setShopContext] = useState('')
   const prefillHandled = useRef(false)
   const lastDesktopFileRef = useRef<string | null>(null)
+  const [routeDecision, setRouteDecision] = useState<RouteDecision | null>(null)
+  const [toolTimeline, setToolTimeline] = useState<ToolActivity[]>([])
+
+  const addToolEvent = useCallback((event: Omit<ToolActivity, 'time'>) => {
+    setToolTimeline(prev => [{
+      ...event,
+      time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' }),
+    }, ...prev].slice(0, 12))
+  }, [])
 
   // Feature 1: TTS helper
   const speak = useCallback((text: string) => {
@@ -1002,6 +1014,9 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const desktopApi = (window as any).electronAPI
     if (!desktopApi) return false
+    const route = classifyRequest(text)
+    const agentName = AGENTS.find(agent => agent.id === route.agentId)?.name || route.agentId
+    const skillName = route.skillIds[0] ? (SKILLS.find(skill => skill.id === route.skillIds[0])?.name || route.skillIds[0]) : undefined
 
     const finish = (assistantMsg: ChatMessage) => {
       setMessages(prev => [...prev, assistantMsg])
@@ -1011,7 +1026,8 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     }
 
     try {
-      if (wantsDesktopMcpCheck(text)) {
+      if (route.intent === 'mcp_status' || wantsDesktopMcpCheck(text)) {
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'mcpDiscover', status: 'running', detail: 'Discovering Windows-MCP and Kapture tools' })
         setStatus('Checking MCP tools...')
         const mcpResult = await desktopApi.mcp.tools()
         const servers = Array.isArray(mcpResult?.servers) ? mcpResult.servers : []
@@ -1064,7 +1080,39 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
           lines.push('Kapture browser automation is ready at the MCP layer, but Chrome has no connected Kapture tab yet. Install/open the extension, click the Kapture toolbar button, and connect the tab.')
         }
 
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'mcpDiscover', status: okServers.length ? 'ok' : 'error', detail: `${okServers.length}/${servers.length || 0} MCP servers connected` })
         return finish({ role: 'assistant', content: lines.join('\n') })
+      }
+
+      if (route.intent === 'browser_kapture' && !wantsKaptureSetup(text)) {
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'kapture.list_tabs', status: 'running', detail: 'Checking connected browser tabs' })
+        setStatus('Checking Kapture tabs...')
+        const result = await desktopApi.mcp.callTool('kapture', 'list_tabs', {}, false)
+        const textContent = Array.isArray(result?.content)
+          ? result.content.find((item: { type?: string; text?: string }) => item.type === 'text')?.text
+          : ''
+        let tabCount: number | null = null
+        let activeTitle = ''
+        try {
+          const parsed = JSON.parse(textContent || '{}')
+          const tabs = Array.isArray(parsed.tabs) ? parsed.tabs : []
+          tabCount = tabs.length
+          activeTitle = tabs.find((tab: { active?: boolean; title?: string }) => tab.active)?.title || tabs[0]?.title || ''
+        } catch {
+          tabCount = null
+        }
+        if (!result?.ok || tabCount === 0) {
+          addToolEvent({ agent: agentName, skill: skillName, tool: 'kapture.list_tabs', status: 'error', detail: result?.error || 'No connected Kapture tab' })
+          return finish({
+            role: 'assistant',
+            content: 'Kapture is installed at the MCP layer, but no Chrome tab is connected yet. Open Chrome, click the Kapture extension button on the tab, connect it, then ask again. I will not claim tab automation worked until list_tabs shows a connected tab.',
+          })
+        }
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'kapture.list_tabs', status: 'ok', detail: `${tabCount} connected tab${tabCount === 1 ? '' : 's'}${activeTitle ? `; active: ${activeTitle}` : ''}` })
+        return finish({
+          role: 'assistant',
+          content: `Kapture is connected to ${tabCount} tab${tabCount === 1 ? '' : 's'}${activeTitle ? ` (${activeTitle})` : ''}. Read-only inspection can run now. Clicks, typing, submits, logins, deletes, posts, and sends require confirmation first.`,
+        })
       }
 
       if (wantsOpenPreviousDesktopFile(text)) {
@@ -1072,8 +1120,10 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         if (!filePath) {
           return finish({ role: 'assistant', content: 'I do not have a saved file from this desktop session yet.' })
         }
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'desktopOpenFile', status: 'running', detail: filePath })
         setStatus('Opening file...')
         const result = await desktopApi.files.openApproved(filePath)
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'desktopOpenFile', status: result?.ok ? 'ok' : 'error', detail: result?.ok ? filePath : (result?.error || 'Unknown error') })
         return finish({
           role: 'assistant',
           content: result?.ok
@@ -1082,16 +1132,19 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         })
       }
 
-      if (looksLikePartsRequest(text)) {
+      if (route.intent === 'parts_lookup' || looksLikePartsRequest(text)) {
         const browserRequest = parseBrowserRequest(text)
         const partsQuery = normalizePartsQuery(text)
         let browserResult: { ok?: boolean; app?: string; error?: string; url?: string } | undefined
         if (browserRequest) {
+          addToolEvent({ agent: agentName, skill: skillName, tool: 'openBrowser', status: 'running', detail: `${browserRequest.app} search for ${partsQuery}` })
           setStatus(`Opening ${browserRequest.app === 'comet' ? 'Comet' : 'Chrome'}...`)
           const browserUrl = `https://www.google.com/search?q=${encodeURIComponent(partsQuery)}`
           browserResult = await desktopApi.system.openApp(browserRequest.app, browserUrl)
+          addToolEvent({ agent: agentName, skill: skillName, tool: 'openBrowser', status: browserResult?.ok ? 'ok' : 'error', detail: browserResult?.ok ? `${browserRequest.app} opened` : (browserResult?.error || 'Browser open failed') })
         }
 
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'partsLookup', status: 'running', detail: partsQuery })
         setStatus('Looking up parts...')
         const pr = await fetch('/api/parts-lookup', {
           method: 'POST',
@@ -1101,8 +1154,11 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         })
         const pd = await pr.json().catch(() => ({}))
         if (pr.ok && pd?.ok && pd.data) {
+          const verifiedCount = Array.isArray(pd.data?.options) ? pd.data.options.reduce((count: number, option: { parts?: unknown[] }) => count + (Array.isArray(option.parts) ? option.parts.length : 0), 0) : 0
+          addToolEvent({ agent: agentName, skill: skillName, tool: 'partsLookup', status: 'ok', detail: `${verifiedCount} verified price item${verifiedCount === 1 ? '' : 's'}; ${pd.data?.searchUrls?.length || 0} source link${pd.data?.searchUrls?.length === 1 ? '' : 's'}` })
           return finish({ role: 'assistant', content: formatPartsLookupText(partsQuery, pd.data, browserResult) })
         }
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'partsLookup', status: 'error', detail: pd?.error || 'Exact prices unavailable' })
 
         const search = await fetch(`/api/ai-search?q=${encodeURIComponent(partsQuery)}`, { signal: AbortSignal.timeout(20000) })
         const searchData = await search.json().catch(() => ({}))
@@ -1127,10 +1183,13 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         const chromeRequest = parseBrowserRequest(text)
         let chromeResult: Record<string, unknown> | null = null
         if (chromeRequest) {
+          addToolEvent({ agent: agentName, skill: skillName, tool: 'openBrowser', status: 'running', detail: `${chromeRequest.app} image search for ${imageRequest.query}` })
           setStatus(`Opening ${chromeRequest.app === 'comet' ? 'Comet' : 'Chrome'}...`)
           chromeResult = await desktopApi.system.openApp(chromeRequest.app, `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(imageRequest.query)}`)
+          addToolEvent({ agent: agentName, skill: skillName, tool: 'openBrowser', status: chromeResult?.ok === false ? 'error' : 'ok', detail: chromeResult?.ok === false ? String(chromeResult.error || 'Browser open failed') : `${chromeRequest.app} opened` })
         }
 
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'desktopDownloadImage', status: 'running', detail: imageRequest.query })
         setStatus('Downloading image...')
         const result = await desktopApi.files.downloadImage({
           query: imageRequest.query,
@@ -1140,6 +1199,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
 
         if (result?.ok && result.path) {
           lastDesktopFileRef.current = String(result.path)
+          addToolEvent({ agent: agentName, skill: skillName, tool: 'desktopDownloadImage', status: 'ok', detail: String(result.path) })
           const chromeNote = chromeResult && chromeResult.ok === false ? ` Chrome did not open: ${chromeResult.error || 'Unknown error'}.` : ''
           return finish({
             role: 'assistant',
@@ -1147,13 +1207,16 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
           })
         }
 
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'desktopDownloadImage', status: 'error', detail: result?.error || 'Unknown error' })
         return finish({ role: 'assistant', content: `Image download failed: ${result?.error || 'Unknown error'}` })
       }
 
       const chromeRequest = parseBrowserRequest(text)
       if (chromeRequest) {
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'openBrowser', status: 'running', detail: `${chromeRequest.app}${chromeRequest.query ? ` search: ${chromeRequest.query}` : ''}` })
         setStatus(`Opening ${chromeRequest.app === 'comet' ? 'Comet' : 'Chrome'}...`)
         const result = await desktopApi.system.openApp(chromeRequest.app, chromeRequest.url)
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'openBrowser', status: result?.ok ? 'ok' : 'error', detail: result?.ok ? `${chromeRequest.app} opened` : (result?.error || 'Unknown error') })
         return finish({
           role: 'assistant',
           content: result?.ok
@@ -1163,8 +1226,10 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       }
 
       if (wantsKaptureSetup(text)) {
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'desktopKaptureSetup', status: 'running', detail: 'Opening setup page' })
         setStatus('Opening Kapture setup...')
         const result = await desktopApi.kapture.openSetup()
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'desktopKaptureSetup', status: result?.ok ? 'ok' : 'error', detail: result?.ok ? 'Setup opened' : (result?.error || 'Unknown error') })
         return finish({
           role: 'assistant',
           content: result?.ok
@@ -1173,13 +1238,15 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         })
       }
     } catch (err) {
-      return finish({ role: 'assistant', content: `Desktop action failed: ${err instanceof Error ? err.message : 'Unknown error'}` })
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      addToolEvent({ agent: agentName, skill: skillName, tool: 'desktopAction', status: 'error', detail: message })
+      return finish({ role: 'assistant', content: `Desktop action failed: ${message}` })
     } finally {
       setStatus('')
     }
 
     return false
-  }, [features.desktopTools, isDesktop, messages, saveToHistory, speak])
+  }, [addToolEvent, features.desktopTools, isDesktop, messages, saveToHistory, speak])
 
   const send = useCallback(async (overrideInput?: string) => {
     const text = (overrideInput || input).trim()
@@ -1200,6 +1267,17 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     }
     const userMsg: ChatMessage = { role: 'user', content: text, imageUrl: attachImageUrl }
     setMessages(prev => [...prev, userMsg])
+    const decision = classifyRequest(text)
+    setRouteDecision(decision)
+    const routeAgent = AGENTS.find(agent => agent.id === decision.agentId)?.name || decision.agentId
+    const routeSkill = decision.skillIds[0] ? (SKILLS.find(skill => skill.id === decision.skillIds[0])?.name || decision.skillIds[0]) : undefined
+    addToolEvent({
+      agent: routeAgent,
+      skill: routeSkill,
+      tool: 'agentRouter',
+      status: 'ok',
+      detail: `${decision.intent} (${Math.round(decision.confidence * 100)}% confidence)`,
+    })
 
     if (await runDirectDesktopCommand(text, userMsg)) {
       setLoading(false)
@@ -1221,35 +1299,11 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     if (callMatch) {
       const phone = callMatch[1].replace(/\s/g, '')
       const instructions = callMatch[2]?.trim() || ''
-      // If user gave instructions ("call X and ask Y"), use them as the AI task
-      // If no instructions ("call X"), it's a personal call - no AI script
-      const callTask = instructions
-        ? instructions
-        : '' // empty = no AI script, just connect the call
-        if (callTask) {
-          // AI voice call - has instructions, use make-call API
-          setStatus('AI Calling...')
-          try {
-            const r = await fetch('/api/make-call', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ to: phone, name: phone, task: callTask })
-            })
-            const d = await r.json()
-            const msg: ChatMessage = d.ok
-              ? { role: 'assistant', content: instructions
-                ? `AI call placed to ${phone}. Task: ${instructions}`
-                : `Call placed to ${phone}. Dialing now.` }
-              : { role: 'assistant', content: `Call failed: ${d.error}` }
-            setMessages(prev => [...prev, msg])
-          } catch (err) {
-            setMessages(prev => [...prev, { role: 'assistant', content: `Call error: ${err instanceof Error ? err.message : 'Unknown'}` }])
-          }
-        } else {
-          // Personal/browser call - user talks via WebRTC softphone
-          window.dispatchEvent(new CustomEvent('phone:call', { detail: { number: phone, name: phone } }))
-          setMessages(prev => [...prev, { role: 'assistant', content: `Connecting you to ${phone} via browser phone...` }])
-        }
+      addToolEvent({ agent: routeAgent, skill: routeSkill, tool: 'call', status: 'error', detail: 'Blocked until call confirmation' })
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: `I can call ${phone}${instructions ? ` and ask: ${instructions}` : ''}, but calls require confirmation before I dial.`,
+      }])
       setLoading(false)
       setStatus('')
       return
@@ -1261,7 +1315,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       : userMsg
     const history2 = [...messages, msgForHistory]
     try {
-      await agentLoop(history2, features)
+      await agentLoop(history2, features, decision)
     } catch (err) {
       const errText = err instanceof Error ? err.message : 'Something went wrong'
       setMessages(prev => [...prev, { role: 'assistant', content: `Ran into an issue: ${errText}. Try again.` }])
@@ -1269,7 +1323,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     setLoading(false)
     setStatus('')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [input, loading, messages, shopContext, attachedFile, features, runDirectDesktopCommand])
+  }, [input, loading, messages, shopContext, attachedFile, features, runDirectDesktopCommand, addToolEvent])
 
   // Poll for voice call status/summary
   const startVoicePoll = useCallback((callId: string) => {
@@ -1348,7 +1402,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     reader.readAsDataURL(file)
   }
 
-    const agentLoop = async (history: ChatMessage[], featureFlags?: { search: boolean;  socialMedia: boolean; thinking: boolean }) => {
+    const agentLoop = async (history: ChatMessage[], featureFlags?: { search: boolean;  socialMedia: boolean; thinking: boolean }, routeOverride?: RouteDecision) => {
         const activeFeatures = featureFlags || { search: true, socialMedia: true, thinking: false }
 
     const accumulated: string[] = []
@@ -1366,7 +1420,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
 - The user is a busy mechanic. They speak casually with typos, slang, abbreviations. FIGURE IT OUT.
 - "invoice 280 flat thermostat asheanna" = create invoice, thermostat, $280, Asheanna, no tax
 - "brakes civic" = search brake parts for the Civic in context
-- "send it" = send whatever you just made to whoever is in context
+- "send it" = resolve the draft/document and recipient, then ask for confirmation before any outbound send
 - "how much we made" = getShopStats, revenue
 - "whats rufina owe" = searchCustomers Rufina, check unpaid
 - "call him" = call the customer from this conversation
@@ -1496,6 +1550,17 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         return
       }
 
+      const activeRoute = routeOverride || routeDecision || classifyRequest(history[history.length - 1]?.content || '')
+      const loopAgent = AGENTS.find(agent => agent.id === activeRoute.agentId)?.name || activeRoute.agentId
+      const loopSkill = activeRoute.skillIds[0] ? (SKILLS.find(skill => skill.id === activeRoute.skillIds[0])?.name || activeRoute.skillIds[0]) : undefined
+      addToolEvent({
+        agent: loopAgent,
+        skill: loopSkill,
+        tool: String(parsed.tool),
+        status: 'running',
+        detail: 'Model requested tool execution',
+      })
+
       // Feature gate: block webSearch if search is disabled
       if (parsed.tool === 'webSearch' && !activeFeatures.search) {
         agentMessages.push({ role: 'assistant', content: raw })
@@ -1522,13 +1587,15 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         try {
           const pr = await fetch('/api/parts-lookup', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: await getAuthJsonHeaders(),
             body: JSON.stringify({ query: parsed.query }),
             signal: AbortSignal.timeout(45000),
           })
           const pd = await pr.json()
           if (pd.ok && pd.data) {
             const d = pd.data
+            const verifiedCount = Array.isArray(d.options) ? d.options.reduce((count: number, opt: { parts?: unknown[] }) => count + (Array.isArray(opt.parts) ? opt.parts.length : 0), 0) : 0
+            addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'partsLookup', status: 'ok', detail: `${verifiedCount} verified price item${verifiedCount === 1 ? '' : 's'}` })
             let partsResult = `SMART PARTS LOOKUP RESULTS for ${d.vehicle}:\n`
             partsResult += `Positions: ${(d.positions || []).join(', ')}\n\n`
             for (const opt of (d.options || [])) {
@@ -1549,7 +1616,10 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             agentMessages.push({ role: 'user', content: `Parts lookup results for "${parsed.query}":\n${partsResult}\n\nPresent these results to the user in a clean formatted way. Use the EXACT prices and URLs from above. Continue to the next step silently.` })
             continue
           }
-        } catch { /* fall through to regular search */ }
+        } catch (e) {
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'partsLookup', status: 'error', detail: e instanceof Error ? e.message : 'Parts lookup failed' })
+          /* fall through to regular search */
+        }
       }
         let searchResult = 'No results'
         try {
@@ -1583,7 +1653,11 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             if (d.related_searches?.length) {
               searchResult += '\n\nRelated searches: ' + (d.related_searches as string[]).join(' | ')
             }
-            } catch { searchResult = 'Search failed' }
+            addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'webSearch', status: 'ok', detail: `${d.results?.length || 0} result${d.results?.length === 1 ? '' : 's'}` })
+            } catch (e) {
+              searchResult = 'Search failed'
+              addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'webSearch', status: 'error', detail: e instanceof Error ? e.message : 'Search failed' })
+            }
         accumulated.push(`[Search: "${parsed.query}"]\n${searchResult}`)
         agentMessages.push({ role: 'assistant', content: raw })
         agentMessages.push({ role: 'user', content: `Search results for "${parsed.query}":\n${searchResult}\n\nContinue to the next step silently.` })
@@ -1672,6 +1746,18 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       // DB Action - execute silently, feed result back to AI
       if (parsed.tool === 'action') {
         const actionName = parsed.action as string
+        const confirmationActions = new Set(['sendEstimateEmail', 'deleteRecord', 'voidDocument', 'convertEstimateToInvoice'])
+        if (confirmationActions.has(actionName)) {
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `action.${actionName}`, status: 'error', detail: 'Blocked until user confirmation' })
+          const assistantMsg: ChatMessage = {
+            role: 'assistant',
+            content: `${actionName} is ready, but I need confirmation before running it. I will not send, delete, void, convert, post, call, or charge anything without you confirming first.`,
+          }
+          setMessages(prev => [...prev, assistantMsg])
+          saveToHistory([...history, assistantMsg])
+          setStatus('')
+          return
+        }
         setStatus('Processing...')
         let actionResult = ''
         try {
@@ -1682,8 +1768,10 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           })
           const d = await r.json()
           actionResult = d.ok ? `Success: ${JSON.stringify(d.data).slice(0, 2000)}` : `Failed: ${d.error}`
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `action.${actionName}`, status: d.ok ? 'ok' : 'error', detail: d.ok ? 'Shop action completed' : (d.error || 'Shop action failed') })
         } catch (err) {
           actionResult = `Error: ${err instanceof Error ? err.message : 'Unknown'}`
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `action.${actionName}`, status: 'error', detail: err instanceof Error ? err.message : 'Unknown' })
         }
         accumulated.push(`[${actionName}]: ${actionResult}`)
         agentMessages.push({ role: 'assistant', content: raw })
@@ -1702,51 +1790,24 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
 
       // AI Voice Call - dials with bidirectional streaming, AI handles conversation
       if (parsed.tool === 'aiVoiceCall') {
-        setStatus('Initiating AI voice call...')
-        try {
-          const r = await fetch('/api/ai-voice-call', {
-            method: 'POST',
-            headers: await getAuthJsonHeaders(),
-            body: JSON.stringify({
-              to: parsed.to,
-              task: parsed.task || 'Have a helpful conversation',
-              callerName: parsed.callerName || 'Alpha International Auto Center'
-            })
-          })
-          const d = await r.json()
-          if (d.ok) {
-            const callState: VoiceCallState = {
-              callId: d.callId,
-              to: d.to,
-              task: parsed.task as string || '',
-              status: 'dialing',
-            }
-            setVoiceCall(callState)
-            startVoicePoll(d.callId)
-            const assistantMsg: ChatMessage = {
-              role: 'assistant',
-              content: '',
-              html: renderVoiceCallCard(callState)
-            }
-            setMessages(prev => [...prev, assistantMsg])
-          } else {
-            const assistantMsg: ChatMessage = { role: 'assistant', content: `AI voice call failed: ${d.error}` }
-            setMessages(prev => [...prev, assistantMsg])
-          }
-        } catch (err) {
-          const assistantMsg: ChatMessage = { role: 'assistant', content: `Voice call error: ${err instanceof Error ? err.message : 'Unknown'}` }
-          setMessages(prev => [...prev, assistantMsg])
+        const assistantMsg: ChatMessage = {
+          role: 'assistant',
+          content: `I can place the AI voice call to ${parsed.to || 'that number'}, but calls require confirmation. Confirm the number and task before I dial.`,
         }
+        addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'aiVoiceCall', status: 'error', detail: 'Blocked until call confirmation' })
+        setMessages(prev => [...prev, assistantMsg])
+        saveToHistory([...history, assistantMsg])
+        setStatus('')
         return
       }
 
-      // Place Phone Call - dials immediately via Telnyx
+      // Place Phone Call - requires explicit user confirmation before dialing
       if (parsed.tool === 'call') {
-        // Browser call - dispatch phone:call event to PhoneWidget
-        window.dispatchEvent(new CustomEvent('phone:call', { detail: { number: parsed.to as string, name: (parsed.name as string) || '' } }))
-        const assistantMsg: ChatMessage = { role: 'assistant', content: `Connecting you to ${parsed.name || parsed.to} via browser phone...` }
+        addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'call', status: 'error', detail: 'Blocked until call confirmation' })
+        const assistantMsg: ChatMessage = { role: 'assistant', content: `I can call ${parsed.name || parsed.to}, but calls require confirmation before dialing.` }
         setMessages(prev => [...prev, assistantMsg])
         saveToHistory([...history, assistantMsg])
+        setStatus('')
         return
       }
 
@@ -2110,6 +2171,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
           }))
           const mcpText = JSON.stringify({ tools: mcpResult, extras }, null, 2).slice(0, 14000)
           accumulated.push(`[Desktop MCP status]: ${mcpText}`)
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'desktopMcpStatus', status: 'ok', detail: `${serverIds.length} MCP server${serverIds.length === 1 ? '' : 's'} available` })
           agentMessages.push({ role: 'assistant', content: raw })
           agentMessages.push({
             role: 'user',
@@ -2117,6 +2179,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
           })
         } catch (e) {
           const errText = e instanceof Error ? e.message : 'Unknown MCP error'
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'desktopMcpStatus', status: 'error', detail: errText })
           agentMessages.push({ role: 'assistant', content: raw })
           agentMessages.push({ role: 'user', content: `Desktop MCP discovery failed: ${errText}` })
         }
@@ -2144,6 +2207,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
           const mcpCallResult = await (window as any).electronAPI.mcp.callTool(server, name, args, parsed.approved === true)
           const mcpCallText = JSON.stringify(mcpCallResult, null, 2).slice(0, 14000)
           accumulated.push(`[Desktop MCP ${server}.${name}]: ${mcpCallText}`)
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `${server}.${name}`, status: mcpCallResult?.ok ? 'ok' : 'error', detail: mcpCallResult?.ok ? 'MCP tool returned ok:true' : (mcpCallResult?.error || 'MCP tool returned ok:false') })
           agentMessages.push({ role: 'assistant', content: raw })
           agentMessages.push({
             role: 'user',
@@ -2151,6 +2215,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
           })
         } catch (e) {
           const errText = e instanceof Error ? e.message : 'Unknown MCP tool error'
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `${server}.${name}`, status: 'error', detail: errText })
           agentMessages.push({ role: 'assistant', content: raw })
           agentMessages.push({ role: 'user', content: `Desktop MCP tool failed for ${server}.${name}: ${errText}` })
         }
@@ -2502,6 +2567,8 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
   ]
 
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const activeAgent = routeDecision ? AGENTS.find(agent => agent.id === routeDecision.agentId) : null
+  const activeSkills = routeDecision ? routeDecision.skillIds.map(id => SKILLS.find(skill => skill.id === id)?.name || id) : []
 
   return (
     <div className="flex flex-col h-screen max-h-screen">
@@ -2634,6 +2701,66 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
           </div>
         </>
       )}
+
+      <div className="border-b border-border bg-bg-base/70 px-3 py-3 sm:px-6">
+        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(300px,420px)]">
+          <div className="rounded-lg border border-border bg-bg-card/80 p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-black uppercase tracking-[0.16em] text-text-muted">Command Center</span>
+              <span className={`rounded-md border px-2 py-1 text-[11px] font-bold ${isDesktop && features.desktopTools ? 'border-green/30 bg-green/10 text-green' : 'border-amber/30 bg-amber/10 text-amber'}`}>
+                {isDesktop && features.desktopTools ? 'Desktop tools live' : 'Desktop tools unavailable'}
+              </span>
+              {routeDecision?.requiresConfirmation && (
+                <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-[11px] font-bold text-amber">confirmation required</span>
+              )}
+              {routeDecision?.requiresToolResult && (
+                <span className="rounded-md border border-blue/30 bg-blue/10 px-2 py-1 text-[11px] font-bold text-blue">tool result required</span>
+              )}
+            </div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-3">
+              <div>
+                <div className="text-[11px] font-bold uppercase text-text-muted">Current Agent</div>
+                <div className="mt-1 truncate text-sm font-bold">{activeAgent?.name || 'Router Agent'}</div>
+              </div>
+              <div>
+                <div className="text-[11px] font-bold uppercase text-text-muted">Active Skill</div>
+                <div className="mt-1 truncate text-sm font-bold">{activeSkills[0] || 'General routing'}</div>
+              </div>
+              <div>
+                <div className="text-[11px] font-bold uppercase text-text-muted">Intent</div>
+                <div className="mt-1 truncate text-sm font-bold">{routeDecision ? `${routeDecision.intent} (${Math.round(routeDecision.confidence * 100)}%)` : 'Waiting'}</div>
+              </div>
+            </div>
+            {routeDecision?.reasons?.length ? (
+              <div className="mt-3 flex flex-wrap gap-1">
+                {routeDecision.reasons.map(reason => (
+                  <span key={reason} className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] text-text-secondary">{reason}</span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="rounded-lg border border-border bg-bg-card/80 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[11px] font-black uppercase tracking-[0.16em] text-text-muted">Tool Activity</div>
+              <a href="/tools" className="text-xs font-bold text-blue hover:underline">Registry</a>
+            </div>
+            <div className="mt-2 max-h-28 space-y-2 overflow-y-auto pr-1">
+              {toolTimeline.length === 0 ? (
+                <div className="text-xs text-text-muted">No tool calls yet.</div>
+              ) : toolTimeline.slice(0, 5).map((event, index) => (
+                <div key={`${event.time}-${event.tool}-${index}`} className="flex gap-2 text-xs">
+                  <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${event.status === 'ok' ? 'bg-green' : event.status === 'error' ? 'bg-red' : 'bg-amber animate-pulse'}`} />
+                  <div className="min-w-0">
+                    <div className="truncate font-bold">{event.tool} <span className="font-normal text-text-muted">{event.time}</span></div>
+                    <div className="truncate text-text-secondary">{event.agent}{event.skill ? ` - ${event.skill}` : ''}: {event.detail}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-4">
         {messages.length === 1 && (

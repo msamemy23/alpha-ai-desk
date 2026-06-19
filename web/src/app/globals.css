@@ -3,12 +3,12 @@
 @tailwind utilities;
 
 :root {
-  --bg-base: #101114;
-  --bg-card: #181a20;
-  --bg-elevated: #1d2028;
-  --bg-hover: #242730;
-  --bg-input: #111318;
-  --border: #303540;
+  --bg-base: #0d1016;
+  --bg-card: #151922;
+  --bg-elevated: #1b202b;
+  --bg-hover: #222936;
+  --bg-input: #0f141c;
+  --border: #303948;
   --blue: #22c7d8;
   --green: #34d399;
   --red: #fb7185;
@@ -22,7 +22,7 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  background: linear-gradient(180deg, #15171d 0%, var(--bg-base) 18rem);
+  background: linear-gradient(180deg, #111824 0%, var(--bg-base) 20rem);
   color: var(--text-primary);
   font-family: 'Inter', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -40,14 +40,14 @@ body {
   .page-subtitle { @apply mt-1 text-sm text-text-secondary; }
   .page-header { @apply mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between; }
   .toolbar { @apply flex flex-wrap items-center gap-2; }
-  .card { @apply bg-bg-card/95 border border-border rounded-lg p-5 shadow-lg shadow-black/20; }
-  .panel { @apply bg-bg-card/95 border border-border rounded-lg shadow-lg shadow-black/20; }
+  .card { @apply bg-bg-card/95 border border-border rounded-lg p-5 shadow-lg shadow-black/20 ring-1 ring-white/[0.02]; }
+  .panel { @apply bg-bg-card/95 border border-border rounded-lg shadow-lg shadow-black/20 ring-1 ring-white/[0.02]; }
   .panel-header { @apply flex items-center justify-between gap-3 border-b border-border px-5 py-4; }
   .panel-body { @apply p-5; }
   .empty-state { @apply rounded-lg border border-dashed border-border bg-bg-hover/35 p-8 text-center text-sm text-text-muted; }
   .btn { @apply inline-flex items-center justify-center gap-2 rounded-md border border-transparent px-4 py-2 text-sm font-semibold tracking-normal transition-all duration-150 cursor-pointer min-h-[44px] sm:min-h-0 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-blue/25 focus:ring-offset-2 focus:ring-offset-bg-base; }
-  .btn-primary { @apply bg-blue text-[#071013] hover:bg-blue/90 shadow-md shadow-blue/10; }
-  .btn-secondary { @apply bg-bg-hover/85 text-text-primary border-border hover:bg-[#2c303a] hover:border-blue/40; }
+  .btn-primary { @apply bg-blue text-[#071013] hover:bg-blue/90 shadow-md shadow-blue/10 active:translate-y-px; }
+  .btn-secondary { @apply bg-bg-hover/85 text-text-primary border-border hover:bg-[#2d3544] hover:border-blue/40 active:translate-y-px; }
   .btn-danger { @apply bg-red/15 text-red border-red/35 hover:bg-red/25; }
   .btn-success { @apply bg-green/15 text-green border-green/35 hover:bg-green/25; }
   .btn-sm { @apply text-xs px-3 py-1.5 min-h-[34px]; }
@@ -63,9 +63,9 @@ body {
   .tag-amber { @apply bg-amber/15 text-amber border-amber/25; }
   .tag-gray { @apply bg-bg-hover text-text-secondary border-border; }
   .nav-item { @apply flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text-secondary cursor-pointer transition-all hover:bg-white/[0.06] hover:text-text-primary min-h-[42px]; }
-  .nav-item.active { @apply bg-blue/15 text-blue shadow-sm shadow-blue/10; }
+  .nav-item.active { @apply bg-blue/15 text-blue shadow-sm shadow-blue/10 ring-1 ring-blue/20; }
   .data-table { @apply w-full text-sm; }
-  .data-table th { @apply bg-bg-hover/45 px-3 sm:px-4 py-3 text-left text-xs font-bold text-text-secondary uppercase tracking-normal border-b border-border; }
+  .data-table th { @apply sticky top-0 z-10 bg-bg-hover/90 backdrop-blur px-3 sm:px-4 py-3 text-left text-xs font-bold text-text-secondary uppercase tracking-normal border-b border-border; }
   .data-table td { @apply px-3 sm:px-4 py-3 border-b border-border/60 align-middle; }
   .data-table tbody tr { @apply transition-colors; }
   .data-table tbody tr:hover td { @apply bg-bg-hover/75; }

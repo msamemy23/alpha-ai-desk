@@ -25,6 +25,7 @@ const NAV = [
   { href: '/messages', icon: 'message', label: 'Calls & Messages' },
   { href: '/voicemail', icon: 'phone', label: 'AI Voicemail' },
   { href: '/ai', icon: 'spark', label: 'Alpha AI' },
+  { href: '/tools', icon: 'tools', label: 'Agents & Tools' },
   { href: '/growth', icon: 'growth', label: 'Growth' },
   { href: '/automations', icon: 'clock', label: 'Automations' },
   { href: '/reports', icon: 'reports', label: 'Reports' },
@@ -80,6 +81,8 @@ function Icon({ name, className = 'h-4 w-4' }: { name: string; className?: strin
       return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M22 16.9v3a2 2 0 0 1-2.2 2A19.8 19.8 0 0 1 3.1 5.2 2 2 0 0 1 5.1 3h3a2 2 0 0 1 2 1.7l.4 2.5a2 2 0 0 1-.6 1.8L8.7 10a16 16 0 0 0 5.3 5.3l1.1-1.2a2 2 0 0 1 1.8-.6l2.5.4a2 2 0 0 1 1.6 2z" /></svg>
     case 'spark':
       return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8z" /><path d="M19 15l.8 2.7L22 18.5l-2.2.8L19 22l-.8-2.7-2.2-.8 2.2-.8z" /></svg>
+    case 'tools':
+      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M14.7 6.3a4 4 0 0 0-5 5L4 17v3h3l5.7-5.7a4 4 0 0 0 5-5l-2.4 2.4-3-3z" /><path d="M18 2l4 4" /><path d="M19 5l-5 5" /></svg>
     case 'growth':
       return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M3 19h18" /><path d="M7 16l4-4 3 3 6-8" /><path d="M17 7h3v3" /></svg>
     case 'clock':
@@ -209,9 +212,9 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           </div>
           <div className="mt-3 flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.035] px-3 py-2">
             <div className="text-[11px] font-bold uppercase text-text-muted">Desktop AI</div>
-            <div className="flex items-center gap-2 text-[11px] font-bold text-green">
-              <span className="h-1.5 w-1.5 rounded-full bg-green shadow-[0_0_10px_rgba(52,211,153,0.8)]" />
-              MCP ready
+            <div className="flex items-center gap-2 text-[11px] font-bold text-blue">
+              <span className="h-1.5 w-1.5 rounded-full bg-blue shadow-[0_0_10px_rgba(34,199,216,0.7)]" />
+              Tools check
             </div>
           </div>
         </div>
