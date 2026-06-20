@@ -34,6 +34,7 @@ function loadTsModule(relativePath, stubs = {}) {
 
 const repairSources = loadTsModule('../src/lib/repair/sources.ts')
 const repairRoute = readFileSync(new URL('../src/app/api/repair-search/route.ts', import.meta.url), 'utf8')
+const repairManualRoute = readFileSync(new URL('../src/app/api/repair-manual/route.ts', import.meta.url), 'utf8')
 const repairPage = readFileSync(new URL('../src/app/(app)/repair/page.tsx', import.meta.url), 'utf8')
 const layout = readFileSync(new URL('../src/app/(app)/layout.tsx', import.meta.url), 'utf8')
 const capabilities = readFileSync(new URL('../src/lib/ai/capabilities.ts', import.meta.url), 'utf8')
@@ -63,6 +64,29 @@ test('repair draft is explicitly source-required and technician-review only', ()
   assert.match(draft.checklist.join(' '), /torque specs/i)
 })
 
+test('manual URL normalization is allowlisted to CHARM and LEMON only', () => {
+  const charm = repairSources.normalizeManualUrl('http://charm.li/Honda/2005/#brakes')
+  assert.equal(charm.provider, 'CHARM')
+  assert.equal(charm.url, 'https://charm.li/Honda/2005/')
+
+  const lemon = repairSources.normalizeManualUrl('https://lemon-manuals.la/Honda/2018/')
+  assert.equal(lemon.provider, 'LEMON')
+  assert.equal(lemon.url, 'https://lemon-manuals.la/Honda/2018/')
+
+  assert.equal(repairSources.normalizeManualUrl('https://example.com/Honda/2018/'), null)
+  assert.equal(repairSources.normalizeManualUrl('not-a-url'), null)
+})
+
+test('repair search returns workflow coverage and safety gates', async () => {
+  const result = await repairSources.searchRepairSources('2005 Honda Civic front lower control arms')
+
+  assert.equal(result.workflow.vehicleMatch.level, 'year_make_model')
+  assert.equal(result.workflow.coverage.hasManual, true)
+  assert.equal(result.workflow.coverage.hasOfficialData, true)
+  assert.match(result.workflow.safetyGates.join(' '), /No torque specs/i)
+  assert.match(result.draft.checklist.join(' '), /alignment/i)
+})
+
 test('repair search API is authenticated, rate limited, audited, and source-backed', () => {
   assert.match(repairRoute, /getAuthedShop/)
   assert.match(repairRoute, /checkRateLimit/)
@@ -71,11 +95,27 @@ test('repair search API is authenticated, rate limited, audited, and source-back
   assert.match(repairRoute, /searchRepairSources/)
 })
 
-test('repair UI exposes CHARM, LEMON, NHTSA, source filters, saved drafts, and estimate handoff', () => {
+test('repair manual preview API is authenticated, rate limited, audited, and source allowlisted', () => {
+  assert.match(repairManualRoute, /getAuthedShop/)
+  assert.match(repairManualRoute, /checkRateLimit/)
+  assert.match(repairManualRoute, /writeAuditLog/)
+  assert.match(repairManualRoute, /repair\.manual\.preview/)
+  assert.match(repairManualRoute, /readRepairManualPage/)
+  assert.match(repairManualRoute, /Only CHARM and LEMON/)
+})
+
+test('repair UI exposes workflow, manual reader, source stack, saved drafts, and estimate handoff', () => {
   assert.match(layout, /href: '\/repair'/)
   assert.match(repairPage, /LEMON/)
   assert.match(repairPage, /CHARM/)
   assert.match(repairPage, /NHTSA/)
+  assert.match(repairPage, /Repair Workflow/)
+  assert.match(repairPage, /Source Stack/)
+  assert.match(repairPage, /Manual Reader/)
+  assert.match(repairPage, /Manual Tree/)
+  assert.match(repairPage, /Pinned Sources/)
+  assert.match(repairPage, /Safety Gates/)
+  assert.match(repairPage, /\/api\/repair-manual/)
   assert.match(repairPage, /Technician verification required/)
   assert.match(repairPage, /alpha_repair_drafts/)
   assert.match(repairPage, /Build Estimate Draft/)

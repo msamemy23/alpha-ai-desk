@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
-import type { RepairSearchResult, RepairSource, RepairVehicle } from '@/lib/repair/sources'
+import type { RepairManualPage, RepairSearchResult, RepairSource, RepairVehicle } from '@/lib/repair/sources'
 
 const CATEGORIES = [
   { value: 'all', label: 'All' },
@@ -86,6 +86,16 @@ function sourceSummary(source: RepairSource) {
   return `${source.provider} ${source.category}: ${source.title}\n${source.url}`
 }
 
+function isManualProvider(source: RepairSource) {
+  return source.provider === 'LEMON' || source.provider === 'CHARM'
+}
+
+function workflowTone(status: string) {
+  if (status === 'ready') return 'border-green/30 bg-green/10 text-green'
+  if (status === 'needs_source') return 'border-amber/30 bg-amber/10 text-amber'
+  return 'border-blue/30 bg-blue/10 text-blue'
+}
+
 export default function RepairPage() {
   const [query, setQuery] = useState('')
   const [vehicle, setVehicle] = useState<RepairVehicle>({ year: '', make: '', model: '', engine: '', vin: '' })
@@ -94,6 +104,12 @@ export default function RepairPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [savedDrafts, setSavedDrafts] = useState<SavedDraft[]>([])
+  const [manualPage, setManualPage] = useState<RepairManualPage | null>(null)
+  const [manualLoading, setManualLoading] = useState(false)
+  const [manualError, setManualError] = useState('')
+  const [selectedManualUrl, setSelectedManualUrl] = useState('')
+  const [pinnedSources, setPinnedSources] = useState<RepairSource[]>([])
+  const [readerFilter, setReaderFilter] = useState('')
 
   useEffect(() => {
     try {
@@ -109,6 +125,13 @@ export default function RepairPage() {
     if (category === 'all') return sources
     return sources.filter(item => item.category === category)
   }, [result, category])
+
+  const filteredManualLinks = useMemo(() => {
+    const links = manualPage?.links || []
+    const filter = readerFilter.trim().toLowerCase()
+    if (!filter) return links
+    return links.filter(item => `${item.title} ${item.category}`.toLowerCase().includes(filter))
+  }, [manualPage, readerFilter])
 
   const sourceCounts = useMemo(() => {
     const counts = result?.counts || {}
@@ -133,6 +156,9 @@ export default function RepairPage() {
     setError('')
     setResult(null)
     setCategory('all')
+    setManualPage(null)
+    setManualError('')
+    setSelectedManualUrl('')
     try {
       const res = await fetch('/api/repair-search', {
         method: 'POST',
@@ -143,6 +169,8 @@ export default function RepairPage() {
       const data = await res.json().catch(() => ({}))
       if (!res.ok || !data.ok) throw new Error(data.error || 'Repair lookup failed')
       setResult(data.data)
+      const firstManual = (data.data?.sources || []).find((item: RepairSource) => isManualProvider(item))
+      if (firstManual) void loadManual(firstManual.url, true)
       if (override) setQuery(override)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Repair lookup failed')
@@ -151,9 +179,43 @@ export default function RepairPage() {
     }
   }
 
+  const loadManual = async (url: string, quiet = false) => {
+    if (!url) return
+    setSelectedManualUrl(url)
+    setManualLoading(true)
+    setManualError('')
+    if (!quiet) setManualPage(null)
+    try {
+      const res = await fetch('/api/repair-manual', {
+        method: 'POST',
+        headers: await getAuthJsonHeaders(),
+        body: JSON.stringify({ url }),
+        signal: AbortSignal.timeout(45000),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Manual preview failed')
+      setManualPage(data.data)
+      setReaderFilter('')
+    } catch (err) {
+      setManualError(err instanceof Error ? err.message : 'Manual preview failed')
+    } finally {
+      setManualLoading(false)
+    }
+  }
+
+  const pinSource = (source: RepairSource) => {
+    setPinnedSources(prev => {
+      if (prev.some(item => item.url === source.url)) return prev
+      return [source, ...prev].slice(0, 8)
+    })
+  }
+
   const sendToAlpha = () => {
     if (!result) return
-    localStorage.setItem('ai_prefill', buildEstimatePrompt(result))
+    const pinned = pinnedSources.length
+      ? `\n\nPinned sources:\n${pinnedSources.map(item => `- ${item.provider} ${item.category}: ${item.title} ${item.url}`).join('\n')}`
+      : ''
+    localStorage.setItem('ai_prefill', `${buildEstimatePrompt(result)}${pinned}`)
     window.location.href = '/ai'
   }
 
@@ -262,15 +324,49 @@ export default function RepairPage() {
             </div>
           </section>
 
+          <section className="rounded-lg border border-border bg-bg-card p-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <div className="text-xs font-black uppercase text-blue">Repair Workflow</div>
+                <div className="mt-1 text-sm text-text-secondary">
+                  {result.workflow.vehicleMatch.label}{result.workflow.vehicleMatch.missing.length ? ` - missing ${result.workflow.vehicleMatch.missing.join(', ')}` : ''}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(result.workflow.coverage).map(([key, value]) => (
+                  <span key={key} className={`rounded-md border px-2 py-1 text-[11px] font-black ${value ? 'border-green/30 bg-green/10 text-green' : 'border-white/10 bg-white/[0.04] text-text-muted'}`}>
+                    {key.replace(/([A-Z])/g, ' $1')} {value ? 'yes' : 'no'}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
+              {result.workflow.steps.map(step => (
+                <div key={step.id} className={`rounded-lg border p-3 ${workflowTone(step.status)}`}>
+                  <div className="text-sm font-black">{step.label}</div>
+                  <div className="mt-2 text-xs leading-5 opacity-90">{step.detail}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+
           {result.warnings.length > 0 && (
             <div className="rounded-lg border border-amber/30 bg-amber/10 p-4 text-sm text-amber">
               {result.warnings.join(' ')}
             </div>
           )}
 
-          <section className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <section className="grid grid-cols-1 gap-5 xl:grid-cols-[330px_minmax(0,1fr)_360px]">
             <div className="space-y-4">
-              <div className="flex flex-wrap gap-2">
+              <div className="rounded-lg border border-border bg-bg-card p-4">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-black uppercase text-text-muted">Source Stack</div>
+                    <div className="mt-1 text-sm font-black">{filteredSources.length} visible</div>
+                  </div>
+                  <button className="text-xs font-bold text-blue hover:underline" onClick={() => setCategory('all')}>Reset</button>
+                </div>
+                <div className="flex flex-wrap gap-2">
                 {sourceCounts.map(item => (
                   <button
                     key={item.value}
@@ -280,23 +376,27 @@ export default function RepairPage() {
                     {item.label} {item.count}
                   </button>
                 ))}
+                </div>
               </div>
 
-              <div className="space-y-3">
+              <div className="max-h-[760px] space-y-2 overflow-y-auto pr-1">
                 {filteredSources.map(item => (
-                  <article key={item.id} className="rounded-lg border border-border bg-bg-card p-4">
-                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className={`rounded-md border px-2 py-1 text-[11px] font-black ${providerTone(item.provider)}`}>{item.provider}</span>
-                          <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-black text-text-secondary">{item.category}</span>
-                          <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-black text-text-secondary">{confidenceText(item.confidence)}</span>
-                        </div>
-                        <h2 className="mt-3 text-base font-black">{item.title}</h2>
-                        <p className="mt-2 text-sm leading-6 text-text-secondary">{item.description}</p>
-                        <a className="mt-2 block truncate text-xs text-blue hover:underline" href={item.url} target="_blank" rel="noreferrer">{item.url}</a>
+                  <article key={item.id} className={`rounded-lg border p-3 transition-colors ${selectedManualUrl === item.url ? 'border-blue/50 bg-blue/10' : 'border-border bg-bg-card hover:border-blue/30'}`}>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`rounded-md border px-2 py-1 text-[10px] font-black ${providerTone(item.provider)}`}>{item.provider}</span>
+                        <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] font-black text-text-secondary">{item.category}</span>
                       </div>
-                      <a className="btn btn-secondary btn-sm shrink-0" href={item.url} target="_blank" rel="noreferrer">Open Source</a>
+                      <h2 className="mt-2 line-clamp-2 text-sm font-black">{item.title}</h2>
+                      <div className="mt-1 text-[11px] text-text-muted">{confidenceText(item.confidence)}</div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {isManualProvider(item) ? (
+                          <button className="btn btn-secondary btn-sm" onClick={() => void loadManual(item.url)}>Preview</button>
+                        ) : (
+                          <a className="btn btn-secondary btn-sm" href={item.url} target="_blank" rel="noreferrer">Open</a>
+                        )}
+                        <button className="btn btn-secondary btn-sm" onClick={() => pinSource(item)}>Pin</button>
+                      </div>
                     </div>
                   </article>
                 ))}
@@ -304,6 +404,89 @@ export default function RepairPage() {
                   <div className="rounded-lg border border-border bg-bg-card p-8 text-center text-sm text-text-muted">No source cards in this category.</div>
                 )}
               </div>
+            </div>
+
+            <div className="space-y-4">
+              <section className="rounded-lg border border-border bg-bg-card p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="min-w-0">
+                    <div className="text-xs font-black uppercase text-blue">Manual Reader</div>
+                    <h2 className="mt-2 truncate text-xl font-black">{manualPage?.title || 'Select a LEMON or CHARM source'}</h2>
+                    <p className="mt-2 text-sm leading-6 text-text-secondary">
+                      {manualPage ? manualPage.warning : 'Preview source structure, follow breadcrumbs, and open exact procedure links without storing copied manual content.'}
+                    </p>
+                  </div>
+                  {manualPage && <a className="btn btn-secondary btn-sm shrink-0" href={manualPage.url} target="_blank" rel="noreferrer">Open Original</a>}
+                </div>
+
+                {manualLoading && <div className="mt-5 rounded-lg border border-border bg-bg-hover p-6 text-center text-sm text-text-muted">Loading manual preview...</div>}
+                {manualError && <div className="mt-5 rounded-lg border border-red/30 bg-red/10 p-4 text-sm text-red">{manualError}</div>}
+
+                {manualPage && !manualLoading && (
+                  <div className="mt-5 space-y-4">
+                    {manualPage.breadcrumbs.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        {manualPage.breadcrumbs.map((crumb, index) => (
+                          <button key={`${crumb.url}-${index}`} className="rounded-md border border-border bg-bg-hover px-2 py-1 font-bold text-text-secondary hover:border-blue/40 hover:text-text-primary" onClick={() => void loadManual(crumb.url)}>
+                            {crumb.title}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+                      <div className="space-y-3">
+                        {manualPage.sections.length === 0 && (
+                          <div className="rounded-lg border border-border bg-bg-hover p-6 text-sm text-text-muted">
+                            This source page is mostly a directory. Choose a child link from the manual tree.
+                          </div>
+                        )}
+                        {manualPage.sections.map(section => (
+                          <section key={`${section.heading}-${section.text.slice(0, 20)}`} className="rounded-lg border border-white/10 bg-white/[0.025] p-4">
+                            <h3 className="text-sm font-black">{section.heading}</h3>
+                            <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-text-secondary">{section.text}</p>
+                          </section>
+                        ))}
+                        {manualPage.images.length > 0 && (
+                          <div className="rounded-lg border border-white/10 bg-white/[0.025] p-4">
+                            <div className="mb-3 text-sm font-black">Images / Diagrams</div>
+                            <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+                              {manualPage.images.slice(0, 6).map(image => (
+                                <a key={image.url} href={image.url} target="_blank" rel="noreferrer" className="overflow-hidden rounded-lg border border-white/10 bg-bg-hover">
+                                  <img src={image.url} alt={image.alt} className="h-28 w-full object-contain" />
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <aside className="rounded-lg border border-white/10 bg-white/[0.025] p-3">
+                        <div className="text-xs font-black uppercase text-text-muted">Manual Tree</div>
+                        <input
+                          className="form-input mt-3 h-9 text-xs"
+                          placeholder="Filter links..."
+                          value={readerFilter}
+                          onChange={e => setReaderFilter(e.target.value)}
+                        />
+                        <div className="mt-3 max-h-[560px] space-y-2 overflow-y-auto pr-1">
+                          {filteredManualLinks.map(link => (
+                            <button
+                              key={link.url}
+                              className="block w-full rounded-md border border-border bg-bg-card px-3 py-2 text-left text-xs font-bold text-text-secondary hover:border-blue/40 hover:text-text-primary"
+                              onClick={() => void loadManual(link.url)}
+                            >
+                              <span className="block truncate">{link.title}</span>
+                              <span className="mt-1 block text-[10px] uppercase text-text-muted">{link.category}{link.isDirectory ? ' / directory' : ''}</span>
+                            </button>
+                          ))}
+                          {filteredManualLinks.length === 0 && <div className="text-sm text-text-muted">No child links on this page.</div>}
+                        </div>
+                      </aside>
+                    </div>
+                  </div>
+                )}
+              </section>
             </div>
 
             <aside className="space-y-4">
@@ -318,6 +501,29 @@ export default function RepairPage() {
                 <div className="mt-4 text-sm font-black">Estimate Notes</div>
                 <ul className="mt-2 space-y-2 text-sm text-text-secondary">
                   {result.draft.estimateNotes.map(item => <li key={item} className="leading-6">- {item}</li>)}
+                </ul>
+              </section>
+
+              <section className="rounded-lg border border-border bg-bg-card p-4">
+                <div className="text-xs font-black uppercase text-text-muted">Pinned Sources</div>
+                <div className="mt-3 space-y-2">
+                  {pinnedSources.length === 0 && <div className="text-sm text-text-muted">Pin source cards that should follow the estimate or job.</div>}
+                  {pinnedSources.map(item => (
+                    <div key={item.url} className="rounded-lg border border-white/10 bg-white/[0.025] p-3">
+                      <div className="flex items-center gap-2">
+                        <span className={`rounded-md border px-2 py-1 text-[10px] font-black ${providerTone(item.provider)}`}>{item.provider}</span>
+                        <span className="text-[10px] font-bold uppercase text-text-muted">{item.category}</span>
+                      </div>
+                      <div className="mt-2 line-clamp-2 text-sm font-black">{item.title}</div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-lg border border-border bg-bg-card p-4">
+                <div className="text-xs font-black uppercase text-amber">Safety Gates</div>
+                <ul className="mt-3 space-y-2 text-sm text-text-secondary">
+                  {result.workflow.safetyGates.map(item => <li key={item} className="leading-6">- {item}</li>)}
                 </ul>
               </section>
 

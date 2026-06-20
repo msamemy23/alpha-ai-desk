@@ -40,7 +40,61 @@ export interface RepairSearchResult {
   sources: RepairSource[]
   draft: RepairDraft
   counts: Record<RepairCategory, number>
+  workflow: RepairWorkflow
   warnings: string[]
+}
+
+export interface RepairWorkflowStep {
+  id: string
+  label: string
+  status: 'ready' | 'needs_source' | 'needs_review'
+  detail: string
+}
+
+export interface RepairWorkflow {
+  vehicleMatch: {
+    level: 'exact_vin' | 'year_make_model' | 'partial' | 'unknown'
+    label: string
+    missing: string[]
+  }
+  coverage: {
+    hasManual: boolean
+    hasOfficialData: boolean
+    hasProcedureCandidate: boolean
+    hasEstimateReadyDraft: boolean
+  }
+  steps: RepairWorkflowStep[]
+  safetyGates: string[]
+}
+
+export interface RepairManualLink {
+  title: string
+  url: string
+  provider: 'LEMON' | 'CHARM'
+  category: RepairCategory
+  isDirectory: boolean
+}
+
+export interface RepairManualSection {
+  heading: string
+  text: string
+}
+
+export interface RepairManualImage {
+  alt: string
+  url: string
+}
+
+export interface RepairManualPage {
+  provider: 'LEMON' | 'CHARM'
+  url: string
+  title: string
+  breadcrumbs: RepairManualLink[]
+  links: RepairManualLink[]
+  sections: RepairManualSection[]
+  images: RepairManualImage[]
+  canStoreContent: false
+  warning: string
 }
 
 const MAKES = [
@@ -71,9 +125,13 @@ const MAKE_ALIASES: Record<string, string> = {
 
 function decodeHtml(value: string) {
   return value
+    .replace(/&#(\d+);/g, (_match, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([a-f0-9]+);/gi, (_match, code) => String.fromCharCode(parseInt(code, 16)))
     .replace(/&amp;/g, '&')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
 }
@@ -235,6 +293,172 @@ function extractManualLinks(html: string, baseUrl: string, model?: string) {
     links.push({ title: label || decodeURIComponent(url.split('/').filter(Boolean).pop() || url), url })
   }
   return links.slice(0, 12)
+}
+
+function stripTags(value: string) {
+  return decodeHtml(value.replace(/<[^>]*>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function titleFromUrl(url: string) {
+  try {
+    const path = new URL(url).pathname.split('/').filter(Boolean)
+    return decodeURIComponent(path[path.length - 1] || url).replace(/\s+/g, ' ')
+  } catch {
+    return url
+  }
+}
+
+function extractTitle(html: string, url: string) {
+  const h1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1]
+  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
+  return stripTags(h1 || title || titleFromUrl(url)).replace(/\s+[~|-]\s+(LEMON Manuals|Operation CHARM).*$/i, '') || titleFromUrl(url)
+}
+
+function providerFromUrl(url: string): 'LEMON' | 'CHARM' | null {
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/^www\./, '')
+    if (host === 'charm.li') return 'CHARM'
+    if (['lemon-manuals.la', 'lemon-manuals.org.ua', 'lemon-manuals.gy'].includes(host)) return 'LEMON'
+    return null
+  } catch {
+    return null
+  }
+}
+
+export function normalizeManualUrl(input: string) {
+  try {
+    const parsed = new URL(input)
+    if (!['https:', 'http:'].includes(parsed.protocol)) return null
+    const provider = providerFromUrl(parsed.toString())
+    if (!provider) return null
+    parsed.protocol = 'https:'
+    parsed.username = ''
+    parsed.password = ''
+    parsed.hash = ''
+    return { provider, url: parsed.toString() }
+  } catch {
+    return null
+  }
+}
+
+function manualLinkFromAnchor(href: string, label: string, baseUrl: string): RepairManualLink | null {
+  try {
+    const url = new URL(decodeHtml(href), baseUrl)
+    url.hash = ''
+    const provider = providerFromUrl(url.toString())
+    if (!provider) return null
+    const cleanLabel = stripTags(label) || titleFromUrl(url.toString())
+    if (!cleanLabel || /^(home|temporarily|permanently|read the announcement)$/i.test(cleanLabel)) return null
+    if (/\/(style\.css|about\.html|nfo\.html)$/i.test(url.pathname)) return null
+    return {
+      title: cleanLabel,
+      url: url.toString(),
+      provider,
+      category: inferCategory(`${cleanLabel} ${decodeURIComponent(url.pathname)}`),
+      isDirectory: url.pathname.endsWith('/'),
+    }
+  } catch {
+    return null
+  }
+}
+
+function extractManualLinksDetailed(html: string, baseUrl: string, limit = 80): RepairManualLink[] {
+  const links: RepairManualLink[] = []
+  const seen = new Set<string>()
+  const re = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi
+  let match: RegExpExecArray | null
+  while ((match = re.exec(html))) {
+    const link = manualLinkFromAnchor(match[1], match[2], baseUrl)
+    if (!link || seen.has(link.url)) continue
+    seen.add(link.url)
+    links.push(link)
+    if (links.length >= limit) break
+  }
+  return links
+}
+
+function extractBreadcrumbs(html: string, baseUrl: string): RepairManualLink[] {
+  const header = html.match(/<div[^>]*class=["'][^"']*header[^"']*["'][^>]*>([\s\S]*?)<\/div>/i)?.[1] || ''
+  return extractManualLinksDetailed(header, baseUrl, 12)
+}
+
+function mainFragment(html: string) {
+  const main = html.match(/<div[^>]*class=["'][^"']*main[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?:<div|<\/body>|$)/i)?.[1]
+  return main || html
+}
+
+function extractManualImages(html: string, baseUrl: string): RepairManualImage[] {
+  const images: RepairManualImage[] = []
+  const seen = new Set<string>()
+  const re = /<img\s+[^>]*src=["']([^"']+)["'][^>]*>/gi
+  let match: RegExpExecArray | null
+  while ((match = re.exec(html))) {
+    try {
+      const tag = match[0]
+      const src = new URL(decodeHtml(match[1]), baseUrl).toString()
+      const provider = providerFromUrl(src)
+      if (!provider || seen.has(src)) continue
+      const alt = stripTags(tag.match(/\salt=["']([^"']*)["']/i)?.[1] || 'Manual image')
+      images.push({ alt, url: src })
+      seen.add(src)
+      if (images.length >= 12) break
+    } catch {}
+  }
+  return images
+}
+
+function extractReaderSections(html: string, url: string): RepairManualSection[] {
+  const main = mainFragment(html)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
+    .replace(/<h([1-4])[^>]*>([\s\S]*?)<\/h\1>/gi, (_match, _level, heading) => `\n@@HEADING:${stripTags(heading)}@@\n`)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|li|tr|div|section)>/gi, '\n')
+
+  const lines = decodeHtml(main.replace(/<[^>]*>/g, ' '))
+    .split(/\r?\n/)
+    .map(line => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+
+  const sections: RepairManualSection[] = []
+  let heading = extractTitle(html, url)
+  let body: string[] = []
+  for (const line of lines) {
+    const marker = line.match(/^@@HEADING:(.*?)@@$/)
+    if (marker) {
+      if (body.length) sections.push({ heading, text: body.join('\n').slice(0, 1600) })
+      heading = marker[1] || 'Section'
+      body = []
+      continue
+    }
+    if (!/^LEMON Manuals|^Operation CHARM|^Home >>/i.test(line)) body.push(line)
+    if (sections.length >= 8) break
+  }
+  if (body.length) sections.push({ heading, text: body.join('\n').slice(0, 1600) })
+  return sections
+    .filter(section => section.text.length > 30)
+    .slice(0, 8)
+}
+
+export async function readRepairManualPage(url: string): Promise<RepairManualPage> {
+  const normalized = normalizeManualUrl(url)
+  if (!normalized) throw new Error('Only CHARM and LEMON manual URLs are supported')
+  const html = await fetchText(normalized.url)
+  if (!html) throw new Error('Manual source did not return readable content')
+  return {
+    provider: normalized.provider,
+    url: normalized.url,
+    title: extractTitle(html, normalized.url),
+    breadcrumbs: extractBreadcrumbs(html, normalized.url),
+    links: extractManualLinksDetailed(mainFragment(html), normalized.url, 80),
+    sections: extractReaderSections(html, normalized.url),
+    images: extractManualImages(mainFragment(html), normalized.url),
+    canStoreContent: false,
+    warning: 'Source preview only. Do not copy protected manual text into customer documents. Verify exact trim, engine, warnings, torque specs, and safety procedures from the source before work.',
+  }
 }
 
 async function browseManualDirectory(provider: 'LEMON' | 'CHARM', vehicle: RepairVehicle, component: string): Promise<RepairSource[]> {
@@ -496,6 +720,67 @@ function countCategories(sources: RepairSource[]) {
   return counts
 }
 
+function buildWorkflow(vehicle: RepairVehicle, sources: RepairSource[], draft: RepairDraft): RepairWorkflow {
+  const missing = [
+    !vehicle.vin ? 'VIN' : '',
+    !vehicle.year ? 'year' : '',
+    !vehicle.make ? 'make' : '',
+    !vehicle.model ? 'model' : '',
+    !vehicle.engine ? 'engine/trim' : '',
+  ].filter(Boolean)
+  const vehicleMatch = vehicle.vin && !missing.includes('year') && !missing.includes('make') && !missing.includes('model')
+    ? { level: 'exact_vin' as const, label: 'VIN decoded match', missing }
+    : vehicle.year && vehicle.make && vehicle.model
+      ? { level: 'year_make_model' as const, label: 'Year/make/model match', missing }
+      : vehicle.year || vehicle.make || vehicle.model
+        ? { level: 'partial' as const, label: 'Partial vehicle match', missing }
+        : { level: 'unknown' as const, label: 'Vehicle not identified', missing }
+  const hasManual = sources.some(item => item.provider === 'LEMON' || item.provider === 'CHARM')
+  const hasOfficialData = sources.some(item => item.provider === 'NHTSA' || item.provider === 'OEM1Stop')
+  const hasProcedureCandidate = sources.some(item => ['procedure', 'manual', 'diagram', 'spec'].includes(item.category))
+  const steps: RepairWorkflowStep[] = [
+    {
+      id: 'vehicle',
+      label: 'Identify Exact Vehicle',
+      status: vehicleMatch.level === 'exact_vin' || vehicleMatch.level === 'year_make_model' ? 'ready' : 'needs_review',
+      detail: vehicleMatch.missing.length ? `Missing ${vehicleMatch.missing.join(', ')}.` : vehicleMatch.label,
+    },
+    {
+      id: 'manual',
+      label: 'Open Matching Manual',
+      status: hasManual ? 'ready' : 'needs_source',
+      detail: hasManual ? 'Manual source candidate found from LEMON/CHARM.' : 'No matching manual directory source verified yet.',
+    },
+    {
+      id: 'official',
+      label: 'Check Official Data',
+      status: hasOfficialData ? 'ready' : 'needs_source',
+      detail: hasOfficialData ? 'NHTSA or OEM index source available.' : 'Use OEM1Stop/NHTSA links before safety-sensitive work.',
+    },
+    {
+      id: 'draft',
+      label: 'Build Shop Procedure Draft',
+      status: draft.sourceRequired ? 'needs_review' : 'ready',
+      detail: 'Draft checklist is ready, but a technician must verify source procedure, specs, and warnings.',
+    },
+  ]
+  return {
+    vehicleMatch,
+    coverage: {
+      hasManual,
+      hasOfficialData,
+      hasProcedureCandidate,
+      hasEstimateReadyDraft: hasProcedureCandidate && vehicleMatch.level !== 'unknown',
+    },
+    steps,
+    safetyGates: [
+      'No torque specs, wiring pinouts, diagnostic steps, labor times, or safety procedures are final until source-verified.',
+      'Customer authorization is required before teardown, repairs, parts ordering, sends, or payments.',
+      'High-voltage, airbag, ADAS, brake, steering, fuel, and lift operations require technician review before work.',
+    ],
+  }
+}
+
 export async function searchRepairSources(query: string, fallbackVehicle: Partial<RepairVehicle> = {}): Promise<RepairSearchResult> {
   const firstPass = parseRepairQuery(query, fallbackVehicle)
   const vinData = await decodeVin(firstPass.vin)
@@ -529,12 +814,15 @@ export async function searchRepairSources(query: string, fallbackVehicle: Partia
     !sources.some(item => item.provider === 'LEMON' || item.provider === 'CHARM') ? 'No matching free manual directory was verified for this vehicle during the lookup.' : '',
   ].filter(Boolean)
 
+  const draft = buildRepairDraft(query, vehicle, component, parsed.dtc)
+
   return {
     query,
     normalizedVehicle: vehicle,
     sources,
-    draft: buildRepairDraft(query, vehicle, component, parsed.dtc),
+    draft,
     counts: countCategories(sources),
+    workflow: buildWorkflow(vehicle, sources, draft),
     warnings,
   }
 }
