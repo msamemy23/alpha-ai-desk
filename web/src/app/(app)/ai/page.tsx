@@ -502,6 +502,23 @@ function formatPartsLookupText(query: string, data: any, browserResult?: Desktop
   return text
 }
 
+function formatRepairSearchText(query: string, data: any) {
+  const vehicle = [data?.normalizedVehicle?.year, data?.normalizedVehicle?.make, data?.normalizedVehicle?.model, data?.normalizedVehicle?.engine].filter(Boolean).join(' ') || 'vehicle not fully identified'
+  const sources = Array.isArray(data?.sources) ? data.sources : []
+  const draft = data?.draft || {}
+  const topSources = sources.slice(0, 8).map((item: any, index: number) => {
+    const label = [item.provider, item.category, item.confidence].filter(Boolean).join(' - ')
+    return `${index + 1}. ${item.title || 'Source'}\n   ${label}\n   ${item.url || ''}`
+  }).join('\n')
+  const checklist = Array.isArray(draft.checklist)
+    ? draft.checklist.slice(0, 6).map((item: string) => `- ${item}`).join('\n')
+    : ''
+  const warnings = Array.isArray(data?.warnings) && data.warnings.length
+    ? `\n\nWarnings:\n${data.warnings.map((item: string) => `- ${item}`).join('\n')}`
+    : ''
+  return `Repair research for "${query}"\nVehicle: ${vehicle}\n\nTop source links:\n${topSources || 'No source links verified.'}\n\nShop draft: ${draft.title || query}\nStatus: technician verification required. I will not invent torque specs, labor times, wiring pinouts, or step-by-step procedures without a source.\n\nChecklist:\n${checklist || '- Open and verify the matching source before quoting or starting work.'}${warnings}\n\nOpen the Repair page for filters, saved drafts, and estimate handoff.`
+}
+
 function wantsDesktopMcpCheck(text: string) {
   const lower = text.toLowerCase()
   const mentionsLocalTools = /\b(mcp|mcps|windows-mcp|kapture|tools?|skills?|agents?)\b/.test(lower)
@@ -1077,6 +1094,30 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
           content: verifiedOpen
             ? `Opened ${filePath}.`
             : `Could not verify file open for ${filePath}: ${result?.error || 'Unknown error'}`,
+        })
+      }
+
+      if (route.intent === 'repair_lookup') {
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'running', detail: text })
+        setStatus('Searching repair sources...')
+        const rr = await fetch('/api/repair-search', {
+          method: 'POST',
+          headers: await getAuthJsonHeaders(),
+          body: JSON.stringify({ query: text }),
+          signal: AbortSignal.timeout(60000),
+        })
+        const rd = await rr.json().catch(() => ({}))
+        if (rr.ok && rd?.ok && rd.data) {
+          addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'ok', detail: `${rd.data.sources?.length || 0} source cards` })
+          return finish({
+            role: 'assistant',
+            content: formatRepairSearchText(text, rd.data),
+          })
+        }
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'error', detail: rd?.error || 'Repair lookup failed' })
+        return finish({
+          role: 'assistant',
+          content: `Repair lookup failed: ${rd?.error || 'Unknown error'}. Try the Repair page with year, make, model, engine, and the exact component or DTC.`,
         })
       }
 

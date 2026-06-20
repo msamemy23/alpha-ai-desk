@@ -1,6 +1,7 @@
 import type { AgentId } from './capabilities'
 
 export type IntentId =
+  | 'repair_lookup'
   | 'parts_lookup'
   | 'desktop_file'
   | 'desktop_browser'
@@ -23,6 +24,7 @@ export interface RouteDecision {
 
 const PART_TERMS = /\b(brake|brakes|rotor|rotors|pad|pads|control\s+arm|control\s+arms|strut|struts|shock|shocks|bearing|hub|alternator|starter|water\s+pump|thermostat|timing\s+belt|a\/c|ac\s+compressor|tie\s+rod|ball\s+joint|axle|cv\s+axle|caliper|muffler|catalytic|spark\s+plug|coil|fuel\s+pump|radiator|belt|hose|filter|battery|part|parts)\b/i
 const VEHICLE_TERMS = /\b(?:19|20)?\d{2}\b|\b(civic|accord|camry|corolla|altima|sentra|silverado|sierra|f-?150|escape|explorer|tacoma|tundra|pilot|cr-v|rav4|malibu|impala|charger|ram)\b/i
+const REPAIR_TERMS = /\b(repair\s+manual|manual|procedure|step\s*by\s*step|steps|torque|specs?|wiring|diagram|schematic|pinout|dtc|trouble\s+code|tsb|bulletin|recall|service\s+information|all\s*data|alldata|charm|lemon)\b/i
 const SEND_TERMS = /\b(send|text|sms|email|call|dial|voicemail|message|reply)\b/i
 const SHOP_TERMS = /\b(customer|vehicle|job|estimate|invoice|receipt|appointment|inventory|staff|timeclock|shop board|work order)\b/i
 const REPORT_TERMS = /\b(report|revenue|sales|stats|how much|conversion|growth|reminder|campaign|follow-?up|review request)\b/i
@@ -44,6 +46,19 @@ export function classifyRequest(input: string): RouteDecision {
       agentId: 'desktop',
       skillIds: ['browser_tab_inspection_kapture'],
       confidence: 0.95,
+      requiresToolResult: true,
+      requiresConfirmation: false,
+      reasons,
+    }
+  }
+
+  if (REPAIR_TERMS.test(text) && (VEHICLE_TERMS.test(text) || /\b[A-HJ-NPR-Z0-9]{17}\b/i.test(text) || /\b[PCBU][0-9A-F]{4}\b/i.test(text))) {
+    reasons.push('vehicle plus repair/manual/procedure terms')
+    return {
+      intent: 'repair_lookup',
+      agentId: 'repair',
+      skillIds: ['source_backed_repair_research'],
+      confidence: 0.93,
       requiresToolResult: true,
       requiresConfirmation: false,
       reasons,

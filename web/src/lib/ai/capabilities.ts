@@ -2,6 +2,7 @@ export type AgentId =
   | 'router'
   | 'shop_ops'
   | 'parts'
+  | 'repair'
   | 'desktop'
   | 'browser'
   | 'communications'
@@ -69,6 +70,14 @@ export const AGENTS: AgentDefinition[] = [
     defaultSkillIds: ['verified_parts_search', 'build_estimate_from_verified_parts'],
   },
   {
+    id: 'repair',
+    name: 'Repair Agent',
+    purpose: 'Source-backed repair research, manuals, procedures, TSBs, recalls, diagrams, specs, and shop-reviewed draft cards.',
+    owns: ['repair manuals', 'procedures', 'DTC research', 'TSBs', 'recalls', 'wiring/source links', 'shop repair drafts'],
+    handoffWhen: ['The user asks for a repair procedure, manual, torque spec, wiring diagram, TSB, recall, DTC, or step-by-step workflow.'],
+    defaultSkillIds: ['source_backed_repair_research'],
+  },
+  {
     id: 'desktop',
     name: 'Desktop Agent',
     purpose: 'Safe local desktop actions through the Electron bridge and Windows-MCP.',
@@ -122,6 +131,18 @@ export const TOOLS: ToolDefinition[] = [
     requiresConfirmation: false,
     inputSchema: { query: 'string', stores: 'string[] optional' },
     resultShape: { ok: 'boolean', data: 'vehicle, positions, options, kits, source confidence' },
+  },
+  {
+    name: 'repairSearch',
+    agentId: 'repair',
+    description: 'Find source-backed repair manuals, procedures, TSBs, recalls, diagrams, specs, and technician-review draft cards.',
+    permission: 'read',
+    timeoutMs: 60000,
+    retry: { attempts: 1, backoffMs: 0 },
+    audit: true,
+    requiresConfirmation: false,
+    inputSchema: { query: 'string', vehicle: 'vin/year/make/model/engine optional' },
+    resultShape: { ok: 'boolean', data: 'normalized vehicle, source cards, counts, draft checklist, warnings' },
   },
   {
     name: 'openBrowser',
@@ -229,6 +250,16 @@ export const SKILLS: SkillDefinition[] = [
     successCriteria: ['Uses only verified parts/prices', 'includes labor reference', 'creates preview before saving'],
     failureBehavior: 'Ask user to choose verified parts before building an estimate.',
     examples: ['build an estimate with the mid option', 'quote that with labor'],
+  },
+  {
+    id: 'source_backed_repair_research',
+    name: 'Source-Backed Repair Research',
+    ownerAgentId: 'repair',
+    description: 'Search free public manuals, NHTSA data, OEM indexes, and shop notes while refusing to invent specs or copyrighted procedure text.',
+    requiredTools: ['repairSearch'],
+    successCriteria: ['Vehicle is normalized', 'source links are returned', 'draft procedure is marked technician-review required', 'no unsupported specs are invented'],
+    failureBehavior: 'Show source links and explain what could not be verified.',
+    examples: ['find the repair procedure for 2018 Jeep Wrangler coolant tank', 'show torque specs for 2004 Civic front brakes', 'look up P0420 diagnostic procedure for 2012 Accord'],
   },
   {
     id: 'customer_lookup_context',

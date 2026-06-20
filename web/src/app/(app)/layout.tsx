@@ -19,6 +19,7 @@ const NAV = [
   { href: '/invoices', icon: 'invoice', label: 'Invoices' },
   { href: '/canned-jobs', icon: 'bolt', label: 'Canned Jobs' },
   { href: '/insurance', icon: 'shield', label: 'Insurance' },
+  { href: '/repair', icon: 'manual', label: 'Repair' },
   { href: '/parts', icon: 'parts', label: 'Parts Lookup' },
   { href: '/inventory', icon: 'box', label: 'Inventory' },
   { href: '/dvi', icon: 'inspect', label: 'Inspections (DVI)' },
@@ -69,6 +70,8 @@ function Icon({ name, className = 'h-4 w-4' }: { name: string; className?: strin
       return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M13 2L4 14h7l-1 8 10-13h-7z" /></svg>
     case 'shield':
       return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
+    case 'manual':
+      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5z" /><path d="M8 6h8" /><path d="M8 10h8" /><path d="M8 14h5" /></svg>
     case 'parts':
       return <svg className={className} viewBox="0 0 24 24" {...common}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a8 8 0 0 0 .1-6l2.1-1.6-2-3.5-2.6 1a8 8 0 0 0-5.1-3L11.5 0h-4l-.4 2.9a8 8 0 0 0-5.1 3l-2.6-1-2 3.5L-0.5 10a8 8 0 0 0 .1 6l-2.1 1.6 2 3.5 2.6-1a8 8 0 0 0 5.1 3l.4 2.9h4l.4-2.9a8 8 0 0 0 5.1-3l2.6 1 2-3.5z" transform="translate(2 0) scale(.83)" /></svg>
     case 'box':
