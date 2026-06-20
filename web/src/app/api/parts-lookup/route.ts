@@ -5,7 +5,7 @@ import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { apiFail, apiOk, optionalStringArray, readJsonObject, requireString, getIdempotencyKey } from '@/lib/api-response'
 import { writeAuditLog } from '@/lib/audit-log'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
-import { normalizeVehicleYear } from '@/lib/ai/router'
+import { normalizePartsQuery as normalizePartsLookupQuery } from '@/lib/ai/desktop-actions'
 
 export const dynamic = 'force-dynamic'
 
@@ -67,15 +67,6 @@ const STORE_DOMAINS: Record<string, string> = {
   'advance auto': 'advanceautoparts.com',
   pepboys: 'pepboys.com',
   'pep boys': 'pepboys.com',
-}
-
-function normalizePartsQuery(query: string) {
-  return normalizeVehicleYear(query)
-    .replace(/\bfront\s+ones\s+both\s+sides\b/gi, 'front left and front right')
-    .replace(/\bboth\s+sides\b/gi, 'left and right')
-    .replace(/\b04\s+honda\b/gi, '2004 Honda')
-    .replace(/\b05\s+honda\b/gi, '2005 Honda')
-    .trim()
 }
 
 function normalizeStoreFilter(stores?: string[]) {
@@ -381,7 +372,7 @@ export async function POST(req: NextRequest) {
     const storesValue = optionalStringArray(parsedBody.body, 'stores')
     if (!storesValue.ok) return apiFail(storesValue.error, 400, 'BAD_REQUEST')
 
-    const query = normalizePartsQuery(queryValue.value).slice(0, 240)
+    const query = normalizePartsLookupQuery(queryValue.value).slice(0, 240)
     const stores = normalizeStoreFilter(storesValue.value)
     const idempotencyKey = getIdempotencyKey(req, [auth.shopId, 'parts-lookup', query])
 

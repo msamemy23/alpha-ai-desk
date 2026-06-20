@@ -5,6 +5,19 @@ import { AGENTS, SKILLS } from '@/lib/ai/capabilities'
 import { classifyRequest, type RouteDecision } from '@/lib/ai/router'
 import { normalizeDocumentDraft } from '@/lib/ai/document-draft'
 import { getLaborFlatAmount, laborLineTotal, partLineTotal } from '@/lib/document-money'
+import {
+  formatBrowserOpenResult,
+  formatDownloadResult,
+  isVerifiedBrowserOpen,
+  isVerifiedDownloadResult,
+  looksLikePartsRequest,
+  normalizePartsQuery,
+  parseBrowserRequest,
+  parseDesktopImageRequest,
+  wantsKaptureSetup,
+  wantsOpenPreviousDesktopFile,
+  type DesktopOpenResult,
+} from '@/lib/ai/desktop-actions'
 
 type SpeechRecognition = any
 type SpeechRecognitionEvent = any
@@ -446,85 +459,11 @@ MCP safety rules:
 - Prefer read-only tools first: windows Snapshot/Screenshot/Scrape and kapture list_tabs/tab_detail/dom/elements/screenshot/console_logs/network_requests.
 - If Kapture says no tabs are connected, tell the user to install/open the Kapture Chrome extension, click the Kapture toolbar extension, and connect the tab.`
 
-function cleanDesktopQuery(value: string) {
-  return value
-    .replace(/\b(open|launch|start)\s+(google\s+)?chrome\b/gi, ' ')
-    .replace(/\b(search|look\s+up|look\s+online\s+for|find|get|grab|download|save)\b/gi, ' ')
-    .replace(/\b(a|an|the|picture|image|photo|png|jpg|jpeg|webp|gif|of|for|online|onto|on|to|my|desktop|file|it|and)\b/gi, ' ')
-    .replace(/[^\w\s-]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function parseDesktopImageRequest(text: string) {
-  const lower = text.toLowerCase()
-  const wantsImage = /\b(image|picture|photo|png|jpe?g|webp|gif)\b/.test(lower)
-  const wantsFetch = /\b(download|save|grab|get|find|search|look\s+up|look\s+online)\b/.test(lower)
-  if (!wantsImage || !wantsFetch) return null
-
-  const directMatch =
-    text.match(/\b(?:picture|image|photo)\s+of\s+(.+?)(?:[.!?]|$)/i) ||
-    text.match(/\b(?:search|find|get|download|save|grab).*?\b(?:for|of)\s+(.+?)(?:[.!?]|$)/i)
-  const query = cleanDesktopQuery(directMatch?.[1] || text)
-  if (!query) return null
-
-  const filename = `${query.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64) || 'downloaded-image'}.png`
-  return { query, filename, open: /\b(open|show|view)\b.*\b(file|image|picture|photo|it)\b/i.test(text) }
-}
-
-function parseBrowserRequest(text: string) {
-  const browserMatch = text.match(/\b(open|launch|start)\s+(?:(google)\s+)?(chrome|comet)(?:\s+browser)?\b/i)
-  if (!browserMatch) return null
-  const app = browserMatch[3].toLowerCase() === 'comet' ? 'comet' : 'chrome'
-  const urlMatch = text.match(/\bhttps?:\/\/[^\s]+/i)
-  const searchMatch =
-    text.match(/\b(?:search|find|look\s+up|look\s+online\s+for)\s+(?:for\s+)?(.+?)(?:[.!?]|$)/i) ||
-    text.match(/\bgo\s+to\s+([a-z0-9.-]+\.[a-z]{2,})(?:\s+and\s+(.+?))?(?:[.!?]|$)/i)
-  const rawQuery = searchMatch?.[2] || searchMatch?.[1] || ''
-  const query = cleanDesktopQuery(rawQuery)
-  return {
-    app,
-    url: urlMatch?.[0] || (query ? `https://www.google.com/search?q=${encodeURIComponent(query)}` : ''),
-    query,
-  }
-}
-
-function wantsOpenPreviousDesktopFile(text: string) {
-  return /^(?:open|show|view|launch)\s+(?:the\s+)?(?:last\s+)?(?:file|download|image|picture|photo|it)\s*$/i.test(text.trim())
-}
-
-function wantsKaptureSetup(text: string) {
-  return /\bkapture\b/i.test(text) && /\b(set\s*up|install|connect|extension|chrome)\b/i.test(text)
-}
-
-const PART_TERMS = /\b(brake|brakes|rotor|rotors|pad|pads|control\s+arm|control\s+arms|strut|struts|shock|shocks|bearing|hub|alternator|starter|water\s+pump|thermostat|timing\s+belt|a\/c|ac\s+compressor|tie\s+rod|ball\s+joint|axle|cv\s+axle|caliper|muffler|catalytic|spark\s+plug|coil|fuel\s+pump|radiator|belt|hose|filter|battery|part|parts)\b/i
-const VEHICLE_TERMS = /\b(?:19|20)?\d{2}\b|\b(civic|accord|camry|corolla|altima|sentra|silverado|sierra|f-?150|escape|explorer|tacoma|tundra|pilot|cr-v|rav4|malibu|impala|charger|ram)\b/i
-
-function looksLikePartsRequest(text: string) {
-  return PART_TERMS.test(text) && VEHICLE_TERMS.test(text) && /\b(find|search|look\s+up|look\s+online|price|prices|cost|how\s+much|get|need|quote)\b/i.test(text)
-}
-
-function normalizePartsQuery(text: string) {
-  let query = text
-    .replace(/\b(open|launch|start)\s+(?:(?:google)\s+)?(?:chrome|comet)(?:\s+browser)?\b/gi, ' ')
-    .replace(/\bgo\s+to\s+(autozone|auto\s*zone|oreilly|o'reilly|napa|advance|advance\s+auto|rockauto|pepboys|pep\s+boys)\b/gi, '$1')
-    .replace(/\b(find|search|look\s+up|look\s+online\s+for|get|need|me|for|please|now|do\s+it)\b/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-  query = query.replace(/\b(\d{2})\s+(civic|accord)\b/gi, (_match, year, model) => `20${year} Honda ${model}`)
-  query = query.replace(/\b(19|20\d{2})\s+(civic|accord)\b/gi, (_match, year, model) => `${year} Honda ${model}`)
-  query = query.replace(/\b(\d{4})\s+(civic|accord)\b/gi, (_match, year, model) => `${year} Honda ${model}`)
-  query = query.replace(/\bfront\s+ones\s+both\s+sides\b/gi, 'front left and front right')
-  query = query.replace(/\bboth\s+sides\b/gi, 'left and right')
-  return query || text
-}
-
-function formatPartsLookupText(query: string, data: any, browserResult?: { ok?: boolean; app?: string; error?: string; url?: string }) {
+function formatPartsLookupText(query: string, data: any, browserResult?: DesktopOpenResult) {
   const opened = browserResult
-    ? browserResult.ok
-      ? `Opened ${browserResult.app || 'browser'}${browserResult.url ? ` to ${browserResult.url}` : ''}.\n\n`
-      : `Browser open failed: ${browserResult.error || 'unknown error'}.\n\n`
+    ? isVerifiedBrowserOpen(browserResult)
+      ? `Opened ${browserResult.app || 'browser'} to the search page and verified the local process started. Parts data below comes from verified source lookup, not an unverified browser claim.\n\n`
+      : `Browser open was not verified: ${browserResult.error || 'unknown error'}.\n\n`
     : ''
   const options = Array.isArray(data?.options) ? data.options : []
   const kits = Array.isArray(data?.kits) ? data.kits : []
@@ -1131,25 +1070,27 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         addToolEvent({ agent: agentName, skill: skillName, tool: 'desktopOpenFile', status: 'running', detail: filePath })
         setStatus('Opening file...')
         const result = await desktopApi.files.openApproved(filePath)
-        addToolEvent({ agent: agentName, skill: skillName, tool: 'desktopOpenFile', status: result?.ok ? 'ok' : 'error', detail: result?.ok ? filePath : (result?.error || 'Unknown error') })
+        const verifiedOpen = result?.ok && result.verified === true && result.opened === true
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'desktopOpenFile', status: verifiedOpen ? 'ok' : 'error', detail: verifiedOpen ? filePath : (result?.error || 'File open not verified') })
         return finish({
           role: 'assistant',
-          content: result?.ok
+          content: verifiedOpen
             ? `Opened ${filePath}.`
-            : `Could not open ${filePath}: ${result?.error || 'Unknown error'}`,
+            : `Could not verify file open for ${filePath}: ${result?.error || 'Unknown error'}`,
         })
       }
 
       if (route.intent === 'parts_lookup' || looksLikePartsRequest(text)) {
         const browserRequest = parseBrowserRequest(text)
         const partsQuery = normalizePartsQuery(text)
-        let browserResult: { ok?: boolean; app?: string; error?: string; url?: string } | undefined
+        let browserResult: DesktopOpenResult | undefined
         if (browserRequest) {
           addToolEvent({ agent: agentName, skill: skillName, tool: 'openBrowser', status: 'running', detail: `${browserRequest.app} search for ${partsQuery}` })
           setStatus(`Opening ${browserRequest.app === 'comet' ? 'Comet' : 'Chrome'}...`)
           const browserUrl = `https://www.google.com/search?q=${encodeURIComponent(partsQuery)}`
           browserResult = await desktopApi.system.openApp(browserRequest.app, browserUrl)
-          addToolEvent({ agent: agentName, skill: skillName, tool: 'openBrowser', status: browserResult?.ok ? 'ok' : 'error', detail: browserResult?.ok ? `${browserRequest.app} opened` : (browserResult?.error || 'Browser open failed') })
+          const verifiedOpen = isVerifiedBrowserOpen(browserResult)
+          addToolEvent({ agent: agentName, skill: skillName, tool: 'openBrowser', status: verifiedOpen ? 'ok' : 'error', detail: verifiedOpen ? `${browserRequest.app} process verified` : (browserResult?.error || 'Browser launch not verified') })
         }
 
         addToolEvent({ agent: agentName, skill: skillName, tool: 'partsLookup', status: 'running', detail: partsQuery })
@@ -1176,9 +1117,9 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
           )).join('\n\n')
           : ''
         const prefix = browserResult
-          ? browserResult.ok
-            ? `Opened ${browserResult.app || 'browser'} for "${partsQuery}".\n\n`
-            : `Browser open failed: ${browserResult.error || 'unknown error'}.\n\n`
+          ? isVerifiedBrowserOpen(browserResult)
+            ? `Opened ${browserResult.app || 'browser'} to a search for "${partsQuery}" and verified the process started.\n\n`
+            : `Browser open was not verified: ${browserResult.error || 'unknown error'}.\n\n`
           : ''
         return finish({
           role: 'assistant',
@@ -1189,12 +1130,13 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       const imageRequest = parseDesktopImageRequest(text)
       if (imageRequest) {
         const chromeRequest = parseBrowserRequest(text)
-        let chromeResult: Record<string, unknown> | null = null
+        let chromeResult: DesktopOpenResult | null = null
         if (chromeRequest) {
           addToolEvent({ agent: agentName, skill: skillName, tool: 'openBrowser', status: 'running', detail: `${chromeRequest.app} image search for ${imageRequest.query}` })
           setStatus(`Opening ${chromeRequest.app === 'comet' ? 'Comet' : 'Chrome'}...`)
           chromeResult = await desktopApi.system.openApp(chromeRequest.app, `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(imageRequest.query)}`)
-          addToolEvent({ agent: agentName, skill: skillName, tool: 'openBrowser', status: chromeResult?.ok === false ? 'error' : 'ok', detail: chromeResult?.ok === false ? String(chromeResult.error || 'Browser open failed') : `${chromeRequest.app} opened` })
+          const verifiedOpen = isVerifiedBrowserOpen(chromeResult)
+          addToolEvent({ agent: agentName, skill: skillName, tool: 'openBrowser', status: verifiedOpen ? 'ok' : 'error', detail: verifiedOpen ? `${chromeRequest.app} process verified` : String(chromeResult?.error || 'Browser launch not verified') })
         }
 
         addToolEvent({ agent: agentName, skill: skillName, tool: 'desktopDownloadImage', status: 'running', detail: imageRequest.query })
@@ -1205,13 +1147,13 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
           open: imageRequest.open,
         })
 
-        if (result?.ok && result.path) {
+        if (isVerifiedDownloadResult(result)) {
           lastDesktopFileRef.current = String(result.path)
           addToolEvent({ agent: agentName, skill: skillName, tool: 'desktopDownloadImage', status: 'ok', detail: String(result.path) })
-          const chromeNote = chromeResult && chromeResult.ok === false ? ` Chrome did not open: ${chromeResult.error || 'Unknown error'}.` : ''
+          const chromeNote = chromeResult && !isVerifiedBrowserOpen(chromeResult) ? ` Browser search was not verified: ${chromeResult.error || 'Unknown error'}.` : ''
           return finish({
             role: 'assistant',
-            content: `Downloaded ${imageRequest.query} to ${result.path}${result.opened ? ' and opened it' : ''}.${chromeNote}`,
+            content: `${formatDownloadResult(result, imageRequest.query)}${chromeNote}`,
           })
         }
 
@@ -1224,12 +1166,11 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         addToolEvent({ agent: agentName, skill: skillName, tool: 'openBrowser', status: 'running', detail: `${chromeRequest.app}${chromeRequest.query ? ` search: ${chromeRequest.query}` : ''}` })
         setStatus(`Opening ${chromeRequest.app === 'comet' ? 'Comet' : 'Chrome'}...`)
         const result = await desktopApi.system.openApp(chromeRequest.app, chromeRequest.url)
-        addToolEvent({ agent: agentName, skill: skillName, tool: 'openBrowser', status: result?.ok ? 'ok' : 'error', detail: result?.ok ? `${chromeRequest.app} opened` : (result?.error || 'Unknown error') })
+        const verifiedOpen = isVerifiedBrowserOpen(result)
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'openBrowser', status: verifiedOpen ? 'ok' : 'error', detail: verifiedOpen ? `${chromeRequest.app} process verified` : (result?.error || 'Browser launch not verified') })
         return finish({
           role: 'assistant',
-          content: result?.ok
-            ? `${chromeRequest.app === 'comet' ? 'Comet' : 'Chrome'} is open${chromeRequest.query ? ` with a search for "${chromeRequest.query}"` : ''}.`
-            : `${chromeRequest.app === 'comet' ? 'Comet' : 'Chrome'} did not open: ${result?.error || 'Unknown error'}`,
+          content: formatBrowserOpenResult(result, chromeRequest),
         })
       }
 
@@ -1589,8 +1530,8 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         setStatus('Searching...')
 
           // Smart parts detection: if query looks like a parts search, use parts-lookup API
-      const partsQuery = (parsed.query as string || '').toLowerCase()
-      const isPartsSearch = /(?:brake|rotor|pad|control arm|strut|shock|bearing|hub|alternator|starter|water pump|thermostat|timing belt|ac compressor|tie rod|ball joint|axle|caliper|muffler|catalytic|spark plug|coil|fuel pump|radiator|belt|hose|filter|battery).*(?:price|cost|how much|\d{4})/i.test(parsed.query as string) || /\d{4}\s+\w+\s+\w+.*(?:brake|rotor|pad|control arm|strut|shock|part)/i.test(parsed.query as string)
+      const partsQuery = String(parsed.query || '')
+      const isPartsSearch = /(?:brake|rotor|pad|control arm|strut|shock|bearing|hub|alternator|starter|water pump|thermostat|timing belt|ac compressor|tie rod|ball joint|axle|caliper|muffler|catalytic|spark plug|coil|fuel pump|radiator|belt|hose|filter|battery).*(?:price|cost|how much|\d{4})/i.test(partsQuery) || /\d{4}\s+\w+\s+\w+.*(?:brake|rotor|pad|control arm|strut|shock|part)/i.test(partsQuery)
       if (isPartsSearch) {
         setStatus('Looking up parts...')
         try {
@@ -1940,8 +1881,15 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const result = await (window as any).electronAPI.system.openApp((parsed.app || parsed.appName || 'chrome') as string, (parsed.url as string) || '')
           accumulated.push(`[Desktop open app]: ${JSON.stringify(result)}`)
-          agentMessages.push({ role: 'assistant', content: raw })
-          agentMessages.push({ role: 'user', content: `Desktop open app result:\n${JSON.stringify(result, null, 2)}\n\nIf ok:true, tell the user it opened. If ok:false, report the exact error.` })
+          const appName = String(parsed.app || parsed.appName || 'chrome').toLowerCase().includes('comet') ? 'comet' : 'chrome'
+          const msg: ChatMessage = {
+            role: 'assistant',
+            content: formatBrowserOpenResult(result, { app: appName, url: (parsed.url as string) || '', query: '' }),
+          }
+          setMessages(prev => [...prev, msg])
+          saveToHistory([...history, msg])
+          setStatus('')
+          return
         } catch (e) {
           agentMessages.push({ role: 'assistant', content: raw })
           agentMessages.push({ role: 'user', content: `Desktop open app failed: ${e instanceof Error ? e.message : 'Unknown error'}` })
@@ -1967,8 +1915,16 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
           })
           if (result?.ok && result.path) lastDesktopFileRef.current = String(result.path)
           accumulated.push(`[Desktop image download]: ${JSON.stringify(result)}`)
-          agentMessages.push({ role: 'assistant', content: raw })
-          agentMessages.push({ role: 'user', content: `Desktop image download result:\n${JSON.stringify(result, null, 2)}\n\nIf ok:true, tell the user the exact saved path and whether it opened. If ok:false, report the exact error. The saved path can be used later with desktopOpenFile.` })
+          const msg: ChatMessage = {
+            role: 'assistant',
+            content: isVerifiedDownloadResult(result)
+              ? formatDownloadResult(result, String(parsed.query || parsed.search || parsed.filename || 'image'))
+              : `Image download failed verification: ${result?.error || 'file was not written and verified'}`,
+          }
+          setMessages(prev => [...prev, msg])
+          saveToHistory([...history, msg])
+          setStatus('')
+          return
         } catch (e) {
           agentMessages.push({ role: 'assistant', content: raw })
           agentMessages.push({ role: 'user', content: `Desktop image download failed: ${e instanceof Error ? e.message : 'Unknown error'}` })
@@ -1988,8 +1944,17 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const result = await (window as any).electronAPI.files.openApproved((parsed.path || parsed.filePath) as string)
           accumulated.push(`[Desktop open file]: ${JSON.stringify(result)}`)
-          agentMessages.push({ role: 'assistant', content: raw })
-          agentMessages.push({ role: 'user', content: `Desktop open file result:\n${JSON.stringify(result, null, 2)}\n\nIf ok:true, tell the user the file opened. If ok:false, report the exact error and say Alpha AI can only open files it saved/downloaded/selected in this desktop session.` })
+          const verifiedOpen = result?.ok && result.verified === true && result.opened === true
+          const msg: ChatMessage = {
+            role: 'assistant',
+            content: verifiedOpen
+              ? `Opened ${result.path}.`
+              : `Could not verify file open: ${result?.error || 'Alpha AI can only open files it saved, downloaded, or the user selected in this desktop session.'}`,
+          }
+          setMessages(prev => [...prev, msg])
+          saveToHistory([...history, msg])
+          setStatus('')
+          return
         } catch (e) {
           agentMessages.push({ role: 'assistant', content: raw })
           agentMessages.push({ role: 'user', content: `Desktop open file failed: ${e instanceof Error ? e.message : 'Unknown error'}` })
