@@ -503,20 +503,33 @@ function formatPartsLookupText(query: string, data: any, browserResult?: Desktop
 }
 
 function formatRepairSearchText(query: string, data: any) {
-  const vehicle = [data?.normalizedVehicle?.year, data?.normalizedVehicle?.make, data?.normalizedVehicle?.model, data?.normalizedVehicle?.engine].filter(Boolean).join(' ') || 'vehicle not fully identified'
+  const vehicle = [data?.normalizedVehicle?.year, data?.normalizedVehicle?.make, data?.normalizedVehicle?.model, data?.normalizedVehicle?.trim, data?.normalizedVehicle?.engine].filter(Boolean).join(' ') || 'vehicle not fully identified'
   const sources = Array.isArray(data?.sources) ? data.sources : []
+  const matches = Array.isArray(data?.manualMatches) ? data.manualMatches : []
+  const operations = Array.isArray(data?.operationLines) ? data.operationLines : []
   const draft = data?.draft || {}
+  const confidence = data?.workflow?.vehicleMatch?.confidence
+  const risk = data?.safetyProfile?.level || 'standard'
   const topSources = sources.slice(0, 8).map((item: any, index: number) => {
     const label = [item.provider, item.category, item.confidence].filter(Boolean).join(' - ')
     return `${index + 1}. ${item.title || 'Source'}\n   ${label}\n   ${item.url || ''}`
   }).join('\n')
+  const topMatches = matches.slice(0, 5).map((item: any, index: number) =>
+    `${index + 1}. ${item.title || 'Manual match'}\n   ${item.provider || ''} - ${(item.matchType || '').replace(/_/g, ' ')} - score ${item.score ?? 0}\n   ${item.url || ''}`
+  ).join('\n')
+  const operationText = operations.slice(0, 6).map((item: any) =>
+    `- ${item.label || 'Operation'} (${item.system || 'system unknown'}, ${item.risk || 'standard'} risk, ${String(item.sourceStatus || 'needs_source').replace(/_/g, ' ')})`
+  ).join('\n')
   const checklist = Array.isArray(draft.checklist)
     ? draft.checklist.slice(0, 6).map((item: string) => `- ${item}`).join('\n')
     : ''
+  const estimateState = data?.estimateDraft?.totalLocked
+    ? `Estimate draft: locked total $${Number(data.estimateDraft.targetTotal || 0).toFixed(2)} allocated across operation lines.`
+    : 'Estimate draft: not price-ready yet. Ask for a locked total or verified line pricing before saving.'
   const warnings = Array.isArray(data?.warnings) && data.warnings.length
     ? `\n\nWarnings:\n${data.warnings.map((item: string) => `- ${item}`).join('\n')}`
     : ''
-  return `Repair research for "${query}"\nVehicle: ${vehicle}\n\nTop source links:\n${topSources || 'No source links verified.'}\n\nShop draft: ${draft.title || query}\nStatus: technician verification required. I will not invent torque specs, labor times, wiring pinouts, or step-by-step procedures without a source.\n\nChecklist:\n${checklist || '- Open and verify the matching source before quoting or starting work.'}${warnings}\n\nOpen the Repair page for filters, saved drafts, and estimate handoff.`
+  return `Repair research for "${query}"\nVehicle: ${vehicle}${typeof confidence === 'number' ? ` (${confidence}% confidence)` : ''}\nRisk: ${risk}\n\nOperation lines:\n${operationText || '- No structured operation lines identified yet.'}\n\nDeep manual matches:\n${topMatches || 'No exact deep match verified yet. Open source links and verify manually.'}\n\nTop source links:\n${topSources || 'No source links verified.'}\n\n${estimateState}\n\nShop draft: ${draft.title || query}\nStatus: technician verification required. I will not invent torque specs, labor times, wiring pinouts, or step-by-step procedures without a source.\n\nChecklist:\n${checklist || '- Open and verify the matching source before quoting or starting work.'}${warnings}\n\nOpen the Repair page for the full workspace, diagram viewer, procedure cards, and estimate builder.`
 }
 
 function wantsDesktopMcpCheck(text: string) {

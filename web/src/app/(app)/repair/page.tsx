@@ -23,6 +23,20 @@ const EXAMPLES = [
   'P0420 2012 Honda Accord diagnostic procedure',
 ]
 
+const WORKSPACE_TABS = [
+  'Overview',
+  'Safety',
+  'Tools',
+  'Parts/Fluids',
+  'Procedure Links',
+  'Torque/Specs',
+  'Wiring/Diagrams',
+  'Estimate Builder',
+  'Shop Notes',
+] as const
+
+type WorkspaceTab = typeof WORKSPACE_TABS[number]
+
 type SavedDraft = {
   id: string
   title: string
@@ -42,7 +56,7 @@ async function getAuthJsonHeaders(): Promise<Record<string, string>> {
 }
 
 function vehicleText(vehicle: RepairVehicle) {
-  return [vehicle.year, vehicle.make, vehicle.model, vehicle.engine].filter(Boolean).join(' ').trim() || 'Vehicle not fully identified'
+  return [vehicle.year, vehicle.make, vehicle.model, vehicle.trim, vehicle.engine].filter(Boolean).join(' ').trim() || 'Vehicle not fully identified'
 }
 
 function confidenceText(value: RepairSource['confidence']) {
@@ -96,6 +110,37 @@ function workflowTone(status: string) {
   return 'border-blue/30 bg-blue/10 text-blue'
 }
 
+function riskTone(status: string) {
+  if (status === 'critical') return 'border-red/40 bg-red/10 text-red'
+  if (status === 'elevated') return 'border-amber/30 bg-amber/10 text-amber'
+  return 'border-green/30 bg-green/10 text-green'
+}
+
+function matchTone(status: string) {
+  if (status === 'exact_procedure') return 'border-green/30 bg-green/10 text-green'
+  if (status === 'likely_section') return 'border-blue/30 bg-blue/10 text-blue'
+  if (status === 'diagram_or_spec') return 'border-amber/30 bg-amber/10 text-amber'
+  return 'border-white/10 bg-white/[0.04] text-text-secondary'
+}
+
+function coverageTone(status: string) {
+  if (status === 'found' || status === 'link_ready') return 'border-green/30 bg-green/10 text-green'
+  if (status === 'needs_database' || status === 'unknown') return 'border-amber/30 bg-amber/10 text-amber'
+  return 'border-white/10 bg-white/[0.04] text-text-muted'
+}
+
+function money(value: number | null | undefined) {
+  return typeof value === 'number' && Number.isFinite(value) ? `$${value.toFixed(2)}` : 'Needs price'
+}
+
+function allocateTotal(total: number, count: number) {
+  const lineCount = Math.max(1, count)
+  const cents = Math.round(total * 100)
+  const base = Math.floor(cents / lineCount)
+  const remainder = cents - base * lineCount
+  return Array.from({ length: lineCount }, (_unused, index) => (base + (index < remainder ? 1 : 0)) / 100)
+}
+
 export default function RepairPage() {
   const [query, setQuery] = useState('')
   const [vehicle, setVehicle] = useState<RepairVehicle>({ year: '', make: '', model: '', engine: '', vin: '' })
@@ -110,6 +155,22 @@ export default function RepairPage() {
   const [selectedManualUrl, setSelectedManualUrl] = useState('')
   const [pinnedSources, setPinnedSources] = useState<RepairSource[]>([])
   const [readerFilter, setReaderFilter] = useState('')
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>('Overview')
+  const [customerName, setCustomerName] = useState('')
+  const [customerEmail, setCustomerEmail] = useState('')
+  const [customerPhone, setCustomerPhone] = useState('')
+  const [lockedTotal, setLockedTotal] = useState('')
+  const [estimateMessage, setEstimateMessage] = useState('')
+  const [creatingEstimate, setCreatingEstimate] = useState(false)
+  const [procedureNotes, setProcedureNotes] = useState('')
+  const [procedureTools, setProcedureTools] = useState('')
+  const [procedurePartsFluids, setProcedurePartsFluids] = useState('')
+  const [approvedBy, setApprovedBy] = useState('')
+  const [procedureMessage, setProcedureMessage] = useState('')
+  const [savingProcedure, setSavingProcedure] = useState(false)
+  const [viewerImage, setViewerImage] = useState<{ url: string; alt: string } | null>(null)
+  const [imageScale, setImageScale] = useState(1)
+  const [bookmarkedImages, setBookmarkedImages] = useState<Array<{ url: string; alt: string }>>([])
 
   useEffect(() => {
     try {
@@ -141,6 +202,21 @@ export default function RepairPage() {
     }))
   }, [result])
 
+  const procedureLinkMatches = useMemo(() => {
+    const matches = result?.manualMatches || []
+    return matches.filter(item => item.category !== 'diagram' && item.category !== 'spec')
+  }, [result])
+
+  const specMatches = useMemo(() => {
+    const matches = result?.manualMatches || []
+    return matches.filter(item => item.category === 'spec' || /torque|spec|capacity|fluid/i.test(item.title))
+  }, [result])
+
+  const diagramMatches = useMemo(() => {
+    const matches = result?.manualMatches || []
+    return matches.filter(item => item.category === 'diagram' || item.matchType === 'diagram_or_spec' || /wiring|diagram|schematic|connector|pinout/i.test(item.title))
+  }, [result])
+
   const runSearch = async (override?: string) => {
     const requested = (override || query).trim()
     const combined = [
@@ -159,6 +235,9 @@ export default function RepairPage() {
     setManualPage(null)
     setManualError('')
     setSelectedManualUrl('')
+    setActiveTab('Overview')
+    setEstimateMessage('')
+    setProcedureMessage('')
     try {
       const res = await fetch('/api/repair-search', {
         method: 'POST',
@@ -169,6 +248,7 @@ export default function RepairPage() {
       const data = await res.json().catch(() => ({}))
       if (!res.ok || !data.ok) throw new Error(data.error || 'Repair lookup failed')
       setResult(data.data)
+      setLockedTotal(data.data?.estimateDraft?.targetTotal ? String(data.data.estimateDraft.targetTotal) : '')
       const firstManual = (data.data?.sources || []).find((item: RepairSource) => isManualProvider(item))
       if (firstManual) void loadManual(firstManual.url, true)
       if (override) setQuery(override)
@@ -246,6 +326,99 @@ export default function RepairPage() {
     localStorage.setItem('alpha_repair_drafts', JSON.stringify(next))
   }
 
+  const estimateDraftForCurrentTotal = () => {
+    if (!result) return null
+    const total = Number(String(lockedTotal).replace(/[$,\s]/g, ''))
+    if (!Number.isFinite(total) || total <= 0) return result.estimateDraft
+    const priced = result.operationLines.filter(line => line.kind === 'labor')
+    const estimateLines = priced.length ? priced : result.operationLines.filter(line => line.kind !== 'parts')
+    const amounts = allocateTotal(total, estimateLines.length || 1)
+    let amountIndex = 0
+    return {
+      ...result.estimateDraft,
+      targetTotal: total,
+      totalLocked: true,
+      parts: [],
+      labors: estimateLines.map(line => ({
+        operation: line.label,
+        amount: amounts[amountIndex++],
+        pricing: 'flat',
+        source_status: line.sourceStatus,
+        risk: line.risk,
+      })),
+      notes: `${result.estimateDraft.notes}\nLocked total entered in Repair Workspace: $${total.toFixed(2)}.`,
+    }
+  }
+
+  const createEstimate = async () => {
+    if (!result) return
+    setCreatingEstimate(true)
+    setEstimateMessage('')
+    try {
+      const estimateDraft = estimateDraftForCurrentTotal()
+      const res = await fetch('/api/repair-estimate', {
+        method: 'POST',
+        headers: await getAuthJsonHeaders(),
+        body: JSON.stringify({
+          customerName: customerName.trim() || 'Customer',
+          customerEmail: customerEmail.trim(),
+          customerPhone: customerPhone.trim(),
+          vehicle: result.normalizedVehicle,
+          estimateDraft,
+          operationLines: result.operationLines,
+          notes: `Source links:\n${[...pinnedSources, ...result.sources.slice(0, 5)].map(item => `${item.provider}: ${item.title} ${item.url}`).join('\n')}`,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Estimate creation failed')
+      setEstimateMessage(`Created estimate ${data.data.docNumber}. Open Estimates to review and send.`)
+    } catch (err) {
+      setEstimateMessage(err instanceof Error ? err.message : 'Estimate creation failed')
+    } finally {
+      setCreatingEstimate(false)
+    }
+  }
+
+  const saveProcedureCard = async (status: 'draft' | 'verified') => {
+    if (!result) return
+    setSavingProcedure(true)
+    setProcedureMessage('')
+    try {
+      const title = `${vehicleText(result.normalizedVehicle)} - ${result.draft.operation}`
+      const res = await fetch('/api/repair-procedures', {
+        method: 'POST',
+        headers: await getAuthJsonHeaders(),
+        body: JSON.stringify({
+          title,
+          operation: result.draft.operation,
+          status,
+          confidence: status === 'verified' ? 'shop_verified' : 'source_linked',
+          vehicle: result.normalizedVehicle,
+          systems: result.safetyProfile.systems,
+          tools: procedureTools.split(/\r?\n|,/).map(item => item.trim()).filter(Boolean),
+          partsFluids: procedurePartsFluids.split(/\r?\n|,/).map(item => item.trim()).filter(Boolean),
+          safetyGates: result.safetyProfile.gates,
+          operationLines: result.operationLines,
+          sourceLinks: [...pinnedSources, ...result.sources.slice(0, 8), ...result.manualMatches.slice(0, 8)],
+          technicianNotes: procedureNotes,
+          approvedBy,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Save failed')
+      if (data.data?.migrationRequired) setProcedureMessage(data.data.message || 'Repair workspace database tables need migration before procedure cards can be saved.')
+      else setProcedureMessage(status === 'verified' ? 'Verified procedure card saved.' : 'Procedure draft saved.')
+    } catch (err) {
+      setProcedureMessage(err instanceof Error ? err.message : 'Save failed')
+    } finally {
+      setSavingProcedure(false)
+    }
+  }
+
+  const bookmarkImage = (image: { url: string; alt: string }) => {
+    setBookmarkedImages(prev => prev.some(item => item.url === image.url) ? prev : [image, ...prev].slice(0, 12))
+  }
+
   return (
     <div className="p-4 sm:p-6 lg:p-8 animate-fade-in space-y-5">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
@@ -271,6 +444,13 @@ export default function RepairPage() {
           <input className="form-input" placeholder="Make" value={vehicle.make || ''} onChange={e => setVehicle(v => ({ ...v, make: e.target.value }))} />
           <input className="form-input" placeholder="Model" value={vehicle.model || ''} onChange={e => setVehicle(v => ({ ...v, model: e.target.value }))} />
           <input className="form-input" placeholder="Engine / trim" value={vehicle.engine || ''} onChange={e => setVehicle(v => ({ ...v, engine: e.target.value }))} />
+        </div>
+        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-5">
+          <input className="form-input" placeholder="Trim" value={vehicle.trim || ''} onChange={e => setVehicle(v => ({ ...v, trim: e.target.value }))} />
+          <input className="form-input" placeholder="Drivetrain" value={vehicle.drivetrain || ''} onChange={e => setVehicle(v => ({ ...v, drivetrain: e.target.value }))} />
+          <input className="form-input" placeholder="Transmission" value={vehicle.transmission || ''} onChange={e => setVehicle(v => ({ ...v, transmission: e.target.value }))} />
+          <input className="form-input" placeholder="Brake package" value={vehicle.brakeSystem || ''} onChange={e => setVehicle(v => ({ ...v, brakeSystem: e.target.value }))} />
+          <input className="form-input" placeholder="ADAS / emissions notes" value={vehicle.adas || ''} onChange={e => setVehicle(v => ({ ...v, adas: e.target.value }))} />
         </div>
         <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[1fr_auto]">
           <input
@@ -301,26 +481,59 @@ export default function RepairPage() {
 
       {result && (
         <>
+          <section className="sticky top-0 z-10 rounded-lg border border-border bg-bg-card/95 p-4 shadow-xl backdrop-blur">
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`rounded-md border px-2 py-1 text-[11px] font-black ${result.workflow.vehicleMatch.confidence >= 70 ? 'border-green/30 bg-green/10 text-green' : 'border-amber/30 bg-amber/10 text-amber'}`}>
+                    {result.workflow.vehicleMatch.confidence}% vehicle confidence
+                  </span>
+                  <span className={`rounded-md border px-2 py-1 text-[11px] font-black ${riskTone(result.safetyProfile.level)}`}>
+                    {result.safetyProfile.level} risk
+                  </span>
+                  <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-black text-text-secondary">
+                    {result.operationLines.length} operation lines
+                  </span>
+                </div>
+                <h2 className="mt-2 text-xl font-black">{vehicleText(result.normalizedVehicle)}</h2>
+                <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-text-secondary md:grid-cols-4">
+                  <div><span className="text-text-muted">VIN:</span> {result.normalizedVehicle.vin || 'missing'}</div>
+                  <div><span className="text-text-muted">Drive:</span> {result.normalizedVehicle.drivetrain || 'missing'}</div>
+                  <div><span className="text-text-muted">Trans:</span> {result.normalizedVehicle.transmission || 'missing'}</div>
+                  <div><span className="text-text-muted">Brakes:</span> {result.normalizedVehicle.brakeSystem || 'missing'}</div>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                {Object.entries(result.coverageDashboard).filter(([key]) => !['indexedPages', 'indexedLinks', 'exactMatches', 'likelyMatches', 'diagrams', 'specs'].includes(key)).map(([key, value]) => (
+                  <div key={key} className={`rounded-md border px-2 py-2 font-black ${coverageTone(String(value))}`}>
+                    <div className="text-[10px] uppercase opacity-80">{key.replace(/([A-Z])/g, ' $1')}</div>
+                    <div>{String(value).replace(/_/g, ' ')}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
           <section className="grid grid-cols-1 gap-3 lg:grid-cols-4">
             <div className="rounded-lg border border-border bg-bg-card p-4">
               <div className="text-xs font-black uppercase text-text-muted">Vehicle</div>
               <div className="mt-2 text-lg font-black">{vehicleText(result.normalizedVehicle)}</div>
-              <div className="mt-2 text-xs text-text-secondary">{result.normalizedVehicle.vin || 'No VIN decoded'}</div>
+              <div className="mt-2 text-xs text-text-secondary">{result.workflow.vehicleMatch.label} - {result.workflow.vehicleMatch.confidence}%</div>
             </div>
             <div className="rounded-lg border border-border bg-bg-card p-4">
-              <div className="text-xs font-black uppercase text-text-muted">Sources</div>
-              <div className="mt-2 text-3xl font-black">{result.sources.length}</div>
-              <div className="mt-1 text-xs text-text-secondary">Free/public source cards</div>
+              <div className="text-xs font-black uppercase text-text-muted">Deep Matches</div>
+              <div className="mt-2 text-3xl font-black">{result.manualMatches.length}</div>
+              <div className="mt-1 text-xs text-text-secondary">{result.coverageDashboard.indexedPages} pages / {result.coverageDashboard.indexedLinks} links indexed</div>
             </div>
             <div className="rounded-lg border border-border bg-bg-card p-4">
-              <div className="text-xs font-black uppercase text-text-muted">Manual Coverage</div>
-              <div className="mt-2 text-3xl font-black">{(result.counts.manual || 0) + (result.counts.procedure || 0)}</div>
-              <div className="mt-1 text-xs text-text-secondary">LEMON/CHARM and guide links</div>
+              <div className="text-xs font-black uppercase text-text-muted">Exact Candidates</div>
+              <div className="mt-2 text-3xl font-black">{result.coverageDashboard.exactMatches}</div>
+              <div className="mt-1 text-xs text-text-secondary">{result.coverageDashboard.likelyMatches} likely sections</div>
             </div>
             <div className="rounded-lg border border-border bg-bg-card p-4">
-              <div className="text-xs font-black uppercase text-text-muted">Safety Status</div>
-              <div className="mt-2 text-sm font-black text-amber">Tech review required</div>
-              <div className="mt-1 text-xs text-text-secondary">No invented specs or procedures</div>
+              <div className="text-xs font-black uppercase text-text-muted">Estimate Readiness</div>
+              <div className="mt-2 text-sm font-black text-amber">{result.estimateDraft.totalLocked ? `Locked ${money(result.estimateDraft.targetTotal)}` : 'Needs price'}</div>
+              <div className="mt-1 text-xs text-text-secondary">No zero-dollar estimate saves</div>
             </div>
           </section>
 
@@ -391,7 +604,7 @@ export default function RepairPage() {
                       <div className="mt-1 text-[11px] text-text-muted">{confidenceText(item.confidence)}</div>
                       <div className="mt-3 flex flex-wrap gap-2">
                         {isManualProvider(item) ? (
-                          <button className="btn btn-secondary btn-sm" onClick={() => void loadManual(item.url)}>Preview</button>
+                          <button className="btn btn-secondary btn-sm" onClick={() => { setActiveTab('Procedure Links'); void loadManual(item.url) }}>Preview</button>
                         ) : (
                           <a className="btn btn-secondary btn-sm" href={item.url} target="_blank" rel="noreferrer">Open</a>
                         )}
@@ -409,83 +622,215 @@ export default function RepairPage() {
             <div className="space-y-4">
               <section className="rounded-lg border border-border bg-bg-card p-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="min-w-0">
-                    <div className="text-xs font-black uppercase text-blue">Manual Reader</div>
-                    <h2 className="mt-2 truncate text-xl font-black">{manualPage?.title || 'Select a LEMON or CHARM source'}</h2>
-                    <p className="mt-2 text-sm leading-6 text-text-secondary">
-                      {manualPage ? manualPage.warning : 'Preview source structure, follow breadcrumbs, and open exact procedure links without storing copied manual content.'}
-                    </p>
+                  <div>
+                    <div className="text-xs font-black uppercase text-blue">Repair Workspace</div>
+                    <h2 className="mt-2 text-xl font-black">{result.draft.operation}</h2>
+                    <p className="mt-2 text-sm leading-6 text-text-secondary">Use the tabs like a shop workflow: identify, verify sources, review safety, build the estimate, then save a shop-owned procedure card.</p>
                   </div>
-                  {manualPage && <a className="btn btn-secondary btn-sm shrink-0" href={manualPage.url} target="_blank" rel="noreferrer">Open Original</a>}
+                  <a className="btn btn-secondary btn-sm" href="/estimates">Open Estimates</a>
                 </div>
 
-                {manualLoading && <div className="mt-5 rounded-lg border border-border bg-bg-hover p-6 text-center text-sm text-text-muted">Loading manual preview...</div>}
-                {manualError && <div className="mt-5 rounded-lg border border-red/30 bg-red/10 p-4 text-sm text-red">{manualError}</div>}
+                <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
+                  {WORKSPACE_TABS.map(tab => (
+                    <button
+                      key={tab}
+                      className={`shrink-0 rounded-md border px-3 py-2 text-xs font-black transition-colors ${activeTab === tab ? 'border-blue/50 bg-blue/15 text-blue' : 'border-border bg-bg-hover text-text-secondary hover:border-blue/40'}`}
+                      onClick={() => setActiveTab(tab)}
+                    >
+                      {tab}
+                    </button>
+                  ))}
+                </div>
 
-                {manualPage && !manualLoading && (
-                  <div className="mt-5 space-y-4">
-                    {manualPage.breadcrumbs.length > 0 && (
-                      <div className="flex flex-wrap items-center gap-2 text-xs">
-                        {manualPage.breadcrumbs.map((crumb, index) => (
-                          <button key={`${crumb.url}-${index}`} className="rounded-md border border-border bg-bg-hover px-2 py-1 font-bold text-text-secondary hover:border-blue/40 hover:text-text-primary" onClick={() => void loadManual(crumb.url)}>
-                            {crumb.title}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
-                      <div className="space-y-3">
-                        {manualPage.sections.length === 0 && (
-                          <div className="rounded-lg border border-border bg-bg-hover p-6 text-sm text-text-muted">
-                            This source page is mostly a directory. Choose a child link from the manual tree.
-                          </div>
-                        )}
-                        {manualPage.sections.map(section => (
-                          <section key={`${section.heading}-${section.text.slice(0, 20)}`} className="rounded-lg border border-white/10 bg-white/[0.025] p-4">
-                            <h3 className="text-sm font-black">{section.heading}</h3>
-                            <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-text-secondary">{section.text}</p>
-                          </section>
-                        ))}
-                        {manualPage.images.length > 0 && (
-                          <div className="rounded-lg border border-white/10 bg-white/[0.025] p-4">
-                            <div className="mb-3 text-sm font-black">Images / Diagrams</div>
-                            <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-                              {manualPage.images.slice(0, 6).map(image => (
-                                <a key={image.url} href={image.url} target="_blank" rel="noreferrer" className="overflow-hidden rounded-lg border border-white/10 bg-bg-hover">
-                                  <img src={image.url} alt={image.alt} className="h-28 w-full object-contain" />
-                                </a>
-                              ))}
+                <div className="mt-5">
+                  {activeTab === 'Overview' && (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                        {result.operationLines.map(line => (
+                          <div key={line.id} className={`rounded-lg border p-4 ${riskTone(line.risk)}`}>
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <div className="text-sm font-black">{line.label}</div>
+                                <div className="mt-1 text-xs opacity-80">{line.system} / {line.sourceStatus.replace(/_/g, ' ')}</div>
+                              </div>
+                              <div className="text-right text-xs font-black">{money(line.estimateAmount)}</div>
                             </div>
                           </div>
-                        )}
+                        ))}
+                      </div>
+                      <div className="rounded-lg border border-border bg-bg-hover p-4">
+                        <div className="text-sm font-black">Shop Procedure Matches</div>
+                        <div className="mt-3 space-y-2">
+                          {(result.shopProcedures || []).length === 0 && <div className="text-sm text-text-muted">{result.coverageDashboard.shopProcedure === 'needs_database' ? 'Install the repair workspace migration to enable shop-owned procedure cards.' : 'No shop-owned procedure card exists for this vehicle/operation yet.'}</div>}
+                          {(result.shopProcedures || []).map(card => (
+                            <div key={card.id} className="rounded-md border border-white/10 bg-white/[0.025] p-3">
+                              <div className="text-sm font-black">{card.title}</div>
+                              <div className="mt-1 text-xs text-text-muted">{card.status} / {card.confidence}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {activeTab === 'Safety' && (
+                    <div className="space-y-3">
+                      <div className={`rounded-lg border p-4 ${riskTone(result.safetyProfile.level)}`}>
+                        <div className="text-sm font-black">{result.safetyProfile.level.toUpperCase()} safety profile</div>
+                        <div className="mt-2 text-xs opacity-90">Systems: {result.safetyProfile.systems.join(', ') || 'general repair'}</div>
+                      </div>
+                      {result.safetyProfile.gates.map(gate => (
+                        <div key={gate.id} className="rounded-lg border border-border bg-bg-hover p-4">
+                          <div className="text-sm font-black">{gate.label}</div>
+                          <div className="mt-2 text-sm leading-6 text-text-secondary">{gate.reason}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {activeTab === 'Tools' && (
+                    <div className="space-y-4">
+                      <div className="rounded-lg border border-border bg-bg-hover p-4 text-sm leading-6 text-text-secondary">Record shop-owned tool notes here. These notes are saved to the procedure card, not copied from a manual.</div>
+                      <textarea className="form-input min-h-40" placeholder="Lift/support points, scan tool, brake service mode, cooling pressure tester, pullers, torque wrench ranges..." value={procedureTools} onChange={e => setProcedureTools(e.target.value)} />
+                    </div>
+                  )}
+
+                  {activeTab === 'Parts/Fluids' && (
+                    <div className="space-y-4">
+                      <div className="rounded-lg border border-border bg-bg-hover p-4 text-sm leading-6 text-text-secondary">List parts, fluids, capacities to verify, and customer-supplied notes. Do not enter unverified prices here.</div>
+                      <textarea className="form-input min-h-40" placeholder="Pads/rotors, coolant type to verify, bulbs, reservoir, alignment, customer supplied parts..." value={procedurePartsFluids} onChange={e => setProcedurePartsFluids(e.target.value)} />
+                    </div>
+                  )}
+
+                  {activeTab === 'Procedure Links' && (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-1 gap-3">
+                        {procedureLinkMatches.slice(0, 8).map(match => (
+                          <div key={match.url} className={`rounded-lg border p-3 ${matchTone(match.matchType)}`}>
+                            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                              <div className="min-w-0">
+                                <div className="text-xs font-black uppercase">{match.provider} / {match.matchType.replace(/_/g, ' ')} / score {match.score}</div>
+                                <div className="mt-1 text-sm font-black">{match.title}</div>
+                                <div className="mt-1 text-xs opacity-80">{match.path.join(' > ')}</div>
+                              </div>
+                              <button className="btn btn-secondary btn-sm shrink-0" onClick={() => void loadManual(match.url)}>Preview</button>
+                            </div>
+                          </div>
+                        ))}
+                        {procedureLinkMatches.length === 0 && <div className="rounded-lg border border-border bg-bg-hover p-6 text-sm text-text-muted">No deep procedure match yet. Open a manual source from the Source Stack and use the manual tree.</div>}
                       </div>
 
-                      <aside className="rounded-lg border border-white/10 bg-white/[0.025] p-3">
-                        <div className="text-xs font-black uppercase text-text-muted">Manual Tree</div>
-                        <input
-                          className="form-input mt-3 h-9 text-xs"
-                          placeholder="Filter links..."
-                          value={readerFilter}
-                          onChange={e => setReaderFilter(e.target.value)}
-                        />
-                        <div className="mt-3 max-h-[560px] space-y-2 overflow-y-auto pr-1">
-                          {filteredManualLinks.map(link => (
-                            <button
-                              key={link.url}
-                              className="block w-full rounded-md border border-border bg-bg-card px-3 py-2 text-left text-xs font-bold text-text-secondary hover:border-blue/40 hover:text-text-primary"
-                              onClick={() => void loadManual(link.url)}
-                            >
-                              <span className="block truncate">{link.title}</span>
-                              <span className="mt-1 block text-[10px] uppercase text-text-muted">{link.category}{link.isDirectory ? ' / directory' : ''}</span>
+                      <div className="rounded-lg border border-border bg-bg-hover p-4">
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="min-w-0">
+                            <div className="text-xs font-black uppercase text-blue">Manual Reader</div>
+                            <h3 className="mt-2 truncate text-lg font-black">{manualPage?.title || 'Select a LEMON or CHARM source'}</h3>
+                            <p className="mt-2 text-sm leading-6 text-text-secondary">{manualPage ? manualPage.warning : 'Preview source structure, follow breadcrumbs, and open exact procedure links without storing copied manual content.'}</p>
+                          </div>
+                          {manualPage && <a className="btn btn-secondary btn-sm shrink-0" href={manualPage.url} target="_blank" rel="noreferrer">Open Original</a>}
+                        </div>
+                        {manualLoading && <div className="mt-5 rounded-lg border border-border bg-bg-card p-6 text-center text-sm text-text-muted">Loading manual preview...</div>}
+                        {manualError && <div className="mt-5 rounded-lg border border-red/30 bg-red/10 p-4 text-sm text-red">{manualError}</div>}
+                        {manualPage && !manualLoading && (
+                          <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
+                            <div className="space-y-3">
+                              {manualPage.sections.length === 0 && <div className="rounded-lg border border-border bg-bg-card p-6 text-sm text-text-muted">This source page is mostly a directory. Choose a child link from the manual tree.</div>}
+                              {manualPage.sections.map(section => (
+                                <section key={`${section.heading}-${section.text.slice(0, 20)}`} className="rounded-lg border border-white/10 bg-white/[0.025] p-4">
+                                  <h3 className="text-sm font-black">{section.heading}</h3>
+                                  <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-text-secondary">{section.text}</p>
+                                </section>
+                              ))}
+                            </div>
+                            <aside className="rounded-lg border border-white/10 bg-white/[0.025] p-3">
+                              <div className="text-xs font-black uppercase text-text-muted">Manual Tree</div>
+                              <input className="form-input mt-3 h-9 text-xs" placeholder="Filter links..." value={readerFilter} onChange={e => setReaderFilter(e.target.value)} />
+                              <div className="mt-3 max-h-[520px] space-y-2 overflow-y-auto pr-1">
+                                {filteredManualLinks.map(link => (
+                                  <button key={link.url} className="block w-full rounded-md border border-border bg-bg-card px-3 py-2 text-left text-xs font-bold text-text-secondary hover:border-blue/40 hover:text-text-primary" onClick={() => void loadManual(link.url)}>
+                                    <span className="block truncate">{link.title}</span>
+                                    <span className="mt-1 block text-[10px] uppercase text-text-muted">{link.category}{link.isDirectory ? ' / directory' : ''}</span>
+                                  </button>
+                                ))}
+                                {filteredManualLinks.length === 0 && <div className="text-sm text-text-muted">No child links on this page.</div>}
+                              </div>
+                            </aside>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {activeTab === 'Torque/Specs' && (
+                    <div className="space-y-3">
+                      {specMatches.length === 0 && <div className="rounded-lg border border-amber/30 bg-amber/10 p-4 text-sm text-amber">No verified spec page found yet. Open source manuals and verify specs manually before quoting or work.</div>}
+                      {specMatches.map(match => (
+                        <div key={match.url} className={`rounded-lg border p-3 ${matchTone(match.matchType)}`}>
+                          <div className="text-sm font-black">{match.title}</div>
+                          <div className="mt-1 text-xs opacity-80">{match.note}</div>
+                          <button className="btn btn-secondary btn-sm mt-3" onClick={() => void loadManual(match.url)}>Preview Source</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {activeTab === 'Wiring/Diagrams' && (
+                    <div className="space-y-4">
+                      {diagramMatches.map(match => (
+                        <div key={match.url} className={`rounded-lg border p-3 ${matchTone(match.matchType)}`}>
+                          <div className="text-sm font-black">{match.title}</div>
+                          <button className="btn btn-secondary btn-sm mt-3" onClick={() => void loadManual(match.url)}>Preview Diagram Source</button>
+                        </div>
+                      ))}
+                      {manualPage?.images.length ? (
+                        <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+                          {manualPage.images.slice(0, 12).map(image => (
+                            <button key={image.url} className="overflow-hidden rounded-lg border border-white/10 bg-bg-hover p-2" onClick={() => { setViewerImage(image); setImageScale(1) }}>
+                              <img src={image.url} alt={image.alt} className="h-32 w-full object-contain" />
+                              <span className="mt-2 block truncate text-left text-xs text-text-muted">{image.alt}</span>
                             </button>
                           ))}
-                          {filteredManualLinks.length === 0 && <div className="text-sm text-text-muted">No child links on this page.</div>}
                         </div>
-                      </aside>
+                      ) : <div className="rounded-lg border border-border bg-bg-hover p-6 text-sm text-text-muted">Open a manual page with images to use the diagram viewer.</div>}
                     </div>
-                  </div>
-                )}
+                  )}
+
+                  {activeTab === 'Estimate Builder' && (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                        <input className="form-input" placeholder="Customer name" value={customerName} onChange={e => setCustomerName(e.target.value)} />
+                        <input className="form-input" placeholder="Locked total, e.g. 430" value={lockedTotal} onChange={e => setLockedTotal(e.target.value)} />
+                        <input className="form-input" placeholder="Customer email" value={customerEmail} onChange={e => setCustomerEmail(e.target.value)} />
+                        <input className="form-input" placeholder="Customer phone" value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} />
+                      </div>
+                      <div className="rounded-lg border border-border bg-bg-hover p-4">
+                        <div className="text-sm font-black">Estimate Lines</div>
+                        <div className="mt-3 space-y-2">
+                          {(estimateDraftForCurrentTotal()?.labors || []).map((line, index) => (
+                            <div key={`${line.operation}-${index}`} className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-white/[0.025] px-3 py-2 text-sm">
+                              <span>{String(line.operation)}</span>
+                              <span className="font-black">{money(typeof line.amount === 'number' ? line.amount : null)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <button className="btn btn-primary" onClick={() => void createEstimate()} disabled={creatingEstimate || !lockedTotal.trim()}>{creatingEstimate ? 'Creating...' : 'Create Estimate Draft'}</button>
+                      {estimateMessage && <div className="rounded-lg border border-border bg-bg-hover p-3 text-sm text-text-secondary">{estimateMessage}</div>}
+                    </div>
+                  )}
+
+                  {activeTab === 'Shop Notes' && (
+                    <div className="space-y-4">
+                      <textarea className="form-input min-h-44" placeholder="Write your shop-owned procedure notes here. Do not paste protected manual text." value={procedureNotes} onChange={e => setProcedureNotes(e.target.value)} />
+                      <input className="form-input" placeholder="Approved by / technician" value={approvedBy} onChange={e => setApprovedBy(e.target.value)} />
+                      <div className="flex flex-wrap gap-2">
+                        <button className="btn btn-secondary" onClick={() => void saveProcedureCard('draft')} disabled={savingProcedure}>Save Draft Procedure</button>
+                        <button className="btn btn-primary" onClick={() => void saveProcedureCard('verified')} disabled={savingProcedure || !approvedBy.trim()}>Save Verified Procedure</button>
+                      </div>
+                      {procedureMessage && <div className="rounded-lg border border-border bg-bg-hover p-3 text-sm text-text-secondary">{procedureMessage}</div>}
+                    </div>
+                  )}
+                </div>
               </section>
             </div>
 
@@ -505,6 +850,19 @@ export default function RepairPage() {
               </section>
 
               <section className="rounded-lg border border-border bg-bg-card p-4">
+                <div className="text-xs font-black uppercase text-blue">Estimate Draft</div>
+                <div className="mt-3 space-y-2">
+                  {(estimateDraftForCurrentTotal()?.labors || []).slice(0, 6).map((line, index) => (
+                    <div key={`${line.operation}-${index}`} className="flex items-center justify-between gap-2 rounded-md border border-white/10 bg-white/[0.025] px-3 py-2 text-xs">
+                      <span className="truncate">{String(line.operation)}</span>
+                      <span className="font-black">{money(typeof line.amount === 'number' ? line.amount : null)}</span>
+                    </div>
+                  ))}
+                </div>
+                <button className="btn btn-primary btn-sm mt-3 w-full" onClick={() => setActiveTab('Estimate Builder')}>Open Estimate Builder</button>
+              </section>
+
+              <section className="rounded-lg border border-border bg-bg-card p-4">
                 <div className="text-xs font-black uppercase text-text-muted">Pinned Sources</div>
                 <div className="mt-3 space-y-2">
                   {pinnedSources.length === 0 && <div className="text-sm text-text-muted">Pin source cards that should follow the estimate or job.</div>}
@@ -516,6 +874,19 @@ export default function RepairPage() {
                       </div>
                       <div className="mt-2 line-clamp-2 text-sm font-black">{item.title}</div>
                     </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-lg border border-border bg-bg-card p-4">
+                <div className="text-xs font-black uppercase text-text-muted">Bookmarked Diagrams</div>
+                <div className="mt-3 space-y-2">
+                  {bookmarkedImages.length === 0 && <div className="text-sm text-text-muted">Open a manual image, then bookmark it for the procedure card.</div>}
+                  {bookmarkedImages.map(image => (
+                    <button key={image.url} className="flex w-full items-center gap-3 rounded-lg border border-white/10 bg-white/[0.025] p-2 text-left" onClick={() => { setViewerImage(image); setImageScale(1) }}>
+                      <img src={image.url} alt={image.alt} className="h-12 w-16 object-contain" />
+                      <span className="min-w-0 truncate text-xs font-bold text-text-secondary">{image.alt}</span>
+                    </button>
                   ))}
                 </div>
               </section>
@@ -562,6 +933,29 @@ export default function RepairPage() {
             </div>
           </div>
         </section>
+      )}
+
+      {viewerImage && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+          <div className="flex max-h-[92vh] w-full max-w-6xl flex-col rounded-lg border border-border bg-bg-card shadow-2xl">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-3">
+              <div className="min-w-0">
+                <div className="text-xs font-black uppercase text-blue">Diagram Viewer</div>
+                <div className="truncate text-sm font-bold">{viewerImage.alt}</div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button className="btn btn-secondary btn-sm" onClick={() => setImageScale(scale => Math.max(0.5, scale - 0.25))}>Zoom Out</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => setImageScale(scale => Math.min(3, scale + 0.25))}>Zoom In</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => bookmarkImage(viewerImage)}>Bookmark</button>
+                <a className="btn btn-secondary btn-sm" href={viewerImage.url} target="_blank" rel="noreferrer">Open Original</a>
+                <button className="btn btn-primary btn-sm" onClick={() => setViewerImage(null)}>Close</button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto p-6">
+              <img src={viewerImage.url} alt={viewerImage.alt} className="mx-auto max-w-none object-contain transition-transform" style={{ transform: `scale(${imageScale})`, transformOrigin: 'top center' }} />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

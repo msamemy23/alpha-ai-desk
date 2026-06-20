@@ -33,6 +33,22 @@ export async function GET(req: NextRequest) {
     "ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS signature_signed_at timestamptz",
     "ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS signature_signer_name text",
     "ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS line_items jsonb DEFAULT '[]'::jsonb",
+    "CREATE TABLE IF NOT EXISTS public.repair_procedure_cards (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), shop_id uuid NOT NULL REFERENCES public.shop_profiles(id) ON DELETE CASCADE, title text NOT NULL, status text NOT NULL DEFAULT 'draft', confidence text NOT NULL DEFAULT 'needs_review', vehicle_year text, vehicle_make text, vehicle_model text, vehicle_engine text, vehicle_trim text, vehicle_drivetrain text, vehicle_transmission text, vehicle_brake_system text, operation text NOT NULL, systems text[] DEFAULT '{}', tools text[] DEFAULT '{}', parts_fluids text[] DEFAULT '{}', safety_gates jsonb DEFAULT '[]'::jsonb, operation_lines jsonb DEFAULT '[]'::jsonb, source_links jsonb DEFAULT '[]'::jsonb, technician_notes text DEFAULT '', approved_by text, approved_at timestamptz, version integer NOT NULL DEFAULT 1, created_by uuid, updated_by uuid, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())",
+    "CREATE TABLE IF NOT EXISTS public.repair_research_sessions (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), shop_id uuid NOT NULL REFERENCES public.shop_profiles(id) ON DELETE CASCADE, user_id uuid, query text NOT NULL, normalized_vehicle jsonb DEFAULT '{}'::jsonb, coverage jsonb DEFAULT '{}'::jsonb, operation_lines jsonb DEFAULT '[]'::jsonb, safety_profile jsonb DEFAULT '{}'::jsonb, estimate_draft jsonb DEFAULT '{}'::jsonb, source_links jsonb DEFAULT '[]'::jsonb, manual_matches jsonb DEFAULT '[]'::jsonb, warnings text[] DEFAULT '{}', created_at timestamptz NOT NULL DEFAULT now())",
+    "CREATE INDEX IF NOT EXISTS idx_repair_procedure_cards_shop_vehicle ON public.repair_procedure_cards(shop_id, vehicle_year, vehicle_make, vehicle_model)",
+    "CREATE INDEX IF NOT EXISTS idx_repair_research_sessions_shop_created ON public.repair_research_sessions(shop_id, created_at DESC)",
+    "ALTER TABLE public.repair_procedure_cards ENABLE ROW LEVEL SECURITY",
+    "ALTER TABLE public.repair_research_sessions ENABLE ROW LEVEL SECURITY",
+    "DROP POLICY IF EXISTS repair_procedure_cards_shop_select ON public.repair_procedure_cards",
+    "CREATE POLICY repair_procedure_cards_shop_select ON public.repair_procedure_cards FOR SELECT USING (shop_id IN (SELECT id FROM public.shop_profiles WHERE user_id = auth.uid()))",
+    "DROP POLICY IF EXISTS repair_procedure_cards_shop_insert ON public.repair_procedure_cards",
+    "CREATE POLICY repair_procedure_cards_shop_insert ON public.repair_procedure_cards FOR INSERT WITH CHECK (shop_id IN (SELECT id FROM public.shop_profiles WHERE user_id = auth.uid()))",
+    "DROP POLICY IF EXISTS repair_procedure_cards_shop_update ON public.repair_procedure_cards",
+    "CREATE POLICY repair_procedure_cards_shop_update ON public.repair_procedure_cards FOR UPDATE USING (shop_id IN (SELECT id FROM public.shop_profiles WHERE user_id = auth.uid())) WITH CHECK (shop_id IN (SELECT id FROM public.shop_profiles WHERE user_id = auth.uid()))",
+    "DROP POLICY IF EXISTS repair_research_sessions_shop_select ON public.repair_research_sessions",
+    "CREATE POLICY repair_research_sessions_shop_select ON public.repair_research_sessions FOR SELECT USING (shop_id IN (SELECT id FROM public.shop_profiles WHERE user_id = auth.uid()))",
+    "DROP POLICY IF EXISTS repair_research_sessions_shop_insert ON public.repair_research_sessions",
+    "CREATE POLICY repair_research_sessions_shop_insert ON public.repair_research_sessions FOR INSERT WITH CHECK (shop_id IN (SELECT id FROM public.shop_profiles WHERE user_id = auth.uid()))",
   ]
 
   const results: Record<string, string> = {}

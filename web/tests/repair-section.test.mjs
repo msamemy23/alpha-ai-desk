@@ -35,11 +35,14 @@ function loadTsModule(relativePath, stubs = {}) {
 const repairSources = loadTsModule('../src/lib/repair/sources.ts')
 const repairRoute = readFileSync(new URL('../src/app/api/repair-search/route.ts', import.meta.url), 'utf8')
 const repairManualRoute = readFileSync(new URL('../src/app/api/repair-manual/route.ts', import.meta.url), 'utf8')
+const repairProcedureRoute = readFileSync(new URL('../src/app/api/repair-procedures/route.ts', import.meta.url), 'utf8')
+const repairEstimateRoute = readFileSync(new URL('../src/app/api/repair-estimate/route.ts', import.meta.url), 'utf8')
 const repairPage = readFileSync(new URL('../src/app/(app)/repair/page.tsx', import.meta.url), 'utf8')
 const layout = readFileSync(new URL('../src/app/(app)/layout.tsx', import.meta.url), 'utf8')
 const capabilities = readFileSync(new URL('../src/lib/ai/capabilities.ts', import.meta.url), 'utf8')
 const router = readFileSync(new URL('../src/lib/ai/router.ts', import.meta.url), 'utf8')
 const aiPage = readFileSync(new URL('../src/app/(app)/ai/page.tsx', import.meta.url), 'utf8')
+const repairMigration = readFileSync(new URL('../../supabase/migrations/20260620_repair_workspace.sql', import.meta.url), 'utf8')
 
 test('repair query parser normalizes shorthand vehicle and DTC requests', () => {
   const parsed = repairSources.parseRepairQuery('find P0420 diagnostic procedure for 04 civic')
@@ -85,6 +88,24 @@ test('repair search returns workflow coverage and safety gates', async () => {
   assert.equal(result.workflow.coverage.hasOfficialData, true)
   assert.match(result.workflow.safetyGates.join(' '), /No torque specs/i)
   assert.match(result.draft.checklist.join(' '), /alignment/i)
+  assert.ok(Array.isArray(result.manualMatches))
+  assert.ok(result.operationLines.some((line) => /control arms/i.test(line.label)))
+  assert.equal(result.safetyProfile.level, 'elevated')
+  assert.equal(typeof result.coverageDashboard.indexedPages, 'number')
+})
+
+test('repair estimate draft itemizes locked totals and does not confuse shorthand years for money', async () => {
+  const quote = await repairSources.searchRepairSources('2018 Jeep Wrangler four brakes coolant tank turn signal bulbs total $430')
+  assert.equal(quote.estimateDraft.targetTotal, 430)
+  assert.equal(quote.estimateDraft.totalLocked, true)
+  assert.match(quote.operationLines.map((line) => line.label).join(' '), /Four wheel brake service/i)
+  assert.match(quote.operationLines.map((line) => line.label).join(' '), /coolant reservoir/i)
+  assert.match(quote.operationLines.map((line) => line.label).join(' '), /turn signal/i)
+  assert.equal(Math.round(quote.estimateDraft.labors.reduce((sum, line) => sum + Number(line.amount || 0), 0) * 100) / 100, 430)
+
+  const lookup = await repairSources.searchRepairSources('open comet browser and search for brakes for 04 civic')
+  assert.equal(lookup.normalizedVehicle.year, '2004')
+  assert.equal(lookup.estimateDraft.targetTotal, null)
 })
 
 test('repair search API is authenticated, rate limited, audited, and source-backed', () => {
@@ -104,7 +125,31 @@ test('repair manual preview API is authenticated, rate limited, audited, and sou
   assert.match(repairManualRoute, /Only CHARM and LEMON/)
 })
 
-test('repair UI exposes workflow, manual reader, source stack, saved drafts, and estimate handoff', () => {
+test('repair procedure and estimate APIs are authenticated, audited, and migration-aware', () => {
+  assert.match(repairProcedureRoute, /getAuthedShop/)
+  assert.match(repairProcedureRoute, /checkRateLimit/)
+  assert.match(repairProcedureRoute, /writeAuditLog/)
+  assert.match(repairProcedureRoute, /repair\.procedure_card\.create/)
+  assert.match(repairProcedureRoute, /migrationRequired/)
+  assert.match(repairProcedureRoute, /repair_procedure_cards/)
+
+  assert.match(repairEstimateRoute, /getAuthedShop/)
+  assert.match(repairEstimateRoute, /checkRateLimit/)
+  assert.match(repairEstimateRoute, /writeAuditLog/)
+  assert.match(repairEstimateRoute, /repair\.estimate\.create/)
+  assert.match(repairEstimateRoute, /documents/)
+  assert.match(repairEstimateRoute, /Enter a locked total or verified line pricing/)
+})
+
+test('repair workspace migration defines shop-scoped procedure cards and sessions', () => {
+  assert.match(repairMigration, /repair_procedure_cards/)
+  assert.match(repairMigration, /repair_research_sessions/)
+  assert.match(repairMigration, /shop_id/)
+  assert.match(repairMigration, /enable row level security/i)
+  assert.match(repairMigration, /shop_profiles/)
+})
+
+test('repair UI exposes workflow tabs, manual reader, source stack, saved drafts, and estimate handoff', () => {
   assert.match(layout, /href: '\/repair'/)
   assert.match(repairPage, /LEMON/)
   assert.match(repairPage, /CHARM/)
@@ -113,9 +158,14 @@ test('repair UI exposes workflow, manual reader, source stack, saved drafts, and
   assert.match(repairPage, /Source Stack/)
   assert.match(repairPage, /Manual Reader/)
   assert.match(repairPage, /Manual Tree/)
+  assert.match(repairPage, /Estimate Builder/)
+  assert.match(repairPage, /Shop Notes/)
+  assert.match(repairPage, /Diagram Viewer/)
   assert.match(repairPage, /Pinned Sources/)
   assert.match(repairPage, /Safety Gates/)
   assert.match(repairPage, /\/api\/repair-manual/)
+  assert.match(repairPage, /\/api\/repair-estimate/)
+  assert.match(repairPage, /\/api\/repair-procedures/)
   assert.match(repairPage, /Technician verification required/)
   assert.match(repairPage, /alpha_repair_drafts/)
   assert.match(repairPage, /Build Estimate Draft/)
@@ -129,5 +179,7 @@ test('repair agent, tool, skill, router, and chat handoff are registered', () =>
   assert.match(router, /REPAIR_TERMS/)
   assert.match(aiPage, /route\.intent === 'repair_lookup'/)
   assert.match(aiPage, /\/api\/repair-search/)
+  assert.match(aiPage, /Deep manual matches/)
+  assert.match(capabilities, /Repair Workspace/)
   assert.match(aiPage, /I will not invent torque specs/)
 })

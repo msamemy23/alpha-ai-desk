@@ -8,6 +8,14 @@ export interface RepairVehicle {
   make?: string
   model?: string
   engine?: string
+  trim?: string
+  drivetrain?: string
+  transmission?: string
+  fuel?: string
+  bodyClass?: string
+  brakeSystem?: string
+  adas?: string
+  emissions?: string
 }
 
 export interface RepairSource {
@@ -38,6 +46,12 @@ export interface RepairSearchResult {
   query: string
   normalizedVehicle: RepairVehicle
   sources: RepairSource[]
+  shopProcedures?: RepairShopProcedureSummary[]
+  manualMatches: RepairManualMatch[]
+  operationLines: RepairOperationLine[]
+  estimateDraft: RepairEstimateDraft
+  safetyProfile: RepairSafetyProfile
+  coverageDashboard: RepairCoverageDashboard
   draft: RepairDraft
   counts: Record<RepairCategory, number>
   workflow: RepairWorkflow
@@ -56,15 +70,89 @@ export interface RepairWorkflow {
     level: 'exact_vin' | 'year_make_model' | 'partial' | 'unknown'
     label: string
     missing: string[]
+    confidence: number
   }
   coverage: {
     hasManual: boolean
     hasOfficialData: boolean
     hasProcedureCandidate: boolean
     hasEstimateReadyDraft: boolean
+    hasExactProcedureMatch: boolean
+    hasShopProcedure: boolean
   }
   steps: RepairWorkflowStep[]
   safetyGates: string[]
+}
+
+export interface RepairManualMatch {
+  id: string
+  title: string
+  url: string
+  provider: 'LEMON' | 'CHARM'
+  path: string[]
+  category: RepairCategory
+  matchType: 'exact_procedure' | 'likely_section' | 'diagram_or_spec' | 'general_manual'
+  score: number
+  hasImages: boolean
+  sourceStatus: 'indexed' | 'source_link_only'
+  note: string
+}
+
+export interface RepairOperationLine {
+  id: string
+  label: string
+  system: string
+  kind: 'labor' | 'inspection' | 'parts' | 'fluid'
+  side?: 'front' | 'rear' | 'left' | 'right' | 'both' | 'all'
+  quantity: number
+  sourceStatus: 'needs_source' | 'source_candidate' | 'source_verified'
+  risk: 'standard' | 'elevated' | 'critical'
+  estimateAmount: number | null
+}
+
+export interface RepairEstimateDraft {
+  targetTotal: number | null
+  totalLocked: boolean
+  parts: Array<Record<string, unknown>>
+  labors: Array<Record<string, unknown>>
+  notes: string
+  warnings: string[]
+}
+
+export interface RepairSafetyProfile {
+  level: 'standard' | 'elevated' | 'critical'
+  systems: string[]
+  technicianSignoffRequired: boolean
+  gates: Array<{
+    id: string
+    label: string
+    reason: string
+    required: boolean
+  }>
+}
+
+export interface RepairCoverageDashboard {
+  lemonCharmManual: 'found' | 'missing'
+  nhtsaRecalls: 'found' | 'not_found' | 'unknown'
+  tsbCommunications: 'link_ready'
+  oemOneStop: 'link_ready'
+  autoZoneGuide: 'link_ready'
+  shopProcedure: 'found' | 'not_found' | 'needs_database'
+  indexedPages: number
+  indexedLinks: number
+  exactMatches: number
+  likelyMatches: number
+  diagrams: number
+  specs: number
+}
+
+export interface RepairShopProcedureSummary {
+  id: string
+  title: string
+  operation: string
+  status: string
+  confidence: string
+  updatedAt?: string
 }
 
 export interface RepairManualLink {
@@ -224,13 +312,21 @@ export function parseRepairQuery(input: string, fallback: Partial<RepairVehicle>
     make: canonicalMakeForManuals(make),
     model: normalizeModel(model),
     engine: fallback.engine,
+    trim: fallback.trim,
+    drivetrain: fallback.drivetrain,
+    transmission: fallback.transmission,
+    fuel: fallback.fuel,
+    bodyClass: fallback.bodyClass,
+    brakeSystem: fallback.brakeSystem,
+    adas: fallback.adas,
+    emissions: fallback.emissions,
     component: component || dtc || input,
     dtc,
   }
 }
 
 export function vehicleLabel(vehicle: RepairVehicle) {
-  return [vehicle.year, canonicalMakeForNhtsa(vehicle.make), vehicle.model, vehicle.engine].filter(Boolean).join(' ').trim()
+  return [vehicle.year, canonicalMakeForNhtsa(vehicle.make), vehicle.model, vehicle.trim, vehicle.engine].filter(Boolean).join(' ').trim()
 }
 
 function sourceId(provider: string, url: string) {
@@ -262,11 +358,11 @@ function source(
   }
 }
 
-async function fetchText(url: string) {
+async function fetchText(url: string, timeoutMs = 12000) {
   try {
     const res = await fetch(url, {
       headers: { 'user-agent': 'AlphaAIRepairResearch/1.0' },
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(timeoutMs),
     })
     if (!res.ok) return ''
     return await res.text()
@@ -443,10 +539,10 @@ function extractReaderSections(html: string, url: string): RepairManualSection[]
     .slice(0, 8)
 }
 
-export async function readRepairManualPage(url: string): Promise<RepairManualPage> {
+export async function readRepairManualPage(url: string, timeoutMs = 12000): Promise<RepairManualPage> {
   const normalized = normalizeManualUrl(url)
   if (!normalized) throw new Error('Only CHARM and LEMON manual URLs are supported')
-  const html = await fetchText(normalized.url)
+  const html = await fetchText(normalized.url, timeoutMs)
   if (!html) throw new Error('Manual source did not return readable content')
   return {
     provider: normalized.provider,
@@ -556,7 +652,17 @@ async function decodeVin(vin?: string): Promise<Partial<RepairVehicle>> {
       year: row.ModelYear || '',
       make: row.Make || '',
       model: row.Model || '',
-      engine: row.DisplacementL ? `${row.DisplacementL}L` : '',
+      engine: [row.DisplacementL ? `${row.DisplacementL}L` : '', row.EngineCylinders ? `${row.EngineCylinders} cyl` : '', row.EngineConfiguration || ''].filter(Boolean).join(' ').trim(),
+      trim: row.Trim || row.Series || '',
+      drivetrain: row.DriveType || '',
+      transmission: row.TransmissionStyle || row.TransmissionSpeeds ? [row.TransmissionStyle, row.TransmissionSpeeds ? `${row.TransmissionSpeeds} speed` : ''].filter(Boolean).join(' ') : '',
+      fuel: row.FuelTypePrimary || '',
+      bodyClass: row.BodyClass || '',
+      brakeSystem: row.BrakeSystemDesc || row.BrakeSystemType || '',
+      adas: [row.AdaptiveCruiseControl, row.LaneDepartureWarning, row.LaneKeepingAssistance, row.ForwardCollisionWarning]
+        .filter(value => value && value !== 'Not Applicable')
+        .join(', '),
+      emissions: row.OtherEngineInfo || '',
     }
   } catch {
     return {}
@@ -720,36 +826,343 @@ function countCategories(sources: RepairSource[]) {
   return counts
 }
 
-function buildWorkflow(vehicle: RepairVehicle, sources: RepairSource[], draft: RepairDraft): RepairWorkflow {
+function extractTargetTotal(text: string): number | null {
+  const strongPattern = /(?:make\s+(?:the\s+)?(?:total|price)|(?:total|price)\s*(?:to\s*be|for|is|=)?|flat(?:\s*rate)?|for\s+everything|everything\s+for|all\s+in|out\s+the\s+door|parts\s+and\s+labor)\D{0,30}\$?\s*([0-9][0-9,]*(?:\.\d{1,2})?)/gi
+  const strongMatches = [...text.matchAll(strongPattern)]
+    .map(match => Number(String(match[1]).replace(/[$,\s]/g, '')))
+    .filter(value => Number.isFinite(value) && value > 0 && value < 100000)
+  if (strongMatches.length) return Math.round(strongMatches[strongMatches.length - 1] * 100) / 100
+
+  const hasDocumentIntent = /\b(invoice|estimate|quote|total|price|flat|parts\s+and\s+labor|everything|all\s+in|out\s+the\s+door)\b/i.test(text)
+  if (hasDocumentIntent) {
+    const forAmountMatches = [...text.matchAll(/\bfor\s+\$?\s*([0-9][0-9,]*(?:\.\d{1,2})?)\b/gi)]
+      .map(match => Number(String(match[1]).replace(/[$,\s]/g, '')))
+      .filter(value => Number.isFinite(value) && value > 0 && value < 100000)
+    if (forAmountMatches.length) return Math.round(forAmountMatches[forAmountMatches.length - 1] * 100) / 100
+  }
+  return null
+}
+
+function allocateMoney(total: number, count: number) {
+  const lineCount = Math.max(1, count)
+  const cents = Math.round(total * 100)
+  const base = Math.floor(cents / lineCount)
+  const remainder = cents - base * lineCount
+  return Array.from({ length: lineCount }, (_unused, index) =>
+    Math.round((base + (index < remainder ? 1 : 0))) / 100
+  )
+}
+
+function operationKey(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+}
+
+function operationLinesFor(query: string, component: string, manualMatches: RepairManualMatch[]): RepairOperationLine[] {
+  const text = `${query} ${component}`.toLowerCase()
+  const lines: RepairOperationLine[] = []
+  const add = (label: string, system: string, risk: RepairOperationLine['risk'], side: RepairOperationLine['side'] | undefined = undefined, quantity = 1, kind: RepairOperationLine['kind'] = 'labor') => {
+    const id = operationKey(label)
+    if (lines.some(line => line.id === id)) return
+    lines.push({
+      id,
+      label,
+      system,
+      kind,
+      side,
+      quantity,
+      sourceStatus: manualMatches.some(match => match.matchType === 'exact_procedure') ? 'source_candidate' : 'needs_source',
+      risk,
+      estimateAmount: null,
+    })
+  }
+
+  if (/(?:\b(?:all\s*)?(?:4|four)\b.{0,28}\bbrakes?\b|\bbrakes?\b.{0,28}\b(?:all\s*)?(?:4|four)\b|all\s+four\s+brakes?)/i.test(text)) {
+    add('Four wheel brake service', 'brakes', 'elevated', 'all', 4)
+  } else {
+    if (/\bfront\b.{0,24}\bbrakes?\b|\bbrakes?\b.{0,24}\bfront\b/i.test(text)) add('Front brake service', 'brakes', 'elevated', 'front', 2)
+    if (/\brear\b.{0,24}\bbrakes?\b|\bbrakes?\b.{0,24}\brear\b/i.test(text)) add('Rear brake service', 'brakes', 'elevated', 'rear', 2)
+    if (!lines.some(line => line.system === 'brakes') && /\bbrakes?\b|rotors?|pads?|calipers?\b/i.test(text)) add('Brake service', 'brakes', 'elevated')
+  }
+
+  if (/\blower\s+control\s+arms?\b/i.test(text)) add('Replace lower control arms', 'suspension/steering', 'elevated', /\bboth\b|left.*right|right.*left/i.test(text) ? 'both' : undefined, /\bboth\b|left.*right|right.*left/i.test(text) ? 2 : 1)
+  if (/\bupper\s+control\s+arms?\b/i.test(text)) add('Replace upper control arms', 'suspension/steering', 'elevated', /\bboth\b|left.*right|right.*left/i.test(text) ? 'both' : undefined, /\bboth\b|left.*right|right.*left/i.test(text) ? 2 : 1)
+  if (/\bstruts?\b/i.test(text)) add('Replace struts', 'suspension/steering', 'elevated')
+  if (/\bshocks?\b/i.test(text)) add('Replace shocks', 'suspension/steering', 'elevated')
+  if (/\bsway\s+bar\s+links?\b/i.test(text)) add('Replace sway bar links', 'suspension/steering', 'elevated', /\bboth\b|left.*right|right.*left/i.test(text) ? 'both' : undefined, /\bboth\b|left.*right|right.*left/i.test(text) ? 2 : 1)
+  if (/\bcoolant\s+(?:tank|reservoir|bottle)\b/i.test(text)) add('Replace coolant reservoir', 'cooling', 'elevated')
+  if (/\bturn(?:ing)?\s+signal(?:\s+light)?\s+bulbs?\b/i.test(text)) add('Replace turn signal bulbs', 'lighting/electrical', 'standard')
+  if (/\bthermostat\b/i.test(text)) add('Replace thermostat', 'cooling', 'elevated')
+  if (/\bradiator\b/i.test(text)) add('Replace radiator', 'cooling', 'elevated')
+  if (/\bwater\s+pump\b/i.test(text)) add('Replace water pump', 'cooling', 'elevated')
+  if (/\balternator\b/i.test(text)) add('Replace alternator', 'charging/electrical', 'standard')
+  if (/\bstarter\b/i.test(text)) add('Replace starter', 'starting/electrical', 'standard')
+  if (/\bair\s*bag|srs\b/i.test(text)) add('SRS/airbag diagnosis or repair', 'airbag/SRS', 'critical')
+  if (/\badas|calibration|radar|camera\b/i.test(text)) add('ADAS inspection/calibration', 'ADAS', 'critical')
+  if (/\bfuel\s+(pump|line|injector|tank)\b/i.test(text)) add('Fuel system repair', 'fuel', 'critical')
+  if (/\bhybrid|ev|high\s+voltage\b/i.test(text)) add('High-voltage system repair', 'hybrid/EV', 'critical')
+  if (/\b[pcbu][0-9a-f]{4}\b/i.test(text)) add('Diagnostic flow and pinpoint testing', 'diagnostics', 'standard', undefined, 1, 'inspection')
+
+  if (!lines.length) add(component || query, inferCategory(component) === 'spec' ? 'specifications' : 'general repair', 'standard')
+  return lines.slice(0, 10)
+}
+
+function buildSafetyProfile(operations: RepairOperationLine[], component: string): RepairSafetyProfile {
+  const systems = Array.from(new Set(operations.map(line => line.system)))
+  const critical = operations.some(line => line.risk === 'critical')
+  const elevated = operations.some(line => line.risk === 'elevated')
+  const level: RepairSafetyProfile['level'] = critical ? 'critical' : elevated ? 'elevated' : 'standard'
+  const gates: RepairSafetyProfile['gates'] = [
+    {
+      id: 'vehicle-fitment',
+      label: 'Exact vehicle fitment verified',
+      reason: 'Wrong engine, trim, drivetrain, brake package, or ADAS package can change procedure, parts, and safety steps.',
+      required: true,
+    },
+    {
+      id: 'source-procedure',
+      label: 'Source procedure opened',
+      reason: 'The app can point to sources, but a technician must verify the actual warnings, steps, and specs.',
+      required: true,
+    },
+    {
+      id: 'no-invented-specs',
+      label: 'No torque specs or invented procedures',
+      reason: 'Torque specs, wiring pinouts, diagnostic steps, labor times, capacities, and safety procedures are not final until source-verified.',
+      required: true,
+    },
+  ]
+  if (level !== 'standard') {
+    gates.push({
+      id: 'safety-system',
+      label: `${level === 'critical' ? 'Critical' : 'Elevated'} safety system signoff`,
+      reason: `${systems.join(', ')} work can affect braking, steering, cooling, fuel, airbags, ADAS, or vehicle support safety.`,
+      required: true,
+    })
+  }
+  if (/\btorque|spec|wiring|diagram|pinout|capacity|fluid\b/i.test(component)) {
+    gates.push({
+      id: 'spec-no-copy',
+      label: 'Specs verified from source',
+      reason: 'Do not invent or copy protected spec/procedure text into customer documents.',
+      required: true,
+    })
+  }
+  return { level, systems, technicianSignoffRequired: true, gates }
+}
+
+function tokenizeForManualSearch(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/\b(?:front|rear|left|right|both|all|replace|repair|service|procedure|manual|find|look|up|for|the|and|a|an|of|to|with)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(/\s+/)
+    .filter(token => token.length >= 3)
+}
+
+function scoreManualText(value: string, tokens: string[], category: RepairCategory) {
+  const text = value.toLowerCase().replace(/[-_]+/g, ' ')
+  let score = 0
+  for (const token of tokens) {
+    if (text.includes(token)) score += token.length > 5 ? 8 : 5
+  }
+  if (category === 'diagram' || category === 'spec') score += 4
+  if (/\b(remove|install|replacement|diagnosis|testing|inspection|adjustment|component|brake|suspension|cooling|electrical)\b/i.test(text)) score += 3
+  return score
+}
+
+function manualMatchType(score: number, tokenCount: number, category: RepairCategory): RepairManualMatch['matchType'] {
+  if ((category === 'diagram' || category === 'spec') && score >= 6) return 'diagram_or_spec'
+  if (tokenCount > 0 && score >= Math.max(10, tokenCount * 5)) return 'exact_procedure'
+  if (score >= 5) return 'likely_section'
+  return 'general_manual'
+}
+
+async function deepSearchManualMatches(vehicle: RepairVehicle, component: string, sources: RepairSource[]) {
+  const manualSources = sources
+    .filter(item => item.provider === 'LEMON' || item.provider === 'CHARM')
+    .slice(0, 3)
+  const tokens = tokenizeForManualSearch(`${vehicleLabel(vehicle)} ${component}`)
+  const queue = manualSources.map(item => item.url)
+  const visited = new Set<string>()
+  const matches: RepairManualMatch[] = []
+  let indexedPages = 0
+  let indexedLinks = 0
+
+  while (queue.length && indexedPages < 8) {
+    const url = queue.shift()!
+    if (visited.has(url)) continue
+    visited.add(url)
+    try {
+      const page = await readRepairManualPage(url, 5000)
+      indexedPages += 1
+      const path = [...page.breadcrumbs.map(link => link.title), page.title].filter(Boolean).slice(-6)
+      const pageScore = scoreManualText(`${page.title} ${decodeURIComponent(page.url)}`, tokens, inferCategory(`${page.title} ${component}`))
+      if (pageScore > 0 || matches.length < 2) {
+        const category = inferCategory(`${page.title} ${component}`)
+        matches.push({
+          id: sourceId(page.provider, page.url),
+          title: page.title,
+          url: page.url,
+          provider: page.provider,
+          path,
+          category,
+          matchType: manualMatchType(pageScore, tokens.length, category),
+          score: pageScore,
+          hasImages: page.images.length > 0,
+          sourceStatus: 'indexed',
+          note: 'Source title/path indexed. Open original source and verify exact procedure, warnings, and specs before use.',
+        })
+      }
+
+      const scoredLinks = page.links
+        .map(link => ({
+          link,
+          score: scoreManualText(`${link.title} ${decodeURIComponent(link.url)}`, tokens, link.category),
+        }))
+        .sort((a, b) => b.score - a.score)
+      indexedLinks += page.links.length
+
+      for (const { link, score } of scoredLinks.slice(0, 10)) {
+        const matchType = manualMatchType(score, tokens.length, link.category)
+        if (score > 0 || link.category === 'diagram' || link.category === 'spec') {
+          matches.push({
+            id: sourceId(link.provider, link.url),
+            title: link.title,
+            url: link.url,
+            provider: link.provider,
+            path: [...path, link.title].slice(-6),
+            category: link.category,
+            matchType,
+            score,
+            hasImages: false,
+            sourceStatus: 'source_link_only',
+            note: 'Matching link found in manual tree. Open it to verify if it is the exact procedure.',
+          })
+        }
+        if (score >= 5 && !visited.has(link.url) && queue.length < 10) queue.push(link.url)
+      }
+    } catch {
+      // Keep search resilient; source cards still show the original link.
+    }
+  }
+
+  const deduped = dedupeManualMatches(matches)
+    .sort((a, b) => b.score - a.score || Number(b.hasImages) - Number(a.hasImages))
+    .slice(0, 18)
+  return { matches: deduped, indexedPages, indexedLinks }
+}
+
+function dedupeManualMatches(items: RepairManualMatch[]) {
+  const seen = new Set<string>()
+  return items.filter(item => {
+    if (seen.has(item.url)) return false
+    seen.add(item.url)
+    return true
+  })
+}
+
+function buildEstimateDraft(query: string, operations: RepairOperationLine[], vehicle: RepairVehicle): RepairEstimateDraft {
+  const targetTotal = extractTargetTotal(query)
+  const pricedOperations = operations.filter(line => line.kind === 'labor')
+  const allocations = targetTotal !== null ? allocateMoney(targetTotal, pricedOperations.length || operations.length || 1) : []
+  let allocationIndex = 0
+  const labors = operations
+    .filter(line => line.kind !== 'parts')
+    .map(line => {
+      const amount = targetTotal !== null && line.kind === 'labor' ? allocations[allocationIndex++] : null
+      return {
+        operation: line.label,
+        ...(amount !== null ? { amount, pricing: 'flat' } : { hours: 0, rate: 0, pricing: 'needs_price' }),
+        source_status: line.sourceStatus,
+        risk: line.risk,
+      }
+    })
+  const notes = [
+    `Repair research estimate draft for ${vehicleLabel(vehicle) || 'selected vehicle'}.`,
+    targetTotal !== null ? `Locked customer-facing total requested: $${targetTotal.toFixed(2)}. No tax applied until reviewed.` : 'No price supplied yet. Enter a locked total or verified labor/part pricing before saving.',
+    'Technician must verify source procedures, warnings, torque/specs, and labor before work starts.',
+  ].join('\n')
+  return {
+    targetTotal,
+    totalLocked: targetTotal !== null,
+    parts: [],
+    labors,
+    notes,
+    warnings: targetTotal === null
+      ? ['No total was provided, so the draft is not estimate-ready yet.']
+      : ['Locked total is allocated across labor/service lines without inventing part prices.'],
+  }
+}
+
+function vehicleConfidence(vehicle: RepairVehicle) {
+  const fields = [vehicle.vin, vehicle.year, vehicle.make, vehicle.model, vehicle.engine, vehicle.trim, vehicle.drivetrain, vehicle.transmission, vehicle.brakeSystem]
+  const present = fields.filter(Boolean).length
+  return Math.min(100, Math.round((present / fields.length) * 100))
+}
+
+function buildCoverageDashboard(sources: RepairSource[], manualStats: { indexedPages: number; indexedLinks: number }, manualMatches: RepairManualMatch[]): RepairCoverageDashboard {
+  const recallCount = sources.filter(item => item.provider === 'NHTSA' && item.category === 'recall').length
+  return {
+    lemonCharmManual: sources.some(item => item.provider === 'LEMON' || item.provider === 'CHARM') ? 'found' : 'missing',
+    nhtsaRecalls: recallCount > 0 ? 'found' : sources.some(item => item.provider === 'NHTSA') ? 'not_found' : 'unknown',
+    tsbCommunications: 'link_ready',
+    oemOneStop: 'link_ready',
+    autoZoneGuide: 'link_ready',
+    shopProcedure: 'needs_database',
+    indexedPages: manualStats.indexedPages,
+    indexedLinks: manualStats.indexedLinks,
+    exactMatches: manualMatches.filter(item => item.matchType === 'exact_procedure').length,
+    likelyMatches: manualMatches.filter(item => item.matchType === 'likely_section').length,
+    diagrams: manualMatches.filter(item => item.category === 'diagram' || item.matchType === 'diagram_or_spec').length,
+    specs: manualMatches.filter(item => item.category === 'spec').length,
+  }
+}
+
+function buildWorkflow(
+  vehicle: RepairVehicle,
+  sources: RepairSource[],
+  draft: RepairDraft,
+  manualMatches: RepairManualMatch[],
+  operations: RepairOperationLine[],
+  safetyProfile: RepairSafetyProfile,
+  coverageDashboard: RepairCoverageDashboard,
+): RepairWorkflow {
   const missing = [
     !vehicle.vin ? 'VIN' : '',
     !vehicle.year ? 'year' : '',
     !vehicle.make ? 'make' : '',
     !vehicle.model ? 'model' : '',
     !vehicle.engine ? 'engine/trim' : '',
+    !vehicle.drivetrain ? 'drivetrain' : '',
+    !vehicle.transmission ? 'transmission' : '',
+    !vehicle.brakeSystem && operations.some(item => item.system === 'brakes') ? 'brake package' : '',
   ].filter(Boolean)
+  const confidence = vehicleConfidence(vehicle)
   const vehicleMatch = vehicle.vin && !missing.includes('year') && !missing.includes('make') && !missing.includes('model')
-    ? { level: 'exact_vin' as const, label: 'VIN decoded match', missing }
+    ? { level: 'exact_vin' as const, label: 'VIN decoded match', missing, confidence }
     : vehicle.year && vehicle.make && vehicle.model
-      ? { level: 'year_make_model' as const, label: 'Year/make/model match', missing }
+      ? { level: 'year_make_model' as const, label: 'Year/make/model match', missing, confidence }
       : vehicle.year || vehicle.make || vehicle.model
-        ? { level: 'partial' as const, label: 'Partial vehicle match', missing }
-        : { level: 'unknown' as const, label: 'Vehicle not identified', missing }
+        ? { level: 'partial' as const, label: 'Partial vehicle match', missing, confidence }
+        : { level: 'unknown' as const, label: 'Vehicle not identified', missing, confidence }
   const hasManual = sources.some(item => item.provider === 'LEMON' || item.provider === 'CHARM')
   const hasOfficialData = sources.some(item => item.provider === 'NHTSA' || item.provider === 'OEM1Stop')
   const hasProcedureCandidate = sources.some(item => ['procedure', 'manual', 'diagram', 'spec'].includes(item.category))
+  const hasExactProcedureMatch = manualMatches.some(item => item.matchType === 'exact_procedure')
   const steps: RepairWorkflowStep[] = [
     {
       id: 'vehicle',
       label: 'Identify Exact Vehicle',
-      status: vehicleMatch.level === 'exact_vin' || vehicleMatch.level === 'year_make_model' ? 'ready' : 'needs_review',
-      detail: vehicleMatch.missing.length ? `Missing ${vehicleMatch.missing.join(', ')}.` : vehicleMatch.label,
+      status: vehicleMatch.confidence >= 70 ? 'ready' : 'needs_review',
+      detail: vehicleMatch.missing.length ? `${vehicleMatch.confidence}% confidence. Missing ${vehicleMatch.missing.join(', ')}.` : `${vehicleMatch.confidence}% confidence. ${vehicleMatch.label}.`,
     },
     {
       id: 'manual',
-      label: 'Open Matching Manual',
-      status: hasManual ? 'ready' : 'needs_source',
-      detail: hasManual ? 'Manual source candidate found from LEMON/CHARM.' : 'No matching manual directory source verified yet.',
+      label: 'Deep Manual Search',
+      status: hasExactProcedureMatch ? 'ready' : hasManual ? 'needs_review' : 'needs_source',
+      detail: hasExactProcedureMatch
+        ? `${coverageDashboard.exactMatches} exact procedure candidate(s), ${coverageDashboard.likelyMatches} likely section(s), ${coverageDashboard.indexedPages} page(s) indexed.`
+        : hasManual ? `${coverageDashboard.indexedPages} manual page(s) indexed. Choose likely source sections before quoting.` : 'No matching manual directory source verified yet.',
     },
     {
       id: 'official',
@@ -758,10 +1171,16 @@ function buildWorkflow(vehicle: RepairVehicle, sources: RepairSource[], draft: R
       detail: hasOfficialData ? 'NHTSA or OEM index source available.' : 'Use OEM1Stop/NHTSA links before safety-sensitive work.',
     },
     {
-      id: 'draft',
-      label: 'Build Shop Procedure Draft',
-      status: draft.sourceRequired ? 'needs_review' : 'ready',
-      detail: 'Draft checklist is ready, but a technician must verify source procedure, specs, and warnings.',
+      id: 'operations',
+      label: 'Structure Work',
+      status: operations.length ? 'ready' : 'needs_review',
+      detail: `${operations.length} operation line(s) identified for checklist and estimate handoff.`,
+    },
+    {
+      id: 'safety',
+      label: 'Safety Signoff',
+      status: safetyProfile.level === 'standard' ? 'needs_review' : 'needs_source',
+      detail: `${safetyProfile.level.toUpperCase()} risk. Technician signoff required before work.`,
     },
   ]
   return {
@@ -771,13 +1190,11 @@ function buildWorkflow(vehicle: RepairVehicle, sources: RepairSource[], draft: R
       hasOfficialData,
       hasProcedureCandidate,
       hasEstimateReadyDraft: hasProcedureCandidate && vehicleMatch.level !== 'unknown',
+      hasExactProcedureMatch,
+      hasShopProcedure: coverageDashboard.shopProcedure === 'found',
     },
     steps,
-    safetyGates: [
-      'No torque specs, wiring pinouts, diagnostic steps, labor times, or safety procedures are final until source-verified.',
-      'Customer authorization is required before teardown, repairs, parts ordering, sends, or payments.',
-      'High-voltage, airbag, ADAS, brake, steering, fuel, and lift operations require technician review before work.',
-    ],
+    safetyGates: safetyProfile.gates.map(gate => `${gate.label}: ${gate.reason}`),
   }
 }
 
@@ -791,6 +1208,14 @@ export async function searchRepairSources(query: string, fallbackVehicle: Partia
     make: parsed.make,
     model: parsed.model,
     engine: parsed.engine,
+    trim: parsed.trim,
+    drivetrain: parsed.drivetrain,
+    transmission: parsed.transmission,
+    fuel: parsed.fuel,
+    bodyClass: parsed.bodyClass,
+    brakeSystem: parsed.brakeSystem,
+    adas: parsed.adas,
+    emissions: parsed.emissions,
   }
   const component = parsed.component
 
@@ -815,14 +1240,25 @@ export async function searchRepairSources(query: string, fallbackVehicle: Partia
   ].filter(Boolean)
 
   const draft = buildRepairDraft(query, vehicle, component, parsed.dtc)
+  const manualStats = await deepSearchManualMatches(vehicle, component, sources)
+  const manualMatches = manualStats.matches
+  const operationLines = operationLinesFor(query, component, manualMatches)
+  const safetyProfile = buildSafetyProfile(operationLines, component)
+  const estimateDraft = buildEstimateDraft(query, operationLines, vehicle)
+  const coverageDashboard = buildCoverageDashboard(sources, manualStats, manualMatches)
 
   return {
     query,
     normalizedVehicle: vehicle,
     sources,
+    manualMatches,
+    operationLines,
+    estimateDraft,
+    safetyProfile,
+    coverageDashboard,
     draft,
     counts: countCategories(sources),
-    workflow: buildWorkflow(vehicle, sources, draft),
+    workflow: buildWorkflow(vehicle, sources, draft, manualMatches, operationLines, safetyProfile, coverageDashboard),
     warnings,
   }
 }
