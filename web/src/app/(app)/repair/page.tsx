@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { RepairManualPage, RepairSearchResult, RepairSource, RepairVehicle } from '@/lib/repair/sources'
 
@@ -217,6 +217,7 @@ export default function RepairPage() {
   const [imageScale, setImageScale] = useState(1)
   const [bookmarkedImages, setBookmarkedImages] = useState<Array<{ url: string; alt: string }>>([])
   const [mainTab, setMainTab] = useState<MainTab>('Easy Answer')
+  const urlQueryHandled = useRef(false)
 
   useEffect(() => {
     try {
@@ -323,6 +324,17 @@ export default function RepairPage() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (urlQueryHandled.current) return
+    const params = new URLSearchParams(window.location.search)
+    const urlQuery = params.get('query') || params.get('q')
+    if (!urlQuery) return
+    urlQueryHandled.current = true
+    setQuery(urlQuery)
+    void runSearch(urlQuery)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const loadManual = async (url: string, quiet = false) => {
     if (!url) return

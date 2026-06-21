@@ -5,6 +5,7 @@ import { AGENTS, SKILLS } from '@/lib/ai/capabilities'
 import { classifyRequest, type RouteDecision } from '@/lib/ai/router'
 import { normalizeDocumentDraft } from '@/lib/ai/document-draft'
 import { getLaborFlatAmount, laborLineTotal, partLineTotal } from '@/lib/document-money'
+import type { RepairSearchResult } from '@/lib/repair/sources'
 import {
   formatBrowserOpenResult,
   formatDownloadResult,
@@ -45,7 +46,8 @@ interface VoiceCallState {
 }
 
 type BrowserPanelStep = {action:string;screenshot?:string;screenshotUrl?:string;url:string;title:string}
-interface ChatMessage { role: 'user'|'assistant'|'browser'; content: string; html?: string; imageUrl?: string; reasoning?: string; thinkingSeconds?: number; browserSteps?: BrowserPanelStep[] }
+type RepairChatResult = { query: string; data: RepairSearchResult }
+interface ChatMessage { role: 'user'|'assistant'|'browser'; content: string; html?: string; imageUrl?: string; reasoning?: string; thinkingSeconds?: number; browserSteps?: BrowserPanelStep[]; repairResult?: RepairChatResult }
 type ToolActivity = { time: string; agent: string; skill?: string; tool: string; status: 'running' | 'ok' | 'error'; detail: string }
 
 function getAIErrorMessage(data: unknown, fallback = 'AI request failed') {
@@ -532,6 +534,185 @@ function formatRepairSearchText(query: string, data: any) {
   return `Repair research for "${query}"\nVehicle: ${vehicle}${typeof confidence === 'number' ? ` (${confidence}% confidence)` : ''}\nRisk: ${risk}\n\nOperation lines:\n${operationText || '- No structured operation lines identified yet.'}\n\nDeep manual matches:\n${topMatches || 'No exact deep match verified yet. Open source links and verify manually.'}\n\nTop source links:\n${topSources || 'No source links verified.'}\n\n${estimateState}\n\nShop draft: ${draft.title || query}\nStatus: technician verification required. I will not invent torque specs, labor times, wiring pinouts, or step-by-step procedures without a source.\n\nChecklist:\n${checklist || '- Open and verify the matching source before quoting or starting work.'}${warnings}\n\nOpen the Repair page for the full workspace, diagram viewer, procedure cards, and estimate builder.`
 }
 
+const REPAIR_DTC_GUIDES: Record<string, { meaning: string; checks: string[]; dontAssume: string[]; action: string }> = {
+  P0420: {
+    meaning: 'Catalyst system efficiency below threshold, Bank 1.',
+    checks: [
+      'Confirm freeze-frame data and check for other engine, fuel trim, or misfire codes.',
+      'Inspect for exhaust leaks before or near the catalytic converter.',
+      'Compare upstream and downstream oxygen sensor activity on a fully warm engine.',
+      'Check fuel trims, coolant temp, misfire history, and oil/coolant contamination.',
+      'Verify converter condition only after the basic checks pass.',
+    ],
+    dontAssume: [
+      'Do not sell a catalytic converter just because P0420 is stored.',
+      'Do not replace oxygen sensors until signal behavior and exhaust leaks are checked.',
+    ],
+    action: 'Create a diagnostic estimate first, then quote converter or sensor work only after testing proves it.',
+  },
+  P0300: {
+    meaning: 'Random or multiple cylinder misfire detected.',
+    checks: [
+      'Read freeze-frame data, pending codes, and cylinder misfire counters.',
+      'Inspect plugs, coils, vacuum leaks, compression, injector operation, and fuel pressure.',
+      'Check for relevant TSBs before replacing parts.',
+    ],
+    dontAssume: ['Do not replace all coils until the failed cylinder or system is verified.'],
+    action: 'Start with diagnostic labor and document test results before parts.',
+  },
+  P0171: {
+    meaning: 'System too lean, Bank 1.',
+    checks: [
+      'Check fuel trims at idle and under load.',
+      'Inspect for vacuum leaks, intake leaks, PCV issues, exhaust leaks, and weak fuel delivery.',
+      'Verify MAF readings and oxygen sensor response.',
+    ],
+    dontAssume: ['Do not replace oxygen sensors just because the mixture is lean.'],
+    action: 'Quote diagnosis first, then parts after trim data confirms the cause.',
+  },
+}
+
+const REPAIR_ANCHOR_TERMS = /\b(?:repair|diagnos|diagnostic|dtc|code|manual|procedure|diagram|wiring|schematic|pinout|spec|torque|tsb|recall|symptom|check engine|misfire|brake|brakes|rotor|pad|caliper|control arm|strut|shock|coolant|radiator|thermostat|reservoir|alternator|starter|sensor|oxygen|catalytic|converter|suspension|steering|airbag|adas|hybrid|ev)\b/i
+
+function detectRepairDtc(value: string) {
+  return value.match(/\b[PCBU][0-9A-F]{4}\b/i)?.[0]?.toUpperCase() || ''
+}
+
+function hasRepairAnchor(value: string) {
+  return REPAIR_ANCHOR_TERMS.test(value) || /\b(?:19|20)?\d{2}\b/.test(value) || /\b[PCBU][0-9A-F]{4}\b/i.test(value) || /\b[A-HJ-NPR-Z0-9]{17}\b/i.test(value)
+}
+
+function buildRepairLookupQuery(text: string, lastQuery: string | null) {
+  const trimmed = text.trim()
+  if (!trimmed) return ''
+  const hasFreshVehicleOrCode = /\b(?:19|20)?\d{2}\b/.test(trimmed) || /\b[PCBU][0-9A-F]{4}\b/i.test(trimmed) || /\b[A-HJ-NPR-Z0-9]{17}\b/i.test(trimmed)
+  if (!hasFreshVehicleOrCode && lastQuery && hasRepairAnchor(trimmed)) return `${lastQuery}\nFollow-up: ${trimmed}`
+  return trimmed
+}
+
+function repairVehicleLabel(vehicle: RepairSearchResult['normalizedVehicle']) {
+  return [vehicle?.year, vehicle?.make, vehicle?.model, vehicle?.trim, vehicle?.engine].filter(Boolean).join(' ') || 'Vehicle not fully identified'
+}
+
+function repairWorkspaceUrl(query: string) {
+  return `/repair?query=${encodeURIComponent(query)}`
+}
+
+function RepairResultCard({ result }: { result: RepairChatResult }) {
+  const { query, data } = result
+  const vehicle = repairVehicleLabel(data.normalizedVehicle)
+  const dtc = detectRepairDtc(`${query} ${data.query}`)
+  const dtcGuide = dtc ? REPAIR_DTC_GUIDES[dtc] : undefined
+  const firstOperation = data.operationLines?.[0]
+  const title = dtcGuide ? `${dtc}: ${dtcGuide.meaning}` : (firstOperation?.label || data.draft?.operation || data.draft?.title || query)
+  const checks = dtcGuide?.checks || data.draft?.checklist?.slice(0, 5) || ['Open a source and verify the exact vehicle before quoting or starting work.']
+  const dontAssume = dtcGuide?.dontAssume || [
+    'Do not invent torque specs, wiring pinouts, labor times, or protected procedure text.',
+    'Do not replace parts until inspection or testing confirms the failure.',
+  ]
+  const action = dtcGuide?.action || (data.estimateDraft?.totalLocked
+    ? 'Review the itemized estimate draft, verify the source, then create the estimate.'
+    : 'Verify the source and create a diagnostic or repair estimate only after pricing is known.')
+  const matches = data.manualMatches || []
+  const diagramMatches = matches
+    .filter(item => item.category === 'diagram' || item.category === 'spec' || item.matchType === 'diagram_or_spec' || /diagram|wiring|schematic|pinout|spec/i.test(item.title))
+    .slice(0, 4)
+  const procedureMatches = matches
+    .filter(item => item.matchType === 'exact_procedure' || item.matchType === 'likely_section')
+    .slice(0, 5)
+  const sources = (data.sources || []).slice(0, 5)
+
+  return (
+    <div className="space-y-3 text-sm">
+      <div className="rounded-lg border border-green/25 bg-green/10 p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <div className="text-[11px] font-black uppercase tracking-[0.14em] text-green">Repair Mode Result</div>
+            <h3 className="mt-2 text-lg font-black text-text-primary">{title}</h3>
+            <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-bold">
+              <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1">{vehicle}</span>
+              <span className="rounded-md border border-blue/30 bg-blue/10 px-2 py-1 text-blue">{data.workflow?.vehicleMatch?.confidence ?? 0}% vehicle confidence</span>
+              <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-amber">{data.safetyProfile?.level || 'standard'} risk</span>
+            </div>
+          </div>
+          <button
+            className="btn btn-primary btn-sm shrink-0"
+            onClick={() => { window.location.href = repairWorkspaceUrl(query) }}
+          >
+            Open in Repair Workspace
+          </button>
+        </div>
+      </div>
+
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_300px]">
+        <div className="space-y-3">
+          <section className="rounded-lg border border-border bg-bg-hover p-4">
+            <div className="text-xs font-black uppercase text-blue">What To Check First</div>
+            <ol className="mt-3 space-y-2 text-text-secondary">
+              {checks.map((item, index) => (
+                <li key={`${item}-${index}`} className="flex gap-2">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-blue/15 text-[11px] font-black text-blue">{index + 1}</span>
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ol>
+          </section>
+
+          <section className="rounded-lg border border-amber/30 bg-amber/10 p-4">
+            <div className="text-xs font-black uppercase text-amber">Do Not Assume</div>
+            <ul className="mt-3 space-y-2 text-amber">
+              {dontAssume.map(item => <li key={item}>- {item}</li>)}
+            </ul>
+          </section>
+
+          <section className="rounded-lg border border-border bg-bg-hover p-4">
+            <div className="text-xs font-black uppercase text-text-muted">Procedure Links</div>
+            <div className="mt-3 space-y-2">
+              {procedureMatches.length ? procedureMatches.map(item => (
+                <a key={item.url} href={item.url} target="_blank" rel="noreferrer" className="block rounded-md border border-white/10 bg-white/[0.03] p-3 hover:border-blue/40">
+                  <span className="block font-bold text-text-primary">{item.title}</span>
+                  <span className="mt-1 block text-xs text-text-muted">{item.provider} / {item.matchType.replace(/_/g, ' ')} / score {item.score}</span>
+                </a>
+              )) : <div className="text-text-muted">No exact procedure match yet. Open sources and verify manually.</div>}
+            </div>
+          </section>
+        </div>
+
+        <aside className="space-y-3">
+          <section className="rounded-lg border border-border bg-bg-hover p-4">
+            <div className="text-xs font-black uppercase text-text-muted">Diagrams / Specs</div>
+            <div className="mt-3 space-y-2">
+              {diagramMatches.length ? diagramMatches.map(item => (
+                <a key={item.url} href={item.url} target="_blank" rel="noreferrer" className="block rounded-md border border-white/10 bg-white/[0.03] p-3 hover:border-blue/40">
+                  <span className="block font-bold text-text-primary">{item.title}</span>
+                  <span className="mt-1 block text-xs text-text-muted">{item.provider} / {item.category} / {item.hasImages ? 'images likely' : 'source link'}</span>
+                </a>
+              )) : <div className="text-text-muted">No diagram/spec match found yet.</div>}
+            </div>
+          </section>
+
+          <section className="rounded-lg border border-green/30 bg-green/10 p-4">
+            <div className="text-xs font-black uppercase text-green">Next Shop Action</div>
+            <p className="mt-2 leading-6 text-green">{action}</p>
+          </section>
+
+          <section className="rounded-lg border border-border bg-bg-hover p-4">
+            <div className="text-xs font-black uppercase text-text-muted">Source Stack</div>
+            <div className="mt-3 space-y-2">
+              {sources.map(item => (
+                <a key={item.id} href={item.url} target="_blank" rel="noreferrer" className="block rounded-md border border-white/10 bg-white/[0.03] p-2 hover:border-blue/40">
+                  <span className="block font-bold text-text-primary">{item.provider}: {item.title}</span>
+                  <span className="mt-1 block text-xs text-text-muted">{item.category} / {item.confidence}</span>
+                </a>
+              ))}
+            </div>
+          </section>
+        </aside>
+      </div>
+    </div>
+  )
+}
+
 function wantsDesktopMcpCheck(text: string) {
   const lower = text.toLowerCase()
   const mentionsLocalTools = /\b(mcp|mcps|windows-mcp|kapture|tools?|skills?|agents?)\b/.test(lower)
@@ -667,6 +848,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   const [shopContext, setShopContext] = useState('')
   const prefillHandled = useRef(false)
   const lastDesktopFileRef = useRef<string | null>(null)
+  const lastRepairQueryRef = useRef<string | null>(null)
   const [routeDecision, setRouteDecision] = useState<RouteDecision | null>(null)
   const [toolTimeline, setToolTimeline] = useState<ToolActivity[]>([])
   const [repairOnlyMode, setRepairOnlyMode] = useState(false)
@@ -905,6 +1087,16 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const isDesktop = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron
   const toggleFeature = (key: keyof typeof features) => setFeatures(prev => ({ ...prev, [key]: !prev[key] }))
+  const toggleRepairMode = () => {
+    const next = !repairOnlyMode
+    setRepairOnlyMode(next)
+    if (next) {
+      localStorage.setItem('ai_repair_mode', 'true')
+      setFeatures(current => ({ ...current, socialMedia: false }))
+    } else {
+      localStorage.removeItem('ai_repair_mode')
+    }
+  }
 
   // Connectors popup state
   const [showConnectorsPopup, setShowConnectorsPopup] = useState(false)
@@ -997,6 +1189,65 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       setTimeout(() => sendRef.current?.(prefill), 500)
     }
   })
+
+  const runRepairLookup = useCallback(async (text: string, userMsg: ChatMessage, forceRepairMode = false) => {
+    const lookupQuery = buildRepairLookupQuery(text, lastRepairQueryRef.current)
+    const agentName = AGENTS.find(agent => agent.id === 'repair')?.name || 'Repair Agent'
+    const skillName = SKILLS.find(skill => skill.id === 'source_backed_repair_research')?.name || 'Source-backed repair research'
+
+    const finish = (assistantMsg: ChatMessage) => {
+      setMessages(prev => [...prev, assistantMsg])
+      saveToHistory([...messages, userMsg, assistantMsg])
+      speak(assistantMsg.content)
+      return true
+    }
+
+    if (forceRepairMode && !lastRepairQueryRef.current && !hasRepairAnchor(text)) {
+      addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'error', detail: 'Missing vehicle, code, symptom, or repair operation' })
+      return finish({
+        role: 'assistant',
+        content: 'Repair mode is on. Give me a vehicle plus a code, symptom, system, or repair operation. Example: 2005 Honda Civic P0420, or 2018 Jeep Wrangler brake diagram.',
+      })
+    }
+
+    lastRepairQueryRef.current = lookupQuery
+    addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'running', detail: lookupQuery })
+    setStatus('Searching repair sources...')
+
+    try {
+      const rr = await fetch('/api/repair-search', {
+        method: 'POST',
+        headers: await getAuthJsonHeaders(),
+        body: JSON.stringify({ query: lookupQuery }),
+        signal: AbortSignal.timeout(60000),
+      })
+      const rd = await rr.json().catch(() => ({}))
+      if (rr.ok && rd?.ok && rd.data) {
+        const repairData = rd.data as RepairSearchResult
+        addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'ok', detail: `${repairData.sources?.length || 0} source cards, ${repairData.manualMatches?.length || 0} manual matches` })
+        return finish({
+          role: 'assistant',
+          content: formatRepairSearchText(lookupQuery, repairData),
+          repairResult: { query: lookupQuery, data: repairData },
+        })
+      }
+
+      addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'error', detail: rd?.error || 'Repair lookup failed' })
+      return finish({
+        role: 'assistant',
+        content: `Repair lookup failed: ${rd?.error || 'Unknown error'}. Try year, make, model, engine, and the exact component, symptom, diagram, or DTC.`,
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown repair lookup error'
+      addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'error', detail: message })
+      return finish({
+        role: 'assistant',
+        content: `Repair lookup failed: ${message}. Try the Repair page with year, make, model, engine, and the exact component, symptom, diagram, or DTC.`,
+      })
+    } finally {
+      setStatus('')
+    }
+  }, [addToolEvent, messages, saveToHistory, speak])
 
   const runDirectDesktopCommand = useCallback(async (text: string, userMsg: ChatMessage) => {
     if (!features.desktopTools || !isDesktop || typeof window === 'undefined') return false
@@ -1306,6 +1557,13 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       detail: `${decision.intent} (${Math.round(decision.confidence * 100)}% confidence)`,
     })
 
+    if (repairOnlyMode || decision.intent === 'repair_lookup') {
+      await runRepairLookup(text, userMsg, repairOnlyMode)
+      setLoading(false)
+      setStatus('')
+      return
+    }
+
     if (await runDirectDesktopCommand(text, userMsg)) {
       setLoading(false)
       setStatus('')
@@ -1350,7 +1608,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     setLoading(false)
     setStatus('')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [input, loading, messages, shopContext, attachedFile, features, repairOnlyMode, runDirectDesktopCommand, addToolEvent])
+  }, [input, loading, messages, shopContext, attachedFile, features, repairOnlyMode, runRepairLookup, runDirectDesktopCommand, addToolEvent])
 
   // Poll for voice call status/summary
   const startVoicePoll = useCallback((callId: string) => {
@@ -1471,7 +1729,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
 - "new invoice" = NEW document, not lookup old ones.
 - User should NEVER have to repeat themselves.
 
-FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' : 'OFF'}\n- Social Media: ${activeFeatures.socialMedia ? 'ON' : 'OFF'}\n- Deep Thinking: ${activeFeatures.thinking ? 'ON' : 'OFF'}\nIf a feature is OFF and the user tries to use it, tell them to enable the toggle at the bottom of the chat input.`
+FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' : 'OFF'}\n- Social Media: ${activeFeatures.socialMedia ? 'ON' : 'OFF'}\n- Deep Thinking: ${activeFeatures.thinking ? 'ON' : 'OFF'}\n- Repair Mode: ${repairOnlyMode ? 'ON' : 'OFF'}\nIf a feature is OFF and the user tries to use it, tell them to enable the toggle at the bottom of the chat input.`
 
       setStatus(step === 0 ? 'Thinking...' : 'Working...')
 
@@ -2626,7 +2884,14 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
     return groups.filter(g => g.entries.length > 0)
   }
 
-  const suggested = [
+  const suggested = repairOnlyMode ? [
+    "2005 Honda Civic P0420",
+    "2018 Jeep Wrangler brake diagram",
+    "2004 Honda Accord all four brakes procedure",
+    "2016 Cadillac Escalade front lower control arm specs",
+    "P0300 diagnostic checks for a 2012 Chevy Silverado",
+    "Find wiring diagram for turn signal bulbs on a 2018 Wrangler",
+  ] : [
     "What jobs are open right now?",
     "Build me an estimate for front brakes on a 2019 Toyota Camry",
     "Who hasn't been in for 90+ days?",
@@ -2876,7 +3141,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
         )}
         {messages.map((m, i) => (
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={m.role === 'browser' ? 'text-sm w-full p-0 bg-transparent' : m.role === 'user' ? 'max-w-[90%] sm:max-w-[80%] rounded-xl px-4 py-3 text-sm bg-blue text-white' : 'max-w-[90%] sm:max-w-[80%] rounded-xl px-4 py-3 text-sm bg-bg-card border border-border'}>
+            <div className={m.role === 'browser' ? 'text-sm w-full p-0 bg-transparent' : m.role === 'user' ? 'max-w-[90%] sm:max-w-[80%] rounded-xl px-4 py-3 text-sm bg-blue text-white' : m.repairResult ? 'w-full max-w-5xl rounded-xl px-3 py-3 text-sm bg-bg-card border border-border' : 'max-w-[90%] sm:max-w-[80%] rounded-xl px-4 py-3 text-sm bg-bg-card border border-border'}>
               {/* Feature 12: Image preview */}
               {m.imageUrl && (
                 <div className="mb-2">
@@ -2896,7 +3161,9 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
                   </div>
                 </details>
               )}
-              {m.role === 'browser' && m.browserSteps
+              {m.repairResult
+                ? <RepairResultCard result={m.repairResult} />
+                : m.role === 'browser' && m.browserSteps
                   ? <BrowserPanel steps={m.browserSteps} />
                   : m.html
                 ? <div dangerouslySetInnerHTML={{ __html: (m.content ? renderMarkdown(m.content) : '') + (m.html || '') }} />
@@ -3146,6 +3413,20 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
               {features.thinking && <span className="w-1.5 h-1.5 rounded-full bg-purple-400 flex-shrink-0" />}
               Thinking
             </button>
+
+          {/* Repair mode toggle */}
+          <button
+            onClick={toggleRepairMode}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border ${
+              repairOnlyMode
+                ? 'bg-green/20 border-green/50 text-green'
+                : 'bg-bg-card border-border text-text-muted hover:border-green/30 hover:text-text-secondary'
+            }`}
+            title={repairOnlyMode ? 'Repair mode ON - source-backed repair answers only' : 'Repair mode OFF - click for repair-only chat'}
+          >
+            {repairOnlyMode && <span className="w-1.5 h-1.5 rounded-full bg-green flex-shrink-0" />}
+            Repair
+          </button>
 
           {/* Desktop Tools toggle - only in Electron */}
           {isDesktop && (
