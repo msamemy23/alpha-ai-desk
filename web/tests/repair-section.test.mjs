@@ -51,7 +51,26 @@ test('repair query parser normalizes shorthand vehicle and DTC requests', () => 
   assert.equal(parsed.make, 'Honda')
   assert.equal(parsed.model, 'civic')
   assert.equal(parsed.dtc, 'P0420')
+  assert.match(parsed.component, /catalyst|catalytic|converter|oxygen|exhaust/i)
   assert.doesNotMatch(parsed.component, /\bcivic\b/i)
+})
+
+test('P0420 removal follow-up stays on catalyst/exhaust context', async () => {
+  const parsed = repairSources.parseRepairQuery('2005 Honda Civic P0420 show me the removal')
+
+  assert.equal(parsed.year, '2005')
+  assert.equal(parsed.make, 'Honda')
+  assert.equal(parsed.model, 'civic')
+  assert.equal(parsed.dtc, 'P0420')
+  assert.match(parsed.component, /catalytic converter|exhaust|oxygen sensor/i)
+
+  const result = await repairSources.searchRepairSources('2005 Honda Civic P0420 show me the removal')
+  assert.equal(result.normalizedVehicle.year, '2005')
+  assert.equal(result.normalizedVehicle.make, 'Honda')
+  assert.equal(result.normalizedVehicle.model, 'civic')
+  assert.match(result.draft.operation, /catalytic converter|exhaust|oxygen sensor/i)
+  assert.ok(result.operationLines.some((line) => line.system === 'emissions/exhaust'))
+  assert.doesNotMatch(result.manualMatches.map((item) => item.title).join(' '), /Brake Fluid Level Sensor|Cabin Air|GMC Sierra/i)
 })
 
 test('repair draft is explicitly source-required and technician-review only', () => {
@@ -199,6 +218,10 @@ test('repair agent, tool, skill, router, and chat handoff are registered', () =>
   assert.match(aiPage, /Repair mode toggle/)
   assert.match(aiPage, /RepairResultCard/)
   assert.match(aiPage, /repairResult/)
+  assert.match(aiPage, /lastRepairContextRef/)
+  assert.match(aiPage, /removalTerms/)
+  assert.match(aiPage, /needs engine\/trim before exact procedure/)
+  assert.match(aiPage, /Exact engine\/trim needed before exact removal/)
   assert.match(aiPage, /Diagrams \/ Specs/)
   assert.match(aiPage, /Open in Repair Workspace/)
   assert.match(aiPage, /repairWorkspaceUrl/)

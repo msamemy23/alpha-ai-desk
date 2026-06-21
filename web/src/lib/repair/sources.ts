@@ -211,6 +211,44 @@ const MAKE_ALIASES: Record<string, string> = {
   ram: 'Dodge and Ram',
 }
 
+const DTC_PROFILES: Record<string, {
+  system: string
+  searchTerms: string
+  removalTerms: string
+  requiredTerms: string[]
+}> = {
+  P0420: {
+    system: 'emissions exhaust catalyst',
+    searchTerms: 'catalyst system catalytic converter exhaust oxygen sensor emissions diagnosis',
+    removalTerms: 'catalytic converter exhaust oxygen sensor removal procedure',
+    requiredTerms: ['catalyst', 'catalytic', 'converter', 'exhaust', 'oxygen', 'o2', 'emission', 'sensor', 'diagnostic trouble code'],
+  },
+  P0300: {
+    system: 'engine misfire',
+    searchTerms: 'random multiple cylinder misfire ignition fuel compression diagnosis',
+    removalTerms: 'spark plug ignition coil injector misfire removal testing procedure',
+    requiredTerms: ['misfire', 'ignition', 'spark', 'coil', 'injector', 'compression', 'fuel'],
+  },
+  P0171: {
+    system: 'fuel trim lean condition',
+    searchTerms: 'system too lean fuel trim vacuum leak maf oxygen sensor diagnosis',
+    removalTerms: 'maf sensor oxygen sensor intake vacuum leak removal testing procedure',
+    requiredTerms: ['lean', 'fuel trim', 'vacuum', 'intake', 'maf', 'oxygen', 'sensor'],
+  },
+}
+
+const GENERIC_COMPONENT_TERMS = new Set([
+  'follow', 'up', 'show', 'me', 'removal', 'remove', 'install', 'installation', 'replacement', 'replace',
+  'procedure', 'manual', 'repair', 'diagnosis', 'diagnostic', 'steps', 'step', 'source', 'sources',
+])
+
+const MANUAL_TOKEN_STOP_WORDS = new Set([
+  'front', 'rear', 'left', 'right', 'both', 'all', 'replace', 'replacement', 'repair', 'service',
+  'procedure', 'manual', 'find', 'look', 'search', 'show', 'follow', 'removal', 'remove', 'install',
+  'installation', 'steps', 'step', 'source', 'sources', 'system', 'sensor', 'component', 'general',
+  'honda', 'toyota', 'ford', 'chevrolet', 'dodge', 'ram', 'jeep', 'nissan', 'gmc',
+])
+
 function decodeHtml(value: string) {
   return value
     .replace(/&#(\d+);/g, (_match, code) => String.fromCharCode(Number(code)))
@@ -258,6 +296,35 @@ function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+function wordsFrom(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+}
+
+function isGenericComponent(value: string) {
+  const words = wordsFrom(value)
+  return !words.length || words.every(word => GENERIC_COMPONENT_TERMS.has(word))
+}
+
+function expandDtcComponent(component: string, dtc?: string) {
+  const profile = dtc ? DTC_PROFILES[dtc] : undefined
+  if (!profile) return component || dtc || ''
+
+  const wantsRemoval = /\b(removal|remove|replace|replacement|install|installation)\b/i.test(component)
+  const cleanComponent = component
+    .replace(new RegExp(`\\b${escapeRegExp(dtc || '')}\\b`, 'gi'), ' ')
+    .replace(/\bfollow\s*up\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  const focus = wantsRemoval ? profile.removalTerms : profile.searchTerms
+  if (!cleanComponent || isGenericComponent(cleanComponent)) return focus
+  return `${focus} ${cleanComponent}`.replace(/\s+/g, ' ').trim()
+}
+
 export function parseRepairQuery(input: string, fallback: Partial<RepairVehicle> = {}): RepairVehicle & { component: string; dtc?: string } {
   let text = input.replace(/\s+/g, ' ').trim()
   const vin = text.match(/\b[A-HJ-NPR-Z0-9]{17}\b/i)?.[0]?.toUpperCase() || fallback.vin
@@ -297,14 +364,17 @@ export function parseRepairQuery(input: string, fallback: Partial<RepairVehicle>
     }
   }
 
-  const component = text
+  const rawComponent = text
+    .replace(/\bfollow\s*up\b/gi, ' ')
     .replace(/\b(open|find|look\s+up|search|repair|manual|procedure|steps?|for|on|a|an|the|please|me|show|get)\b/gi, ' ')
     .replace(/\b[A-HJ-NPR-Z0-9]{17}\b/gi, ' ')
+    .replace(/\b[PCBU][0-9A-F]{4}\b/gi, ' ')
     .replace(/\b(19|20)?\d{2}\b/g, ' ')
     .replace(new RegExp(`\\b(${MAKES.join('|').replace(/\s+/g, '\\s+')})\\b`, 'gi'), ' ')
     .replace(new RegExp(`\\b(${MODEL_HINTS.map(escapeRegExp).join('|').replace(/\s+/g, '\\s+')})\\b`, 'gi'), ' ')
     .replace(/\s+/g, ' ')
     .trim()
+  const component = expandDtcComponent(rawComponent, dtc)
 
   return {
     vin,
@@ -896,6 +966,9 @@ function operationLinesFor(query: string, component: string, manualMatches: Repa
   if (/\bwater\s+pump\b/i.test(text)) add('Replace water pump', 'cooling', 'elevated')
   if (/\balternator\b/i.test(text)) add('Replace alternator', 'charging/electrical', 'standard')
   if (/\bstarter\b/i.test(text)) add('Replace starter', 'starting/electrical', 'standard')
+  if (/\bcatalyst|catalytic|converter|exhaust|oxygen\s+sensor|o2\s+sensor|emissions?\b/i.test(text)) {
+    add(/\bremov|install|replace/i.test(text) ? 'Verify catalyst/exhaust removal procedure' : 'Catalyst efficiency diagnostic flow', 'emissions/exhaust', 'elevated')
+  }
   if (/\bair\s*bag|srs\b/i.test(text)) add('SRS/airbag diagnosis or repair', 'airbag/SRS', 'critical')
   if (/\badas|calibration|radar|camera\b/i.test(text)) add('ADAS inspection/calibration', 'ADAS', 'critical')
   if (/\bfuel\s+(pump|line|injector|tank)\b/i.test(text)) add('Fuel system repair', 'fuel', 'critical')
@@ -953,20 +1026,46 @@ function buildSafetyProfile(operations: RepairOperationLine[], component: string
 function tokenizeForManualSearch(value: string) {
   return value
     .toLowerCase()
-    .replace(/\b(?:front|rear|left|right|both|all|replace|repair|service|procedure|manual|find|look|up|for|the|and|a|an|of|to|with)\b/g, ' ')
+    .replace(/\b(?:for|the|and|a|an|of|to|with|from|into|about)\b/g, ' ')
     .replace(/[^a-z0-9]+/g, ' ')
     .split(/\s+/)
-    .filter(token => token.length >= 3)
+    .filter(token => token.length >= 3 && !MANUAL_TOKEN_STOP_WORDS.has(token))
 }
 
-function scoreManualText(value: string, tokens: string[], category: RepairCategory) {
+function requiredTermsForComponent(component: string) {
+  const text = component.toLowerCase()
+  if (/\b(catalyst|catalytic|converter|exhaust|oxygen|o2|emission)\b/.test(text)) {
+    return DTC_PROFILES.P0420.requiredTerms
+  }
+  if (/\b(misfire|spark|coil|injector|compression|ignition)\b/.test(text)) {
+    return DTC_PROFILES.P0300.requiredTerms
+  }
+  if (/\b(lean|fuel trim|vacuum|intake|maf)\b/.test(text)) {
+    return DTC_PROFILES.P0171.requiredTerms
+  }
+  if (/\bbrake|rotor|pad|caliper\b/.test(text)) return ['brake', 'rotor', 'pad', 'caliper']
+  if (/\bcontrol arm|ball joint|strut|shock|sway|suspension\b/.test(text)) return ['control arm', 'ball joint', 'strut', 'shock', 'suspension', 'sway']
+  if (/\bcoolant|radiator|reservoir|thermostat|water pump\b/.test(text)) return ['coolant', 'radiator', 'reservoir', 'thermostat', 'water pump']
+  if (/\bturn signal|bulb|lamp|light|headlight|taillight\b/.test(text)) return ['turn signal', 'bulb', 'lamp', 'light', 'headlight', 'taillight']
+  return []
+}
+
+function textHasAnyTerm(text: string, terms: string[]) {
+  const normalized = text.toLowerCase().replace(/[-_]+/g, ' ')
+  return terms.some(term => normalized.includes(term))
+}
+
+function scoreManualText(value: string, tokens: string[], category: RepairCategory, component = '') {
   const text = value.toLowerCase().replace(/[-_]+/g, ' ')
+  const requiredTerms = requiredTermsForComponent(component)
+  if (requiredTerms.length && !textHasAnyTerm(text, requiredTerms)) return 0
+
   let score = 0
   for (const token of tokens) {
     if (text.includes(token)) score += token.length > 5 ? 8 : 5
   }
-  if (category === 'diagram' || category === 'spec') score += 4
-  if (/\b(remove|install|replacement|diagnosis|testing|inspection|adjustment|component|brake|suspension|cooling|electrical)\b/i.test(text)) score += 3
+  if (score > 0 && (category === 'diagram' || category === 'spec')) score += 4
+  if (score > 0 && /\b(remove|install|replacement|diagnosis|testing|inspection|adjustment)\b/i.test(text)) score += 2
   return score
 }
 
@@ -996,9 +1095,10 @@ async function deepSearchManualMatches(vehicle: RepairVehicle, component: string
       const page = await readRepairManualPage(url, 5000)
       indexedPages += 1
       const path = [...page.breadcrumbs.map(link => link.title), page.title].filter(Boolean).slice(-6)
-      const pageScore = scoreManualText(`${page.title} ${decodeURIComponent(page.url)}`, tokens, inferCategory(`${page.title} ${component}`))
-      if (pageScore > 0 || matches.length < 2) {
-        const category = inferCategory(`${page.title} ${component}`)
+      const pageCategory = inferCategory(`${page.title} ${component}`)
+      const pageScore = scoreManualText(`${page.title} ${decodeURIComponent(page.url)}`, tokens, pageCategory, component)
+      if (pageScore >= 5) {
+        const category = pageCategory
         matches.push({
           id: sourceId(page.provider, page.url),
           title: page.title,
@@ -1017,14 +1117,14 @@ async function deepSearchManualMatches(vehicle: RepairVehicle, component: string
       const scoredLinks = page.links
         .map(link => ({
           link,
-          score: scoreManualText(`${link.title} ${decodeURIComponent(link.url)}`, tokens, link.category),
+          score: scoreManualText(`${link.title} ${decodeURIComponent(link.url)}`, tokens, link.category, component),
         }))
         .sort((a, b) => b.score - a.score)
       indexedLinks += page.links.length
 
       for (const { link, score } of scoredLinks.slice(0, 10)) {
         const matchType = manualMatchType(score, tokens.length, link.category)
-        if (score > 0 || link.category === 'diagram' || link.category === 'spec') {
+        if (score >= 5) {
           matches.push({
             id: sourceId(link.provider, link.url),
             title: link.title,
