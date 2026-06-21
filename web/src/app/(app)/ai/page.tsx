@@ -571,9 +571,9 @@ const REPAIR_DTC_GUIDES: Record<string, RepairDtcGuide> = {
     ],
     dontAssume: ['Do not replace all coils until the failed cylinder or system is verified.'],
     action: 'Start with diagnostic labor and document test results before parts.',
-    focusTerms: 'random multiple cylinder misfire ignition fuel compression diagnosis',
-    removalTerms: 'spark plug ignition coil injector misfire removal testing procedure',
-    requiredTerms: ['misfire', 'ignition', 'spark', 'coil', 'injector', 'compression', 'fuel'],
+    focusTerms: 'random multiple cylinder misfire ignition fuel compression firing order cylinder order diagnosis',
+    removalTerms: 'spark plug ignition coil injector misfire firing order cylinder order removal testing procedure',
+    requiredTerms: ['misfire', 'ignition', 'spark', 'coil', 'injector', 'compression', 'fuel', 'firing', 'order', 'cylinder'],
   },
   P0171: {
     meaning: 'System too lean, Bank 1.',
@@ -591,29 +591,55 @@ const REPAIR_DTC_GUIDES: Record<string, RepairDtcGuide> = {
 }
 
 const REPAIR_ANCHOR_TERMS = /\b(?:repair|diagnos|diagnostic|dtc|code|manual|procedure|removal|remove|install|replace|diagram|wiring|schematic|pinout|spec|torque|tsb|recall|symptom|check engine|misfire|brake|brakes|rotor|pad|caliper|control arm|strut|shock|coolant|radiator|thermostat|reservoir|alternator|starter|sensor|oxygen|catalytic|converter|suspension|steering|airbag|adas|hybrid|ev)\b/i
+const REPAIR_FOLLOWUP_TERMS = /\b(?:order|firing\s+order|cylinder\s+order|cylinder\s+layout|plug\s+wire|coil|fuse|fuses|fuse\s+box|relay|relays|location|where|diagram|wiring|schematic|pinout|removal|remove|install|replace|replacement|procedure|steps?|spec|torque|test|testing|check|checks?)\b/i
 
 function detectRepairDtc(value: string) {
   return value.match(/\b[PCBU][0-9A-F]{4}\b/i)?.[0]?.toUpperCase() || ''
 }
 
 function hasRepairAnchor(value: string) {
-  return REPAIR_ANCHOR_TERMS.test(value) || /\b(?:19|20)?\d{2}\b/.test(value) || /\b[PCBU][0-9A-F]{4}\b/i.test(value) || /\b[A-HJ-NPR-Z0-9]{17}\b/i.test(value)
+  return REPAIR_ANCHOR_TERMS.test(value) || REPAIR_FOLLOWUP_TERMS.test(value) || /\b(?:19|20)?\d{2}\b/.test(value) || /\b[PCBU][0-9A-F]{4}\b/i.test(value) || /\b[A-HJ-NPR-Z0-9]{17}\b/i.test(value)
+}
+
+function isFreshRepairVehicleOrCode(value: string) {
+  return /\b(?:19|20)?\d{2}\b/.test(value) || /\b[PCBU][0-9A-F]{4}\b/i.test(value) || /\b[A-HJ-NPR-Z0-9]{17}\b/i.test(value)
+}
+
+function isLikelyRepairFollowup(value: string) {
+  const words = value.trim().split(/\s+/).filter(Boolean)
+  return REPAIR_FOLLOWUP_TERMS.test(value) || (words.length > 0 && words.length <= 8)
+}
+
+function followupIntentFor(text: string, guide?: RepairDtcGuide) {
+  const trimmed = text.trim()
+  if (/\border\b|firing\s+order|cylinder\s+order|plug\s+wire|cylinder\s+layout/i.test(trimmed)) {
+    return 'firing order cylinder order cylinder layout spark plug wire coil routing'
+  }
+  if (/\bfuses?\b|fuse\s+box|relays?|where|location/i.test(trimmed)) {
+    return 'fuse box fuse relay location diagram'
+  }
+  if (/\bdiagram|wiring|schematic|pinout\b/i.test(trimmed)) {
+    return `wiring diagram schematic pinout ${trimmed}`
+  }
+  if (/\b(removal|remove|install|replace|replacement|procedure|steps?)\b/i.test(trimmed)) {
+    return guide ? `removal procedure ${guide.removalTerms}` : `removal procedure ${trimmed}`
+  }
+  if (/\btest|testing|check|checks?\b/i.test(trimmed)) {
+    return guide ? `diagnostic test checks ${guide.focusTerms}` : `diagnostic test checks ${trimmed}`
+  }
+  return guide ? `${guide.focusTerms} ${trimmed}` : trimmed
 }
 
 function buildRepairLookupQuery(text: string, lastContext: RepairChatResult | null) {
   const trimmed = text.trim()
   if (!trimmed) return ''
-  const hasFreshVehicleOrCode = /\b(?:19|20)?\d{2}\b/.test(trimmed) || /\b[PCBU][0-9A-F]{4}\b/i.test(trimmed) || /\b[A-HJ-NPR-Z0-9]{17}\b/i.test(trimmed)
-  if (!hasFreshVehicleOrCode && lastContext && hasRepairAnchor(trimmed)) {
+  const hasFreshVehicleOrCode = isFreshRepairVehicleOrCode(trimmed)
+  if (!hasFreshVehicleOrCode && lastContext && isLikelyRepairFollowup(trimmed)) {
     const vehicle = repairVehicleLabel(lastContext.data.normalizedVehicle)
     const dtc = detectRepairDtc(`${lastContext.query} ${lastContext.data.query}`)
     const guide = dtc ? REPAIR_DTC_GUIDES[dtc] : undefined
-    const wantsRemoval = /\b(removal|remove|install|replace|replacement|procedure|steps?)\b/i.test(trimmed)
-    const wantsDiagram = /\b(diagram|wiring|schematic|pinout|spec|torque)\b/i.test(trimmed)
-    const focus = guide
-      ? wantsRemoval ? guide.removalTerms : guide.focusTerms
-      : lastContext.data.operationLines?.map(line => line.label).join(' ') || lastContext.data.draft?.operation || ''
-    const intent = wantsDiagram ? `diagram specs ${trimmed}` : wantsRemoval ? `removal procedure ${trimmed}` : trimmed
+    const focus = guide?.focusTerms || lastContext.data.operationLines?.map(line => line.label).join(' ') || lastContext.data.draft?.operation || ''
+    const intent = followupIntentFor(trimmed, guide)
     return [vehicle, dtc, focus, intent].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
   }
   return trimmed
@@ -1255,7 +1281,10 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   })
 
   const runRepairLookup = useCallback(async (text: string, userMsg: ChatMessage, forceRepairMode = false) => {
-    const lookupQuery = buildRepairLookupQuery(text, lastRepairContextRef.current)
+    const previousRepairContext = lastRepairContextRef.current
+    const isFollowup = !!previousRepairContext && !isFreshRepairVehicleOrCode(text) && isLikelyRepairFollowup(text)
+    const lookupQuery = buildRepairLookupQuery(text, previousRepairContext)
+    const fallbackVehicle = isFollowup ? previousRepairContext?.data.normalizedVehicle : undefined
     const agentName = AGENTS.find(agent => agent.id === 'repair')?.name || 'Repair Agent'
     const skillName = SKILLS.find(skill => skill.id === 'source_backed_repair_research')?.name || 'Source-backed repair research'
 
@@ -1281,14 +1310,18 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       const rr = await fetch('/api/repair-search', {
         method: 'POST',
         headers: await getAuthJsonHeaders(),
-        body: JSON.stringify({ query: lookupQuery }),
+        body: JSON.stringify({ query: lookupQuery, vehicle: fallbackVehicle }),
         signal: AbortSignal.timeout(60000),
       })
       const rd = await rr.json().catch(() => ({}))
       if (rr.ok && rd?.ok && rd.data) {
         const repairData = rd.data as RepairSearchResult
         const repairResult = { query: lookupQuery, data: repairData }
-        lastRepairContextRef.current = repairResult
+        const newConfidence = repairData.workflow?.vehicleMatch?.confidence ?? 0
+        const previousConfidence = previousRepairContext?.data.workflow?.vehicleMatch?.confidence ?? 0
+        if (!previousRepairContext || isFreshRepairVehicleOrCode(text) || newConfidence >= previousConfidence || repairData.normalizedVehicle?.year) {
+          lastRepairContextRef.current = repairResult
+        }
         addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'ok', detail: `${repairData.sources?.length || 0} source cards, ${repairData.manualMatches?.length || 0} manual matches` })
         return finish({
           role: 'assistant',

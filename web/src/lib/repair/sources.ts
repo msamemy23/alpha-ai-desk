@@ -225,9 +225,9 @@ const DTC_PROFILES: Record<string, {
   },
   P0300: {
     system: 'engine misfire',
-    searchTerms: 'random multiple cylinder misfire ignition fuel compression diagnosis',
-    removalTerms: 'spark plug ignition coil injector misfire removal testing procedure',
-    requiredTerms: ['misfire', 'ignition', 'spark', 'coil', 'injector', 'compression', 'fuel'],
+    searchTerms: 'random multiple cylinder misfire ignition fuel compression firing order cylinder order diagnosis',
+    removalTerms: 'spark plug ignition coil injector misfire firing order cylinder order removal testing procedure',
+    requiredTerms: ['misfire', 'ignition', 'spark', 'coil', 'injector', 'compression', 'fuel', 'firing', 'order', 'cylinder'],
   },
   P0171: {
     system: 'fuel trim lean condition',
@@ -961,6 +961,8 @@ function operationLinesFor(query: string, component: string, manualMatches: Repa
   if (/\bsway\s+bar\s+links?\b/i.test(text)) add('Replace sway bar links', 'suspension/steering', 'elevated', /\bboth\b|left.*right|right.*left/i.test(text) ? 'both' : undefined, /\bboth\b|left.*right|right.*left/i.test(text) ? 2 : 1)
   if (/\bcoolant\s+(?:tank|reservoir|bottle)\b/i.test(text)) add('Replace coolant reservoir', 'cooling', 'elevated')
   if (/\bturn(?:ing)?\s+signal(?:\s+light)?\s+bulbs?\b/i.test(text)) add('Replace turn signal bulbs', 'lighting/electrical', 'standard')
+  if (/\bfuse|relay|fuse box|junction box\b/i.test(text)) add('Fuse/relay location or wiring diagram lookup', 'lighting/electrical', 'standard', undefined, 1, 'inspection')
+  if (/\bwiring|diagram|schematic|pinout\b/i.test(text) && !lines.some(line => /electrical|diagnostic/i.test(line.system))) add('Wiring diagram lookup', 'electrical', 'standard', undefined, 1, 'inspection')
   if (/\bthermostat\b/i.test(text)) add('Replace thermostat', 'cooling', 'elevated')
   if (/\bradiator\b/i.test(text)) add('Replace radiator', 'cooling', 'elevated')
   if (/\bwater\s+pump\b/i.test(text)) add('Replace water pump', 'cooling', 'elevated')
@@ -1047,6 +1049,7 @@ function requiredTermsForComponent(component: string) {
   if (/\bcontrol arm|ball joint|strut|shock|sway|suspension\b/.test(text)) return ['control arm', 'ball joint', 'strut', 'shock', 'suspension', 'sway']
   if (/\bcoolant|radiator|reservoir|thermostat|water pump\b/.test(text)) return ['coolant', 'radiator', 'reservoir', 'thermostat', 'water pump']
   if (/\bturn signal|bulb|lamp|light|headlight|taillight\b/.test(text)) return ['turn signal', 'bulb', 'lamp', 'light', 'headlight', 'taillight']
+  if (/\bfuse|relay|fuse box|junction box\b/.test(text)) return ['fuse', 'relay', 'fuse box', 'junction box']
   return []
 }
 

@@ -73,6 +73,29 @@ test('P0420 removal follow-up stays on catalyst/exhaust context', async () => {
   assert.doesNotMatch(result.manualMatches.map((item) => item.title).join(' '), /Brake Fluid Level Sensor|Cabin Air|GMC Sierra/i)
 })
 
+test('P0300 order follow-up maps to firing order instead of losing vehicle context', () => {
+  const parsed = repairSources.parseRepairQuery('2012 Chevrolet Silverado P0300 firing order cylinder order')
+
+  assert.equal(parsed.year, '2012')
+  assert.equal(parsed.make, 'Chevrolet')
+  assert.equal(parsed.model, 'silverado')
+  assert.equal(parsed.dtc, 'P0300')
+  assert.match(parsed.component, /firing order|cylinder order|misfire/i)
+})
+
+test('repair parser can use remembered vehicle for fuse and wiring follow-ups', () => {
+  const parsed = repairSources.parseRepairQuery('fuse box fuse relay location diagram', {
+    year: '2005',
+    make: 'Honda',
+    model: 'civic',
+  })
+
+  assert.equal(parsed.year, '2005')
+  assert.equal(parsed.make, 'Honda')
+  assert.equal(parsed.model, 'civic')
+  assert.match(parsed.component, /fuse|relay|diagram/i)
+})
+
 test('repair draft is explicitly source-required and technician-review only', () => {
   const draft = repairSources.buildRepairDraft(
     '2005 Honda Civic front lower control arms',
@@ -219,6 +242,9 @@ test('repair agent, tool, skill, router, and chat handoff are registered', () =>
   assert.match(aiPage, /RepairResultCard/)
   assert.match(aiPage, /repairResult/)
   assert.match(aiPage, /lastRepairContextRef/)
+  assert.match(aiPage, /REPAIR_FOLLOWUP_TERMS/)
+  assert.match(aiPage, /firing order cylinder order/)
+  assert.match(aiPage, /fallbackVehicle/)
   assert.match(aiPage, /removalTerms/)
   assert.match(aiPage, /needs engine\/trim before exact procedure/)
   assert.match(aiPage, /Exact engine\/trim needed before exact removal/)
