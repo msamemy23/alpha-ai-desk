@@ -669,6 +669,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   const lastDesktopFileRef = useRef<string | null>(null)
   const [routeDecision, setRouteDecision] = useState<RouteDecision | null>(null)
   const [toolTimeline, setToolTimeline] = useState<ToolActivity[]>([])
+  const [repairOnlyMode, setRepairOnlyMode] = useState(false)
 
   const addToolEvent = useCallback((event: Omit<ToolActivity, 'time'>) => {
     setToolTimeline(prev => [{
@@ -835,6 +836,17 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       localStorage.setItem('ai_history', JSON.stringify(updated))
       return updated
     })
+  }, [])
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const isRepairMode = params.get('mode') === 'repair' || localStorage.getItem('ai_repair_mode') === 'true'
+    if (!isRepairMode) return
+    setRepairOnlyMode(true)
+    setMessages([{
+      role: 'assistant',
+      content: 'Repair Only Mode is on. I will stay focused on diagnostics, repair sources, safety checks, work notes, and estimate-ready repair details.',
+    }])
   }, [])
 
   useEffect(() => {
@@ -1270,7 +1282,19 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     }
     const userMsg: ChatMessage = { role: 'user', content: text, imageUrl: attachImageUrl }
     setMessages(prev => [...prev, userMsg])
-    const decision = classifyRequest(text)
+    const classifiedDecision = classifyRequest(text)
+    const decision: RouteDecision = repairOnlyMode
+      ? {
+          ...classifiedDecision,
+          intent: 'repair_lookup',
+          agentId: 'repair',
+          skillIds: ['source_backed_repair_research'],
+          confidence: Math.max(classifiedDecision.confidence, 0.95),
+          requiresToolResult: true,
+          requiresConfirmation: classifiedDecision.requiresConfirmation,
+          reasons: ['repair-only chat tab', ...classifiedDecision.reasons],
+        }
+      : classifiedDecision
     setRouteDecision(decision)
     const routeAgent = AGENTS.find(agent => agent.id === decision.agentId)?.name || decision.agentId
     const routeSkill = decision.skillIds[0] ? (SKILLS.find(skill => skill.id === decision.skillIds[0])?.name || decision.skillIds[0]) : undefined
@@ -1326,7 +1350,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     setLoading(false)
     setStatus('')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [input, loading, messages, shopContext, attachedFile, features, runDirectDesktopCommand, addToolEvent])
+  }, [input, loading, messages, shopContext, attachedFile, features, repairOnlyMode, runDirectDesktopCommand, addToolEvent])
 
   // Poll for voice call status/summary
   const startVoicePoll = useCallback((callId: string) => {
@@ -1414,7 +1438,15 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     const agentMessages: {role: string; content: string}[] = history.map(m => ({ role: m.role, content: m.content }))
 
     for (let step = 0; step < 10; step++) {
-      const systemWithContext = SYSTEM_PROMPT + (isDesktop && features.desktopTools ? ('\n\n' + DESKTOP_TOOLS_PROMPT) : '') +
+      const repairOnlyContext = repairOnlyMode
+        ? `\n\nREPAIR ONLY MODE:
+- This chat tab is only for repair diagnostics, source-backed repair research, safety checks, shop notes, and estimate-ready repair details.
+- Keep answers simple: what it means, what to check first, what not to assume, and the next shop action.
+- Use repairSearch for vehicle, DTC, manual, procedure, diagram, safety, and repair-source questions.
+- Do not invent torque specs, labor times, wiring pinouts, reset steps, protected manual text, or parts prices. Say when source verification is required.
+- If the user asks for unrelated customer admin, marketing, browser, file, call, SMS, payment, delete, or posting work, say this tab is repair-only and tell them to use normal Alpha AI chat.`
+        : ''
+      const systemWithContext = SYSTEM_PROMPT + repairOnlyContext + (isDesktop && features.desktopTools ? ('\n\n' + DESKTOP_TOOLS_PROMPT) : '') +
         (shopContext ? `\n\nLive shop context:\n${shopContext}` : '') +
         (accumulated.length ? `\n\nCompleted steps so far:\n${accumulated.join('\n')}` : '') +
           `\n\nCRITICAL INSTRUCTIONS:\n1. NEW INVOICE vs REPRINT: When user says "new invoice" or "I need a invoice for [item]", CREATE a NEW document using proposeDocument. Do NOT reprint or lookup old invoices. A "new invoice" means build a fresh one from scratch.\n2. UNDERSTAND SIMPLE REQUESTS: If the user gives you a customer name and says they need something, DO IT. Don't ask them to repeat. Example: "I need a new invoice for thermostat, $280 flat for Asheanna" = immediately create a invoice with those details, no tax, flat total.\n3. CUSTOMER SEARCH: When the user mentions a customer name, phone, or asks about a customer, ALWAYS use searchCustomers first (NOT createCustomer). Show matching results with name, phone, email, jobs. If no match, say so and ask before creating.\n4. NEVER LOOP: Give ONE clear response per turn. If you're unsure, ask ONE clarifying question. Never repeat yourself.\n5. FLAT RATE: When user says "flat" or "no tax", set tax to 0 and use the exact total they gave.\n6. customer search results: when searchcustomers returns results, always show all matching customers with their full details (name, phone, email, vehicles). the search now includes vehicle info from jobs. never show just one customer if multiple matches exist. present each customer clearly so the user can identify the right one.
@@ -2748,11 +2780,33 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
         </>
       )}
 
+      {repairOnlyMode && (
+        <div className="border-b border-green/20 bg-green/10 px-3 py-3 sm:px-6">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-green/25 bg-bg-card/75 p-3">
+            <div>
+              <div className="text-[11px] font-black uppercase tracking-[0.16em] text-green">Repair Only Mode</div>
+              <p className="mt-1 text-sm text-text-secondary">
+                This chat will stay on diagnostics, repair sources, safety checks, work notes, and estimate-ready repair details.
+              </p>
+            </div>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => {
+                setRepairOnlyMode(false)
+                localStorage.removeItem('ai_repair_mode')
+              }}
+            >
+              Exit Repair Mode
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="border-b border-border bg-bg-base/70 px-3 py-3 sm:px-6">
         <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(300px,420px)]">
           <div className="rounded-lg border border-border bg-bg-card/80 p-3">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[11px] font-black uppercase tracking-[0.16em] text-text-muted">Command Center</span>
+              <span className="text-[11px] font-black uppercase tracking-[0.16em] text-text-muted">{repairOnlyMode ? 'Repair Command Center' : 'Command Center'}</span>
               <span className={`rounded-md border px-2 py-1 text-[11px] font-bold ${isDesktop && features.desktopTools ? 'border-green/30 bg-green/10 text-green' : 'border-amber/30 bg-amber/10 text-amber'}`}>
                 {isDesktop && features.desktopTools ? 'Desktop tools live' : 'Desktop tools unavailable'}
               </span>
@@ -2987,7 +3041,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
           <textarea
             className="form-input flex-1 resize-none text-sm"
             rows={2}
-            placeholder="Ask anything - or tell me to create, update, message, search..."
+            placeholder={repairOnlyMode ? 'Ask about this repair, diagnostic checks, source verification, or estimate notes...' : 'Ask anything - or tell me to create, update, message, search...'}
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}

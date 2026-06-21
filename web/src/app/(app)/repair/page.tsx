@@ -37,6 +37,47 @@ const WORKSPACE_TABS = [
 
 type WorkspaceTab = typeof WORKSPACE_TABS[number]
 
+const MAIN_TABS = ['Easy Answer', 'AI Repair', 'Sources', 'Estimate', 'Advanced'] as const
+type MainTab = typeof MAIN_TABS[number]
+
+const DTC_GUIDES: Record<string, { meaning: string; checks: string[]; dontAssume: string[]; action: string }> = {
+  P0420: {
+    meaning: 'Catalyst system efficiency below threshold, Bank 1.',
+    checks: [
+      'Confirm the code, freeze-frame data, and whether other engine or misfire codes are present.',
+      'Check for exhaust leaks before or near the catalytic converter.',
+      'Review upstream and downstream oxygen sensor activity on a warm engine.',
+      'Check fuel trims, misfire history, coolant temp, and oil/coolant contamination issues.',
+      'Verify converter condition only after the basic checks pass.',
+    ],
+    dontAssume: [
+      'Do not sell a catalytic converter just because P0420 is stored.',
+      'Do not replace oxygen sensors until signal behavior and exhaust leaks are checked.',
+    ],
+    action: 'Create a diagnostic estimate first. Verify data before quoting converter or sensor replacement.',
+  },
+  P0300: {
+    meaning: 'Random or multiple cylinder misfire detected.',
+    checks: [
+      'Check freeze-frame data, misfire counters, fuel trims, and pending cylinder-specific codes.',
+      'Inspect plugs, coils, vacuum leaks, fuel pressure, compression, and injector operation.',
+      'Check for TSBs before replacing parts.',
+    ],
+    dontAssume: ['Do not replace all coils until the failed cylinder/system is verified.'],
+    action: 'Start with diagnostic labor and document test results before parts.',
+  },
+  P0171: {
+    meaning: 'System too lean, Bank 1.',
+    checks: [
+      'Check fuel trims at idle and under load.',
+      'Inspect for vacuum leaks, intake leaks, PCV issues, exhaust leaks, and weak fuel delivery.',
+      'Verify MAF readings and oxygen sensor response.',
+    ],
+    dontAssume: ['Do not replace oxygen sensors just because the mixture is lean.'],
+    action: 'Quote diagnosis first, then parts after trim data confirms the cause.',
+  },
+}
+
 type SavedDraft = {
   id: string
   title: string
@@ -141,6 +182,10 @@ function allocateTotal(total: number, count: number) {
   return Array.from({ length: lineCount }, (_unused, index) => (base + (index < remainder ? 1 : 0)) / 100)
 }
 
+function detectDtcCode(value: string) {
+  return value.match(/\b[PCBU][0-9A-F]{4}\b/i)?.[0]?.toUpperCase() || ''
+}
+
 export default function RepairPage() {
   const [query, setQuery] = useState('')
   const [vehicle, setVehicle] = useState<RepairVehicle>({ year: '', make: '', model: '', engine: '', vin: '' })
@@ -171,6 +216,7 @@ export default function RepairPage() {
   const [viewerImage, setViewerImage] = useState<{ url: string; alt: string } | null>(null)
   const [imageScale, setImageScale] = useState(1)
   const [bookmarkedImages, setBookmarkedImages] = useState<Array<{ url: string; alt: string }>>([])
+  const [mainTab, setMainTab] = useState<MainTab>('Easy Answer')
 
   useEffect(() => {
     try {
@@ -217,6 +263,24 @@ export default function RepairPage() {
     return matches.filter(item => item.category === 'diagram' || item.matchType === 'diagram_or_spec' || /wiring|diagram|schematic|connector|pinout/i.test(item.title))
   }, [result])
 
+  const simpleAnswer = useMemo(() => {
+    if (!result) return null
+    const dtc = detectDtcCode(`${result.query} ${query}`)
+    const dtcGuide = dtc ? DTC_GUIDES[dtc] : undefined
+    const firstOperation = result.operationLines[0]
+    return {
+      dtc,
+      title: dtcGuide ? `${dtc}: ${dtcGuide.meaning}` : (firstOperation?.label || result.draft.operation || 'Repair lookup'),
+      system: firstOperation?.system || result.safetyProfile.systems[0] || 'general repair',
+      checks: dtcGuide?.checks || result.draft.checklist.slice(0, 5),
+      dontAssume: dtcGuide?.dontAssume || [
+        'Do not quote torque specs, labor times, or procedures until a source is opened and verified.',
+        'Do not replace parts until the failure is confirmed by inspection or testing.',
+      ],
+      action: dtcGuide?.action || (result.estimateDraft.totalLocked ? 'Review the itemized estimate draft, verify sources, then create the estimate.' : 'Verify the source and enter a price or diagnostic labor before creating an estimate.'),
+    }
+  }, [query, result])
+
   const runSearch = async (override?: string) => {
     const requested = (override || query).trim()
     const combined = [
@@ -236,6 +300,7 @@ export default function RepairPage() {
     setManualError('')
     setSelectedManualUrl('')
     setActiveTab('Overview')
+    setMainTab('Easy Answer')
     setEstimateMessage('')
     setProcedureMessage('')
     try {
@@ -297,6 +362,30 @@ export default function RepairPage() {
       : ''
     localStorage.setItem('ai_prefill', `${buildEstimatePrompt(result)}${pinned}`)
     window.location.href = '/ai'
+  }
+
+  const openRepairAi = () => {
+    if (!result) return
+    const lines = [
+      'REPAIR ONLY MODE. Stay focused on this repair/diagnostic problem and do not switch to general shop tasks unless I ask to leave repair mode.',
+      `Vehicle: ${vehicleText(result.normalizedVehicle)}`,
+      simpleAnswer?.dtc ? `Code: ${simpleAnswer.dtc}` : '',
+      `Problem: ${simpleAnswer?.title || result.draft.operation}`,
+      '',
+      'Explain this in plain English for a mechanic. Give me:',
+      '1. What it means',
+      '2. What to check first',
+      '3. What not to assume',
+      '4. What estimate or diagnostic note to create',
+      '',
+      'Work items:',
+      ...result.operationLines.map(item => `- ${item.label} (${item.system})`),
+      '',
+      'Important: do not invent torque specs, labor times, wiring pinouts, or protected procedure text.',
+    ].filter(Boolean)
+    localStorage.setItem('ai_repair_mode', 'true')
+    localStorage.setItem('ai_prefill', lines.join('\n'))
+    window.location.href = '/ai?mode=repair'
   }
 
   const saveDraft = () => {
@@ -481,7 +570,202 @@ export default function RepairPage() {
 
       {result && (
         <>
-          <section className="sticky top-0 z-10 rounded-lg border border-border bg-bg-card/95 p-4 shadow-xl backdrop-blur">
+          <section className="rounded-lg border border-border bg-bg-card p-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-md border border-blue/30 bg-blue/10 px-2 py-1 text-[11px] font-black text-blue">Easy Repair View</span>
+                  <span className={`rounded-md border px-2 py-1 text-[11px] font-black ${result.workflow.vehicleMatch.confidence >= 70 ? 'border-green/30 bg-green/10 text-green' : 'border-amber/30 bg-amber/10 text-amber'}`}>
+                    {result.workflow.vehicleMatch.confidence}% vehicle confidence
+                  </span>
+                  <span className={`rounded-md border px-2 py-1 text-[11px] font-black ${riskTone(result.safetyProfile.level)}`}>
+                    {result.safetyProfile.level} risk
+                  </span>
+                </div>
+                <h2 className="mt-3 text-2xl font-black">{vehicleText(result.normalizedVehicle)}</h2>
+                <p className="mt-2 text-sm leading-6 text-text-secondary">{simpleAnswer?.title}</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button className="btn btn-primary btn-sm" onClick={() => setMainTab('Estimate')}>Create Estimate</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => setMainTab('Sources')}>Open Sources</button>
+                <button className="btn btn-secondary btn-sm" onClick={openRepairAi}>Ask AI Repair</button>
+              </div>
+            </div>
+          </section>
+
+          <section className="rounded-lg border border-border bg-bg-card p-2">
+            <div className="flex gap-2 overflow-x-auto">
+              {MAIN_TABS.map(tab => (
+                <button
+                  key={tab}
+                  className={`shrink-0 rounded-md border px-4 py-2 text-sm font-black transition-colors ${mainTab === tab ? 'border-blue/50 bg-blue/15 text-blue' : 'border-transparent bg-transparent text-text-secondary hover:border-border hover:bg-bg-hover'}`}
+                  onClick={() => setMainTab(tab)}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {mainTab === 'Easy Answer' && (
+            <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+              <div className="space-y-4">
+                <div className="rounded-lg border border-border bg-bg-card p-5">
+                  <div className="text-xs font-black uppercase text-blue">What This Means</div>
+                  <h3 className="mt-2 text-xl font-black">{simpleAnswer?.title}</h3>
+                  <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-text-secondary md:grid-cols-2">
+                    <div><span className="font-bold text-text-primary">System:</span> {simpleAnswer?.system}</div>
+                    <div><span className="font-bold text-text-primary">Vehicle:</span> {vehicleText(result.normalizedVehicle)}</div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-border bg-bg-card p-5">
+                  <div className="text-xs font-black uppercase text-text-muted">What To Check First</div>
+                  <ol className="mt-3 space-y-3 text-sm leading-6 text-text-secondary">
+                    {(simpleAnswer?.checks || []).map((item, index) => (
+                      <li key={item} className="flex gap-3">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-blue/15 text-xs font-black text-blue">{index + 1}</span>
+                        <span>{item}</span>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+
+                <div className="rounded-lg border border-amber/30 bg-amber/10 p-5">
+                  <div className="text-xs font-black uppercase text-amber">Do Not Assume</div>
+                  <ul className="mt-3 space-y-2 text-sm leading-6 text-amber">
+                    {(simpleAnswer?.dontAssume || []).map(item => <li key={item}>- {item}</li>)}
+                  </ul>
+                </div>
+
+                <div className="rounded-lg border border-green/30 bg-green/10 p-5">
+                  <div className="text-xs font-black uppercase text-green">Recommended Next Action</div>
+                  <p className="mt-3 text-sm leading-6 text-green">{simpleAnswer?.action}</p>
+                </div>
+              </div>
+
+              <aside className="space-y-4">
+                <div className="rounded-lg border border-border bg-bg-card p-4">
+                  <div className="text-xs font-black uppercase text-text-muted">Quick Actions</div>
+                  <div className="mt-3 grid gap-2">
+                    <button className="btn btn-primary btn-sm" onClick={() => setMainTab('Estimate')}>Create Diagnostic Estimate</button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => setMainTab('Sources')}>Show Source Links</button>
+                    <button className="btn btn-secondary btn-sm" onClick={openRepairAi}>Open AI Repair Chat</button>
+                    <button className="btn btn-secondary btn-sm" onClick={saveDraft}>Save Local Note</button>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-border bg-bg-card p-4">
+                  <div className="text-xs font-black uppercase text-text-muted">What We Found</div>
+                  <div className="mt-3 space-y-2 text-sm text-text-secondary">
+                    <div>{result.coverageDashboard.lemonCharmManual === 'found' ? 'Manual source found' : 'Manual source not found'}</div>
+                    <div>{result.coverageDashboard.nhtsaRecalls === 'found' ? 'NHTSA recall data found' : 'NHTSA link ready'}</div>
+                    <div>{result.coverageDashboard.likelyMatches} possible source page{result.coverageDashboard.likelyMatches === 1 ? '' : 's'}</div>
+                    <div>{result.operationLines.length} work item{result.operationLines.length === 1 ? '' : 's'}</div>
+                  </div>
+                </div>
+              </aside>
+            </section>
+          )}
+
+          {mainTab === 'AI Repair' && (
+            <section className="rounded-lg border border-border bg-bg-card p-6">
+              <div className="max-w-3xl">
+                <div className="text-xs font-black uppercase text-blue">AI Repair Chat</div>
+                <h3 className="mt-2 text-xl font-black">Repair-only chat for this job</h3>
+                <p className="mt-3 text-sm leading-6 text-text-secondary">This opens Alpha AI with this vehicle, code/problem, work items, and a repair-only instruction. It will focus on explaining the repair, what to check, and what estimate or diagnostic note to create.</p>
+                <button className="btn btn-primary mt-4" onClick={openRepairAi}>Open AI Repair Chat</button>
+              </div>
+            </section>
+          )}
+
+          {mainTab === 'Sources' && (
+            <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+              <div className="rounded-lg border border-border bg-bg-card p-4">
+                <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div className="text-xs font-black uppercase text-blue">Source Links</div>
+                    <div className="mt-1 text-sm text-text-secondary">Open these only when you need proof, diagrams, TSBs, or manual details.</div>
+                  </div>
+                  <button className="btn btn-secondary btn-sm" onClick={copySources}>Copy Sources</button>
+                </div>
+                <div className="space-y-2">
+                  {result.sources.slice(0, 12).map(item => (
+                    <article key={item.id} className="rounded-lg border border-border bg-bg-hover p-3">
+                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap gap-2">
+                            <span className={`rounded-md border px-2 py-1 text-[10px] font-black ${providerTone(item.provider)}`}>{item.provider}</span>
+                            <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] font-black text-text-secondary">{item.category}</span>
+                          </div>
+                          <h4 className="mt-2 text-sm font-black">{item.title}</h4>
+                          <p className="mt-1 text-xs leading-5 text-text-muted">{item.description}</p>
+                        </div>
+                        {isManualProvider(item)
+                          ? <button className="btn btn-secondary btn-sm shrink-0" onClick={() => { setMainTab('Advanced'); setActiveTab('Procedure Links'); void loadManual(item.url) }}>Preview</button>
+                          : <a className="btn btn-secondary btn-sm shrink-0" href={item.url} target="_blank" rel="noreferrer">Open</a>}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </div>
+              <aside className="rounded-lg border border-border bg-bg-card p-4">
+                <div className="text-xs font-black uppercase text-text-muted">Possible Source Pages</div>
+                <div className="mt-3 space-y-2">
+                  {result.manualMatches.slice(0, 8).map(match => (
+                    <button key={match.url} className={`block w-full rounded-lg border p-3 text-left ${matchTone(match.matchType)}`} onClick={() => { setMainTab('Advanced'); setActiveTab('Procedure Links'); void loadManual(match.url) }}>
+                      <span className="block text-sm font-black">{match.title}</span>
+                      <span className="mt-1 block text-xs opacity-80">{match.provider} / {match.matchType.replace(/_/g, ' ')}</span>
+                    </button>
+                  ))}
+                  {result.manualMatches.length === 0 && <div className="text-sm text-text-muted">No deep source page match yet.</div>}
+                </div>
+              </aside>
+            </section>
+          )}
+
+          {mainTab === 'Estimate' && (
+            <section className="rounded-lg border border-border bg-bg-card p-5">
+              <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+                <div className="space-y-4">
+                  <div>
+                    <div className="text-xs font-black uppercase text-blue">Estimate Builder</div>
+                    <h3 className="mt-2 text-xl font-black">{result.estimateDraft.totalLocked ? `Locked total ${money(result.estimateDraft.targetTotal)}` : 'Enter a diagnostic or repair total'}</h3>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <input className="form-input" placeholder="Customer name" value={customerName} onChange={e => setCustomerName(e.target.value)} />
+                    <input className="form-input" placeholder="Total, e.g. 430" value={lockedTotal} onChange={e => setLockedTotal(e.target.value)} />
+                    <input className="form-input" placeholder="Customer email" value={customerEmail} onChange={e => setCustomerEmail(e.target.value)} />
+                    <input className="form-input" placeholder="Customer phone" value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} />
+                  </div>
+                  <div className="rounded-lg border border-border bg-bg-hover p-4">
+                    <div className="text-sm font-black">Work Items</div>
+                    <div className="mt-3 space-y-2">
+                      {(estimateDraftForCurrentTotal()?.labors || []).map((line, index) => (
+                        <div key={`${line.operation}-${index}`} className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-white/[0.025] px-3 py-2 text-sm">
+                          <span>{String(line.operation)}</span>
+                          <span className="font-black">{money(typeof line.amount === 'number' ? line.amount : null)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <button className="btn btn-primary" onClick={() => void createEstimate()} disabled={creatingEstimate || !lockedTotal.trim()}>{creatingEstimate ? 'Creating...' : 'Create Estimate Draft'}</button>
+                  {estimateMessage && <div className="rounded-lg border border-border bg-bg-hover p-3 text-sm text-text-secondary">{estimateMessage}</div>}
+                </div>
+                <aside className="rounded-lg border border-amber/30 bg-amber/10 p-4">
+                  <div className="text-xs font-black uppercase text-amber">Before Saving</div>
+                  <ul className="mt-3 space-y-2 text-sm leading-6 text-amber">
+                    <li>- Verify the vehicle and source links.</li>
+                    <li>- Use a diagnostic total for DTC work unless the failed part is proven.</li>
+                    <li>- The app will not save a zero-dollar estimate.</li>
+                  </ul>
+                </aside>
+              </div>
+            </section>
+          )}
+
+          {mainTab === 'Advanced' && (
+            <>
+          <section className="rounded-lg border border-border bg-bg-card/95 p-4 shadow-xl">
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -913,6 +1197,8 @@ export default function RepairPage() {
               </section>
             </aside>
           </section>
+            </>
+          )}
         </>
       )}
 
