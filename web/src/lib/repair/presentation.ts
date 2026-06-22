@@ -1,6 +1,7 @@
 import type { RepairManualMatch, RepairSearchResult, RepairSource } from './sources'
 
-export type RepairActionKind = 'diagnostic' | 'removal' | 'wiring' | 'fuse' | 'spec' | 'manual' | 'workspace'
+export type RepairActionKind = 'diagnostic' | 'removal' | 'wiring' | 'fuse' | 'spec' | 'manual' | 'estimate' | 'workspace'
+export type RepairPrimaryIntent = 'diagnostic' | 'removal' | 'diagram' | 'fuse' | 'spec' | 'estimate' | 'general'
 
 export interface RepairActionLink {
   kind: RepairActionKind
@@ -9,6 +10,22 @@ export interface RepairActionLink {
   url: string
   confidence: 'exact' | 'closest' | 'manual_choice'
   provider?: string
+}
+
+export interface RepairVehicleChoice {
+  label: string
+  detail: string
+  url: string
+  provider?: string
+  selectionQuery: string
+}
+
+export interface RepairJobCard {
+  vehicle: string
+  problem: string
+  risk: string
+  sourceState: string
+  estimateState: string
 }
 
 interface RepairGuide {
@@ -91,6 +108,16 @@ export function repairTextMatchesFocus(value: string, guide?: RepairGuide) {
   return guide.requiredTerms.some(term => text.includes(term))
 }
 
+function repairIntentFor(query: string): RepairPrimaryIntent {
+  if (/\b(wiring|diagram|schematic|pinout|connector|o2\s*sensor|oxygen\s*sensor)\b/i.test(query)) return 'diagram'
+  if (/\b(fuse|relay|fuse\s*box|junction\s*box)\b/i.test(query)) return 'fuse'
+  if (/\b(removal|remove|install|installation|replace|replacement|procedure|steps?)\b/i.test(query)) return 'removal'
+  if (/\b(torque|spec|specs|capacity|fluid)\b/i.test(query)) return 'spec'
+  if (/\b(estimate|invoice|quote|price|labor|total|\$\d+)\b/i.test(query)) return 'estimate'
+  if (detectRepairDtc(query) || /\b(diagnos|diagnostic|test|testing|check|symptom|code|dtc)\b/i.test(query)) return 'diagnostic'
+  return 'general'
+}
+
 function matchText(match: RepairManualMatch) {
   return `${match.title} ${match.path?.join(' ')} ${match.url}`
 }
@@ -128,12 +155,20 @@ function linkFromMatch(kind: RepairActionKind, label: string, detail: string, ma
   }
 }
 
-function manualChoiceLinks(sources: RepairSource[]) {
+function cleanedManualLabel(title: string) {
+  return title
+    .replace(/^LEMON:\s*/i, '')
+    .replace(/^CHARM:\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function manualChoiceLinks(sources: RepairSource[]): RepairActionLink[] {
   return sources
     .filter(item => item.provider === 'LEMON' || item.provider === 'CHARM')
     .map(item => ({
       kind: 'manual' as const,
-      label: item.title.replace(/^LEMON:\s*/i, '').replace(/^CHARM:\s*/i, ''),
+      label: cleanedManualLabel(item.title),
       detail: 'Choose this manual if it matches the exact engine/trim.',
       url: item.url,
       confidence: 'manual_choice' as const,
@@ -141,6 +176,16 @@ function manualChoiceLinks(sources: RepairSource[]) {
     }))
     .filter((item, index, all) => item.label && all.findIndex(other => other.url === item.url) === index)
     .slice(0, 5)
+}
+
+function vehicleChoicesFor(query: string, sources: RepairSource[]): RepairVehicleChoice[] {
+  return manualChoiceLinks(sources).map(link => ({
+    label: link.label,
+    detail: link.provider ? `${link.provider} manual. Pick this only if it matches the car.` : 'Pick this only if it matches the car.',
+    url: link.url,
+    provider: link.provider,
+    selectionQuery: `${query} ${link.label}`.replace(/\s+/g, ' ').trim(),
+  }))
 }
 
 function closestManualLink(sources: RepairSource[], guide?: RepairGuide) {
@@ -157,10 +202,58 @@ function closestManualLink(sources: RepairSource[], guide?: RepairGuide) {
   }
 }
 
+function orderActionLinks(links: RepairActionLink[], intent: RepairPrimaryIntent) {
+  const rank: Record<RepairActionKind, number> = {
+    diagnostic: intent === 'diagnostic' ? 0 : 1,
+    wiring: intent === 'diagram' ? 0 : 3,
+    fuse: intent === 'fuse' ? 0 : 4,
+    removal: intent === 'removal' ? 0 : 2,
+    spec: intent === 'spec' ? 0 : 5,
+    manual: 8,
+    estimate: intent === 'estimate' ? 0 : 9,
+    workspace: 10,
+  }
+  return [...links].sort((a, b) => (rank[a.kind] ?? 99) - (rank[b.kind] ?? 99))
+}
+
+function actionLabelFor(intent: RepairPrimaryIntent, needsExactVehicle: boolean) {
+  if (needsExactVehicle) return 'Pick Exact Vehicle First'
+  if (intent === 'diagram') return 'Open Diagram Info'
+  if (intent === 'removal') return 'Open Removal Info'
+  if (intent === 'fuse') return 'Open Fuse/Relay Info'
+  if (intent === 'spec') return 'Open Specs'
+  if (intent === 'estimate') return 'Build Estimate From This'
+  return 'Open The Info'
+}
+
+function sourceStateFor(data: RepairSearchResult) {
+  if (data.coverageDashboard?.exactMatches > 0) return `${data.coverageDashboard.exactMatches} exact source candidate(s)`
+  if (data.coverageDashboard?.diagrams > 0) return `${data.coverageDashboard.diagrams} diagram/spec candidate(s)`
+  if (data.coverageDashboard?.likelyMatches > 0) return `${data.coverageDashboard.likelyMatches} likely source section(s)`
+  if (data.workflow?.coverage?.hasManual) return 'manual source found, exact page not confirmed'
+  return 'no verified manual source yet'
+}
+
+function estimateStateFor(data: RepairSearchResult) {
+  if (data.estimateDraft?.totalLocked) return `locked total ${data.estimateDraft.targetTotal ?? ''}`.trim()
+  if (data.operationLines?.length) return `${data.operationLines.length} item(s) ready for estimate draft`
+  return 'needs price or diagnostic total'
+}
+
+function askNextFor(intent: RepairPrimaryIntent, dtc: string) {
+  if (intent === 'diagram') return ['show me testing steps', 'show me removal', 'build a diagnostic estimate']
+  if (intent === 'removal') return ['show me diagram', 'show me specs', 'build an estimate']
+  if (intent === 'fuse') return ['show me wiring', 'show me connector location', 'show me testing steps']
+  if (intent === 'spec') return ['show me removal', 'show me diagram', 'build an estimate']
+  if (dtc) return ['show me removal', 'show me diagram', 'build a diagnostic estimate']
+  return ['show me diagram', 'show me removal', 'build an estimate']
+}
+
 export function buildRepairPresentation(query: string, data: RepairSearchResult) {
   const vehicle = repairVehicleLabel(data.normalizedVehicle)
   const dtc = detectRepairDtc(`${query} ${data.query}`)
   const guide = dtc ? REPAIR_DTC_GUIDES[dtc] : undefined
+  const primaryIntent = repairIntentFor(query)
   const firstOperation = data.operationLines?.[0]
   const title = guide ? `${dtc}: ${guide.meaning}` : (firstOperation?.label || data.draft?.operation || data.draft?.title || query)
   const checks = guide?.checks || data.draft?.checklist?.slice(0, 5) || ['Open the source and verify the exact vehicle before quoting or starting work.']
@@ -186,31 +279,51 @@ export function buildRepairPresentation(query: string, data: RepairSearchResult)
   const directLinks = [diagnostic, removal, wiring, fuse, spec].filter(Boolean) as RepairActionLink[]
   const manualFallback = closestManualLink(sources, guide)
   const manualChoices = manualChoiceLinks(sources)
+  const vehicleChoices = vehicleChoicesFor(query, sources)
   const actionLinks = needsExactVehicle
     ? manualChoices
     : directLinks.length
-      ? [...directLinks, ...(manualFallback ? [manualFallback] : [])].slice(0, 5)
+      ? orderActionLinks([...directLinks, ...(manualFallback ? [manualFallback] : [])], primaryIntent).slice(0, 5)
       : (manualFallback ? [manualFallback] : [])
 
   const plainAnswer = guide
     ? `${dtc} on ${vehicle} means ${guide.meaning.toLowerCase()} Start with testing before selling parts.`
     : `${title} for ${vehicle}. Start by verifying the exact vehicle and opening the closest source page.`
+  const sourceState = sourceStateFor(data)
+  const estimateState = estimateStateFor(data)
+  const mechanicSummary = [
+    plainAnswer,
+    needsExactVehicle ? 'Pick the exact engine/trim before trusting diagrams, removal steps, or specs.' : '',
+    `Source status: ${sourceState}.`,
+  ].filter(Boolean).join(' ')
 
   return {
     dtc,
     guide,
+    primaryIntent,
     vehicle,
     title,
     plainAnswer,
+    mechanicSummary,
     checks,
     dontAssume,
     action,
     missingVehicle,
     confidence,
     needsExactVehicle,
+    primaryActionLabel: actionLabelFor(primaryIntent, needsExactVehicle),
     actionLinks,
     directLinks,
     manualChoices,
+    vehicleChoices,
+    askNext: askNextFor(primaryIntent, dtc),
+    jobCard: {
+      vehicle,
+      problem: title,
+      risk: data.safetyProfile?.level || 'standard',
+      sourceState,
+      estimateState,
+    } satisfies RepairJobCard,
     sources: sources.filter(item => isFocusedSource(item, guide)).slice(0, 5),
   }
 }

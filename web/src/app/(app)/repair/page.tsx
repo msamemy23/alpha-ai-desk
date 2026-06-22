@@ -382,13 +382,15 @@ export default function RepairPage() {
     window.location.href = '/ai'
   }
 
-  const openRepairAi = () => {
+  const openRepairAi = (followup?: string) => {
     if (!result) return
     const lines = [
       'REPAIR ONLY MODE. Stay focused on this repair/diagnostic problem and do not switch to general shop tasks unless I ask to leave repair mode.',
       `Vehicle: ${vehicleText(result.normalizedVehicle)}`,
       simpleAnswer?.dtc ? `Code: ${simpleAnswer.dtc}` : '',
       `Problem: ${simpleAnswer?.title || result.draft.operation}`,
+      repairView?.mechanicSummary ? `Current answer: ${repairView.mechanicSummary}` : '',
+      followup ? `Next question: ${followup}` : '',
       '',
       'Explain this in plain English for a mechanic. Give me:',
       '1. What it means',
@@ -402,7 +404,7 @@ export default function RepairPage() {
       'Important: do not invent torque specs, labor times, wiring pinouts, or protected procedure text.',
     ].filter(Boolean)
     localStorage.setItem('ai_repair_mode', 'true')
-    localStorage.setItem('ai_prefill', lines.join('\n'))
+    localStorage.setItem('ai_prefill', followup || lines.join('\n'))
     window.location.href = '/ai?mode=repair'
   }
 
@@ -601,12 +603,17 @@ export default function RepairPage() {
                   </span>
                 </div>
                 <h2 className="mt-3 text-2xl font-black">{vehicleText(result.normalizedVehicle)}</h2>
-                <p className="mt-2 text-sm leading-6 text-text-secondary">{simpleAnswer?.title}</p>
+                <p className="mt-2 text-sm leading-6 text-text-secondary">{repairView?.mechanicSummary || simpleAnswer?.title}</p>
+                {repairView?.needsExactVehicle && (
+                  <div className="mt-3 rounded-md border border-amber/30 bg-amber/10 px-3 py-2 text-xs font-bold text-amber">
+                    Pick the exact engine/trim before using diagrams, specs, or removal steps.
+                  </div>
+                )}
               </div>
               <div className="flex flex-wrap gap-2">
                 <button className="btn btn-primary btn-sm" onClick={() => setMainTab('Estimate')}>Create Estimate</button>
                 <button className="btn btn-secondary btn-sm" onClick={() => setMainTab('Sources')}>Open Sources</button>
-                <button className="btn btn-secondary btn-sm" onClick={openRepairAi}>Ask AI Repair</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => openRepairAi()}>Ask AI Repair</button>
               </div>
             </div>
           </section>
@@ -639,18 +646,35 @@ export default function RepairPage() {
                 </div>
 
                 <div className="rounded-lg border border-border bg-bg-card p-5">
-                  <div className="text-xs font-black uppercase text-blue">{repairView?.needsExactVehicle ? 'Pick The Exact Manual' : 'Open The Info'}</div>
+                  <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="text-xs font-black uppercase text-blue">{repairView?.primaryActionLabel || (repairView?.needsExactVehicle ? 'Pick Exact Vehicle First' : 'Open The Info')}</div>
+                    {repairView?.needsExactVehicle && <div className="text-xs font-bold text-amber">Choose the matching manual first.</div>}
+                  </div>
                   <div className="mt-3 grid gap-2 md:grid-cols-2">
                     {(repairView?.actionLinks || []).map(link => (
                       <a key={`${link.kind}-${link.url}`} href={link.url} target="_blank" rel="noreferrer" className="rounded-md border border-white/10 bg-bg-hover p-3 transition-colors hover:border-blue/50 hover:bg-blue/10">
                         <span className="block text-sm font-black text-text-primary">{link.label}</span>
                         <span className="mt-1 block text-xs leading-5 text-text-secondary">{link.detail}</span>
-                        <span className="mt-2 inline-flex rounded border border-white/10 px-2 py-1 text-[10px] font-black uppercase text-text-muted">{link.confidence.replace('_', ' ')}</span>
+                        <span className="mt-2 inline-flex rounded border border-white/10 px-2 py-1 text-[10px] font-black uppercase text-text-muted">{link.confidence.replace('_', ' ')}{link.provider ? ` / ${link.provider}` : ''}</span>
                       </a>
                     ))}
                     {!repairView?.actionLinks.length && <div className="text-sm text-text-muted">No direct source page found yet. Use Advanced sources to narrow the manual.</div>}
                   </div>
                 </div>
+
+                {repairView?.needsExactVehicle && repairView.vehicleChoices.length > 0 && (
+                  <div className="rounded-lg border border-amber/30 bg-amber/10 p-5">
+                    <div className="text-xs font-black uppercase text-amber">Exact Vehicle Choices</div>
+                    <div className="mt-3 grid gap-2 md:grid-cols-2">
+                      {repairView.vehicleChoices.map(choice => (
+                        <a key={choice.url} href={choice.url} target="_blank" rel="noreferrer" className="rounded-md border border-amber/25 bg-bg-card/60 p-3 transition-colors hover:border-amber/60">
+                          <span className="block text-sm font-black text-text-primary">{choice.label}</span>
+                          <span className="mt-1 block text-xs leading-5 text-text-secondary">{choice.detail}</span>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <div className="rounded-lg border border-border bg-bg-card p-5">
                   <div className="text-xs font-black uppercase text-text-muted">What To Check First</div>
@@ -671,8 +695,16 @@ export default function RepairPage() {
                   <div className="mt-3 grid gap-2">
                     <button className="btn btn-primary btn-sm" onClick={() => setMainTab('Estimate')}>Create Diagnostic Estimate</button>
                     <button className="btn btn-secondary btn-sm" onClick={() => setMainTab('Sources')}>Show Source Links</button>
-                    <button className="btn btn-secondary btn-sm" onClick={openRepairAi}>Open AI Repair Chat</button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => openRepairAi()}>Open AI Repair Chat</button>
                     <button className="btn btn-secondary btn-sm" onClick={saveDraft}>Save Local Note</button>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-border bg-bg-card p-4">
+                  <div className="text-xs font-black uppercase text-text-muted">Repair Card</div>
+                  <div className="mt-3 space-y-2 text-xs text-text-secondary">
+                    <div><span className="font-black text-text-primary">Problem:</span> {repairView?.jobCard.problem || result.draft.operation}</div>
+                    <div><span className="font-black text-text-primary">Source:</span> {repairView?.jobCard.sourceState || 'source needs review'}</div>
+                    <div><span className="font-black text-text-primary">Estimate:</span> {repairView?.jobCard.estimateState || 'needs price'}</div>
                   </div>
                 </div>
                 <div className="rounded-lg border border-green/30 bg-green/10 p-4">
@@ -685,6 +717,16 @@ export default function RepairPage() {
                     {(repairView?.dontAssume || simpleAnswer?.dontAssume || []).slice(0, 2).map(item => <div key={item}>- {item}</div>)}
                   </div>
                 </div>
+                <div className="rounded-lg border border-border bg-bg-card p-4">
+                  <div className="text-xs font-black uppercase text-text-muted">Ask Next</div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {(repairView?.askNext || []).map(item => (
+                      <button key={item} className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-xs font-bold text-text-secondary hover:border-green/40 hover:text-text-primary" onClick={() => openRepairAi(item)}>
+                        {item}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </aside>
             </section>
           )}
@@ -695,7 +737,7 @@ export default function RepairPage() {
                 <div className="text-xs font-black uppercase text-blue">AI Repair Chat</div>
                 <h3 className="mt-2 text-xl font-black">Repair-only chat for this job</h3>
                 <p className="mt-3 text-sm leading-6 text-text-secondary">This opens Alpha AI with this vehicle, code/problem, work items, and a repair-only instruction. It will focus on explaining the repair, what to check, and what estimate or diagnostic note to create.</p>
-                <button className="btn btn-primary mt-4" onClick={openRepairAi}>Open AI Repair Chat</button>
+                <button className="btn btn-primary mt-4" onClick={() => openRepairAi()}>Open AI Repair Chat</button>
               </div>
             </section>
           )}

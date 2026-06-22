@@ -515,33 +515,10 @@ function formatPartsLookupText(query: string, data: any, browserResult?: Desktop
 }
 
 function formatRepairSearchText(query: string, data: any) {
-  const vehicle = [data?.normalizedVehicle?.year, data?.normalizedVehicle?.make, data?.normalizedVehicle?.model, data?.normalizedVehicle?.trim, data?.normalizedVehicle?.engine].filter(Boolean).join(' ') || 'vehicle not fully identified'
-  const sources = Array.isArray(data?.sources) ? data.sources : []
-  const matches = Array.isArray(data?.manualMatches) ? data.manualMatches : []
-  const operations = Array.isArray(data?.operationLines) ? data.operationLines : []
-  const draft = data?.draft || {}
-  const confidence = data?.workflow?.vehicleMatch?.confidence
-  const risk = data?.safetyProfile?.level || 'standard'
-  const topSources = sources.slice(0, 8).map((item: any, index: number) => {
-    const label = [item.provider, item.category, item.confidence].filter(Boolean).join(' - ')
-    return `${index + 1}. ${item.title || 'Source'}\n   ${label}\n   ${item.url || ''}`
-  }).join('\n')
-  const topMatches = matches.slice(0, 5).map((item: any, index: number) =>
-    `${index + 1}. ${item.title || 'Manual match'}\n   ${item.provider || ''} - ${(item.matchType || '').replace(/_/g, ' ')} - score ${item.score ?? 0}\n   ${item.url || ''}`
-  ).join('\n')
-  const operationText = operations.slice(0, 6).map((item: any) =>
-    `- ${item.label || 'Operation'} (${item.system || 'system unknown'}, ${item.risk || 'standard'} risk, ${String(item.sourceStatus || 'needs_source').replace(/_/g, ' ')})`
-  ).join('\n')
-  const checklist = Array.isArray(draft.checklist)
-    ? draft.checklist.slice(0, 6).map((item: string) => `- ${item}`).join('\n')
-    : ''
-  const estimateState = data?.estimateDraft?.totalLocked
-    ? `Estimate draft: locked total $${Number(data.estimateDraft.targetTotal || 0).toFixed(2)} allocated across operation lines.`
-    : 'Estimate draft: not price-ready yet. Ask for a locked total or verified line pricing before saving.'
-  const warnings = Array.isArray(data?.warnings) && data.warnings.length
-    ? `\n\nWarnings:\n${data.warnings.map((item: string) => `- ${item}`).join('\n')}`
-    : ''
-  return `Repair research for "${query}"\nVehicle: ${vehicle}${typeof confidence === 'number' ? ` (${confidence}% confidence)` : ''}\nRisk: ${risk}\n\nOperation lines:\n${operationText || '- No structured operation lines identified yet.'}\n\nDeep manual matches:\n${topMatches || 'No exact deep match verified yet. Open source links and verify manually.'}\n\nTop source links:\n${topSources || 'No source links verified.'}\n\n${estimateState}\n\nShop draft: ${draft.title || query}\nStatus: technician verification required. I will not invent torque specs, labor times, wiring pinouts, or step-by-step procedures without a source.\n\nChecklist:\n${checklist || '- Open and verify the matching source before quoting or starting work.'}${warnings}\n\nOpen the Repair page for the full workspace, diagram viewer, procedure cards, and estimate builder.`
+  const view = buildRepairPresentation(query, data as RepairSearchResult)
+  const checks = view.checks.slice(0, 3).map((item: string) => `- ${item}`).join('\n')
+  const links = view.actionLinks.slice(0, 3).map(link => `- ${link.label}: ${link.url}`).join('\n')
+  return `${view.mechanicSummary}\n\nWhat to check first:\n${checks || '- Verify the exact vehicle and source first.'}\n\n${view.primaryActionLabel}:\n${links || '- Open the Repair Workspace and narrow the source.'}\n\nNext: ${view.action}`
 }
 
 const REPAIR_ANCHOR_TERMS = /\b(?:repair|diagnos|diagnostic|dtc|code|manual|procedure|removal|remove|install|replace|diagram|wiring|schematic|pinout|spec|torque|tsb|recall|symptom|check engine|misfire|brake|brakes|rotor|pad|caliper|control arm|strut|shock|coolant|radiator|thermostat|reservoir|alternator|starter|sensor|oxygen|catalytic|converter|suspension|steering|airbag|adas|hybrid|ev)\b/i
@@ -595,7 +572,7 @@ function buildRepairLookupQuery(text: string, lastContext: RepairChatResult | nu
   return trimmed
 }
 
-function RepairResultCard({ result }: { result: RepairChatResult }) {
+function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onAskNext?: (text: string) => void }) {
   const { query, data } = result
   const view = buildRepairPresentation(query, data)
 
@@ -611,6 +588,7 @@ function RepairResultCard({ result }: { result: RepairChatResult }) {
               <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1">{view.vehicle}</span>
               {view.needsExactVehicle && <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-amber">needs exact engine/trim for exact diagrams</span>}
               <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-amber">{data.safetyProfile?.level || 'standard'} risk</span>
+              <span className="rounded-md border border-blue/30 bg-blue/10 px-2 py-1 text-blue">{view.jobCard.sourceState}</span>
             </div>
           </div>
           <button
@@ -623,18 +601,35 @@ function RepairResultCard({ result }: { result: RepairChatResult }) {
       </div>
 
       <section className="rounded-lg border border-border bg-bg-hover p-4">
-        <div className="text-xs font-black uppercase text-blue">{view.needsExactVehicle ? 'Pick The Exact Manual' : 'Open The Info'}</div>
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-xs font-black uppercase text-blue">{view.primaryActionLabel}</div>
+          {view.needsExactVehicle && <div className="text-xs font-bold text-amber">Pick one before trusting diagrams, specs, or removal steps.</div>}
+        </div>
         <div className="mt-3 grid gap-2 md:grid-cols-2">
           {view.actionLinks.map(link => (
             <a key={`${link.kind}-${link.url}`} href={link.url} target="_blank" rel="noreferrer" className="rounded-md border border-white/10 bg-white/[0.035] p-3 transition-colors hover:border-blue/50 hover:bg-blue/10">
               <span className="block font-black text-text-primary">{link.label}</span>
               <span className="mt-1 block text-xs leading-5 text-text-secondary">{link.detail}</span>
-              <span className="mt-2 inline-flex rounded border border-white/10 px-2 py-1 text-[10px] font-black uppercase text-text-muted">{link.confidence.replace('_', ' ')}</span>
+              <span className="mt-2 inline-flex rounded border border-white/10 px-2 py-1 text-[10px] font-black uppercase text-text-muted">{link.confidence.replace('_', ' ')}{link.provider ? ` / ${link.provider}` : ''}</span>
             </a>
           ))}
           {!view.actionLinks.length && <div className="text-text-muted">I did not find a useful direct page yet. Open the Repair Workspace so we can narrow the vehicle/source.</div>}
         </div>
       </section>
+
+      {view.needsExactVehicle && view.vehicleChoices.length > 0 && (
+        <section className="rounded-lg border border-amber/30 bg-amber/10 p-4">
+          <div className="text-xs font-black uppercase text-amber">Exact Vehicle Choices</div>
+          <div className="mt-3 grid gap-2 md:grid-cols-2">
+            {view.vehicleChoices.map(choice => (
+              <a key={choice.url} href={choice.url} target="_blank" rel="noreferrer" className="rounded-md border border-amber/25 bg-bg-card/60 p-3 transition-colors hover:border-amber/60">
+                <span className="block text-sm font-black text-text-primary">{choice.label}</span>
+                <span className="mt-1 block text-xs leading-5 text-text-secondary">{choice.detail}</span>
+              </a>
+            ))}
+          </div>
+        </section>
+      )}
 
       <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_300px]">
         <section className="rounded-lg border border-border bg-bg-hover p-4">
@@ -650,6 +645,15 @@ function RepairResultCard({ result }: { result: RepairChatResult }) {
         </section>
 
         <aside className="space-y-3">
+          <section className="rounded-lg border border-border bg-bg-hover p-4">
+            <div className="text-xs font-black uppercase text-text-muted">Repair Card</div>
+            <div className="mt-3 space-y-2 text-xs text-text-secondary">
+              <div><span className="font-black text-text-primary">Problem:</span> {view.jobCard.problem}</div>
+              <div><span className="font-black text-text-primary">Source:</span> {view.jobCard.sourceState}</div>
+              <div><span className="font-black text-text-primary">Estimate:</span> {view.jobCard.estimateState}</div>
+            </div>
+          </section>
+
           <section className="rounded-lg border border-green/30 bg-green/10 p-4">
             <div className="text-xs font-black uppercase text-green">Next Shop Action</div>
             <p className="mt-2 leading-6 text-green">{view.action}</p>
@@ -660,6 +664,17 @@ function RepairResultCard({ result }: { result: RepairChatResult }) {
             <ul className="mt-3 space-y-2 text-amber">
               {view.dontAssume.slice(0, 2).map(item => <li key={item}>- {item}</li>)}
             </ul>
+          </section>
+
+          <section className="rounded-lg border border-border bg-bg-hover p-4">
+            <div className="text-xs font-black uppercase text-text-muted">Ask Next</div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {view.askNext.map(item => (
+                <button key={item} className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-xs font-bold text-text-secondary hover:border-green/40 hover:text-text-primary" onClick={() => onAskNext?.(item)}>
+                  {item}
+                </button>
+              ))}
+            </div>
           </section>
         </aside>
       </div>
@@ -3124,7 +3139,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
                 </details>
               )}
               {m.repairResult
-                ? <RepairResultCard result={m.repairResult} />
+                ? <RepairResultCard result={m.repairResult} onAskNext={(text) => { setRepairOnlyMode(true); localStorage.setItem('ai_repair_mode', 'true'); setInput(text) }} />
                 : m.role === 'browser' && m.browserSteps
                   ? <BrowserPanel steps={m.browserSteps} />
                   : m.html
