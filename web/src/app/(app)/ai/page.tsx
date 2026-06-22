@@ -6,6 +6,7 @@ import { classifyRequest, type RouteDecision } from '@/lib/ai/router'
 import { normalizeDocumentDraft } from '@/lib/ai/document-draft'
 import { getLaborFlatAmount, laborLineTotal, partLineTotal } from '@/lib/document-money'
 import type { RepairSearchResult } from '@/lib/repair/sources'
+import { buildRepairPresentation, detectRepairDtc, repairVehicleLabel, repairWorkspaceUrl, REPAIR_DTC_GUIDES } from '@/lib/repair/presentation'
 import {
   formatBrowserOpenResult,
   formatDownloadResult,
@@ -543,59 +544,8 @@ function formatRepairSearchText(query: string, data: any) {
   return `Repair research for "${query}"\nVehicle: ${vehicle}${typeof confidence === 'number' ? ` (${confidence}% confidence)` : ''}\nRisk: ${risk}\n\nOperation lines:\n${operationText || '- No structured operation lines identified yet.'}\n\nDeep manual matches:\n${topMatches || 'No exact deep match verified yet. Open source links and verify manually.'}\n\nTop source links:\n${topSources || 'No source links verified.'}\n\n${estimateState}\n\nShop draft: ${draft.title || query}\nStatus: technician verification required. I will not invent torque specs, labor times, wiring pinouts, or step-by-step procedures without a source.\n\nChecklist:\n${checklist || '- Open and verify the matching source before quoting or starting work.'}${warnings}\n\nOpen the Repair page for the full workspace, diagram viewer, procedure cards, and estimate builder.`
 }
 
-const REPAIR_DTC_GUIDES: Record<string, RepairDtcGuide> = {
-  P0420: {
-    meaning: 'Catalyst system efficiency below threshold, Bank 1.',
-    checks: [
-      'Confirm freeze-frame data and check for other engine, fuel trim, or misfire codes.',
-      'Inspect for exhaust leaks before or near the catalytic converter.',
-      'Compare upstream and downstream oxygen sensor activity on a fully warm engine.',
-      'Check fuel trims, coolant temp, misfire history, and oil/coolant contamination.',
-      'Verify converter condition only after the basic checks pass.',
-    ],
-    dontAssume: [
-      'Do not sell a catalytic converter just because P0420 is stored.',
-      'Do not replace oxygen sensors until signal behavior and exhaust leaks are checked.',
-    ],
-    action: 'Create a diagnostic estimate first, then quote converter or sensor work only after testing proves it.',
-    focusTerms: 'catalyst system catalytic converter exhaust oxygen sensor emissions diagnosis',
-    removalTerms: 'catalytic converter exhaust oxygen sensor removal procedure',
-    requiredTerms: ['catalyst', 'catalytic', 'converter', 'exhaust', 'oxygen', 'o2', 'emission', 'sensor', 'diagnostic trouble code'],
-  },
-  P0300: {
-    meaning: 'Random or multiple cylinder misfire detected.',
-    checks: [
-      'Read freeze-frame data, pending codes, and cylinder misfire counters.',
-      'Inspect plugs, coils, vacuum leaks, compression, injector operation, and fuel pressure.',
-      'Check for relevant TSBs before replacing parts.',
-    ],
-    dontAssume: ['Do not replace all coils until the failed cylinder or system is verified.'],
-    action: 'Start with diagnostic labor and document test results before parts.',
-    focusTerms: 'random multiple cylinder misfire ignition fuel compression firing order cylinder order diagnosis',
-    removalTerms: 'spark plug ignition coil injector misfire firing order cylinder order removal testing procedure',
-    requiredTerms: ['misfire', 'ignition', 'spark', 'coil', 'injector', 'compression', 'fuel', 'firing', 'order', 'cylinder'],
-  },
-  P0171: {
-    meaning: 'System too lean, Bank 1.',
-    checks: [
-      'Check fuel trims at idle and under load.',
-      'Inspect for vacuum leaks, intake leaks, PCV issues, exhaust leaks, and weak fuel delivery.',
-      'Verify MAF readings and oxygen sensor response.',
-    ],
-    dontAssume: ['Do not replace oxygen sensors just because the mixture is lean.'],
-    action: 'Quote diagnosis first, then parts after trim data confirms the cause.',
-    focusTerms: 'system too lean fuel trim vacuum leak maf oxygen sensor diagnosis',
-    removalTerms: 'maf sensor oxygen sensor intake vacuum leak removal testing procedure',
-    requiredTerms: ['lean', 'fuel trim', 'vacuum', 'intake', 'maf', 'oxygen', 'sensor'],
-  },
-}
-
 const REPAIR_ANCHOR_TERMS = /\b(?:repair|diagnos|diagnostic|dtc|code|manual|procedure|removal|remove|install|replace|diagram|wiring|schematic|pinout|spec|torque|tsb|recall|symptom|check engine|misfire|brake|brakes|rotor|pad|caliper|control arm|strut|shock|coolant|radiator|thermostat|reservoir|alternator|starter|sensor|oxygen|catalytic|converter|suspension|steering|airbag|adas|hybrid|ev)\b/i
 const REPAIR_FOLLOWUP_TERMS = /\b(?:order|firing\s+order|cylinder\s+order|cylinder\s+layout|plug\s+wire|coil|fuse|fuses|fuse\s+box|relay|relays|location|where|diagram|wiring|schematic|pinout|removal|remove|install|replace|replacement|procedure|steps?|spec|torque|test|testing|check|checks?)\b/i
-
-function detectRepairDtc(value: string) {
-  return value.match(/\b[PCBU][0-9A-F]{4}\b/i)?.[0]?.toUpperCase() || ''
-}
 
 function hasRepairAnchor(value: string) {
   return REPAIR_ANCHOR_TERMS.test(value) || REPAIR_FOLLOWUP_TERMS.test(value) || /\b(?:19|20)?\d{2}\b/.test(value) || /\b[PCBU][0-9A-F]{4}\b/i.test(value) || /\b[A-HJ-NPR-Z0-9]{17}\b/i.test(value)
@@ -645,71 +595,21 @@ function buildRepairLookupQuery(text: string, lastContext: RepairChatResult | nu
   return trimmed
 }
 
-function repairVehicleLabel(vehicle: RepairSearchResult['normalizedVehicle']) {
-  return [vehicle?.year, vehicle?.make, vehicle?.model, vehicle?.trim, vehicle?.engine].filter(Boolean).join(' ') || 'Vehicle not fully identified'
-}
-
-function repairWorkspaceUrl(query: string) {
-  return `/repair?query=${encodeURIComponent(query)}`
-}
-
-function repairTextMatchesFocus(value: string, guide?: RepairDtcGuide) {
-  if (!guide) return true
-  const normalized = value.toLowerCase().replace(/[-_]+/g, ' ')
-  return guide.requiredTerms.some(term => normalized.includes(term))
-}
-
-function repairSourceMatchesFocus(source: RepairSearchResult['sources'][number], guide?: RepairDtcGuide) {
-  if (!guide) return true
-  if (source.provider === 'LEMON' || source.provider === 'CHARM' || source.provider === 'NHTSA' || source.provider === 'OEM1Stop') return true
-  return repairTextMatchesFocus(`${source.title} ${source.description} ${source.url}`, guide)
-}
-
 function RepairResultCard({ result }: { result: RepairChatResult }) {
   const { query, data } = result
-  const vehicle = repairVehicleLabel(data.normalizedVehicle)
-  const dtc = detectRepairDtc(`${query} ${data.query}`)
-  const dtcGuide = dtc ? REPAIR_DTC_GUIDES[dtc] : undefined
-  const firstOperation = data.operationLines?.[0]
-  const title = dtcGuide ? `${dtc}: ${dtcGuide.meaning}` : (firstOperation?.label || data.draft?.operation || data.draft?.title || query)
-  const checks = dtcGuide?.checks || data.draft?.checklist?.slice(0, 5) || ['Open a source and verify the exact vehicle before quoting or starting work.']
-  const dontAssume = dtcGuide?.dontAssume || [
-    'Do not invent torque specs, wiring pinouts, labor times, or protected procedure text.',
-    'Do not replace parts until inspection or testing confirms the failure.',
-  ]
-  const action = dtcGuide?.action || (data.estimateDraft?.totalLocked
-    ? 'Review the itemized estimate draft, verify the source, then create the estimate.'
-    : 'Verify the source and create a diagnostic or repair estimate only after pricing is known.')
-  const missingVehicle = data.workflow?.vehicleMatch?.missing || []
-  const confidence = data.workflow?.vehicleMatch?.confidence ?? 0
-  const exactVehicleNeeded = confidence < 70 || missingVehicle.includes('engine/trim')
-  const matches = data.manualMatches || []
-  const focusedMatches = matches.filter(item => repairTextMatchesFocus(`${item.title} ${item.path?.join(' ')} ${item.url}`, dtcGuide))
-  const diagramMatches = matches
-    .filter(item => focusedMatches.includes(item))
-    .filter(item => item.category === 'diagram' || item.category === 'spec' || item.matchType === 'diagram_or_spec' || /diagram|wiring|schematic|pinout|spec/i.test(item.title))
-    .slice(0, 4)
-  const procedureMatches = focusedMatches
-    .filter(item => item.matchType === 'exact_procedure' || item.matchType === 'likely_section')
-    .slice(0, 5)
-  const sources = (data.sources || []).filter(item => repairSourceMatchesFocus(item, dtcGuide)).slice(0, 5)
-  const vehicleChoices = (data.sources || [])
-    .filter(item => item.provider === 'LEMON' || item.provider === 'CHARM')
-    .map(item => item.title.replace(/^LEMON:\s*/i, '').replace(/^CHARM:\s*/i, ''))
-    .filter((title, index, all) => title && all.indexOf(title) === index)
-    .slice(0, 5)
+  const view = buildRepairPresentation(query, data)
 
   return (
     <div className="space-y-3 text-sm">
       <div className="rounded-lg border border-green/25 bg-green/10 p-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <div className="text-[11px] font-black uppercase tracking-[0.14em] text-green">Repair Mode Result</div>
-            <h3 className="mt-2 text-lg font-black text-text-primary">{title}</h3>
-            <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-bold">
-              <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1">{vehicle}</span>
-              <span className="rounded-md border border-blue/30 bg-blue/10 px-2 py-1 text-blue">{data.workflow?.vehicleMatch?.confidence ?? 0}% vehicle confidence</span>
-              {exactVehicleNeeded && <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-amber">needs engine/trim before exact procedure</span>}
+            <div className="text-[11px] font-black uppercase tracking-[0.14em] text-green">Mechanic Answer</div>
+            <h3 className="mt-2 text-lg font-black text-text-primary">{view.title}</h3>
+            <p className="mt-2 max-w-3xl leading-6 text-text-secondary">{view.plainAnswer}</p>
+            <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold">
+              <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1">{view.vehicle}</span>
+              {view.needsExactVehicle && <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-amber">needs exact engine/trim for exact diagrams</span>}
               <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-amber">{data.safetyProfile?.level || 'standard'} risk</span>
             </div>
           </div>
@@ -722,80 +622,44 @@ function RepairResultCard({ result }: { result: RepairChatResult }) {
         </div>
       </div>
 
+      <section className="rounded-lg border border-border bg-bg-hover p-4">
+        <div className="text-xs font-black uppercase text-blue">{view.needsExactVehicle ? 'Pick The Exact Manual' : 'Open The Info'}</div>
+        <div className="mt-3 grid gap-2 md:grid-cols-2">
+          {view.actionLinks.map(link => (
+            <a key={`${link.kind}-${link.url}`} href={link.url} target="_blank" rel="noreferrer" className="rounded-md border border-white/10 bg-white/[0.035] p-3 transition-colors hover:border-blue/50 hover:bg-blue/10">
+              <span className="block font-black text-text-primary">{link.label}</span>
+              <span className="mt-1 block text-xs leading-5 text-text-secondary">{link.detail}</span>
+              <span className="mt-2 inline-flex rounded border border-white/10 px-2 py-1 text-[10px] font-black uppercase text-text-muted">{link.confidence.replace('_', ' ')}</span>
+            </a>
+          ))}
+          {!view.actionLinks.length && <div className="text-text-muted">I did not find a useful direct page yet. Open the Repair Workspace so we can narrow the vehicle/source.</div>}
+        </div>
+      </section>
+
       <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_300px]">
-        <div className="space-y-3">
-          <section className="rounded-lg border border-border bg-bg-hover p-4">
-            <div className="text-xs font-black uppercase text-blue">What To Check First</div>
-            <ol className="mt-3 space-y-2 text-text-secondary">
-              {checks.map((item, index) => (
-                <li key={`${item}-${index}`} className="flex gap-2">
-                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-blue/15 text-[11px] font-black text-blue">{index + 1}</span>
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ol>
+        <section className="rounded-lg border border-border bg-bg-hover p-4">
+          <div className="text-xs font-black uppercase text-blue">What To Check First</div>
+          <ol className="mt-3 space-y-2 text-text-secondary">
+            {view.checks.slice(0, 4).map((item, index) => (
+              <li key={`${item}-${index}`} className="flex gap-2">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-blue/15 text-[11px] font-black text-blue">{index + 1}</span>
+                <span>{item}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+
+        <aside className="space-y-3">
+          <section className="rounded-lg border border-green/30 bg-green/10 p-4">
+            <div className="text-xs font-black uppercase text-green">Next Shop Action</div>
+            <p className="mt-2 leading-6 text-green">{view.action}</p>
           </section>
 
           <section className="rounded-lg border border-amber/30 bg-amber/10 p-4">
             <div className="text-xs font-black uppercase text-amber">Do Not Assume</div>
             <ul className="mt-3 space-y-2 text-amber">
-              {dontAssume.map(item => <li key={item}>- {item}</li>)}
+              {view.dontAssume.slice(0, 2).map(item => <li key={item}>- {item}</li>)}
             </ul>
-          </section>
-
-          <section className="rounded-lg border border-border bg-bg-hover p-4">
-            <div className="text-xs font-black uppercase text-text-muted">Procedure Links</div>
-            <div className="mt-3 space-y-2">
-              {exactVehicleNeeded ? (
-                <div className="rounded-md border border-amber/30 bg-amber/10 p-3 text-amber">
-                  <div className="font-bold">Exact engine/trim needed before exact removal or procedure links.</div>
-                  <div className="mt-2 text-xs leading-5">Missing: {missingVehicle.join(', ') || 'engine/trim details'}. Choose the matching vehicle/manual first, then open the exact removal procedure.</div>
-                  {vehicleChoices.length ? (
-                    <div className="mt-3 space-y-1">
-                      {vehicleChoices.map(choice => <div key={choice} className="text-xs">- {choice}</div>)}
-                    </div>
-                  ) : null}
-                </div>
-              ) : procedureMatches.length ? procedureMatches.map(item => (
-                <a key={item.url} href={item.url} target="_blank" rel="noreferrer" className="block rounded-md border border-white/10 bg-white/[0.03] p-3 hover:border-blue/40">
-                  <span className="block font-bold text-text-primary">{item.title}</span>
-                  <span className="mt-1 block text-xs text-text-muted">{item.provider} / {item.matchType.replace(/_/g, ' ')} / score {item.score}</span>
-                </a>
-              )) : <div className="text-text-muted">No exact procedure match yet. Open sources and verify manually.</div>}
-            </div>
-          </section>
-        </div>
-
-        <aside className="space-y-3">
-          <section className="rounded-lg border border-border bg-bg-hover p-4">
-            <div className="text-xs font-black uppercase text-text-muted">Diagrams / Specs</div>
-            <div className="mt-3 space-y-2">
-              {exactVehicleNeeded ? (
-                <div className="text-text-muted">Need exact engine/trim before diagrams or specs.</div>
-              ) : diagramMatches.length ? diagramMatches.map(item => (
-                <a key={item.url} href={item.url} target="_blank" rel="noreferrer" className="block rounded-md border border-white/10 bg-white/[0.03] p-3 hover:border-blue/40">
-                  <span className="block font-bold text-text-primary">{item.title}</span>
-                  <span className="mt-1 block text-xs text-text-muted">{item.provider} / {item.category} / {item.hasImages ? 'images likely' : 'source link'}</span>
-                </a>
-              )) : <div className="text-text-muted">No diagram/spec match found yet.</div>}
-            </div>
-          </section>
-
-          <section className="rounded-lg border border-green/30 bg-green/10 p-4">
-            <div className="text-xs font-black uppercase text-green">Next Shop Action</div>
-            <p className="mt-2 leading-6 text-green">{action}</p>
-          </section>
-
-          <section className="rounded-lg border border-border bg-bg-hover p-4">
-            <div className="text-xs font-black uppercase text-text-muted">Source Stack</div>
-            <div className="mt-3 space-y-2">
-              {sources.map(item => (
-                <a key={item.id} href={item.url} target="_blank" rel="noreferrer" className="block rounded-md border border-white/10 bg-white/[0.03] p-2 hover:border-blue/40">
-                  <span className="block font-bold text-text-primary">{item.provider}: {item.title}</span>
-                  <span className="mt-1 block text-xs text-text-muted">{item.category} / {item.confidence}</span>
-                </a>
-              ))}
-            </div>
           </section>
         </aside>
       </div>

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { RepairManualPage, RepairSearchResult, RepairSource, RepairVehicle } from '@/lib/repair/sources'
+import { buildRepairPresentation } from '@/lib/repair/presentation'
 
 const CATEGORIES = [
   { value: 'all', label: 'All' },
@@ -263,6 +264,11 @@ export default function RepairPage() {
     const matches = result?.manualMatches || []
     return matches.filter(item => item.category === 'diagram' || item.matchType === 'diagram_or_spec' || /wiring|diagram|schematic|connector|pinout/i.test(item.title))
   }, [result])
+
+  const repairView = useMemo(() => {
+    if (!result) return null
+    return buildRepairPresentation(query || result.query, result)
+  }, [query, result])
 
   const simpleAnswer = useMemo(() => {
     if (!result) return null
@@ -622,37 +628,40 @@ export default function RepairPage() {
           {mainTab === 'Easy Answer' && (
             <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
               <div className="space-y-4">
+                <div className="rounded-lg border border-green/25 bg-green/10 p-5">
+                  <div className="text-xs font-black uppercase text-green">Mechanic Answer</div>
+                  <h3 className="mt-2 text-xl font-black">{repairView?.title || simpleAnswer?.title}</h3>
+                  <p className="mt-3 max-w-3xl text-sm leading-6 text-text-secondary">{repairView?.plainAnswer}</p>
+                  <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold">
+                    <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1">{repairView?.vehicle || vehicleText(result.normalizedVehicle)}</span>
+                    {repairView?.needsExactVehicle && <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-amber">needs exact engine/trim for exact diagrams</span>}
+                  </div>
+                </div>
+
                 <div className="rounded-lg border border-border bg-bg-card p-5">
-                  <div className="text-xs font-black uppercase text-blue">What This Means</div>
-                  <h3 className="mt-2 text-xl font-black">{simpleAnswer?.title}</h3>
-                  <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-text-secondary md:grid-cols-2">
-                    <div><span className="font-bold text-text-primary">System:</span> {simpleAnswer?.system}</div>
-                    <div><span className="font-bold text-text-primary">Vehicle:</span> {vehicleText(result.normalizedVehicle)}</div>
+                  <div className="text-xs font-black uppercase text-blue">{repairView?.needsExactVehicle ? 'Pick The Exact Manual' : 'Open The Info'}</div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-2">
+                    {(repairView?.actionLinks || []).map(link => (
+                      <a key={`${link.kind}-${link.url}`} href={link.url} target="_blank" rel="noreferrer" className="rounded-md border border-white/10 bg-bg-hover p-3 transition-colors hover:border-blue/50 hover:bg-blue/10">
+                        <span className="block text-sm font-black text-text-primary">{link.label}</span>
+                        <span className="mt-1 block text-xs leading-5 text-text-secondary">{link.detail}</span>
+                        <span className="mt-2 inline-flex rounded border border-white/10 px-2 py-1 text-[10px] font-black uppercase text-text-muted">{link.confidence.replace('_', ' ')}</span>
+                      </a>
+                    ))}
+                    {!repairView?.actionLinks.length && <div className="text-sm text-text-muted">No direct source page found yet. Use Advanced sources to narrow the manual.</div>}
                   </div>
                 </div>
 
                 <div className="rounded-lg border border-border bg-bg-card p-5">
                   <div className="text-xs font-black uppercase text-text-muted">What To Check First</div>
                   <ol className="mt-3 space-y-3 text-sm leading-6 text-text-secondary">
-                    {(simpleAnswer?.checks || []).map((item, index) => (
+                    {(repairView?.checks || simpleAnswer?.checks || []).slice(0, 4).map((item, index) => (
                       <li key={item} className="flex gap-3">
                         <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-blue/15 text-xs font-black text-blue">{index + 1}</span>
                         <span>{item}</span>
                       </li>
                     ))}
                   </ol>
-                </div>
-
-                <div className="rounded-lg border border-amber/30 bg-amber/10 p-5">
-                  <div className="text-xs font-black uppercase text-amber">Do Not Assume</div>
-                  <ul className="mt-3 space-y-2 text-sm leading-6 text-amber">
-                    {(simpleAnswer?.dontAssume || []).map(item => <li key={item}>- {item}</li>)}
-                  </ul>
-                </div>
-
-                <div className="rounded-lg border border-green/30 bg-green/10 p-5">
-                  <div className="text-xs font-black uppercase text-green">Recommended Next Action</div>
-                  <p className="mt-3 text-sm leading-6 text-green">{simpleAnswer?.action}</p>
                 </div>
               </div>
 
@@ -666,13 +675,14 @@ export default function RepairPage() {
                     <button className="btn btn-secondary btn-sm" onClick={saveDraft}>Save Local Note</button>
                   </div>
                 </div>
-                <div className="rounded-lg border border-border bg-bg-card p-4">
-                  <div className="text-xs font-black uppercase text-text-muted">What We Found</div>
-                  <div className="mt-3 space-y-2 text-sm text-text-secondary">
-                    <div>{result.coverageDashboard.lemonCharmManual === 'found' ? 'Manual source found' : 'Manual source not found'}</div>
-                    <div>{result.coverageDashboard.nhtsaRecalls === 'found' ? 'NHTSA recall data found' : 'NHTSA link ready'}</div>
-                    <div>{result.coverageDashboard.likelyMatches} possible source page{result.coverageDashboard.likelyMatches === 1 ? '' : 's'}</div>
-                    <div>{result.operationLines.length} work item{result.operationLines.length === 1 ? '' : 's'}</div>
+                <div className="rounded-lg border border-green/30 bg-green/10 p-4">
+                  <div className="text-xs font-black uppercase text-green">Next Shop Action</div>
+                  <p className="mt-3 text-sm leading-6 text-green">{repairView?.action || simpleAnswer?.action}</p>
+                </div>
+                <div className="rounded-lg border border-amber/30 bg-amber/10 p-4">
+                  <div className="text-xs font-black uppercase text-amber">Do Not Assume</div>
+                  <div className="mt-3 space-y-2 text-sm leading-6 text-amber">
+                    {(repairView?.dontAssume || simpleAnswer?.dontAssume || []).slice(0, 2).map(item => <div key={item}>- {item}</div>)}
                   </div>
                 </div>
               </aside>
