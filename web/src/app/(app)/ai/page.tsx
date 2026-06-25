@@ -3231,9 +3231,9 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
               )}
               {m.repairResult
                 ? <RepairResultCard result={m.repairResult} onAskNext={(text) => {
-                    setRepairOnlyMode(true)
-                    localStorage.setItem('ai_repair_mode', 'true')
-                    setInput(text)
+                    // Send the follow-up inline. The router auto-routes it to the
+                    // manuals and carries the vehicle from context — no need to flip
+                    // the whole chat into repair-only mode or leave text in the box.
                     setTimeout(() => sendRef.current?.(text), 0)
                   }} />
                 : m.role === 'browser' && m.browserSteps

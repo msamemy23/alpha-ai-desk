@@ -308,3 +308,17 @@ Changes (all build-verified; routing covered by web/test/router-repair.test.ts, 
 
 Note: this needs a deploy to reach production (changes are local).
 
+### 2026-06-25 - Live-tested on production + fix
+Drove the deployed app (Comet) and verified the repair-first chat on alpha-ai-desk.vercel.app:
+- "P0420" (no vehicle, Repair toggle OFF) -> routed to Repair Agent / repair_lookup (90%),
+  repairSearch fired, replied "Which vehicle?" (no web). PASS
+- "2012 Honda Accord P0420" -> repairSearch found 29 source cards, P0420 manual guidance
+  + Ask-Next chips. PASS
+- "show me diagram" (bare follow-up) -> carried the Accord context (repairSearch "2012 Honda
+  Accord"), Repair Summary card + What-To-Check + Open Source + engine-pick for the exact
+  diagram. PASS (context carry works)
+FIX: the in-chat repair card's Ask-Next chips were calling setRepairOnlyMode(true) +
+localStorage, which trapped the chat in Repair-Only Mode and left the text unsent in the box.
+Changed onAskNext (ai/page.tsx ~3233) to just send the follow-up inline — the router already
+routes it to the manuals and carries the vehicle, so no mode flip needed.
+
