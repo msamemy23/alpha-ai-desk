@@ -322,3 +322,19 @@ localStorage, which trapped the chat in Repair-Only Mode and left the text unsen
 Changed onAskNext (ai/page.tsx ~3233) to just send the follow-up inline — the router already
 routes it to the manuals and carries the vehicle, so no mode flip needed.
 
+### 2026-06-25 - Repair tab: diagrams in-app + simplified
+Owner: (1) want diagrams/pictures/info shown INSIDE Alpha AI, not links out to the browser;
+(2) the Repair tab is way too confusing.
+- NEW /api/repair-image — SSRF-safe proxy (charm.li / lemon-manuals only) so manual diagram
+  images render inline (those sites block hot-linking). Auth-gated; same-origin <img> sends cookie.
+- /repair page simplified: removed the 11-field vehicle form (now ONE search box — vehicle is
+  parsed from the query), cut the top tab bar from 5 tabs to 2 (Easy Answer + Estimate;
+  AI Repair/Sources/Advanced kept in code/type but off the main bar, reachable via buttons,
+  escapable via the 2-tab bar), dropped the "% vehicle confidence" + "risk" jargon badges and
+  the extra banner buttons.
+- Diagrams inline: the Easy Answer view now shows the manual's diagram images (via the proxy,
+  tap to enlarge in the existing viewer); if the auto-loaded page has none, it lists the diagram
+  matches as "Open diagram" buttons that load the page in-app (no leaving to the browser).
+Defaults chosen (owner said "fix both" without picking): relevant-diagram-inline (not full-page
+dump) + keep a simplified Repair tab (not delete it). Build-verified; needs deploy + live look.
+

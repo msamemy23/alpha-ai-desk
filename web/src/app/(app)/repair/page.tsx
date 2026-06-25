@@ -39,6 +39,9 @@ const WORKSPACE_TABS = [
 type WorkspaceTab = typeof WORKSPACE_TABS[number]
 
 const MAIN_TABS = ['Easy Answer', 'AI Repair', 'Sources', 'Estimate', 'Advanced'] as const
+// Only these two show as top-level tabs now — the rest are reachable from buttons
+// but kept off the main bar to keep the screen simple.
+const VISIBLE_TABS = ['Easy Answer', 'Estimate'] as const
 type MainTab = typeof MAIN_TABS[number]
 
 // Single source of truth lives in lib/repair/presentation. Aliased here so the
@@ -139,6 +142,12 @@ function coverageTone(status: string) {
 
 function money(value: number | null | undefined) {
   return typeof value === 'number' && Number.isFinite(value) ? `$${value.toFixed(2)}` : 'Needs price'
+}
+
+// Load manual diagrams through our own origin so they render inline (the source
+// sites can block hot-linking).
+function proxied(url: string) {
+  return `/api/repair-image?url=${encodeURIComponent(url)}`
 }
 
 function allocateTotal(total: number, count: number) {
@@ -510,21 +519,7 @@ export default function RepairPage() {
       </div>
 
       <section className="rounded-lg border border-border bg-bg-card p-4">
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
-          <input className="form-input" placeholder="VIN" value={vehicle.vin || ''} onChange={e => setVehicle(v => ({ ...v, vin: e.target.value }))} />
-          <input className="form-input" placeholder="Year" value={vehicle.year || ''} onChange={e => setVehicle(v => ({ ...v, year: e.target.value }))} />
-          <input className="form-input" placeholder="Make" value={vehicle.make || ''} onChange={e => setVehicle(v => ({ ...v, make: e.target.value }))} />
-          <input className="form-input" placeholder="Model" value={vehicle.model || ''} onChange={e => setVehicle(v => ({ ...v, model: e.target.value }))} />
-          <input className="form-input" placeholder="Engine / trim" value={vehicle.engine || ''} onChange={e => setVehicle(v => ({ ...v, engine: e.target.value }))} />
-        </div>
-        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-5">
-          <input className="form-input" placeholder="Trim" value={vehicle.trim || ''} onChange={e => setVehicle(v => ({ ...v, trim: e.target.value }))} />
-          <input className="form-input" placeholder="Drivetrain" value={vehicle.drivetrain || ''} onChange={e => setVehicle(v => ({ ...v, drivetrain: e.target.value }))} />
-          <input className="form-input" placeholder="Transmission" value={vehicle.transmission || ''} onChange={e => setVehicle(v => ({ ...v, transmission: e.target.value }))} />
-          <input className="form-input" placeholder="Brake package" value={vehicle.brakeSystem || ''} onChange={e => setVehicle(v => ({ ...v, brakeSystem: e.target.value }))} />
-          <input className="form-input" placeholder="ADAS / emissions notes" value={vehicle.adas || ''} onChange={e => setVehicle(v => ({ ...v, adas: e.target.value }))} />
-        </div>
-        <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[1fr_auto]">
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_auto]">
           <input
             className="form-input"
             placeholder="Search repair, DTC, symptom, component, procedure..."
@@ -557,13 +552,7 @@ export default function RepairPage() {
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded-md border border-blue/30 bg-blue/10 px-2 py-1 text-[11px] font-black text-blue">Easy Repair View</span>
-                  <span className={`rounded-md border px-2 py-1 text-[11px] font-black ${result.workflow.vehicleMatch.confidence >= 70 ? 'border-green/30 bg-green/10 text-green' : 'border-amber/30 bg-amber/10 text-amber'}`}>
-                    {result.workflow.vehicleMatch.confidence}% vehicle confidence
-                  </span>
-                  <span className={`rounded-md border px-2 py-1 text-[11px] font-black ${riskTone(result.safetyProfile.level)}`}>
-                    {result.safetyProfile.level} risk
-                  </span>
+                  <span className="rounded-md border border-blue/30 bg-blue/10 px-2 py-1 text-[11px] font-black text-blue">Repair Answer</span>
                 </div>
                 <h2 className="mt-3 text-2xl font-black">{vehicleText(result.normalizedVehicle)}</h2>
                 <p className="mt-2 text-sm leading-6 text-text-secondary">{repairView?.mechanicSummary || simpleAnswer?.title}</p>
@@ -575,15 +564,13 @@ export default function RepairPage() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <button className="btn btn-primary btn-sm" onClick={() => setMainTab('Estimate')}>Create Estimate</button>
-                <button className="btn btn-secondary btn-sm" onClick={() => setMainTab('Sources')}>Open Sources</button>
-                <button className="btn btn-secondary btn-sm" onClick={() => openRepairAi()}>Ask AI Repair</button>
               </div>
             </div>
           </section>
 
           <section className="rounded-lg border border-border bg-bg-card p-2">
             <div className="flex gap-2 overflow-x-auto">
-              {MAIN_TABS.map(tab => (
+              {VISIBLE_TABS.map(tab => (
                 <button
                   key={tab}
                   className={`shrink-0 rounded-md border px-4 py-2 text-sm font-black transition-colors ${mainTab === tab ? 'border-blue/50 bg-blue/15 text-blue' : 'border-transparent bg-transparent text-text-secondary hover:border-border hover:bg-bg-hover'}`}
@@ -598,6 +585,32 @@ export default function RepairPage() {
           {mainTab === 'Easy Answer' && (
             <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
               <div className="space-y-4">
+                {manualPage?.images?.length ? (
+                  <div className="rounded-lg border border-blue/25 bg-blue/5 p-5">
+                    <div className="text-xs font-black uppercase text-blue">Diagram</div>
+                    <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                      {manualPage.images.slice(0, 6).map(image => (
+                        <button key={image.url} className="overflow-hidden rounded-lg border border-white/10 bg-white p-1" onClick={() => { setViewerImage(image); setImageScale(1) }}>
+                          <img src={proxied(image.url)} alt={image.alt} className="h-32 w-full object-contain" />
+                        </button>
+                      ))}
+                    </div>
+                    <div className="mt-2 text-[11px] text-text-muted">From the manual — tap any diagram to enlarge.</div>
+                  </div>
+                ) : diagramMatches.length ? (
+                  <div className="rounded-lg border border-blue/25 bg-blue/5 p-5">
+                    <div className="text-xs font-black uppercase text-blue">Diagram</div>
+                    <div className="mt-3 grid grid-cols-1 gap-2">
+                      {diagramMatches.slice(0, 4).map(match => (
+                        <button key={match.url} className="rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-left text-sm font-bold text-text-secondary hover:border-blue/40 hover:text-text-primary disabled:opacity-60" onClick={() => void loadManual(match.url)} disabled={manualLoading}>
+                          {manualLoading ? 'Loading the diagram…' : `Open diagram: ${match.title}`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : manualLoading ? (
+                  <div className="rounded-lg border border-border bg-bg-card p-4 text-sm text-text-muted">Loading the diagram from the manual…</div>
+                ) : null}
                 <div className="rounded-lg border border-green/25 bg-green/10 p-5">
                   <div className="text-xs font-black uppercase text-green">Mechanic Answer</div>
                   <h3 className="mt-2 text-xl font-black">{repairView?.title || simpleAnswer?.title}</h3>
@@ -1264,7 +1277,7 @@ export default function RepairPage() {
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-auto p-6">
-              <img src={viewerImage.url} alt={viewerImage.alt} className="mx-auto max-w-none object-contain transition-transform" style={{ transform: `scale(${imageScale})`, transformOrigin: 'top center' }} />
+              <img src={proxied(viewerImage.url)} alt={viewerImage.alt} className="mx-auto max-w-none object-contain transition-transform" style={{ transform: `scale(${imageScale})`, transformOrigin: 'top center' }} />
             </div>
           </div>
         </div>
