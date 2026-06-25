@@ -1,7 +1,7 @@
 import type { RepairManualMatch, RepairSearchResult, RepairSource } from './sources'
 
-export type RepairActionKind = 'diagnostic' | 'removal' | 'wiring' | 'fuse' | 'spec' | 'manual' | 'estimate' | 'workspace'
-export type RepairPrimaryIntent = 'diagnostic' | 'removal' | 'diagram' | 'fuse' | 'spec' | 'estimate' | 'general'
+export type RepairActionKind = 'diagnostic' | 'location' | 'removal' | 'wiring' | 'fuse' | 'spec' | 'manual' | 'estimate' | 'workspace'
+export type RepairPrimaryIntent = 'diagnostic' | 'location' | 'removal' | 'diagram' | 'fuse' | 'spec' | 'estimate' | 'general'
 
 export interface RepairActionLink {
   kind: RepairActionKind
@@ -31,11 +31,13 @@ export interface RepairJobCard {
 interface RepairGuide {
   meaning: string
   checks: string[]
+  locations?: string[]
   dontAssume: string[]
   action: string
   focusTerms: string
   removalTerms: string
   requiredTerms: string[]
+  exactVehicleQuestion?: string
 }
 
 export const REPAIR_DTC_GUIDES: Record<string, RepairGuide> = {
@@ -48,6 +50,12 @@ export const REPAIR_DTC_GUIDES: Record<string, RepairGuide> = {
       'Check fuel trims, coolant temp, misfire history, and oil/coolant contamination.',
       'Verify converter condition only after the basic checks pass.',
     ],
+    locations: [
+      'The catalytic converter is in the exhaust stream near or after the exhaust manifold.',
+      'The upstream air/fuel or oxygen sensor is before the converter.',
+      'The downstream oxygen sensor is after the converter.',
+      'On the 4-cylinder Accord, Bank 1 is the only bank. On the V6, Bank 1 depends on the cylinder-1 bank.',
+    ],
     dontAssume: [
       'Do not sell a catalytic converter just because P0420 is stored.',
       'Do not replace oxygen sensors until signal behavior and exhaust leaks are checked.',
@@ -56,6 +64,7 @@ export const REPAIR_DTC_GUIDES: Record<string, RepairGuide> = {
     focusTerms: 'catalyst system catalytic converter exhaust oxygen sensor emissions diagnosis',
     removalTerms: 'catalytic converter exhaust oxygen sensor removal procedure',
     requiredTerms: ['catalyst', 'catalytic', 'converter', 'exhaust', 'oxygen', 'o2', 'emission', 'sensor', 'diagnostic trouble code'],
+    exactVehicleQuestion: 'Which engine is in it: 2.4L 4-cylinder or 3.5L V6? Locations and diagrams change by engine.',
   },
   P0300: {
     meaning: 'Random or multiple cylinder misfire detected.',
@@ -109,6 +118,7 @@ export function repairTextMatchesFocus(value: string, guide?: RepairGuide) {
 }
 
 function repairIntentFor(query: string): RepairPrimaryIntent {
+  if (/\b(where|location|located|bank\s*1|bank\s*one)\b/i.test(query)) return 'location'
   if (/\b(wiring|diagram|schematic|pinout|connector|o2\s*sensor|oxygen\s*sensor)\b/i.test(query)) return 'diagram'
   if (/\b(fuse|relay|fuse\s*box|junction\s*box)\b/i.test(query)) return 'fuse'
   if (/\b(removal|remove|install|installation|replace|replacement|procedure|steps?)\b/i.test(query)) return 'removal'
@@ -163,13 +173,28 @@ function cleanedManualLabel(title: string) {
     .trim()
 }
 
+function friendlyManualChoiceLabel(title: string) {
+  const clean = cleanedManualLabel(title)
+  const engine = clean.match(/\b(\d\.\dL)\s+Eng\b/i)?.[1]
+    || clean.match(/\b(\d\.\dL)\b/i)?.[1]
+  const transmission = /\bAutomatic\s+Trans\b/i.test(clean)
+    ? 'Automatic'
+    : /\b(Standard|Manual)\s+Trans\b/i.test(clean)
+      ? 'Manual'
+      : ''
+  const body = clean.match(/\b(2D\s+Coupe|4D\s+Sedan|4D\s+Pickup|2D\s+Hatchback|4D\s+Hatchback|SUV|Wagon)\b/i)?.[1]
+  const trim = clean.match(/^\d{4}\s+[A-Z][a-zA-Z-]+\s+([^,]+),/)?.[1]?.trim()
+  const short = [engine, transmission, trim, body].filter(Boolean).join(' - ')
+  return short || clean
+}
+
 function manualChoiceLinks(sources: RepairSource[]): RepairActionLink[] {
   return sources
     .filter(item => item.provider === 'LEMON' || item.provider === 'CHARM')
     .map(item => ({
       kind: 'manual' as const,
-      label: cleanedManualLabel(item.title),
-      detail: 'Choose this manual if it matches the exact engine/trim.',
+      label: friendlyManualChoiceLabel(item.title),
+      detail: cleanedManualLabel(item.title),
       url: item.url,
       confidence: 'manual_choice' as const,
       provider: item.provider,
@@ -181,10 +206,10 @@ function manualChoiceLinks(sources: RepairSource[]): RepairActionLink[] {
 function vehicleChoicesFor(query: string, sources: RepairSource[]): RepairVehicleChoice[] {
   return manualChoiceLinks(sources).map(link => ({
     label: link.label,
-    detail: link.provider ? `${link.provider} manual. Pick this only if it matches the car.` : 'Pick this only if it matches the car.',
+    detail: link.detail,
     url: link.url,
     provider: link.provider,
-    selectionQuery: `${query} ${link.label}`.replace(/\s+/g, ' ').trim(),
+    selectionQuery: `${query} ${link.detail}`.replace(/\s+/g, ' ').trim(),
   }))
 }
 
@@ -205,6 +230,7 @@ function closestManualLink(sources: RepairSource[], guide?: RepairGuide) {
 function orderActionLinks(links: RepairActionLink[], intent: RepairPrimaryIntent) {
   const rank: Record<RepairActionKind, number> = {
     diagnostic: intent === 'diagnostic' ? 0 : 1,
+    location: intent === 'location' ? 0 : 2,
     wiring: intent === 'diagram' ? 0 : 3,
     fuse: intent === 'fuse' ? 0 : 4,
     removal: intent === 'removal' ? 0 : 2,
@@ -217,7 +243,8 @@ function orderActionLinks(links: RepairActionLink[], intent: RepairPrimaryIntent
 }
 
 function actionLabelFor(intent: RepairPrimaryIntent, needsExactVehicle: boolean) {
-  if (needsExactVehicle) return 'Pick Exact Vehicle First'
+  if (needsExactVehicle) return 'Pick Engine First'
+  if (intent === 'location') return 'Open Location Info'
   if (intent === 'diagram') return 'Open Diagram Info'
   if (intent === 'removal') return 'Open Removal Info'
   if (intent === 'fuse') return 'Open Fuse/Relay Info'
@@ -227,20 +254,22 @@ function actionLabelFor(intent: RepairPrimaryIntent, needsExactVehicle: boolean)
 }
 
 function sourceStateFor(data: RepairSearchResult) {
-  if (data.coverageDashboard?.exactMatches > 0) return `${data.coverageDashboard.exactMatches} exact source candidate(s)`
-  if (data.coverageDashboard?.diagrams > 0) return `${data.coverageDashboard.diagrams} diagram/spec candidate(s)`
-  if (data.coverageDashboard?.likelyMatches > 0) return `${data.coverageDashboard.likelyMatches} likely source section(s)`
-  if (data.workflow?.coverage?.hasManual) return 'manual source found, exact page not confirmed'
-  return 'no verified manual source yet'
+  if (data.coverageDashboard?.exactMatches > 0) return 'Likely matching manual page found'
+  if (data.coverageDashboard?.diagrams > 0) return 'Diagram or spec page found'
+  if (data.coverageDashboard?.likelyMatches > 0) return 'Likely manual section found'
+  if (data.workflow?.coverage?.hasManual) return 'Manual found; pick the exact engine for the right page'
+  return 'No useful source page found yet'
 }
 
-function estimateStateFor(data: RepairSearchResult) {
+function estimateStateFor(data: RepairSearchResult, intent: RepairPrimaryIntent) {
   if (data.estimateDraft?.totalLocked) return `locked total ${data.estimateDraft.targetTotal ?? ''}`.trim()
+  if (intent !== 'estimate') return 'Not needed for this question'
   if (data.operationLines?.length) return `${data.operationLines.length} item(s) ready for estimate draft`
   return 'needs price or diagnostic total'
 }
 
 function askNextFor(intent: RepairPrimaryIntent, dtc: string) {
+  if (intent === 'location') return dtc ? ['2.4L 4-cylinder', '3.5L V6', 'show me diagram'] : ['show me diagram', 'show me removal', 'show me testing steps']
   if (intent === 'diagram') return ['show me testing steps', 'show me removal', 'build a diagnostic estimate']
   if (intent === 'removal') return ['show me diagram', 'show me specs', 'build an estimate']
   if (intent === 'fuse') return ['show me wiring', 'show me connector location', 'show me testing steps']
@@ -256,7 +285,8 @@ export function buildRepairPresentation(query: string, data: RepairSearchResult)
   const primaryIntent = repairIntentFor(query)
   const firstOperation = data.operationLines?.[0]
   const title = guide ? `${dtc}: ${guide.meaning}` : (firstOperation?.label || data.draft?.operation || data.draft?.title || query)
-  const checks = guide?.checks || data.draft?.checklist?.slice(0, 5) || ['Open the source and verify the exact vehicle before quoting or starting work.']
+  const locationNotes = primaryIntent === 'location' && guide?.locations ? guide.locations : []
+  const checks = locationNotes.length ? locationNotes : (guide?.checks || data.draft?.checklist?.slice(0, 5) || ['Open the source and verify the exact vehicle before quoting or starting work.'])
   const dontAssume = guide?.dontAssume || [
     'Do not invent torque specs, wiring pinouts, labor times, or protected procedure text.',
     'Do not replace parts until inspection or testing confirms the failure.',
@@ -266,17 +296,19 @@ export function buildRepairPresentation(query: string, data: RepairSearchResult)
     : 'Verify the source and create a diagnostic or repair estimate only after pricing is known.')
   const missingVehicle = data.workflow?.vehicleMatch?.missing || []
   const confidence = data.workflow?.vehicleMatch?.confidence ?? 0
-  const needsExactVehicle = confidence < 70 || missingVehicle.includes('engine/trim')
+  const hasUsableEngineMatch = Boolean(data.normalizedVehicle?.year && data.normalizedVehicle?.make && data.normalizedVehicle?.model && data.normalizedVehicle?.engine)
+  const needsExactVehicle = !hasUsableEngineMatch && (confidence < 70 || missingVehicle.includes('engine/trim'))
   const matches = data.manualMatches || []
   const sources = data.sources || []
 
   const diagnostic = linkFromMatch('diagnostic', 'Open diagnostic flow', 'Best source-backed diagnostic page found.', findManualMatch(matches, [/diagnos|trouble code|dtc|testing|inspection|pinpoint/i], guide))
+  const location = linkFromMatch('location', 'Open component location', 'Best matching component location, sensor, or exhaust page found.', findManualMatch(matches, [/location|component|sensor|oxygen|o2|catalyst|catalytic|converter|exhaust|bank/i], guide))
   const removal = linkFromMatch('removal', 'Open removal procedure', 'Best matching removal or replacement page found.', findManualMatch(matches, [/remov|replace|replacement|install/i], guide))
   const wiring = linkFromMatch('wiring', 'Open wiring diagram', 'Best matching wiring, schematic, connector, or pinout page found.', findManualMatch(matches, [/wiring|diagram|schematic|connector|pinout|oxygen sensor|o2 sensor|fuse|relay/i], guide))
   const fuse = linkFromMatch('fuse', 'Open fuse/relay info', 'Best matching fuse, relay, or fuse box page found.', findManualMatch(matches, [/fuse|relay|junction box|fuse box/i], guide))
   const spec = linkFromMatch('spec', 'Open specs', 'Best matching spec or torque page found.', findManualMatch(matches, [/torque|spec|capacity|fluid/i], guide))
 
-  const directLinks = [diagnostic, removal, wiring, fuse, spec].filter(Boolean) as RepairActionLink[]
+  const directLinks = [diagnostic, location, removal, wiring, fuse, spec].filter(Boolean) as RepairActionLink[]
   const manualFallback = closestManualLink(sources, guide)
   const manualChoices = manualChoiceLinks(sources)
   const vehicleChoices = vehicleChoicesFor(query, sources)
@@ -286,15 +318,18 @@ export function buildRepairPresentation(query: string, data: RepairSearchResult)
       ? orderActionLinks([...directLinks, ...(manualFallback ? [manualFallback] : [])], primaryIntent).slice(0, 5)
       : (manualFallback ? [manualFallback] : [])
 
+  const exactVehiclePrompt = needsExactVehicle && guide?.exactVehicleQuestion ? guide.exactVehicleQuestion : ''
   const plainAnswer = guide
-    ? `${dtc} on ${vehicle} means ${guide.meaning.toLowerCase()} Start with testing before selling parts.`
+    ? primaryIntent === 'location'
+      ? `${dtc} points you to the catalyst, exhaust, and oxygen sensor area on ${vehicle}. ${exactVehiclePrompt || 'Pick the exact engine before trusting the exact diagram or component location.'}`.trim()
+      : `${dtc} on ${vehicle} means ${guide.meaning.toLowerCase()} Start with testing before selling parts.`
     : `${title} for ${vehicle}. Start by verifying the exact vehicle and opening the closest source page.`
   const sourceState = sourceStateFor(data)
-  const estimateState = estimateStateFor(data)
+  const estimateState = estimateStateFor(data, primaryIntent)
   const mechanicSummary = [
     plainAnswer,
-    needsExactVehicle ? 'Pick the exact engine/trim before trusting diagrams, removal steps, or specs.' : '',
-    `Source status: ${sourceState}.`,
+    needsExactVehicle && !exactVehiclePrompt ? 'Pick the exact engine/trim before trusting diagrams, removal steps, or specs.' : '',
+    sourceState,
   ].filter(Boolean).join(' ')
 
   return {
@@ -308,6 +343,8 @@ export function buildRepairPresentation(query: string, data: RepairSearchResult)
     checks,
     dontAssume,
     action,
+    exactVehiclePrompt,
+    checkHeading: locationNotes.length ? 'Location To Check' : 'What To Check First',
     missingVehicle,
     confidence,
     needsExactVehicle,
@@ -324,6 +361,7 @@ export function buildRepairPresentation(query: string, data: RepairSearchResult)
       sourceState,
       estimateState,
     } satisfies RepairJobCard,
+    showEstimateCard: primaryIntent === 'estimate' || Boolean(data.estimateDraft?.totalLocked),
     sources: sources.filter(item => isFocusedSource(item, guide)).slice(0, 5),
   }
 }

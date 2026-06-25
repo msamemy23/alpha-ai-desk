@@ -206,15 +206,20 @@ create index if not exists idx_messages_customer_id on messages(customer_id);
 create index if not exists idx_messages_created_at on messages(created_at desc);
 create index if not exists idx_messages_read on messages(read);
 
--- ── RLS: disable for now (enable + add policies when you add auth) ──
-alter table settings disable row level security;
-alter table customers disable row level security;
-alter table jobs disable row level security;
-alter table documents disable row level security;
-alter table messages disable row level security;
-alter table activities disable row level security;
-alter table audit_log disable row level security;
-alter table campaigns disable row level security;
+-- ── RLS: ENABLED by default (per-shop policies live in
+--    web/supabase/migrations/002_add_shop_id_to_tables.sql and 003_*.sql) ──
+-- SECURITY: never disable RLS here. Re-running this file must not be able to
+-- silently turn security off on a database the migrations already locked down.
+-- With RLS on but no policy yet, the anon key can read nothing until 002/003
+-- add the per-shop policies — which is the correct secure-by-default ordering.
+alter table settings enable row level security;
+alter table customers enable row level security;
+alter table jobs enable row level security;
+alter table documents enable row level security;
+alter table messages enable row level security;
+alter table activities enable row level security;
+alter table audit_log enable row level security;
+alter table campaigns enable row level security;
 
 -- ── Connectors (Social Media & Calendar OAuth) ────────────────
 create table if not exists connectors (
@@ -231,7 +236,10 @@ create table if not exists connectors (
   updated_at timestamptz default now()
 );
 
-alter table connectors disable row level security;
+-- SECURITY: RLS on. Per-shop policies + shop_id column are added in
+-- web/supabase/migrations/003_fix_remaining_tables.sql. The `service text
+-- unique` constraint above is superseded there by a per-shop scoping fix.
+alter table connectors enable row level security;
 
 -- Seed initial rows
 insert into connectors (service, enabled) values

@@ -554,6 +554,8 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                     </select>
                     <span className="text-text-muted ml-2" title="Your cost — internal, never prints">Cost</span>
                     <input className="form-input !py-1 w-20" type="number" step="0.01" placeholder="0.00" value={p.cost as number||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],cost:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
+                    <span className="text-text-muted ml-2" title="Refundable core deposit — added to the total, refunded when the old core is returned">Core $</span>
+                    <input className="form-input !py-1 w-20" type="number" step="0.01" placeholder="0.00" value={p.core as number||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],core:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
                     {Number(p.cost) > 0 && Number(p.unitPrice) > 0 ? <span className="text-green" title="Profit on this line">margin {formatCurrency((Number(p.unitPrice) - Number(p.cost)) * (Number(p.qty) || 1))}</span> : null}
                   </div>
                   </div>
@@ -860,6 +862,11 @@ tr, td, th, thead, table { break-inside: avoid; }
                   <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
                     <span>Labor Subtotal</span><span>{formatCurrency(totals.laborTotal)}</span>
                   </div>
+                  {totals.coreTotal > 0 && (
+                    <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
+                      <span>Core Charges (refundable)</span><span>{formatCurrency(totals.coreTotal)}</span>
+                    </div>
+                  )}
                   {Number(form.shop_supplies) > 0 && (
                     <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
                       <span>Shop Supplies</span><span>{formatCurrency(Number(form.shop_supplies))}</span>

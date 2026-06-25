@@ -166,10 +166,13 @@ export function calcTotals(doc: Record<string, unknown>) {
 
   const laborTotal = labors.reduce((s, l) => s + laborLineTotal(l), 0)
   const partsTotal = parts.reduce((s, p) => s + partLineTotal(p), 0)
+  // Core charges: a refundable deposit on the old unit (alternators, batteries,
+  // calipers…). The customer pays it now and gets it back when the core is returned.
+  const coreTotal = parts.reduce((s, p) => s + (Number(p.qty)||1) * (Number(p.core)||0), 0)
   const taxableBase = applyTax ? parts.filter(p => p.taxable !== false).reduce((s,p) => s + (Number(p.qty)||1)*(Number(p.unitPrice)||0), 0) + shopSupplies + sublet : 0
   const taxAmount = taxableBase * (taxRate / 100)
-  const subtotal = laborTotal + partsTotal + shopSupplies + sublet
+  const subtotal = laborTotal + partsTotal + shopSupplies + sublet + coreTotal
   const total = subtotal + taxAmount
   const balanceDue = Math.max(total - deposit, 0)
-  return { laborTotal, partsTotal, taxAmount, subtotal, total, balanceDue, deposit }
+  return { laborTotal, partsTotal, coreTotal, taxAmount, subtotal, total, balanceDue, deposit }
 }

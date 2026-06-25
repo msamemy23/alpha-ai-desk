@@ -6,6 +6,7 @@ import { classifyRequest, type RouteDecision } from '@/lib/ai/router'
 import { normalizeDocumentDraft } from '@/lib/ai/document-draft'
 import { getLaborFlatAmount, laborLineTotal, partLineTotal } from '@/lib/document-money'
 import type { RepairSearchResult } from '@/lib/repair/sources'
+import { parseRepairQuery } from '@/lib/repair/sources'
 import { buildRepairPresentation, detectRepairDtc, repairVehicleLabel, repairWorkspaceUrl, REPAIR_DTC_GUIDES } from '@/lib/repair/presentation'
 import {
   formatBrowserOpenResult,
@@ -171,6 +172,7 @@ Labor rate is ALWAYS $120/hr. Use these automatically when building estimates.
 - NEVER auto-create customers without explicit instruction
 
 CRITICAL BEHAVIOR RULES:
+0. REPAIR, DIAGNOSTIC, AND DIAGRAM QUESTIONS ARE MANUAL-ONLY. For any car problem, trouble code (P0420, etc.), symptom, wiring diagram, schematic, fuse/relay location, torque spec, capacity, or repair procedure, the answer comes ONLY from the repair manual sources - NEVER from webSearch. Do NOT use webSearch for repair/diagnostic/diagram/spec questions. Only go to the web if the user EXPLICITLY says to look it up online or search the web, and even then the manual stays the primary source. webSearch is for PARTS PRICES, not repair information.
 1. When the user mentions "look online", "search for", "find prices for", "look up parts", "check prices", "what does a ___ cost" - you MUST use the webSearch tool to find REAL prices.
 3. When the user says "go to website", "browse to", "visit", "open URL", or gives a specific URL to check:
 {"tool":"browse","url":"https://example.com","task":"what is on this page"} NEVER make up or estimate prices. NEVER guess part costs. Always search first.
@@ -222,6 +224,9 @@ TOOL CALLS - respond with ONLY a raw JSON object, no markdown, no code blocks, n
 
 WEB SEARCH - Search the web for real-time information including prices, images, news, part numbers, and anything else. Use this whenever the user asks to "look online", "search for", "find prices", "find images", "find pictures", "show me", "check availability", "what does X cost", "go to google", "get me a picture of", or any request for current pricing/info/images. NEVER guess prices - always search first. Use webSearch for ALL web lookups. Use webSearch for ALL web lookups - prices, images, videos, part numbers, diagnostics, labor times, TSBs, recalls, and any real-time information. webSearch returns rich results including: text results with URLs and favicons, product images, YouTube videos with embed URLs, Price Radar (price comparison across stores with best deal highlighted), Knowledge Panels (DTC codes, fluid specs), AI summaries, Smart Follow-up suggestions, and Related Searches. webSearch now returns rich results including product images, YouTube videos, price comparisons (Price Radar), and smart follow-up suggestions.
 {"tool":"webSearch","query":"2007 Honda Civic lower control arm price"} ALWAYS present rich results to the user: show product images using markdown ![img](url), embed YouTube videos, show Price Radar as a comparison table with best deal highlighted, display Knowledge Panels for DTC codes and fluid specs, offer follow-up suggestions as clickable options, and show related searches.
+
+REPAIR / DIAGNOSTIC / DIAGRAM LOOKUP - For ANY car problem, trouble code (P0420), symptom, wiring diagram, fuse/relay location, torque spec, capacity, or repair procedure, use repairSearch to pull from the repair manuals. This is the ONLY source for repair info - NEVER use webSearch for repair/diagnostic/diagram questions. Include the vehicle in the query; if you don't know the vehicle, ASK the user first instead of guessing.
+{"tool":"repairSearch","query":"2012 Honda Accord P0420 catalytic converter diagnostic"}
 
 CREATE CUSTOMER - Create a new customer record. Use when user mentions a new person's name/phone/email that isn't in the system yet:
 {"tool":"action","action":"createCustomer","payload":{"name":"John Doe","phone":"555-1234","email":"john@example.com"}}
@@ -518,11 +523,13 @@ function formatRepairSearchText(query: string, data: any) {
   const view = buildRepairPresentation(query, data as RepairSearchResult)
   const checks = view.checks.slice(0, 3).map((item: string) => `- ${item}`).join('\n')
   const links = view.actionLinks.slice(0, 3).map(link => `- ${link.label}: ${link.url}`).join('\n')
-  return `${view.mechanicSummary}\n\nWhat to check first:\n${checks || '- Verify the exact vehicle and source first.'}\n\n${view.primaryActionLabel}:\n${links || '- Open the Repair Workspace and narrow the source.'}\n\nNext: ${view.action}`
+  return `${view.mechanicSummary}\n\n${view.checkHeading}:\n${checks || '- I need the exact vehicle/engine before giving a confident answer.'}\n\n${view.primaryActionLabel}:\n${links || '- Tell me the engine or VIN and I will narrow this down.'}\n\nNext: ${view.action}`
 }
 
 const REPAIR_ANCHOR_TERMS = /\b(?:repair|diagnos|diagnostic|dtc|code|manual|procedure|removal|remove|install|replace|diagram|wiring|schematic|pinout|spec|torque|tsb|recall|symptom|check engine|misfire|brake|brakes|rotor|pad|caliper|control arm|strut|shock|coolant|radiator|thermostat|reservoir|alternator|starter|sensor|oxygen|catalytic|converter|suspension|steering|airbag|adas|hybrid|ev)\b/i
 const REPAIR_FOLLOWUP_TERMS = /\b(?:order|firing\s+order|cylinder\s+order|cylinder\s+layout|plug\s+wire|coil|fuse|fuses|fuse\s+box|relay|relays|location|where|diagram|wiring|schematic|pinout|removal|remove|install|replace|replacement|procedure|steps?|spec|torque|test|testing|check|checks?)\b/i
+// Explicit "go online" intent. Repair answers stay manual-only unless this is present.
+const ONLINE_INTENT = /\b(online|search\s+(?:the\s+)?web|web\s+search|google\s+(?:it|this|that)|look\s+(?:it\s+up|up)\s+online|check\s+online|search\s+online|on\s+the\s+internet|the\s+internet)\b/i
 
 function hasRepairAnchor(value: string) {
   return REPAIR_ANCHOR_TERMS.test(value) || REPAIR_FOLLOWUP_TERMS.test(value) || /\b(?:19|20)?\d{2}\b/.test(value) || /\b[PCBU][0-9A-F]{4}\b/i.test(value) || /\b[A-HJ-NPR-Z0-9]{17}\b/i.test(value)
@@ -542,8 +549,11 @@ function followupIntentFor(text: string, guide?: RepairDtcGuide) {
   if (/\border\b|firing\s+order|cylinder\s+order|plug\s+wire|cylinder\s+layout/i.test(trimmed)) {
     return 'firing order cylinder order cylinder layout spark plug wire coil routing'
   }
-  if (/\bfuses?\b|fuse\s+box|relays?|where|location/i.test(trimmed)) {
+  if (/\bfuses?\b|fuse\s+box|relays?/i.test(trimmed)) {
     return 'fuse box fuse relay location diagram'
+  }
+  if (/\bwhere|location|located|bank\s*1|bank\s*one/i.test(trimmed)) {
+    return guide ? `component location bank 1 sensor location ${guide.focusTerms}` : `component location ${trimmed}`
   }
   if (/\bdiagram|wiring|schematic|pinout\b/i.test(trimmed)) {
     return `wiring diagram schematic pinout ${trimmed}`
@@ -586,8 +596,8 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
             <p className="mt-2 max-w-3xl leading-6 text-text-secondary">{view.plainAnswer}</p>
             <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold">
               <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1">{view.vehicle}</span>
-              {view.needsExactVehicle && <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-amber">needs exact engine/trim for exact diagrams</span>}
-              <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-amber">{data.safetyProfile?.level || 'standard'} risk</span>
+              {view.needsExactVehicle && <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-amber">engine needed for exact diagram</span>}
+              {data.safetyProfile?.level && data.safetyProfile.level !== 'standard' && <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-amber">verify before selling parts</span>}
               <span className="rounded-md border border-blue/30 bg-blue/10 px-2 py-1 text-blue">{view.jobCard.sourceState}</span>
             </div>
           </div>
@@ -606,34 +616,35 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
           {view.needsExactVehicle && <div className="text-xs font-bold text-amber">Pick one before trusting diagrams, specs, or removal steps.</div>}
         </div>
         <div className="mt-3 grid gap-2 md:grid-cols-2">
-          {view.actionLinks.map(link => (
-            <a key={`${link.kind}-${link.url}`} href={link.url} target="_blank" rel="noreferrer" className="rounded-md border border-white/10 bg-white/[0.035] p-3 transition-colors hover:border-blue/50 hover:bg-blue/10">
-              <span className="block font-black text-text-primary">{link.label}</span>
-              <span className="mt-1 block text-xs leading-5 text-text-secondary">{link.detail}</span>
-              <span className="mt-2 inline-flex rounded border border-white/10 px-2 py-1 text-[10px] font-black uppercase text-text-muted">{link.confidence.replace('_', ' ')}{link.provider ? ` / ${link.provider}` : ''}</span>
-            </a>
-          ))}
-          {!view.actionLinks.length && <div className="text-text-muted">I did not find a useful direct page yet. Open the Repair Workspace so we can narrow the vehicle/source.</div>}
+          {view.actionLinks.map(link => {
+            const choice = view.vehicleChoices.find(item => item.url === link.url)
+            const isManualChoice = link.confidence === 'manual_choice'
+            return isManualChoice ? (
+              <div key={`${link.kind}-${link.url}`} className="rounded-md border border-amber/25 bg-amber/10 p-3">
+                <span className="block font-black text-text-primary">{link.label}</span>
+                <span className="mt-1 block text-xs leading-5 text-text-secondary">{link.detail}</span>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button className="btn btn-primary btn-sm" onClick={() => onAskNext?.(choice?.selectionQuery || `${query} ${link.label}`)}>
+                    Use This Engine
+                  </button>
+                  <a href={link.url} target="_blank" rel="noreferrer" className="btn btn-secondary btn-sm">Open Source</a>
+                </div>
+              </div>
+            ) : (
+              <a key={`${link.kind}-${link.url}`} href={link.url} target="_blank" rel="noreferrer" className="rounded-md border border-white/10 bg-white/[0.035] p-3 transition-colors hover:border-blue/50 hover:bg-blue/10">
+                <span className="block font-black text-text-primary">{link.label}</span>
+                <span className="mt-1 block text-xs leading-5 text-text-secondary">{link.detail}</span>
+                <span className="mt-2 inline-flex rounded border border-white/10 px-2 py-1 text-[10px] font-black uppercase text-text-muted">{link.provider || 'source link'}</span>
+              </a>
+            )
+          })}
+          {!view.actionLinks.length && <div className="text-text-muted">Tell me the engine or VIN and I will narrow this down to the right page.</div>}
         </div>
       </section>
 
-      {view.needsExactVehicle && view.vehicleChoices.length > 0 && (
-        <section className="rounded-lg border border-amber/30 bg-amber/10 p-4">
-          <div className="text-xs font-black uppercase text-amber">Exact Vehicle Choices</div>
-          <div className="mt-3 grid gap-2 md:grid-cols-2">
-            {view.vehicleChoices.map(choice => (
-              <a key={choice.url} href={choice.url} target="_blank" rel="noreferrer" className="rounded-md border border-amber/25 bg-bg-card/60 p-3 transition-colors hover:border-amber/60">
-                <span className="block text-sm font-black text-text-primary">{choice.label}</span>
-                <span className="mt-1 block text-xs leading-5 text-text-secondary">{choice.detail}</span>
-              </a>
-            ))}
-          </div>
-        </section>
-      )}
-
       <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_300px]">
         <section className="rounded-lg border border-border bg-bg-hover p-4">
-          <div className="text-xs font-black uppercase text-blue">What To Check First</div>
+          <div className="text-xs font-black uppercase text-blue">{view.checkHeading}</div>
           <ol className="mt-3 space-y-2 text-text-secondary">
             {view.checks.slice(0, 4).map((item, index) => (
               <li key={`${item}-${index}`} className="flex gap-2">
@@ -646,11 +657,11 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
 
         <aside className="space-y-3">
           <section className="rounded-lg border border-border bg-bg-hover p-4">
-            <div className="text-xs font-black uppercase text-text-muted">Repair Card</div>
+            <div className="text-xs font-black uppercase text-text-muted">Repair Summary</div>
             <div className="mt-3 space-y-2 text-xs text-text-secondary">
               <div><span className="font-black text-text-primary">Problem:</span> {view.jobCard.problem}</div>
               <div><span className="font-black text-text-primary">Source:</span> {view.jobCard.sourceState}</div>
-              <div><span className="font-black text-text-primary">Estimate:</span> {view.jobCard.estimateState}</div>
+              {view.showEstimateCard && <div><span className="font-black text-text-primary">Estimate:</span> {view.jobCard.estimateState}</div>}
             </div>
           </section>
 
@@ -1034,6 +1045,11 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, status])
 
+  useEffect(() => {
+    const latestRepair = [...messages].reverse().find(message => message.repairResult)?.repairResult
+    if (latestRepair) lastRepairContextRef.current = latestRepair
+  }, [messages])
+
   // Thinking timer - counts up while loading
   useEffect(() => {
     if (loading) {
@@ -1174,16 +1190,25 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       return true
     }
 
-    if (forceRepairMode && !lastRepairContextRef.current && !hasRepairAnchor(text)) {
-      addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'error', detail: 'Missing vehicle, code, symptom, or repair operation' })
+    // ── Always ask for the vehicle when we don't have one (this message OR the
+    // running conversation). Never guess, never fall back to the web. ──
+    const parsedNow = parseRepairQuery(text)
+    const hasVehicleNow = !!(parsedNow.year && (parsedNow.make || parsedNow.model)) || !!parsedNow.vin
+    const contextVehicle = previousRepairContext?.data.normalizedVehicle
+    const hasContextVehicle = !!(contextVehicle && contextVehicle.year && (contextVehicle.make || contextVehicle.model))
+    if (!hasVehicleNow && !hasContextVehicle) {
+      addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'error', detail: 'Need the vehicle first' })
       return finish({
         role: 'assistant',
-        content: 'Repair mode is on. Give me a vehicle plus a code, symptom, system, or repair operation. Example: 2005 Honda Civic P0420, or 2018 Jeep Wrangler brake diagram.',
+        content: 'Which vehicle? Give me the year, make, and model — and the engine or trim if you have it. I need it to pull the right diagram, spec, or procedure from the manual.',
       })
     }
 
+    // Manual is the source of truth. Only blend in the web when the user explicitly asks to go online.
+    const wantsOnline = ONLINE_INTENT.test(text)
+
     addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'running', detail: lookupQuery })
-    setStatus('Searching repair sources...')
+    setStatus('Searching repair manual...')
 
     try {
       const rr = await fetch('/api/repair-search', {
@@ -1202,11 +1227,47 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
           lastRepairContextRef.current = repairResult
         }
         addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'ok', detail: `${repairData.sources?.length || 0} source cards, ${repairData.manualMatches?.length || 0} manual matches` })
-        return finish({
-          role: 'assistant',
-          content: formatRepairSearchText(lookupQuery, repairData),
-          repairResult,
-        })
+
+        const manualSummary = formatRepairSearchText(lookupQuery, repairData)
+
+        // Default: manual only.
+        if (!wantsOnline) {
+          return finish({ role: 'assistant', content: manualSummary, repairResult })
+        }
+
+        // User asked to go online → keep the manual as the base, add the web, and
+        // write the single best combined answer.
+        setStatus('Adding web sources...')
+        let webText = ''
+        try {
+          const wr = await fetch(`/api/ai-search?q=${encodeURIComponent(lookupQuery)}`, { headers: await getAuthJsonHeaders(), signal: AbortSignal.timeout(20000) })
+          const wd = await wr.json().catch(() => ({}))
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const results: any[] = Array.isArray(wd?.results) ? wd.results : Array.isArray(wd?.data?.results) ? wd.data.results : []
+          webText = results.slice(0, 5).map((r, i) => `${i + 1}. ${r.title || r.url || ''}\n${String(r.content || r.snippet || r.description || '').slice(0, 300)}\n${r.url || ''}`).join('\n\n')
+        } catch { /* web is optional — manual still wins */ }
+
+        let combined = manualSummary
+        try {
+          setStatus('Writing best answer...')
+          const synth = await fetch('/api/ai-completions', {
+            method: 'POST',
+            headers: await getAuthJsonHeaders(),
+            body: JSON.stringify({
+              messages: [
+                { role: 'system', content: 'You are Alpha AI, a master auto technician. Answer the mechanic\'s repair question. The REPAIR MANUAL section is your PRIMARY source — lead with it and trust it over the web. The WEB section is only a supplement the user explicitly asked for; use it to fill gaps, never to override the manual. Do not invent torque specs, wiring pinouts, or procedures no source supports — say when something must be source-verified. Keep it tight and practical for a busy mechanic.' },
+                { role: 'user', content: `Question: ${text}\n\nREPAIR MANUAL (primary):\n${manualSummary}\n\nWEB (supplement, the user asked to go online):\n${webText || '(no web results returned)'}` },
+              ],
+              max_tokens: 900,
+              temperature: 0.3,
+            }),
+          })
+          const sd = await synth.json().catch(() => ({}))
+          const out = sd.choices?.[0]?.message?.content?.trim()
+          if (synth.ok && out) combined = out
+        } catch { /* fall back to the manual answer */ }
+
+        return finish({ role: 'assistant', content: combined, repairResult })
       }
 
       addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'error', detail: rd?.error || 'Repair lookup failed' })
@@ -1843,6 +1904,36 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       if (parsed.tool === 'connector' && !activeFeatures.socialMedia) {
         agentMessages.push({ role: 'assistant', content: raw })
         agentMessages.push({ role: 'user', content: 'Social media connectors are currently disabled by the user. Inform the user that Social Media toggle is off.' })
+        continue
+      }
+
+      // Repair manual lookup - backstop for repair questions that reached the loop.
+      // Always answers from the manuals, never the web.
+      if (parsed.tool === 'repairSearch') {
+        setStatus('Searching repair manual...')
+        let repairText = 'No manual results'
+        try {
+          const rr = await fetch('/api/repair-search', {
+            method: 'POST',
+            headers: await getAuthJsonHeaders(),
+            body: JSON.stringify({ query: parsed.query, vehicle: parsed.vehicle }),
+            signal: AbortSignal.timeout(60000),
+          })
+          const rd = await rr.json().catch(() => ({}))
+          if (rr.ok && rd?.ok && rd.data) {
+            const repairData = rd.data as RepairSearchResult
+            lastRepairContextRef.current = { query: String(parsed.query || ''), data: repairData }
+            repairText = formatRepairSearchText(String(parsed.query || ''), repairData)
+            addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'repairSearch', status: 'ok', detail: `${repairData.sources?.length || 0} source cards, ${repairData.manualMatches?.length || 0} manual matches` })
+          } else {
+            addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'repairSearch', status: 'error', detail: rd?.error || 'Repair lookup failed' })
+          }
+        } catch (e) {
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'repairSearch', status: 'error', detail: e instanceof Error ? e.message : 'Repair lookup failed' })
+        }
+        accumulated.push(`[Repair manual lookup: "${parsed.query}"]\n${repairText}`)
+        agentMessages.push({ role: 'assistant', content: raw })
+        agentMessages.push({ role: 'user', content: `Repair manual results for "${parsed.query}":\n${repairText}\n\nAnswer the repair question from THIS manual data only. Lead with what it means and what to check, and include the source links. Do NOT use web search. Do NOT invent torque specs, pinouts, or procedures the manual does not show.` })
         continue
       }
 
@@ -3139,7 +3230,12 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
                 </details>
               )}
               {m.repairResult
-                ? <RepairResultCard result={m.repairResult} onAskNext={(text) => { setRepairOnlyMode(true); localStorage.setItem('ai_repair_mode', 'true'); setInput(text) }} />
+                ? <RepairResultCard result={m.repairResult} onAskNext={(text) => {
+                    setRepairOnlyMode(true)
+                    localStorage.setItem('ai_repair_mode', 'true')
+                    setInput(text)
+                    setTimeout(() => sendRef.current?.(text), 0)
+                  }} />
                 : m.role === 'browser' && m.browserSteps
                   ? <BrowserPanel steps={m.browserSteps} />
                   : m.html

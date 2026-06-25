@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { RepairManualPage, RepairSearchResult, RepairSource, RepairVehicle } from '@/lib/repair/sources'
-import { buildRepairPresentation } from '@/lib/repair/presentation'
+import { buildRepairPresentation, REPAIR_DTC_GUIDES, detectRepairDtc } from '@/lib/repair/presentation'
 
 const CATEGORIES = [
   { value: 'all', label: 'All' },
@@ -41,43 +41,9 @@ type WorkspaceTab = typeof WORKSPACE_TABS[number]
 const MAIN_TABS = ['Easy Answer', 'AI Repair', 'Sources', 'Estimate', 'Advanced'] as const
 type MainTab = typeof MAIN_TABS[number]
 
-const DTC_GUIDES: Record<string, { meaning: string; checks: string[]; dontAssume: string[]; action: string }> = {
-  P0420: {
-    meaning: 'Catalyst system efficiency below threshold, Bank 1.',
-    checks: [
-      'Confirm the code, freeze-frame data, and whether other engine or misfire codes are present.',
-      'Check for exhaust leaks before or near the catalytic converter.',
-      'Review upstream and downstream oxygen sensor activity on a warm engine.',
-      'Check fuel trims, misfire history, coolant temp, and oil/coolant contamination issues.',
-      'Verify converter condition only after the basic checks pass.',
-    ],
-    dontAssume: [
-      'Do not sell a catalytic converter just because P0420 is stored.',
-      'Do not replace oxygen sensors until signal behavior and exhaust leaks are checked.',
-    ],
-    action: 'Create a diagnostic estimate first. Verify data before quoting converter or sensor replacement.',
-  },
-  P0300: {
-    meaning: 'Random or multiple cylinder misfire detected.',
-    checks: [
-      'Check freeze-frame data, misfire counters, fuel trims, and pending cylinder-specific codes.',
-      'Inspect plugs, coils, vacuum leaks, fuel pressure, compression, and injector operation.',
-      'Check for TSBs before replacing parts.',
-    ],
-    dontAssume: ['Do not replace all coils until the failed cylinder/system is verified.'],
-    action: 'Start with diagnostic labor and document test results before parts.',
-  },
-  P0171: {
-    meaning: 'System too lean, Bank 1.',
-    checks: [
-      'Check fuel trims at idle and under load.',
-      'Inspect for vacuum leaks, intake leaks, PCV issues, exhaust leaks, and weak fuel delivery.',
-      'Verify MAF readings and oxygen sensor response.',
-    ],
-    dontAssume: ['Do not replace oxygen sensors just because the mixture is lean.'],
-    action: 'Quote diagnosis first, then parts after trim data confirms the cause.',
-  },
-}
+// Single source of truth lives in lib/repair/presentation. Aliased here so the
+// page's simpleAnswer fallback uses the same DTC data as buildRepairPresentation.
+const DTC_GUIDES = REPAIR_DTC_GUIDES
 
 type SavedDraft = {
   id: string
@@ -183,9 +149,6 @@ function allocateTotal(total: number, count: number) {
   return Array.from({ length: lineCount }, (_unused, index) => (base + (index < remainder ? 1 : 0)) / 100)
 }
 
-function detectDtcCode(value: string) {
-  return value.match(/\b[PCBU][0-9A-F]{4}\b/i)?.[0]?.toUpperCase() || ''
-}
 
 export default function RepairPage() {
   const [query, setQuery] = useState('')
@@ -272,7 +235,7 @@ export default function RepairPage() {
 
   const simpleAnswer = useMemo(() => {
     if (!result) return null
-    const dtc = detectDtcCode(`${result.query} ${query}`)
+    const dtc = detectRepairDtc(`${result.query} ${query}`)
     const dtcGuide = dtc ? DTC_GUIDES[dtc] : undefined
     const firstOperation = result.operationLines[0]
     return {
@@ -542,7 +505,7 @@ export default function RepairPage() {
         <div className="flex flex-wrap gap-2">
           <button className="btn btn-secondary btn-sm" onClick={copySources} disabled={!result}>Copy Sources</button>
           <button className="btn btn-secondary btn-sm" onClick={saveDraft} disabled={!result}>Save Draft</button>
-          <button className="btn btn-primary btn-sm" onClick={sendToAlpha} disabled={!result}>Build Estimate Draft</button>
+          <button className="btn btn-primary btn-sm" onClick={sendToAlpha} disabled={!result}>Send to AI Chat</button>
         </div>
       </div>
 
@@ -641,43 +604,42 @@ export default function RepairPage() {
                   <p className="mt-3 max-w-3xl text-sm leading-6 text-text-secondary">{repairView?.plainAnswer}</p>
                   <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold">
                     <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1">{repairView?.vehicle || vehicleText(result.normalizedVehicle)}</span>
-                    {repairView?.needsExactVehicle && <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-amber">needs exact engine/trim for exact diagrams</span>}
+                    {repairView?.needsExactVehicle && <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-amber">engine needed for exact diagram</span>}
                   </div>
                 </div>
 
                 <div className="rounded-lg border border-border bg-bg-card p-5">
                   <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="text-xs font-black uppercase text-blue">{repairView?.primaryActionLabel || (repairView?.needsExactVehicle ? 'Pick Exact Vehicle First' : 'Open The Info')}</div>
-                    {repairView?.needsExactVehicle && <div className="text-xs font-bold text-amber">Choose the matching manual first.</div>}
+                    <div className="text-xs font-black uppercase text-blue">{repairView?.primaryActionLabel || (repairView?.needsExactVehicle ? 'Pick Engine First' : 'Open The Info')}</div>
+                    {repairView?.needsExactVehicle && <div className="text-xs font-bold text-amber">Pick the engine that matches the car.</div>}
                   </div>
                   <div className="mt-3 grid gap-2 md:grid-cols-2">
-                    {(repairView?.actionLinks || []).map(link => (
-                      <a key={`${link.kind}-${link.url}`} href={link.url} target="_blank" rel="noreferrer" className="rounded-md border border-white/10 bg-bg-hover p-3 transition-colors hover:border-blue/50 hover:bg-blue/10">
-                        <span className="block text-sm font-black text-text-primary">{link.label}</span>
-                        <span className="mt-1 block text-xs leading-5 text-text-secondary">{link.detail}</span>
-                        <span className="mt-2 inline-flex rounded border border-white/10 px-2 py-1 text-[10px] font-black uppercase text-text-muted">{link.confidence.replace('_', ' ')}{link.provider ? ` / ${link.provider}` : ''}</span>
-                      </a>
-                    ))}
-                    {!repairView?.actionLinks.length && <div className="text-sm text-text-muted">No direct source page found yet. Use Advanced sources to narrow the manual.</div>}
+                    {(repairView?.actionLinks || []).map(link => {
+                      const choice = repairView?.vehicleChoices.find(item => item.url === link.url)
+                      const isManualChoice = link.confidence === 'manual_choice'
+                      return isManualChoice ? (
+                        <div key={`${link.kind}-${link.url}`} className="rounded-md border border-amber/25 bg-amber/10 p-3">
+                          <span className="block text-sm font-black text-text-primary">{link.label}</span>
+                          <span className="mt-1 block text-xs leading-5 text-text-secondary">{link.detail}</span>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button className="btn btn-primary btn-sm" onClick={() => void runSearch(choice?.selectionQuery || `${query} ${link.label}`)}>Use This Engine</button>
+                            <a href={link.url} target="_blank" rel="noreferrer" className="btn btn-secondary btn-sm">Open Source</a>
+                          </div>
+                        </div>
+                      ) : (
+                        <a key={`${link.kind}-${link.url}`} href={link.url} target="_blank" rel="noreferrer" className="rounded-md border border-white/10 bg-bg-hover p-3 transition-colors hover:border-blue/50 hover:bg-blue/10">
+                          <span className="block text-sm font-black text-text-primary">{link.label}</span>
+                          <span className="mt-1 block text-xs leading-5 text-text-secondary">{link.detail}</span>
+                          <span className="mt-2 inline-flex rounded border border-white/10 px-2 py-1 text-[10px] font-black uppercase text-text-muted">{link.provider || 'source link'}</span>
+                        </a>
+                      )
+                    })}
+                    {!repairView?.actionLinks.length && <div className="text-sm text-text-muted">Tell me the engine or VIN and I will narrow this down to the right page.</div>}
                   </div>
                 </div>
 
-                {repairView?.needsExactVehicle && repairView.vehicleChoices.length > 0 && (
-                  <div className="rounded-lg border border-amber/30 bg-amber/10 p-5">
-                    <div className="text-xs font-black uppercase text-amber">Exact Vehicle Choices</div>
-                    <div className="mt-3 grid gap-2 md:grid-cols-2">
-                      {repairView.vehicleChoices.map(choice => (
-                        <a key={choice.url} href={choice.url} target="_blank" rel="noreferrer" className="rounded-md border border-amber/25 bg-bg-card/60 p-3 transition-colors hover:border-amber/60">
-                          <span className="block text-sm font-black text-text-primary">{choice.label}</span>
-                          <span className="mt-1 block text-xs leading-5 text-text-secondary">{choice.detail}</span>
-                        </a>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
                 <div className="rounded-lg border border-border bg-bg-card p-5">
-                  <div className="text-xs font-black uppercase text-text-muted">What To Check First</div>
+                  <div className="text-xs font-black uppercase text-text-muted">{repairView?.checkHeading || 'What To Check First'}</div>
                   <ol className="mt-3 space-y-3 text-sm leading-6 text-text-secondary">
                     {(repairView?.checks || simpleAnswer?.checks || []).slice(0, 4).map((item, index) => (
                       <li key={item} className="flex gap-3">
@@ -700,11 +662,11 @@ export default function RepairPage() {
                   </div>
                 </div>
                 <div className="rounded-lg border border-border bg-bg-card p-4">
-                  <div className="text-xs font-black uppercase text-text-muted">Repair Card</div>
+                  <div className="text-xs font-black uppercase text-text-muted">Repair Summary</div>
                   <div className="mt-3 space-y-2 text-xs text-text-secondary">
                     <div><span className="font-black text-text-primary">Problem:</span> {repairView?.jobCard.problem || result.draft.operation}</div>
                     <div><span className="font-black text-text-primary">Source:</span> {repairView?.jobCard.sourceState || 'source needs review'}</div>
-                    <div><span className="font-black text-text-primary">Estimate:</span> {repairView?.jobCard.estimateState || 'needs price'}</div>
+                    {repairView?.showEstimateCard && <div><span className="font-black text-text-primary">Estimate:</span> {repairView?.jobCard.estimateState || 'needs price'}</div>}
                   </div>
                 </div>
                 <div className="rounded-lg border border-green/30 bg-green/10 p-4">

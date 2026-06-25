@@ -24,7 +24,16 @@ export interface RouteDecision {
 
 const PART_TERMS = /\b(brake|brakes|rotor|rotors|pad|pads|control\s+arm|control\s+arms|strut|struts|shock|shocks|bearing|hub|alternator|starter|water\s+pump|thermostat|timing\s+belt|a\/c|ac\s+compressor|tie\s+rod|ball\s+joint|axle|cv\s+axle|caliper|muffler|catalytic|spark\s+plug|coil|fuel\s+pump|radiator|belt|hose|filter|battery|part|parts)\b/i
 const VEHICLE_TERMS = /\b(?:19|20)?\d{2}\b|\b(civic|accord|camry|corolla|altima|sentra|silverado|sierra|f-?150|escape|explorer|tacoma|tundra|pilot|cr-v|rav4|malibu|impala|charger|ram)\b/i
-const REPAIR_TERMS = /\b(repair\s+manual|manual|procedure|step\s*by\s*step|steps|torque|specs?|wiring|diagram|schematic|pinout|dtc|trouble\s+code|tsb|bulletin|recall|service\s+information|all\s*data|alldata|charm|lemon)\b/i
+// Repair-reference and procedure words (the kind of thing that lives in a manual).
+const REPAIR_TERMS = /\b(repair\s+manual|service\s+manual|manual|procedure|removal|installation|torque|specs?|spec|capacity|wiring|diagram|schematic|pinout|connector|fuse\s*box|fuse|relay|firing\s+order|dtc|trouble\s+code|tsb|bulletin|recall|service\s+information|all\s*data|alldata|charm|lemon)\b/i
+// Diagnostic intent.
+const REPAIR_DIAG = /\b(diagnos\w*|what'?s\s+wrong|trouble\s*shoot\w*|check\s+engine|engine\s+light|warning\s+light|limp\s+mode)\b/i
+// Symptom words a customer/mechanic describes.
+const SYMPTOM_TERMS = /\b(misfir\w*|stall\w*|overheat\w*|shak\w+|vibrat\w*|rough\s+idle|hesitat\w*|surg\w*|knock\w*|grind\w*|squeal\w*|sputter\w*|leak\w*|rattl\w*|no[\s-]?start|won'?t\s+start|wont\s+start|hard\s+start)\b/i
+// Diagnostic trouble code, e.g. P0420.
+const DTC_TERMS = /\b[PCBU][0-9A-F]{4}\b/i
+// Money/parts-ordering intent — these keep the parts/pricing path, not the manual.
+const PRICING_TERMS = /\b(price|prices|pricing|cost|costs|quote|cheapest|best\s+deal|buy|purchase)\b|\$\s*\d/i
 const SEND_TERMS = /\b(send|text|sms|email|call|dial|voicemail|message|reply)\b/i
 const SHOP_TERMS = /\b(customer|vehicle|job|estimate|invoice|receipt|appointment|inventory|staff|timeclock|shop board|work order)\b/i
 const REPORT_TERMS = /\b(report|revenue|sales|stats|how much|conversion|growth|reminder|campaign|follow-?up|review request)\b/i
@@ -52,13 +61,16 @@ export function classifyRequest(input: string): RouteDecision {
     }
   }
 
-  if (REPAIR_TERMS.test(text) && (VEHICLE_TERMS.test(text) || /\b[A-HJ-NPR-Z0-9]{17}\b/i.test(text) || /\b[PCBU][0-9A-F]{4}\b/i.test(text))) {
-    reasons.push('vehicle plus repair/manual/procedure terms')
+  // Repair-first: any code, symptom, diagram/spec/procedure ask, or repair follow-up
+  // goes to the manuals — even without the vehicle restated (it gets carried from
+  // context or asked for downstream). Pricing intent keeps the parts path.
+  if (!PRICING_TERMS.test(text) && (REPAIR_TERMS.test(text) || REPAIR_DIAG.test(text) || SYMPTOM_TERMS.test(text) || DTC_TERMS.test(text))) {
+    reasons.push('repair/diagnostic/code/symptom intent (manual-first)')
     return {
       intent: 'repair_lookup',
       agentId: 'repair',
       skillIds: ['source_backed_repair_research'],
-      confidence: 0.93,
+      confidence: 0.9,
       requiresToolResult: true,
       requiresConfirmation: false,
       reasons,

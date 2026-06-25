@@ -363,6 +363,12 @@ export function parseRepairQuery(input: string, fallback: Partial<RepairVehicle>
       break
     }
   }
+  const engineMatch = text.match(/\b(\d\.\d)\s*(?:l|liter)\b/i)
+  const engine = fallback.engine || (engineMatch ? `${engineMatch[1]}L` : '')
+  const transmission = fallback.transmission
+    || (/\bautomatic(?:\s+(?:trans|transmission))?\b/i.test(text) ? 'Automatic'
+      : /\b(?:standard|manual)(?:\s+(?:trans|transmission))?\b/i.test(text) ? 'Manual'
+        : '')
 
   const rawComponent = text
     .replace(/\bfollow\s*up\b/gi, ' ')
@@ -381,10 +387,10 @@ export function parseRepairQuery(input: string, fallback: Partial<RepairVehicle>
     year,
     make: canonicalMakeForManuals(make),
     model: normalizeModel(model),
-    engine: fallback.engine,
+    engine,
     trim: fallback.trim,
     drivetrain: fallback.drivetrain,
-    transmission: fallback.transmission,
+    transmission,
     fuel: fallback.fuel,
     bodyClass: fallback.bodyClass,
     brakeSystem: fallback.brakeSystem,
@@ -442,7 +448,8 @@ async function fetchText(url: string, timeoutMs = 12000) {
 }
 
 function extractManualLinks(html: string, baseUrl: string, model?: string) {
-  const links: Array<{ title: string; url: string }> = []
+  const all: Array<{ title: string; url: string }> = []
+  const matched: Array<{ title: string; url: string }> = []
   const seen = new Set<string>()
   const modelLower = (model || '').toLowerCase().replace(/-/g, '')
   const re = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi
@@ -451,14 +458,18 @@ function extractManualLinks(html: string, baseUrl: string, model?: string) {
     const href = decodeHtml(match[1])
     const label = decodeHtml(match[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim())
     if (!href || href.startsWith('#') || href === '/' || /about|nfo|style/i.test(href)) continue
-    const url = new URL(href, baseUrl).toString()
+    let url: string
+    try { url = new URL(href, baseUrl).toString() } catch { continue }
     if (seen.has(url)) continue
-    const comparable = `${label} ${decodeURIComponent(url)}`.toLowerCase().replace(/-/g, '')
-    if (modelLower && !comparable.includes(modelLower)) continue
     seen.add(url)
-    links.push({ title: label || decodeURIComponent(url.split('/').filter(Boolean).pop() || url), url })
+    const entry = { title: label || decodeURIComponent(url.split('/').filter(Boolean).pop() || url), url }
+    all.push(entry)
+    const comparable = `${label} ${decodeURIComponent(url)}`.toLowerCase().replace(/-/g, '')
+    if (modelLower && comparable.includes(modelLower)) matched.push(entry)
   }
-  return links.slice(0, 12)
+  // Prefer links that match the model, but fall back to ALL links so a naming
+  // mismatch on the directory page never returns an empty result.
+  return (matched.length ? matched : all).slice(0, 16)
 }
 
 function stripTags(value: string) {
