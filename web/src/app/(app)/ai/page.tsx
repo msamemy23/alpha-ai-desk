@@ -829,6 +829,8 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   const prefillHandled = useRef(false)
   const lastDesktopFileRef = useRef<string | null>(null)
   const lastRepairContextRef = useRef<RepairChatResult | null>(null)
+  // Set when we ask the user for the vehicle on a repair question; the next reply resumes the lookup.
+  const pendingRepairQueryRef = useRef<string | null>(null)
   const [routeDecision, setRouteDecision] = useState<RouteDecision | null>(null)
   const [toolTimeline, setToolTimeline] = useState<ToolActivity[]>([])
   const [repairOnlyMode, setRepairOnlyMode] = useState(false)
@@ -1197,6 +1199,8 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     const contextVehicle = previousRepairContext?.data.normalizedVehicle
     const hasContextVehicle = !!(contextVehicle && contextVehicle.year && (contextVehicle.make || contextVehicle.model))
     if (!hasVehicleNow && !hasContextVehicle) {
+      // Remember the repair question so the user's next reply (the vehicle) resumes it.
+      pendingRepairQueryRef.current = text
       addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'error', detail: 'Need the vehicle first' })
       return finish({
         role: 'assistant',
@@ -1571,6 +1575,22 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     }
     const userMsg: ChatMessage = { role: 'user', content: text, imageUrl: attachImageUrl }
     setMessages(prev => [...prev, userMsg])
+
+    // Resume a repair lookup that was waiting on the vehicle: if we just asked
+    // "which vehicle?" and this reply names one, re-run with the remembered question.
+    if (pendingRepairQueryRef.current) {
+      const pendingVehicle = parseRepairQuery(text)
+      const looksLikeVehicle = !!(pendingVehicle.year || pendingVehicle.make || pendingVehicle.model || pendingVehicle.vin)
+      const pending = pendingRepairQueryRef.current
+      pendingRepairQueryRef.current = null
+      if (looksLikeVehicle) {
+        await runRepairLookup(`${pending} ${text}`.trim(), userMsg, false)
+        setLoading(false)
+        setStatus('')
+        return
+      }
+    }
+
     const classifiedDecision = classifyRequest(text)
     const decision: RouteDecision = repairOnlyMode
       ? {
