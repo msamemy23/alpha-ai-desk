@@ -328,7 +328,9 @@ function expandDtcComponent(component: string, dtc?: string) {
 export function parseRepairQuery(input: string, fallback: Partial<RepairVehicle> = {}): RepairVehicle & { component: string; dtc?: string } {
   let text = input.replace(/\s+/g, ' ').trim()
   const vin = text.match(/\b[A-HJ-NPR-Z0-9]{17}\b/i)?.[0]?.toUpperCase() || fallback.vin
+  const dtcShort = text.match(/\b([PCBU])\s?-?\s?(\d{3})\b/i)
   const dtc = text.match(/\b[PCBU][0-9A-F]{4}\b/i)?.[0]?.toUpperCase()
+    || (dtcShort ? `${dtcShort[1].toUpperCase()}0${dtcShort[2]}` : undefined)
   const explicitYear = text.match(/\b(19|20)\d{2}\b/)?.[0]
   const shortYearMatch = text.match(/\b(\d{2})\s+([a-z][a-z0-9-]+)/i)
   const year = fallback.year || explicitYear || (shortYearMatch ? expandTwoDigitYear(shortYearMatch[1]) : '')

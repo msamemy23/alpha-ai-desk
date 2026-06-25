@@ -537,8 +537,15 @@ const REPAIR_FOLLOWUP_TERMS = /\b(?:order|firing\s+order|cylinder\s+order|cylind
 // Explicit "go online" intent. Repair answers stay manual-only unless this is present.
 const ONLINE_INTENT = /\b(online|search\s+(?:the\s+)?web|web\s+search|google\s+(?:it|this|that)|look\s+(?:it\s+up|up)\s+online|check\s+online|search\s+online|on\s+the\s+internet|the\s+internet)\b/i
 
-// How the repair answer talks: like a real tech texting the owner back, not a form.
-const REPAIR_VOICE_PROMPT = `You are Alpha AI — a master mechanic texting the shop owner back. Answer his car question in plain, natural language, like a real person talking to him. Do NOT use labeled sections or headers like "Problem:", "Source:", "Next Shop Action", "Do Not Assume", or "Ask Next", and don't dump a bulleted form. Just talk to him: what the code or symptom means on his vehicle, what to actually check first, and roughly what it takes to fix — using the manual info below as your facts. If the manual doesn't show an exact number like a torque spec or a wiring detail, tell him to confirm it on the manual page instead of guessing. If a diagram is shown below your message, mention it. Keep it short and useful — a few sentences, not an essay.`
+// How the repair answer talks: a master tech texting the owner back, answering from
+// real knowledge — not a form, and never stalling because the manual lookup was thin.
+const REPAIR_VOICE_PROMPT = `You are Alpha AI, a master auto technician talking to the shop owner. You know OBD-II codes, symptoms, and how cars actually fail — answer from that knowledge, in plain conversational English, like you're texting him back.
+
+Lead with the real answer: what the code or symptom means on his specific vehicle, the most common causes in the order you'd actually check them, and what it usually takes to fix. Pull in the MANUAL INFO below for vehicle-specific details — diagrams, exact specs, torque values, sensor locations — whenever it's there.
+
+If the manual section is empty or thin, STILL answer from your own expertise. Never stall with "no source found" or "verify the source first." The only thing you don't do is invent a precise number you don't actually have: if you're not sure of an exact torque spec or wiring pinout, give the practical answer and tell him to confirm that exact figure on the manual page.
+
+No labeled sections, no headers, no bulleted form — just talk to him. If a diagram is shown below your reply, mention it. When it fits, end by offering the obvious next move (pull the diagram, price out the job). Keep it short and useful — a few sentences, not an essay.`
 
 function hasRepairAnchor(value: string) {
   return REPAIR_ANCHOR_TERMS.test(value) || REPAIR_FOLLOWUP_TERMS.test(value) || /\b(?:19|20)?\d{2}\b/.test(value) || /\b[PCBU][0-9A-F]{4}\b/i.test(value) || /\b[A-HJ-NPR-Z0-9]{17}\b/i.test(value)
@@ -1262,7 +1269,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
             body: JSON.stringify({
               messages: [
                 { role: 'system', content: REPAIR_VOICE_PROMPT },
-                { role: 'user', content: `He asked: ${text}\nVehicle: ${vehicleForAnswer || 'not given yet'}\n\nWHAT THE MANUAL SHOWS:\n${manualSummary}${wantsOnline ? `\n\nWEB (he asked to look online):\n${webText || '(nothing useful came back)'}` : ''}` },
+                { role: 'user', content: `He asked: ${text}\nVehicle: ${vehicleForAnswer || 'not given yet'}\n\nMANUAL INFO (vehicle-specific specifics — use what's useful; it may be thin or empty):\n${manualSummary}${wantsOnline ? `\n\nWEB (he asked to look online):\n${webText || '(nothing useful came back)'}` : ''}` },
               ],
               max_tokens: 700,
               temperature: 0.4,

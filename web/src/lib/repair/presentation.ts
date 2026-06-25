@@ -96,7 +96,13 @@ export const REPAIR_DTC_GUIDES: Record<string, RepairGuide> = {
 }
 
 export function detectRepairDtc(value: string) {
-  return value.match(/\b[PCBU][0-9A-F]{4}\b/i)?.[0]?.toUpperCase() || ''
+  // Full code first (hex is valid in some, e.g. P0A1F)...
+  const full = value.match(/\b([PCBU])([0-9A-F]{4})\b/i)
+  if (full) return `${full[1]}${full[2]}`.toUpperCase()
+  // ...then the shorthand people actually text: "p420" means P0420.
+  const short = value.match(/\b([PCBU])\s?-?\s?(\d{3})\b/i)
+  if (short) return `${short[1].toUpperCase()}0${short[2]}`
+  return ''
 }
 
 export function repairVehicleLabel(vehicle: RepairSearchResult['normalizedVehicle']) {
