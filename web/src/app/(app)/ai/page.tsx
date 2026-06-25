@@ -537,6 +537,9 @@ const REPAIR_FOLLOWUP_TERMS = /\b(?:order|firing\s+order|cylinder\s+order|cylind
 // Explicit "go online" intent. Repair answers stay manual-only unless this is present.
 const ONLINE_INTENT = /\b(online|search\s+(?:the\s+)?web|web\s+search|google\s+(?:it|this|that)|look\s+(?:it\s+up|up)\s+online|check\s+online|search\s+online|on\s+the\s+internet|the\s+internet)\b/i
 
+// How the repair answer talks: like a real tech texting the owner back, not a form.
+const REPAIR_VOICE_PROMPT = `You are Alpha AI — a master mechanic texting the shop owner back. Answer his car question in plain, natural language, like a real person talking to him. Do NOT use labeled sections or headers like "Problem:", "Source:", "Next Shop Action", "Do Not Assume", or "Ask Next", and don't dump a bulleted form. Just talk to him: what the code or symptom means on his vehicle, what to actually check first, and roughly what it takes to fix — using the manual info below as your facts. If the manual doesn't show an exact number like a torque spec or a wiring detail, tell him to confirm it on the manual page instead of guessing. If a diagram is shown below your message, mention it. Keep it short and useful — a few sentences, not an essay.`
+
 function hasRepairAnchor(value: string) {
   return REPAIR_ANCHOR_TERMS.test(value) || REPAIR_FOLLOWUP_TERMS.test(value) || /\b(?:19|20)?\d{2}\b/.test(value) || /\b[PCBU][0-9A-F]{4}\b/i.test(value) || /\b[A-HJ-NPR-Z0-9]{17}\b/i.test(value)
 }
@@ -628,28 +631,6 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
 
   return (
     <div className="space-y-3 text-sm">
-      <div className="rounded-lg border border-green/25 bg-green/10 p-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <div className="text-[11px] font-black uppercase tracking-[0.14em] text-green">Mechanic Answer</div>
-            <h3 className="mt-2 text-lg font-black text-text-primary">{view.title}</h3>
-            <p className="mt-2 max-w-3xl leading-6 text-text-secondary">{view.plainAnswer}</p>
-            <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold">
-              <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1">{view.vehicle}</span>
-              {view.needsExactVehicle && <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-amber">engine needed for exact diagram</span>}
-              {data.safetyProfile?.level && data.safetyProfile.level !== 'standard' && <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-amber">verify before selling parts</span>}
-              <span className="rounded-md border border-blue/30 bg-blue/10 px-2 py-1 text-blue">{view.jobCard.sourceState}</span>
-            </div>
-          </div>
-          <button
-            className="btn btn-primary btn-sm shrink-0"
-            onClick={() => { window.location.href = repairWorkspaceUrl(query) }}
-          >
-            Open in Repair Workspace
-          </button>
-        </div>
-      </div>
-
       {(diagramLoading || diagrams.length > 0) && (
         <section className="rounded-lg border border-blue/25 bg-blue/5 p-4">
           <div className="text-xs font-black uppercase text-blue">Diagram</div>
@@ -669,10 +650,11 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
       )}
 
       <section className="rounded-lg border border-border bg-bg-hover p-4">
-        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-          <div className="text-xs font-black uppercase text-blue">{view.primaryActionLabel}</div>
-          {view.needsExactVehicle && <div className="text-xs font-bold text-amber">Pick one before trusting diagrams, specs, or removal steps.</div>}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-xs font-black uppercase text-blue">Open in the manual</div>
+          <button className="btn btn-secondary btn-sm shrink-0" onClick={() => { window.location.href = repairWorkspaceUrl(query) }}>Repair workspace</button>
         </div>
+        {view.needsExactVehicle && <div className="mt-1 text-xs font-bold text-amber">Pick the engine below for the exact diagram, spec, or steps.</div>}
         <div className="mt-3 grid gap-2 md:grid-cols-2">
           {view.actionLinks.map(link => {
             const choice = view.vehicleChoices.find(item => item.url === link.url)
@@ -700,53 +682,15 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
         </div>
       </section>
 
-      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_300px]">
-        <section className="rounded-lg border border-border bg-bg-hover p-4">
-          <div className="text-xs font-black uppercase text-blue">{view.checkHeading}</div>
-          <ol className="mt-3 space-y-2 text-text-secondary">
-            {view.checks.slice(0, 4).map((item, index) => (
-              <li key={`${item}-${index}`} className="flex gap-2">
-                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-blue/15 text-[11px] font-black text-blue">{index + 1}</span>
-                <span>{item}</span>
-              </li>
-            ))}
-          </ol>
-        </section>
-
-        <aside className="space-y-3">
-          <section className="rounded-lg border border-border bg-bg-hover p-4">
-            <div className="text-xs font-black uppercase text-text-muted">Repair Summary</div>
-            <div className="mt-3 space-y-2 text-xs text-text-secondary">
-              <div><span className="font-black text-text-primary">Problem:</span> {view.jobCard.problem}</div>
-              <div><span className="font-black text-text-primary">Source:</span> {view.jobCard.sourceState}</div>
-              {view.showEstimateCard && <div><span className="font-black text-text-primary">Estimate:</span> {view.jobCard.estimateState}</div>}
-            </div>
-          </section>
-
-          <section className="rounded-lg border border-green/30 bg-green/10 p-4">
-            <div className="text-xs font-black uppercase text-green">Next Shop Action</div>
-            <p className="mt-2 leading-6 text-green">{view.action}</p>
-          </section>
-
-          <section className="rounded-lg border border-amber/30 bg-amber/10 p-4">
-            <div className="text-xs font-black uppercase text-amber">Do Not Assume</div>
-            <ul className="mt-3 space-y-2 text-amber">
-              {view.dontAssume.slice(0, 2).map(item => <li key={item}>- {item}</li>)}
-            </ul>
-          </section>
-
-          <section className="rounded-lg border border-border bg-bg-hover p-4">
-            <div className="text-xs font-black uppercase text-text-muted">Ask Next</div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {view.askNext.map(item => (
-                <button key={item} className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-xs font-bold text-text-secondary hover:border-green/40 hover:text-text-primary" onClick={() => onAskNext?.(item)}>
-                  {item}
-                </button>
-              ))}
-            </div>
-          </section>
-        </aside>
-      </div>
+      {view.askNext.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {view.askNext.map(item => (
+            <button key={item} className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs font-bold text-text-secondary hover:border-green/40 hover:text-text-primary" onClick={() => onAskNext?.(item)}>
+              {item}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -1291,45 +1235,45 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'ok', detail: `${repairData.sources?.length || 0} source cards, ${repairData.manualMatches?.length || 0} manual matches` })
 
         const manualSummary = formatRepairSearchText(lookupQuery, repairData)
+        const vehicleForAnswer = repairVehicleLabel(repairData.normalizedVehicle)
 
-        // Default: manual only.
-        if (!wantsOnline) {
-          return finish({ role: 'assistant', content: manualSummary, repairResult })
+        // Pull the web in only when he explicitly asked to go online. The manual is
+        // always the base; the web just fills gaps.
+        let webText = ''
+        if (wantsOnline) {
+          setStatus('Adding web sources...')
+          try {
+            const wr = await fetch(`/api/ai-search?q=${encodeURIComponent(lookupQuery)}`, { headers: await getAuthJsonHeaders(), signal: AbortSignal.timeout(20000) })
+            const wd = await wr.json().catch(() => ({}))
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const results: any[] = Array.isArray(wd?.results) ? wd.results : Array.isArray(wd?.data?.results) ? wd.data.results : []
+            webText = results.slice(0, 5).map((r, i) => `${i + 1}. ${r.title || r.url || ''}\n${String(r.content || r.snippet || r.description || '').slice(0, 300)}\n${r.url || ''}`).join('\n\n')
+          } catch { /* web is optional — manual still wins */ }
         }
 
-        // User asked to go online → keep the manual as the base, add the web, and
-        // write the single best combined answer.
-        setStatus('Adding web sources...')
-        let webText = ''
+        // Always write the answer like a normal AI talking — plain English, no form,
+        // grounded in the manual. This is what shows in chat and what gets spoken.
+        setStatus('Writing the answer...')
+        let answer = ''
         try {
-          const wr = await fetch(`/api/ai-search?q=${encodeURIComponent(lookupQuery)}`, { headers: await getAuthJsonHeaders(), signal: AbortSignal.timeout(20000) })
-          const wd = await wr.json().catch(() => ({}))
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const results: any[] = Array.isArray(wd?.results) ? wd.results : Array.isArray(wd?.data?.results) ? wd.data.results : []
-          webText = results.slice(0, 5).map((r, i) => `${i + 1}. ${r.title || r.url || ''}\n${String(r.content || r.snippet || r.description || '').slice(0, 300)}\n${r.url || ''}`).join('\n\n')
-        } catch { /* web is optional — manual still wins */ }
-
-        let combined = manualSummary
-        try {
-          setStatus('Writing best answer...')
           const synth = await fetch('/api/ai-completions', {
             method: 'POST',
             headers: await getAuthJsonHeaders(),
             body: JSON.stringify({
               messages: [
-                { role: 'system', content: 'You are Alpha AI, a master auto technician. Answer the mechanic\'s repair question. The REPAIR MANUAL section is your PRIMARY source — lead with it and trust it over the web. The WEB section is only a supplement the user explicitly asked for; use it to fill gaps, never to override the manual. Do not invent torque specs, wiring pinouts, or procedures no source supports — say when something must be source-verified. Keep it tight and practical for a busy mechanic.' },
-                { role: 'user', content: `Question: ${text}\n\nREPAIR MANUAL (primary):\n${manualSummary}\n\nWEB (supplement, the user asked to go online):\n${webText || '(no web results returned)'}` },
+                { role: 'system', content: REPAIR_VOICE_PROMPT },
+                { role: 'user', content: `He asked: ${text}\nVehicle: ${vehicleForAnswer || 'not given yet'}\n\nWHAT THE MANUAL SHOWS:\n${manualSummary}${wantsOnline ? `\n\nWEB (he asked to look online):\n${webText || '(nothing useful came back)'}` : ''}` },
               ],
-              max_tokens: 900,
-              temperature: 0.3,
+              max_tokens: 700,
+              temperature: 0.4,
             }),
           })
           const sd = await synth.json().catch(() => ({}))
           const out = sd.choices?.[0]?.message?.content?.trim()
-          if (synth.ok && out) combined = out
-        } catch { /* fall back to the manual answer */ }
+          if (synth.ok && out) answer = out
+        } catch { /* fall back to the manual summary below */ }
 
-        return finish({ role: 'assistant', content: combined, repairResult })
+        return finish({ role: 'assistant', content: answer || manualSummary, repairResult })
       }
 
       addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'error', detail: rd?.error || 'Repair lookup failed' })
