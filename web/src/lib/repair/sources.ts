@@ -638,6 +638,40 @@ export async function readRepairManualPage(url: string, timeoutMs = 12000): Prom
   }
 }
 
+// Manuals are nested folders (year > make > model > engine > system > the diagram
+// leaf). A search usually matches a folder, so opening it dumps the user in a link
+// list and they have to click around. This drills DOWN for them: follow the
+// best-scoring child link until we reach a page that actually has the image, then
+// hand that page back so it can render inline.
+export async function readRepairManualPageDrilled(
+  startUrl: string,
+  query: string,
+  maxHops = 4,
+): Promise<RepairManualPage & { trail: string[] }> {
+  const tokens = tokenizeForManualSearch(query || '')
+  const visited = new Set<string>()
+  const trail: string[] = []
+  let page = await readRepairManualPage(startUrl)
+  if (page.title) trail.push(page.title)
+  let hops = 0
+  while (page.images.length === 0 && page.links.length > 0 && hops < maxHops) {
+    visited.add(page.url)
+    const next = page.links
+      .filter(link => !visited.has(link.url))
+      .map(link => {
+        let decoded = link.url
+        try { decoded = decodeURIComponent(link.url) } catch { /* keep the raw url */ }
+        return { link, score: scoreManualText(`${link.title} ${decoded}`, tokens, link.category, query) }
+      })
+      .sort((a, b) => b.score - a.score)[0]?.link
+    if (!next) break
+    try { page = await readRepairManualPage(next.url, 8000) } catch { break }
+    if (page.title) trail.push(page.title)
+    hops += 1
+  }
+  return { ...page, trail }
+}
+
 async function browseManualDirectory(provider: 'LEMON' | 'CHARM', vehicle: RepairVehicle, component: string): Promise<RepairSource[]> {
   const make = canonicalMakeForManuals(vehicle.make)
   if (!make || !vehicle.year) return []

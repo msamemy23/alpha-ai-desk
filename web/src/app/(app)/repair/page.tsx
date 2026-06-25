@@ -324,7 +324,7 @@ export default function RepairPage() {
       const res = await fetch('/api/repair-manual', {
         method: 'POST',
         headers: await getAuthJsonHeaders(),
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ url, query: query.trim() || result?.query || '' }),
         signal: AbortSignal.timeout(45000),
       })
       const data = await res.json().catch(() => ({}))

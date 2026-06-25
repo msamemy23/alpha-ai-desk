@@ -84,6 +84,12 @@ async function getAuthJsonHeaders(): Promise<Record<string, string>> {
   return headers
 }
 
+// Stream a manual diagram through our own origin so it renders inline in the chat
+// (charm.li / lemon-manuals block hot-linking).
+function proxiedImage(url: string) {
+  return `/api/repair-image?url=${encodeURIComponent(url)}`
+}
+
 const SYSTEM_PROMPT = `You are Alpha AI, the intelligent assistant for Alpha International Auto Center, an auto repair shop in Houston, TX.
 
 SHOP INFO:
@@ -585,6 +591,40 @@ function buildRepairLookupQuery(text: string, lastContext: RepairChatResult | nu
 function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onAskNext?: (text: string) => void }) {
   const { query, data } = result
   const view = buildRepairPresentation(query, data)
+  const [diagrams, setDiagrams] = useState<{ url: string; alt: string }[]>([])
+  const [diagramLoading, setDiagramLoading] = useState(false)
+
+  // Auto-pull the diagram into the chat: drill the best manual match down to the
+  // page that has the image, then render it inline via our same-origin proxy.
+  useEffect(() => {
+    const matches = data.manualMatches || []
+    const best =
+      matches.find(m => m.category === 'diagram') ||
+      matches.find(m => m.matchType === 'diagram_or_spec') ||
+      matches.find(m => m.hasImages) ||
+      matches[0]
+    if (!best) { setDiagrams([]); return }
+    let cancelled = false
+    setDiagramLoading(true)
+    ;(async () => {
+      try {
+        const res = await fetch('/api/repair-manual', {
+          method: 'POST',
+          headers: await getAuthJsonHeaders(),
+          body: JSON.stringify({ url: best.url, query }),
+          signal: AbortSignal.timeout(45000),
+        })
+        const json = await res.json().catch(() => ({}))
+        const imgs: { url: string; alt?: string }[] = Array.isArray(json?.data?.images) ? json.data.images : []
+        if (!cancelled) setDiagrams(imgs.slice(0, 4).map(img => ({ url: img.url, alt: img.alt || best.title })))
+      } catch {
+        if (!cancelled) setDiagrams([])
+      } finally {
+        if (!cancelled) setDiagramLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [data, query])
 
   return (
     <div className="space-y-3 text-sm">
@@ -609,6 +649,24 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
           </button>
         </div>
       </div>
+
+      {(diagramLoading || diagrams.length > 0) && (
+        <section className="rounded-lg border border-blue/25 bg-blue/5 p-4">
+          <div className="text-xs font-black uppercase text-blue">Diagram</div>
+          {diagramLoading && !diagrams.length ? (
+            <div className="mt-3 text-sm text-text-muted">Pulling the diagram from the manual…</div>
+          ) : (
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {diagrams.map(img => (
+                <a key={img.url} href={proxiedImage(img.url)} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-md border border-white/10 bg-white transition-colors hover:border-blue/50">
+                  <img src={proxiedImage(img.url)} alt={img.alt} loading="lazy" className="h-auto w-full object-contain" />
+                </a>
+              ))}
+            </div>
+          )}
+          {diagrams.length > 0 && <div className="mt-2 text-[11px] font-bold text-text-muted">Tap to enlarge. Straight from the LEMON/CHARM manual.</div>}
+        </section>
+      )}
 
       <section className="rounded-lg border border-border bg-bg-hover p-4">
         <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">

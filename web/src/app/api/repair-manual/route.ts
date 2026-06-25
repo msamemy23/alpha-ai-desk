@@ -3,7 +3,7 @@ import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { apiFail, apiOk, getIdempotencyKey, readJsonObject, requireString } from '@/lib/api-response'
 import { writeAuditLog } from '@/lib/audit-log'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
-import { readRepairManualPage } from '@/lib/repair/sources'
+import { readRepairManualPage, readRepairManualPageDrilled } from '@/lib/repair/sources'
 
 export const dynamic = 'force-dynamic'
 
@@ -22,7 +22,12 @@ export async function POST(req: NextRequest) {
     if (!urlValue.ok) return apiFail(urlValue.error, 400, 'BAD_REQUEST')
 
     const idempotencyKey = getIdempotencyKey(req, [auth.shopId, 'repair-manual', urlValue.value])
-    const result = await readRepairManualPage(urlValue.value)
+    // When the caller passes a query, auto-drill the folder down to the page that
+    // actually has the diagram instead of stopping at the directory link list.
+    const drillQuery = typeof parsedBody.body.query === 'string' ? parsedBody.body.query.trim() : ''
+    const result = drillQuery
+      ? await readRepairManualPageDrilled(urlValue.value, drillQuery)
+      : await readRepairManualPage(urlValue.value)
 
     await writeAuditLog({
       shopId: auth.shopId,
