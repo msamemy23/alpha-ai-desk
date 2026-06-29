@@ -659,8 +659,8 @@ export async function readRepairManualPage(url: string, timeoutMs = 12000, linkL
 }
 
 // Folder names that lead to an actual figure vs. text-only leaves to avoid.
-const DIAGRAM_LEAF_HINTS = /(component\s*location|locations?|connector\s*view|wiring|schematic|diagram|description\s*and\s*operation|pinout|illustration|exploded|views?)/i
-const TEXT_LEAF_PENALTY = /(p\s*code\s*chart|code\s*chart|dtc\s*(?:list|index)|trouble\s*code\s*(?:list|description)|technical\s*service\s*bulletin|\btsb\b|maintenance)/i
+const DIAGRAM_LEAF_HINTS = /(component\s*location|locations?|connector\s*view|schematic|diagram|description\s*and\s*operation|pinout|illustration|exploded|views?)/i
+const TEXT_LEAF_PENALTY = /(p\s*code\s*chart|code\s*chart|dtc\s*(?:list|index)|trouble\s*code\s*(?:list|description)|technical\s*service\s*bulletin|\btsb\b|maintenance|wiring\s*repairs?|\brepairs\b)/i
 // The part itself, not its relay/fuse/module/wiring — unless that's what we want.
 const DISTRACTOR_PENALTY = /\b(relay|module|fuse|junction|harness|circuit breaker)\b/i
 
@@ -747,7 +747,7 @@ async function drillTowardDiagram(
   trail: string[],
   deadline: number,
 ): Promise<{ page: RepairManualPage | null; matched: boolean }> {
-  let page = await readRepairManualPage(startUrl, 6000, 220)
+  let page = await readRepairManualPage(startUrl, 6000, 1000)
   if (page.title) trail.push(page.title)
   let fallback: RepairManualPage | null = null
   let hops = 0
@@ -768,7 +768,7 @@ async function drillTowardDiagram(
       .sort((a, b) => b.score - a.score)
       .find(item => item.score > 0)?.link
     if (!next) break
-    try { page = await readRepairManualPage(next.url, 6000, 220) } catch { break }
+    try { page = await readRepairManualPage(next.url, 6000, 1000) } catch { break }
     if (page.title) trail.push(page.title)
     hops += 1
   }
@@ -790,12 +790,21 @@ export async function readRepairManualPageDrilled(
   const visited = new Set<string>()
   const trail: string[] = []
   // Keep the whole drill inside a tight budget so the request never hangs.
-  const deadline = Date.now() + 9000
+  const deadline = Date.now() + 12000
 
   // 1) Cross into the component branch (where the real figures live) first.
   let diagBase = diagnosisBaseFromUrl(startUrl)
-  if (!diagBase && providerFromUrl(startUrl) === 'CHARM' && startUrl.endsWith('/')) {
-    diagBase = `${startUrl}Repair%20and%20Diagnosis/`
+  if (!diagBase) {
+    // Find the actual "Repair and Diagnosis" link on the start page — robust to the
+    // trailing-slash / encoding quirks that vary across the manual pages.
+    try {
+      const startPage = await readRepairManualPage(startUrl, 6000, 1000)
+      const rd = startPage.links.find(link =>
+        /repair and diagnosis/i.test(link.title) || /repair and diagnosis/i.test(decodeURIComponent(link.url)),
+      )
+      if (rd) diagBase = rd.url
+      else if (providerFromUrl(startUrl) === 'CHARM') diagBase = `${startUrl.endsWith('/') ? startUrl : `${startUrl}/`}Repair%20and%20Diagnosis/`
+    } catch { /* fall through to the down-tree pass */ }
   }
   let fallback: RepairManualPage | null = null
   if (diagBase) {
