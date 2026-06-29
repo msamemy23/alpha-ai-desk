@@ -712,11 +712,12 @@ async function drillTowardDiagram(
   maxHops: number,
   visited: Set<string>,
   trail: string[],
+  deadline: number,
 ): Promise<RepairManualPage> {
-  let page = await readRepairManualPage(startUrl, 8000, 220)
+  let page = await readRepairManualPage(startUrl, 6000, 220)
   if (page.title) trail.push(page.title)
   let hops = 0
-  while (page.images.length === 0 && page.links.length > 0 && hops < maxHops) {
+  while (page.images.length === 0 && page.links.length > 0 && hops < maxHops && Date.now() < deadline) {
     visited.add(page.url)
     const ranked = page.links
       .filter(link => !visited.has(link.url))
@@ -728,7 +729,7 @@ async function drillTowardDiagram(
       .sort((a, b) => b.score - a.score)
     const next = ranked.find(item => item.score > 0)?.link || ranked[0]?.link
     if (!next) break
-    try { page = await readRepairManualPage(next.url, 8000, 220) } catch { break }
+    try { page = await readRepairManualPage(next.url, 6000, 220) } catch { break }
     if (page.title) trail.push(page.title)
     hops += 1
   }
@@ -747,9 +748,11 @@ export async function readRepairManualPageDrilled(
   const componentTerms = componentTermsForRepairQuery(query)
   const visited = new Set<string>()
   const trail: string[] = []
+  // Keep the whole drill inside a tight budget so the request never hangs.
+  const deadline = Date.now() + 9000
 
   // 1) Straight down from the matched page toward a real diagram leaf.
-  const page = await drillTowardDiagram(startUrl, componentTerms, maxHops, visited, trail)
+  const page = await drillTowardDiagram(startUrl, componentTerms, Math.min(maxHops, 3), visited, trail, deadline)
   if (page.images.length) return { ...page, trail }
 
   // 2) For a P0420-style code the diagram isn't under the DTC chart — it's in the
@@ -758,7 +761,7 @@ export async function readRepairManualPageDrilled(
   if (componentTerms.length) {
     const diagBase = diagnosisBaseFromUrl(startUrl)
     if (diagBase && !visited.has(diagBase)) {
-      const viaComponent = await drillTowardDiagram(diagBase, componentTerms, maxHops + 1, visited, trail)
+      const viaComponent = await drillTowardDiagram(diagBase, componentTerms, maxHops + 1, visited, trail, deadline)
       if (viaComponent.images.length) return { ...viaComponent, trail }
     }
   }
