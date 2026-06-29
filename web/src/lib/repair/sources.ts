@@ -579,13 +579,31 @@ function extractManualImages(html: string, baseUrl: string): RepairManualImage[]
       const src = new URL(decodeHtml(match[1]), baseUrl).toString()
       const provider = providerFromUrl(src)
       if (!provider || seen.has(src)) continue
-      const alt = stripTags(tag.match(/\salt=["']([^"']*)["']/i)?.[1] || 'Manual image')
-      images.push({ alt, url: src })
+      // Skip UI chrome. On these manual sites the folder/section icons live under
+      // /icons/ and are SVGs (e.g. the generic vehicle outline) — never a real
+      // diagram. Actual figures are raster images under /images/. Filtering these
+      // out stops the drill from stopping on an icon-only directory page.
+      const path = new URL(src).pathname.toLowerCase()
+      if (/\/icons?\//.test(path) || path.endsWith('.svg') || /\bclass=["'][^"']*\bfolder-icon\b/i.test(tag)) continue
+      // Diagram <img> tags have no alt; the caption is the nearest preceding h3/b.
+      const altAttr = stripTags(tag.match(/\salt=["']([^"']*)["']/i)?.[1] || '')
+      const caption = altAttr || captionBeforeIndex(html, match.index) || 'Manual diagram'
+      images.push({ alt: caption, url: src })
       seen.add(src)
       if (images.length >= 12) break
     } catch {}
   }
   return images
+}
+
+// Pull a diagram's caption from the closest <h3> or <b> just before the <img>.
+function captionBeforeIndex(html: string, index: number) {
+  const before = html.slice(Math.max(0, index - 1400), index)
+  const heading = [...before.matchAll(/<h3[^>]*>([\s\S]*?)<\/h3>/gi)].pop()?.[1]
+    || [...before.matchAll(/<b[^>]*>([\s\S]*?)<\/b>/gi)].pop()?.[1]
+    || ''
+  const text = stripTags(decodeHtml(heading)).replace(/\s+/g, ' ').trim()
+  return text.length >= 3 && text.length <= 160 ? text : ''
 }
 
 function extractReaderSections(html: string, url: string): RepairManualSection[] {
@@ -622,7 +640,7 @@ function extractReaderSections(html: string, url: string): RepairManualSection[]
     .slice(0, 8)
 }
 
-export async function readRepairManualPage(url: string, timeoutMs = 12000): Promise<RepairManualPage> {
+export async function readRepairManualPage(url: string, timeoutMs = 12000, linkLimit = 80): Promise<RepairManualPage> {
   const normalized = normalizeManualUrl(url)
   if (!normalized) throw new Error('Only CHARM and LEMON manual URLs are supported')
   const html = await fetchText(normalized.url, timeoutMs)
@@ -632,7 +650,7 @@ export async function readRepairManualPage(url: string, timeoutMs = 12000): Prom
     url: normalized.url,
     title: extractTitle(html, normalized.url),
     breadcrumbs: extractBreadcrumbs(html, normalized.url),
-    links: extractManualLinksDetailed(mainFragment(html), normalized.url, 80),
+    links: extractManualLinksDetailed(mainFragment(html), normalized.url, linkLimit),
     sections: extractReaderSections(html, normalized.url),
     images: extractManualImages(mainFragment(html), normalized.url),
     canStoreContent: false,
@@ -640,37 +658,111 @@ export async function readRepairManualPage(url: string, timeoutMs = 12000): Prom
   }
 }
 
-// Manuals are nested folders (year > make > model > engine > system > the diagram
-// leaf). A search usually matches a folder, so opening it dumps the user in a link
-// list and they have to click around. This drills DOWN for them: follow the
-// best-scoring child link until we reach a page that actually has the image, then
-// hand that page back so it can render inline.
-export async function readRepairManualPageDrilled(
+// Folder names that lead to an actual figure vs. text-only leaves to avoid.
+const DIAGRAM_LEAF_HINTS = /(component\s*location|locations?|connector\s*view|wiring|schematic|diagram|description\s*and\s*operation|pinout|illustration|exploded|views?)/i
+const TEXT_LEAF_PENALTY = /(p\s*code\s*chart|code\s*chart|dtc\s*(?:list|index)|trouble\s*code\s*list|technical\s*service\s*bulletin|\btsb\b|maintenance)/i
+
+function detectDtcCode(value: string) {
+  const full = value.match(/\b([PCBU])([0-9A-F]{4})\b/i)
+  if (full) return `${full[1]}${full[2]}`.toUpperCase()
+  const short = value.match(/\b([PCBU])\s?-?\s?(\d{3})\b/i)
+  if (short) return `${short[1].toUpperCase()}0${short[2]}`
+  return ''
+}
+
+// The system/part words to steer the drill toward. A code maps to its profile;
+// otherwise fall back to the component the free-text query is about.
+function componentTermsForRepairQuery(query: string): string[] {
+  const dtc = detectDtcCode(query)
+  if (dtc && DTC_PROFILES[dtc]) return DTC_PROFILES[dtc].requiredTerms
+  return requiredTermsForComponent(query)
+}
+
+// From a manual page URL, find the vehicle's "Repair and Diagnosis" index so we
+// can cross into the component branch (where diagrams live) instead of staying in
+// the DTC chart branch (which is text only).
+function diagnosisBaseFromUrl(url: string): string | null {
+  try {
+    const u = new URL(url)
+    const segs = u.pathname.split('/').filter(Boolean)
+    const idx = segs.findIndex(seg => {
+      try { return /repair and diagnosis/i.test(decodeURIComponent(seg)) } catch { return false }
+    })
+    if (idx === -1) return null
+    return `${u.origin}/${segs.slice(0, idx + 1).join('/')}/`
+  } catch {
+    return null
+  }
+}
+
+function scoreDiagramLink(title: string, urlText: string, componentTerms: string[]) {
+  const text = `${title} ${urlText}`.toLowerCase().replace(/[-_]+/g, ' ')
+  let score = 0
+  if (componentTerms.some(term => text.includes(term.toLowerCase()))) score += 20
+  if (DIAGRAM_LEAF_HINTS.test(text)) score += 10
+  if (TEXT_LEAF_PENALTY.test(text)) score -= 12
+  return score
+}
+
+// Follow the best-scoring child link down the folder tree until a page actually
+// carries a real diagram image (icons are already filtered out upstream).
+async function drillTowardDiagram(
   startUrl: string,
-  query: string,
-  maxHops = 4,
-): Promise<RepairManualPage & { trail: string[] }> {
-  const tokens = tokenizeForManualSearch(query || '')
-  const visited = new Set<string>()
-  const trail: string[] = []
-  let page = await readRepairManualPage(startUrl)
+  componentTerms: string[],
+  maxHops: number,
+  visited: Set<string>,
+  trail: string[],
+): Promise<RepairManualPage> {
+  let page = await readRepairManualPage(startUrl, 8000, 220)
   if (page.title) trail.push(page.title)
   let hops = 0
   while (page.images.length === 0 && page.links.length > 0 && hops < maxHops) {
     visited.add(page.url)
-    const next = page.links
+    const ranked = page.links
       .filter(link => !visited.has(link.url))
       .map(link => {
         let decoded = link.url
         try { decoded = decodeURIComponent(link.url) } catch { /* keep the raw url */ }
-        return { link, score: scoreManualText(`${link.title} ${decoded}`, tokens, link.category, query) }
+        return { link, score: scoreDiagramLink(link.title, decoded, componentTerms) }
       })
-      .sort((a, b) => b.score - a.score)[0]?.link
+      .sort((a, b) => b.score - a.score)
+    const next = ranked.find(item => item.score > 0)?.link || ranked[0]?.link
     if (!next) break
-    try { page = await readRepairManualPage(next.url, 8000) } catch { break }
+    try { page = await readRepairManualPage(next.url, 8000, 220) } catch { break }
     if (page.title) trail.push(page.title)
     hops += 1
   }
+  return page
+}
+
+// Manuals are nested folders (year > make > model > engine > system > the diagram
+// leaf). A search usually matches a folder, so opening it leaves the user in a
+// link list. This drills DOWN to the actual diagram for them, and for trouble
+// codes it crosses into the component branch where the figures really live.
+export async function readRepairManualPageDrilled(
+  startUrl: string,
+  query: string,
+  maxHops = 5,
+): Promise<RepairManualPage & { trail: string[] }> {
+  const componentTerms = componentTermsForRepairQuery(query)
+  const visited = new Set<string>()
+  const trail: string[] = []
+
+  // 1) Straight down from the matched page toward a real diagram leaf.
+  const page = await drillTowardDiagram(startUrl, componentTerms, maxHops, visited, trail)
+  if (page.images.length) return { ...page, trail }
+
+  // 2) For a P0420-style code the diagram isn't under the DTC chart — it's in the
+  //    component branch (e.g. Oxygen Sensor > Locations). Jump to the vehicle's
+  //    Repair and Diagnosis index and drill toward the component instead.
+  if (componentTerms.length) {
+    const diagBase = diagnosisBaseFromUrl(startUrl)
+    if (diagBase && !visited.has(diagBase)) {
+      const viaComponent = await drillTowardDiagram(diagBase, componentTerms, maxHops + 1, visited, trail)
+      if (viaComponent.images.length) return { ...viaComponent, trail }
+    }
+  }
+
   return { ...page, trail }
 }
 
