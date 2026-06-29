@@ -660,7 +660,9 @@ export async function readRepairManualPage(url: string, timeoutMs = 12000, linkL
 
 // Folder names that lead to an actual figure vs. text-only leaves to avoid.
 const DIAGRAM_LEAF_HINTS = /(component\s*location|locations?|connector\s*view|wiring|schematic|diagram|description\s*and\s*operation|pinout|illustration|exploded|views?)/i
-const TEXT_LEAF_PENALTY = /(p\s*code\s*chart|code\s*chart|dtc\s*(?:list|index)|trouble\s*code\s*list|technical\s*service\s*bulletin|\btsb\b|maintenance)/i
+const TEXT_LEAF_PENALTY = /(p\s*code\s*chart|code\s*chart|dtc\s*(?:list|index)|trouble\s*code\s*(?:list|description)|technical\s*service\s*bulletin|\btsb\b|maintenance)/i
+// The part itself, not its relay/fuse/module/wiring — unless that's what we want.
+const DISTRACTOR_PENALTY = /\b(relay|module|fuse|junction|harness|circuit breaker)\b/i
 
 function detectDtcCode(value: string) {
   const full = value.match(/\b([PCBU])([0-9A-F]{4})\b/i)
@@ -670,12 +672,31 @@ function detectDtcCode(value: string) {
   return ''
 }
 
-// The system/part words to steer the drill toward. A code maps to its profile;
-// otherwise fall back to the component the free-text query is about.
-function componentTermsForRepairQuery(query: string): string[] {
+// Specific part words that pin the right figure. Generic words like "sensor" or
+// "diagnostic trouble code" are left out on purpose — they drag the drill onto ABS
+// code lists and unrelated sensors instead of the part the code is about.
+const DIAGRAM_TARGET_TERMS: Record<string, string[]> = {
+  P0420: ['catalytic', 'catalyst', 'converter', 'oxygen', 'a/f sensor', 'air fuel', 'air/fuel', 'ho2s'],
+  P0300: ['ignition coil', 'spark plug', 'firing order', 'distributor', 'coil', 'injector'],
+  P0171: ['mass air flow', 'maf', 'oxygen', 'intake air', 'air fuel', 'air/fuel', 'throttle body'],
+}
+
+function diagramTargetTerms(query: string): string[] {
   const dtc = detectDtcCode(query)
-  if (dtc && DTC_PROFILES[dtc]) return DTC_PROFILES[dtc].requiredTerms
-  return requiredTermsForComponent(query)
+  if (dtc && DIAGRAM_TARGET_TERMS[dtc]) return DIAGRAM_TARGET_TERMS[dtc]
+  const text = query.toLowerCase()
+  if (/\b(catalytic|catalyst|converter)\b/.test(text)) return DIAGRAM_TARGET_TERMS.P0420
+  if (/\b(o2|oxygen|a\/f|air[\s/]?fuel)\b/.test(text)) return ['oxygen', 'a/f sensor', 'air fuel', 'air/fuel', 'ho2s']
+  if (/\b(misfire|coil|spark|ignition)\b/.test(text)) return DIAGRAM_TARGET_TERMS.P0300
+  if (/\b(maf|mass air|lean)\b/.test(text)) return DIAGRAM_TARGET_TERMS.P0171
+  if (/\b(fuse|relay|junction)\b/.test(text)) return ['fuse', 'relay', 'fuse box', 'junction box', 'power distribution']
+  if (/\b(brake|rotor|pad|caliper|abs)\b/.test(text)) return ['brake', 'rotor', 'pad', 'caliper', 'disc']
+  if (/\b(turn signal|blinker|headlight|tail ?light|bulb|lamp)\b/.test(text)) return ['turn signal', 'bulb', 'lamp', 'headlight', 'tail light', 'exterior light']
+  if (/\b(alternator|starter|charging|battery)\b/.test(text)) return ['alternator', 'starter', 'charging', 'battery']
+  if (/\b(coolant|radiator|thermostat|water pump|overheat)\b/.test(text)) return ['radiator', 'coolant', 'thermostat', 'water pump', 'cooling']
+  const fromComponent = requiredTermsForComponent(query)
+  if (fromComponent.length) return fromComponent
+  return tokenizeForManualSearch(query).filter(token => token.length >= 4)
 }
 
 // From a manual page URL, find the vehicle's "Repair and Diagnosis" index so we
@@ -695,78 +716,99 @@ function diagnosisBaseFromUrl(url: string): string | null {
   }
 }
 
-function scoreDiagramLink(title: string, urlText: string, componentTerms: string[]) {
+function pathMatchesComponent(url: string, terms: string[]): boolean {
+  let path = ''
+  try { path = decodeURIComponent(new URL(url).pathname).toLowerCase().replace(/[-_]+/g, ' ') } catch { return false }
+  return terms.some(term => path.includes(term))
+}
+
+function scoreDiagramLink(title: string, urlText: string, terms: string[], penalizeDistractors: boolean) {
   const text = `${title} ${urlText}`.toLowerCase().replace(/[-_]+/g, ' ')
   let score = 0
-  if (componentTerms.some(term => text.includes(term.toLowerCase()))) score += 20
+  if (terms.some(term => text.includes(term))) score += 25
   if (DIAGRAM_LEAF_HINTS.test(text)) score += 10
-  if (TEXT_LEAF_PENALTY.test(text)) score -= 12
+  if (TEXT_LEAF_PENALTY.test(text)) score -= 18
+  if (penalizeDistractors && DISTRACTOR_PENALTY.test(text)) score -= 16
   return score
 }
 
-// Follow the best-scoring child link down the folder tree until a page actually
-// carries a real diagram image (icons are already filtered out upstream).
+// Follow the best-scoring child link down the folder tree. Accept a page only when
+// it has a real figure AND its path is actually about the part we want; a figure on
+// an unrelated page is kept only as a weak fallback. Icons are filtered upstream.
 async function drillTowardDiagram(
   startUrl: string,
-  componentTerms: string[],
+  terms: string[],
+  penalizeDistractors: boolean,
   maxHops: number,
   visited: Set<string>,
   trail: string[],
   deadline: number,
-): Promise<RepairManualPage> {
+): Promise<{ page: RepairManualPage | null; matched: boolean }> {
   let page = await readRepairManualPage(startUrl, 6000, 220)
   if (page.title) trail.push(page.title)
+  let fallback: RepairManualPage | null = null
   let hops = 0
-  while (page.images.length === 0 && page.links.length > 0 && hops < maxHops && Date.now() < deadline) {
+  while (hops <= maxHops && Date.now() < deadline) {
+    if (page.images.length) {
+      if (pathMatchesComponent(page.url, terms)) return { page, matched: true }
+      if (!fallback) fallback = page
+    }
+    if (page.links.length === 0) break
     visited.add(page.url)
-    const ranked = page.links
+    const next = page.links
       .filter(link => !visited.has(link.url))
       .map(link => {
         let decoded = link.url
         try { decoded = decodeURIComponent(link.url) } catch { /* keep the raw url */ }
-        return { link, score: scoreDiagramLink(link.title, decoded, componentTerms) }
+        return { link, score: scoreDiagramLink(link.title, decoded, terms, penalizeDistractors) }
       })
       .sort((a, b) => b.score - a.score)
-    const next = ranked.find(item => item.score > 0)?.link || ranked[0]?.link
+      .find(item => item.score > 0)?.link
     if (!next) break
     try { page = await readRepairManualPage(next.url, 6000, 220) } catch { break }
     if (page.title) trail.push(page.title)
     hops += 1
   }
-  return page
+  return { page: fallback, matched: false }
 }
 
 // Manuals are nested folders (year > make > model > engine > system > the diagram
-// leaf). A search usually matches a folder, so opening it leaves the user in a
-// link list. This drills DOWN to the actual diagram for them, and for trouble
-// codes it crosses into the component branch where the figures really live.
+// leaf). A search usually matches a folder, so opening it leaves the user in a link
+// list. This drills to the actual diagram: for a code/part it crosses into the
+// component branch (Oxygen Sensor > ...) where the real figures live, accepting a
+// figure only once its page matches the part.
 export async function readRepairManualPageDrilled(
   startUrl: string,
   query: string,
-  maxHops = 5,
+  maxHops = 6,
 ): Promise<RepairManualPage & { trail: string[] }> {
-  const componentTerms = componentTermsForRepairQuery(query)
+  const terms = diagramTargetTerms(query)
+  const penalizeDistractors = !terms.some(term => DISTRACTOR_PENALTY.test(term))
   const visited = new Set<string>()
   const trail: string[] = []
   // Keep the whole drill inside a tight budget so the request never hangs.
   const deadline = Date.now() + 9000
 
-  // 1) Straight down from the matched page toward a real diagram leaf.
-  const page = await drillTowardDiagram(startUrl, componentTerms, Math.min(maxHops, 3), visited, trail, deadline)
-  if (page.images.length) return { ...page, trail }
-
-  // 2) For a P0420-style code the diagram isn't under the DTC chart — it's in the
-  //    component branch (e.g. Oxygen Sensor > Locations). Jump to the vehicle's
-  //    Repair and Diagnosis index and drill toward the component instead.
-  if (componentTerms.length) {
-    const diagBase = diagnosisBaseFromUrl(startUrl)
-    if (diagBase && !visited.has(diagBase)) {
-      const viaComponent = await drillTowardDiagram(diagBase, componentTerms, maxHops + 1, visited, trail, deadline)
-      if (viaComponent.images.length) return { ...viaComponent, trail }
-    }
+  // 1) Cross into the component branch (where the real figures live) first.
+  let diagBase = diagnosisBaseFromUrl(startUrl)
+  if (!diagBase && providerFromUrl(startUrl) === 'CHARM' && startUrl.endsWith('/')) {
+    diagBase = `${startUrl}Repair%20and%20Diagnosis/`
+  }
+  let fallback: RepairManualPage | null = null
+  if (diagBase) {
+    const viaComponent = await drillTowardDiagram(diagBase, terms, penalizeDistractors, maxHops, visited, trail, deadline)
+    if (viaComponent.matched && viaComponent.page) return { ...viaComponent.page, trail }
+    fallback = viaComponent.page
   }
 
-  return { ...page, trail }
+  // 2) Otherwise drill straight down from the matched page.
+  const downTree = await drillTowardDiagram(startUrl, terms, penalizeDistractors, 3, visited, trail, deadline)
+  if (downTree.matched && downTree.page) return { ...downTree.page, trail }
+  fallback = fallback || downTree.page
+
+  // 3) Last resort: a non-matching figure if we found one, else the start page.
+  const base = fallback || await readRepairManualPage(startUrl)
+  return { ...base, trail }
 }
 
 async function browseManualDirectory(provider: 'LEMON' | 'CHARM', vehicle: RepairVehicle, component: string): Promise<RepairSource[]> {
