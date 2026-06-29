@@ -677,7 +677,7 @@ function detectDtcCode(value: string) {
 // code lists and unrelated sensors instead of the part the code is about.
 const DIAGRAM_TARGET_TERMS: Record<string, string[]> = {
   P0420: ['catalytic', 'catalyst', 'converter', 'oxygen', 'a/f sensor', 'air fuel', 'air/fuel', 'ho2s'],
-  P0300: ['ignition coil', 'spark plug', 'firing order', 'distributor', 'coil', 'injector'],
+  P0300: ['ignition', 'ignition coil', 'spark plug', 'firing order', 'distributor', 'coil', 'injector'],
   P0171: ['mass air flow', 'maf', 'oxygen', 'intake air', 'air fuel', 'air/fuel', 'throttle body'],
 }
 
@@ -689,7 +689,7 @@ function diagramTargetTerms(query: string): string[] {
   if (/\b(o2|oxygen|a\/f|air[\s/]?fuel)\b/.test(text)) return ['oxygen', 'a/f sensor', 'air fuel', 'air/fuel', 'ho2s']
   if (/\b(misfire|coil|spark|ignition)\b/.test(text)) return DIAGRAM_TARGET_TERMS.P0300
   if (/\b(maf|mass air|lean)\b/.test(text)) return DIAGRAM_TARGET_TERMS.P0171
-  if (/\b(fuse|relay|junction)\b/.test(text)) return ['fuse', 'relay', 'fuse box', 'junction box', 'power distribution']
+  if (/\b(fuse|relay|junction)\b/.test(text)) return ['fuse', 'fuse box', 'fuse block', 'junction box', 'power distribution', 'relay box']
   if (/\b(brake|rotor|pad|caliper|abs)\b/.test(text)) return ['brake', 'rotor', 'pad', 'caliper', 'disc']
   if (/\b(turn signal|blinker|headlight|tail ?light|bulb|lamp)\b/.test(text)) return ['turn signal', 'bulb', 'lamp', 'headlight', 'tail light', 'exterior light']
   if (/\b(alternator|starter|charging|battery)\b/.test(text)) return ['alternator', 'starter', 'charging', 'battery']
@@ -725,7 +725,10 @@ function pathMatchesComponent(url: string, terms: string[]): boolean {
 function scoreDiagramLink(title: string, urlText: string, terms: string[], penalizeDistractors: boolean) {
   const text = `${title} ${urlText}`.toLowerCase().replace(/[-_]+/g, ' ')
   let score = 0
-  if (terms.some(term => text.includes(term))) score += 25
+  // More matched part-words = a more specific link (e.g. "Ignition Coil" beats
+  // "Ignition Switch", "Under-Dash Fuse and Relay Box" beats a bare relay folder).
+  const hits = terms.filter(term => text.includes(term)).length
+  if (hits) score += 25 + Math.min(hits - 1, 3) * 6
   if (DIAGRAM_LEAF_HINTS.test(text)) score += 10
   if (TEXT_LEAF_PENALTY.test(text)) score -= 18
   if (penalizeDistractors && DISTRACTOR_PENALTY.test(text)) score -= 16
