@@ -90,6 +90,13 @@ function proxiedImage(url: string) {
   return `/api/repair-image?url=${encodeURIComponent(url)}`
 }
 
+// Render manual procedure text safely: escape HTML, then bold the **headings**.
+// Newlines are preserved by whitespace-pre-wrap on the container.
+function renderProcedureHtml(text: string) {
+  const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return esc.replace(/\*\*([^*]+)\*\*/g, '<strong class="text-text-primary">$1</strong>')
+}
+
 const SYSTEM_PROMPT = `You are Alpha AI, the intelligent assistant for Alpha International Auto Center, an auto repair shop in Houston, TX.
 
 SHOP INFO:
@@ -601,21 +608,22 @@ function buildRepairLookupQuery(text: string, lastContext: RepairChatResult | nu
 function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onAskNext?: (text: string) => void }) {
   const { query, data } = result
   const view = buildRepairPresentation(query, data)
-  const [diagrams, setDiagrams] = useState<{ url: string; alt: string }[]>([])
-  const [diagramLoading, setDiagramLoading] = useState(false)
+  const [content, setContent] = useState<{ procedureText: string; images: { url: string; alt: string }[]; intent: string; sourceUrl: string; sourceTitle: string } | null>(null)
+  const [loadingContent, setLoadingContent] = useState(false)
 
-  // Auto-pull the diagram into the chat: drill the best manual match down to the
-  // page that has the image, then render it inline via our same-origin proxy.
+  // Pull the actual page from the manual: the step-by-step procedure (default) or
+  // the diagram, drilled to the exact leaf and rendered right here in the chat.
   useEffect(() => {
     const matches = data.manualMatches || []
+    // Prefer an engine-keyed page (the detailed database) — it carries the real steps + figures.
     const best =
-      matches.find(m => m.category === 'diagram') ||
+      matches.find(m => /\b[lv]\d-\d/i.test(decodeURIComponent(m.url))) ||
       matches.find(m => m.matchType === 'diagram_or_spec') ||
       matches.find(m => m.hasImages) ||
       matches[0]
-    if (!best) { setDiagrams([]); return }
+    if (!best) { setContent(null); return }
     let cancelled = false
-    setDiagramLoading(true)
+    setLoadingContent(true)
     ;(async () => {
       try {
         const res = await fetch('/api/repair-manual', {
@@ -625,12 +633,19 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
           signal: AbortSignal.timeout(45000),
         })
         const json = await res.json().catch(() => ({}))
-        const imgs: { url: string; alt?: string }[] = Array.isArray(json?.data?.images) ? json.data.images : []
-        if (!cancelled) setDiagrams(imgs.slice(0, 4).map(img => ({ url: img.url, alt: img.alt || best.title })))
+        const d = json?.data || {}
+        const imgs: { url: string; alt?: string }[] = Array.isArray(d.images) ? d.images : []
+        if (!cancelled) setContent({
+          procedureText: typeof d.procedureText === 'string' ? d.procedureText : '',
+          images: imgs.slice(0, 6).map(img => ({ url: img.url, alt: img.alt || best.title })),
+          intent: typeof d.intent === 'string' ? d.intent : 'procedure',
+          sourceUrl: typeof d.url === 'string' ? d.url : best.url,
+          sourceTitle: typeof d.title === 'string' ? d.title : best.title,
+        })
       } catch {
-        if (!cancelled) setDiagrams([])
+        if (!cancelled) setContent(null)
       } finally {
-        if (!cancelled) setDiagramLoading(false)
+        if (!cancelled) setLoadingContent(false)
       }
     })()
     return () => { cancelled = true }
@@ -638,21 +653,27 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
 
   return (
     <div className="space-y-3 text-sm">
-      {(diagramLoading || diagrams.length > 0) && (
+      {loadingContent && !content && (
+        <section className="rounded-lg border border-border bg-bg-hover p-4 text-sm text-text-muted">Pulling it straight from the manual…</section>
+      )}
+      {content?.procedureText && content.procedureText.length > 60 && (
+        <section className="rounded-lg border border-green/25 bg-green/[0.06] p-4">
+          <div className="text-xs font-black uppercase text-green">From the manual{content.sourceTitle ? ` — ${content.sourceTitle}` : ''}</div>
+          <div className="mt-2 max-w-none whitespace-pre-wrap text-sm leading-6 text-text-secondary" dangerouslySetInnerHTML={{ __html: renderProcedureHtml(content.procedureText) }} />
+          <a href={content.sourceUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex text-[11px] font-bold text-blue hover:underline">Open the full manual page</a>
+        </section>
+      )}
+      {content && content.images.length > 0 && (
         <section className="rounded-lg border border-blue/25 bg-blue/5 p-4">
           <div className="text-xs font-black uppercase text-blue">Diagram</div>
-          {diagramLoading && !diagrams.length ? (
-            <div className="mt-3 text-sm text-text-muted">Pulling the diagram from the manual…</div>
-          ) : (
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {diagrams.map(img => (
-                <a key={img.url} href={proxiedImage(img.url)} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-md border border-white/10 bg-white transition-colors hover:border-blue/50">
-                  <img src={proxiedImage(img.url)} alt={img.alt} loading="lazy" className="h-auto w-full object-contain" />
-                </a>
-              ))}
-            </div>
-          )}
-          {diagrams.length > 0 && <div className="mt-2 text-[11px] font-bold text-text-muted">Tap to enlarge. Straight from the LEMON/CHARM manual.</div>}
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {content.images.map(img => (
+              <a key={img.url} href={proxiedImage(img.url)} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-md border border-white/10 bg-white transition-colors hover:border-blue/50">
+                <img src={proxiedImage(img.url)} alt={img.alt} loading="lazy" className="h-auto w-full object-contain" />
+              </a>
+            ))}
+          </div>
+          <div className="mt-2 text-[11px] font-bold text-text-muted">Tap to enlarge. Straight from the manual.</div>
         </section>
       )}
 
@@ -1243,6 +1264,17 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
 
         const manualSummary = formatRepairSearchText(lookupQuery, repairData)
         const vehicleForAnswer = repairVehicleLabel(repairData.normalizedVehicle)
+
+        // When he's asking for a procedure or a diagram, don't write a chatty
+        // link-dump — the card below pulls the actual steps/figure from the manual
+        // and shows them inline. Just lead in, then let the real content land.
+        const wantsDiagram = /\b(diagram|picture|schematic|wiring|pinout|exploded|drawing)\b/i.test(text)
+        const wantsProcedure = /\b(procedure|steps?|how\s+(to|do)|remove|removal|replace|replacement|install|overhaul|inspect|adjust|service|bleed|rotate|all\s*(four|4))\b/i.test(text)
+          || /\b(brakes?|rotors?|calipers?|pads?|fuse|relay|alternator|starter|radiator|thermostat|water\s*pump|timing\s*belt|spark\s*plugs?|clutch|axle|wheel\s*bearing|struts?|shocks?)\b/i.test(text)
+        if (wantsDiagram || wantsProcedure) {
+          const lead = `Here's the ${wantsDiagram ? 'diagram' : 'procedure'} from the manual for your ${vehicleForAnswer || 'vehicle'} — straight from the page below.`
+          return finish({ role: 'assistant', content: lead, repairResult })
+        }
 
         // Pull the web in only when he explicitly asked to go online. The manual is
         // always the base; the web just fills gaps.
