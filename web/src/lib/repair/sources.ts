@@ -456,8 +456,15 @@ async function fetchText(url: string, timeoutMs = 12000) {
 // table, no service client, or running in the browser → plain live fetch.
 const MANUAL_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
+// Warm-lambda memory cache: even without the DB cache table, repeat fetches
+// inside the same server instance are instant. Small cap — pages can be 1.5MB.
+const memoryCache = new Map<string, { html: string; at: number }>()
+const MEMORY_CACHE_MAX = 24
+
 async function fetchManualHtmlCached(url: string, timeoutMs = 12000): Promise<string> {
   if (typeof window !== 'undefined') return fetchText(url, timeoutMs)
+  const mem = memoryCache.get(url)
+  if (mem && Date.now() - mem.at < MANUAL_CACHE_TTL_MS) return mem.html
   try {
     const { getServiceClient } = await import('../supabase')
     const db = getServiceClient()
@@ -473,6 +480,11 @@ async function fetchManualHtmlCached(url: string, timeoutMs = 12000): Promise<st
     } catch { /* cache table may not exist yet — fetch live */ }
     const html = await fetchText(url, timeoutMs)
     if (html) {
+      if (memoryCache.size >= MEMORY_CACHE_MAX) {
+        const oldest = memoryCache.keys().next().value
+        if (oldest) memoryCache.delete(oldest)
+      }
+      memoryCache.set(url, { html, at: Date.now() })
       // Fire and forget — the caller never waits on the cache write.
       void db
         .from('repair_manual_cache')
@@ -765,6 +777,23 @@ export async function readRepairManualPage(url: string, timeoutMs = 12000, linkL
   if (!normalized) throw new Error('Only CHARM and LEMON manual URLs are supported')
   const html = await fetchManualHtmlCached(normalized.url, timeoutMs)
   if (!html) throw new Error('Manual source did not return readable content')
+  // Mega index pages (the old-db Repair-and-Diagnosis tree is ~1.5MB) are link
+  // hubs, never content — skip the expensive text parsing so a serverless CPU
+  // doesn't burn the whole time budget on one page.
+  if (html.length > 350_000) {
+    return {
+      provider: normalized.provider,
+      url: normalized.url,
+      title: extractTitle(html, normalized.url),
+      breadcrumbs: extractBreadcrumbs(html, normalized.url),
+      links: extractManualLinksDetailed(mainFragment(html), normalized.url, linkLimit),
+      sections: [],
+      images: [],
+      procedureText: '',
+      canStoreContent: false,
+      warning: 'Source preview only. Do not copy protected manual text into customer documents. Verify exact trim, engine, warnings, torque specs, and safety procedures from the source before work.',
+    }
+  }
   return {
     provider: normalized.provider,
     url: normalized.url,
@@ -984,12 +1013,23 @@ export async function readRepairManualPageDrilled(
     // early exit once the ask is satisfied by a non-TOC page
     if (intent === 'diagram' && bestImgs && !pageContentQuality(bestImgs, terms).isToc) break
     if (intent === 'procedure' && bestText && bestTextSteps >= 2) break
-    const next = frontier.shift()
-    if (!next) break
-    visited.add(next.url)
-    try { page = await readRepairManualPage(next.url, 7000, 6000); fetches++ } catch { continue }
-    if (page.title) trail.push(page.title)
-    pushLinks(page)
+    // Fetch the top-scored candidates in PARALLEL — wall time is the scarce
+    // resource on serverless, not bandwidth.
+    const batch = frontier.splice(0, 3).filter(item => !visited.has(item.url))
+    if (!batch.length) break
+    batch.forEach(item => visited.add(item.url))
+    const settled = await Promise.allSettled(batch.map(item => readRepairManualPage(item.url, 7000, 6000)))
+    fetches += batch.length
+    const pages = settled.filter((s): s is PromiseFulfilledResult<RepairManualPage> => s.status === 'fulfilled').map(s => s.value)
+    if (!pages.length) continue
+    for (const candidate of pages) {
+      if (candidate.title) trail.push(candidate.title)
+      const cq = pageContentQuality(candidate, terms)
+      if (cq.ok && cq.stepLines > bestTextSteps) { bestText = candidate; bestTextSteps = cq.stepLines }
+      if (candidate.images.length && pathMatchesComponent(candidate.url, terms) && (!bestImgs || candidate.images.length > bestImgs.images.length)) bestImgs = candidate
+      pushLinks(candidate)
+    }
+    page = pages[0]
   }
 
   const result = intent === 'diagram' ? (bestImgs || bestText || page) : (bestText || bestImgs || page)
