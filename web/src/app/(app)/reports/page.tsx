@@ -1,6 +1,6 @@
 ﻿'use client'
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
+import { supabase, calcTotals } from '@/lib/supabase'
 
 interface Invoice { id: string; customer_name: string; total: number; amount_paid: number; status: string; created_at: string; payment_method: string }
 interface Job { id: string; status: string; tech: string; concern: string; created_at: string }
@@ -31,12 +31,23 @@ export default function ReportsPage() {
     const load = async () => {
       setLoading(true)
       try {
+        // Invoices live in the documents table (this page used to query a
+        // nonexistent `invoices` table, so every report showed zero).
         const [{ data: inv }, { data: j }, { data: c }] = await Promise.all([
-          supabase.from('invoices').select('id,customer_name,total,amount_paid,status,created_at,payment_method').order('created_at', { ascending: false }).limit(1000),
+          supabase.from('documents').select('*').in('type', ['Invoice', 'Receipt']).order('created_at', { ascending: false }).limit(1000),
           supabase.from('jobs').select('id,status,tech,concern,created_at').order('created_at', { ascending: false }).limit(2000),
           supabase.from('call_history').select('id,direction,duration_secs,start_time,status').order('start_time', { ascending: false }).limit(2000),
         ])
-        setInvoices((inv || []) as Invoice[])
+        const mapped = (inv || []).map((d: Record<string, unknown>) => ({
+          id: d.id as string,
+          customer_name: (d.customer_name as string) || '',
+          total: calcTotals(d).total,
+          amount_paid: Number(d.amount_paid) || 0,
+          status: (d.status as string) || '',
+          created_at: (d.created_at as string) || '',
+          payment_method: (d.payment_method as string) || '',
+        }))
+        setInvoices(mapped as Invoice[])
         setJobs((j || []) as Job[])
         setCalls((c || []) as CallRecord[])
       } finally { setLoading(false) }
