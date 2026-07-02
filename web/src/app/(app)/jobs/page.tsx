@@ -231,7 +231,32 @@ export default function JobsPage() {
           </div>
 
           {view === 'list' ? (
-            <div className="card overflow-x-auto">
+            <>
+            {/* Phone: stacked cards — no sideways scrolling */}
+            <div className="space-y-2 sm:hidden">
+              {filtered.length === 0 && !loading ? (
+                <div className="card p-8 text-center text-text-muted">
+                  <div className="text-4xl mb-2">🔧</div>
+                  <div className="font-semibold mb-2">{jobs.length === 0 ? 'No jobs yet' : 'No jobs match your filter'}</div>
+                  {jobs.length === 0 && <button className="btn btn-primary mt-1" onClick={openNew}>+ Create First Job</button>}
+                </div>
+              ) : filtered.map(j => (
+                <button key={j.id} onClick={()=>openEdit(j)} className="card w-full p-3 text-left">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold truncate">{j.customer_name||'Unknown'}</span>
+                    <span className={`tag shrink-0 ${STATUS_COLOR[j.status]||'tag-gray'}`}>{j.status}</span>
+                  </div>
+                  <div className="mt-1 text-sm text-text-muted truncate">{[j.vehicle_year,j.vehicle_make,j.vehicle_model].filter(Boolean).join(' ')||'—'}</div>
+                  {j.concern && <div className="mt-1 text-sm text-text-muted truncate">{j.concern}</div>}
+                  <div className="mt-1 flex items-center justify-between text-xs text-text-muted">
+                    <span className="font-mono">{j.ro_number||'—'}</span>
+                    <span className={j.promise_date&&new Date(j.promise_date)<new Date()&&!['Paid','Closed','Completed'].includes(j.status)?'text-red font-semibold':''}>{fmt(j.promise_date)}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+            {/* Desktop: full table */}
+            <div className="card overflow-x-auto hidden sm:block">
               <table className="data-table w-full min-w-[700px]">
                 <thead>
                   <tr><th>RO #</th><th>Customer</th><th>Vehicle</th><th>Concern</th><th>Tech</th><th>Status</th><th>Due</th></tr>
@@ -271,6 +296,7 @@ export default function JobsPage() {
                 </tbody>
               </table>
             </div>
+            </>
           ) : (
             <div className="flex gap-4 overflow-x-auto pb-4">
               {['New','Approved','In Progress','Waiting on Parts','Ready for Pickup','Paid'].map(col => {

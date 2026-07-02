@@ -77,12 +77,13 @@ const ROLE_EMOJIS: Record<string, string> = {
   advisor: '📋',
 }
 
+// Dark-theme friendly — the app always renders on a dark background.
 const STATUS_COLORS: Record<string, string> = {
-  pending:       'bg-yellow-100 text-yellow-800 border-yellow-300',
-  'in-progress': 'bg-blue-100 text-blue-800 border-blue-300',
-  completed:     'bg-green-100 text-green-800 border-green-300',
-  waiting:       'bg-orange-100 text-orange-800 border-orange-300',
-  cancelled:     'bg-red-100 text-red-800 border-red-300',
+  pending:       'bg-yellow-500/15 text-yellow-300 border-yellow-500/30',
+  'in-progress': 'bg-blue-500/15 text-blue-300 border-blue-500/30',
+  completed:     'bg-green-500/15 text-green-300 border-green-500/30',
+  waiting:       'bg-orange-500/15 text-orange-300 border-orange-500/30',
+  cancelled:     'bg-red-500/15 text-red-300 border-red-500/30',
 }
 
 const PRIORITY_DOT: Record<string, string> = {

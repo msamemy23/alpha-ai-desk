@@ -277,7 +277,7 @@ export default function DashboardPage() {
             </div>
           </div>
           {briefingExpanded && (
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
+            <div className="grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mt-4">
               <div className="bg-bg-card border border-border rounded-lg p-3">
                 <div className="text-xs text-text-muted">Open Jobs</div>
                 <div className="text-lg font-bold text-blue">{stats!.openJobs}</div>
@@ -304,7 +304,7 @@ export default function DashboardPage() {
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         {[
           { label: 'Open Jobs', value: stats!.openJobs, color: 'text-blue', icon: 'JOB' },
           { label: 'Unpaid Balance', value: formatCurrency(stats!.unpaidTotal), color: 'text-red', icon: 'DUE' },

@@ -47,7 +47,10 @@ export default function AppointmentsPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [techs, setTechs] = useState<string[]>(['Unassigned'])
   const [weekBase, setWeekBase] = useState(new Date())
-  const [view, setView] = useState<'week'|'list'>('week')
+  // Phones default to the list — the 7-day grid needs sideways scrolling there.
+  const [view, setView] = useState<'week'|'list'>(() =>
+    typeof window !== 'undefined' && window.innerWidth < 640 ? 'list' : 'week'
+  )
   const [editing, setEditing] = useState<string|null|'new'>(null)
   const [form, setForm] = useState<Partial<Appointment>>({})
   const [search, setSearch] = useState('')

@@ -950,7 +950,31 @@ tr, td, th, thead, table { break-inside: avoid; }
               <button className="btn btn-primary whitespace-nowrap" onClick={openNew}>+ New {type}</button>
             </div>
           </div>
-          <div className="card p-0 overflow-x-auto">
+          {/* Phone: stacked cards — no sideways scrolling */}
+          <div className="space-y-2 sm:hidden">
+            {filtered.length === 0 && <div className="card p-8 text-center text-text-muted">No {type.toLowerCase()}s yet</div>}
+            {filtered.map(d => {
+              const t = calcTotals(d as unknown as Record<string,unknown>)
+              return (
+                <div key={d.id} className="card p-3" onClick={() => { const cust = customers.find(c => c.id === d.customer_id); setForm({ ...d, customer_phone: d.customer_phone || cust?.phone || '', customer_email: d.customer_email || cust?.email || '' } as Partial<Doc>); setEditing(d.id); setSignatureImg(null); if (d.signature_signed_at) { fetch('/api/signature?documentId='+d.id).then(r=>r.json()).then(sig=>{ if(sig?.signature_data) setSignatureImg(sig.signature_data) }) } }}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium truncate">{d.customer_name || '—'}</span>
+                    <span className={`tag shrink-0 ${statusColor[d.status]||'tag-gray'}`}>{d.status}</span>
+                  </div>
+                  <div className="mt-1 flex items-center justify-between text-sm">
+                    <span className="font-mono text-blue">{d.doc_number}</span>
+                    <span className="font-semibold">{formatCurrency(t.total)}</span>
+                  </div>
+                  <div className="mt-1 flex items-center justify-between text-xs text-text-muted">
+                    <span className="truncate">{[d.vehicle_year, d.vehicle_make, d.vehicle_model].filter(Boolean).join(' ') || '—'}</span>
+                    <span>{fmt(d.doc_date)}</span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          {/* Desktop: full table */}
+          <div className="card p-0 overflow-x-auto hidden sm:block">
             <table className="data-table w-full min-w-[640px]">
               <thead><tr><th>Doc #</th><th>Customer</th><th>Vehicle</th><th>Date</th><th>Status</th><th>Total</th><th>Actions</th></tr></thead>
               <tbody>

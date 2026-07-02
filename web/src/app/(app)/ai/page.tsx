@@ -2862,7 +2862,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
       // YouTube embeds: [YouTube](embed_url) or bare embed URLs
       .replace(/(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([\w-]{11})/g, (_m, id) => `<div style="margin:8px 0;border-radius:12px;overflow:hidden;max-width:480px"><iframe width="100%" height="270" src="https://www.youtube.com/embed/${id}" frameborder="0" allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture" allowfullscreen style="border-radius:12px"></iframe></div>`)
             // Images: ![alt](url)
-      .replace(/!\[([^\]]*)]\(([^)]+)\)/g, (_m, alt, url) => `<img src="${safeUrl(url)}" alt="${escapeHtml(alt)}" class="rounded-lg max-w-[300px] max-h-[300px] object-cover my-1 inline-block" />`)
+      .replace(/!\[([^\]]*)]\(([^)]+)\)/g, (_m, alt, url) => `<img src="${safeUrl(url)}" alt="${escapeHtml(alt)}" class="rounded-lg max-w-full sm:max-w-[300px] max-h-[300px] object-cover my-1 inline-block" />`)
       // Links: [text](url)
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, url) => `<a href="${safeUrl(url)}" target="_blank" rel="noopener noreferrer" class="text-blue underline hover:text-blue/80">${escapeHtml(label)}</a>`)
       // Bold: **text**
@@ -3093,7 +3093,7 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
       {showHistory && (
         <div className="fixed inset-0 z-50 flex">
           <div className="absolute inset-0 bg-black/40" onClick={() => setShowHistory(false)} />
-          <div className="relative ml-auto w-80 bg-bg-card border-l border-border h-full overflow-y-auto p-4">
+          <div className="relative ml-auto w-80 max-w-[85vw] bg-bg-card border-l border-border h-full overflow-y-auto p-4">
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-bold text-lg">Chat History</h2>
                                 <button onClick={() => { if (confirm('Delete ALL chat history?')) { setHistory([]); localStorage.removeItem('ai_history'); showToast('All history deleted') }}} className="btn btn-sm text-xs text-red-400 hover:bg-red-400/10 border border-red-400/30">Delete All</button>
