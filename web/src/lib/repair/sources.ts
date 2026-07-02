@@ -440,13 +440,48 @@ function source(
 async function fetchText(url: string, timeoutMs = 12000) {
   try {
     const res = await fetch(url, {
-      headers: { 'user-agent': 'AlphaAIRepairResearch/1.0' },
+      // Standard browser UA — nothing identifying, and less likely to be blocked.
+      headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
       signal: AbortSignal.timeout(timeoutMs),
     })
     if (!res.ok) return ''
     return await res.text()
   } catch {
     return ''
+  }
+}
+
+// Manual pages are static — cache them in the DB so repeat lookups are instant
+// and survive the manual sites being slow or down. Fails open in every way: no
+// table, no service client, or running in the browser → plain live fetch.
+const MANUAL_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+async function fetchManualHtmlCached(url: string, timeoutMs = 12000): Promise<string> {
+  if (typeof window !== 'undefined') return fetchText(url, timeoutMs)
+  try {
+    const { getServiceClient } = await import('../supabase')
+    const db = getServiceClient()
+    try {
+      const { data } = await db
+        .from('repair_manual_cache')
+        .select('html, fetched_at')
+        .eq('url', url)
+        .maybeSingle()
+      if (data?.html && Date.now() - new Date(data.fetched_at).getTime() < MANUAL_CACHE_TTL_MS) {
+        return data.html
+      }
+    } catch { /* cache table may not exist yet — fetch live */ }
+    const html = await fetchText(url, timeoutMs)
+    if (html) {
+      // Fire and forget — the caller never waits on the cache write.
+      void db
+        .from('repair_manual_cache')
+        .upsert({ url, html, fetched_at: new Date().toISOString() })
+        .then(() => {}, () => {})
+    }
+    return html
+  } catch {
+    return fetchText(url, timeoutMs)
   }
 }
 
@@ -670,7 +705,7 @@ function extractProcedureText(html: string): string {
 export async function readRepairManualPage(url: string, timeoutMs = 12000, linkLimit = 80): Promise<RepairManualPage> {
   const normalized = normalizeManualUrl(url)
   if (!normalized) throw new Error('Only CHARM and LEMON manual URLs are supported')
-  const html = await fetchText(normalized.url, timeoutMs)
+  const html = await fetchManualHtmlCached(normalized.url, timeoutMs)
   if (!html) throw new Error('Manual source did not return readable content')
   return {
     provider: normalized.provider,
