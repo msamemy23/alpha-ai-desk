@@ -382,3 +382,20 @@ REMAINING FOR OWNER — one step: run web/supabase/migrations/006_security_perf_
 in the Supabase SQL editor (or GET /api/migrate with the x-admin-secret header).
 Everything works without it (code fails open), but the cache, payments history,
 reminder dedupe, and indexes only kick in once it runs.
+
+## 2026-07-02 (later) — Format-proof repair chat (any car, any manual layout)
+Root causes found live: (1) a canned reply line had replaced the AI voice for
+procedure/diagram asks; (2) all extraction was tuned to the pre-2014 manual layout —
+2014+ vehicles use a different database (Service Information mega-docs, ol-numbered
+steps, anchor TOCs) so the drill returned nothing; (3) 41 Wrangler trims blocked the
+answer behind an engine-picker wall.
+Rebuilt: structure-based extraction (both step formats, section splitting, caption
+spans, anchor-skip), best-first search drill (TOCs are hubs never answers, subsystem
+qualifiers stop ABS/lamps/seats/circuit hijacks, requested-section pull, front/rear),
+vehicle auto-pick (engine-keyed db first, automatic, no hybrid unless asked), chat
+prefetches manual content BEFORE the AI writes (natural voice grounded in the real
+steps; honest no-diagram fallback with look-online button).
+Verified headlessly on live manuals — 8/8: 04 Accord steps+diagram, 18 Wrangler
+removal+diagram, 16 F-150 alternator, 19 Camry front pads (16 steps/10 figs),
+15 Silverado thermostat, 05 Civic P0420 O2 figures. Tests 34/34. Prototype harness:
+scratchpad/general-drill.mjs (session temp).
