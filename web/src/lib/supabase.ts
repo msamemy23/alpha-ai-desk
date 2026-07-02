@@ -3,12 +3,15 @@ import { laborLineTotal, partLineTotal } from '@/lib/document-money'
 import { createBrowserClient } from '@supabase/ssr'
 
 // Publishable URL + anon key (safe to ship to the browser; access is governed
-// by RLS, not by hiding this key).
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_EwRdKR6toaGlqbtoqQVbzw_nhXJwa8h'
+// by RLS, not by hiding this key). Env only — values are inlined at build time
+// from Vercel env / .env.local; no hardcoded fallbacks.
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 export const supabaseBrowserUrl = supabaseUrl
 export const supabaseBrowserAnonKey = supabaseAnonKey
-export const supabaseAuthStorageKey = `sb-${new URL(supabaseUrl).hostname.split('.')[0]}-auth-token`
+export const supabaseAuthStorageKey = supabaseUrl
+  ? `sb-${new URL(supabaseUrl).hostname.split('.')[0]}-auth-token`
+  : 'sb-auth-token'
 
 // Browser client that stores the auth session in COOKIES (not localStorage) so
 // the server (middleware + API routes) can read and verify the real session.

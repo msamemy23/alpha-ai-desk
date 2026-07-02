@@ -2,9 +2,18 @@ import { NextRequest, NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
-// Only proxy images from the manual sources we use. Anything else is rejected
-// so this can't be turned into an open SSRF proxy.
-const ALLOWED_HOST = /(?:^|\.)charm\.li$|(?:^|\.)lemon-manuals\.(?:la|org\.ua|gy)$/i
+// Only proxy images from the manual sources we use. Exact-match hostnames so
+// this can't be turned into an open SSRF proxy.
+const ALLOWED_HOSTS = new Set([
+  'charm.li',
+  'www.charm.li',
+  'lemon-manuals.la',
+  'www.lemon-manuals.la',
+  'lemon-manuals.org.ua',
+  'www.lemon-manuals.org.ua',
+  'lemon-manuals.gy',
+  'www.lemon-manuals.gy',
+])
 const MAX_BYTES = 12 * 1024 * 1024
 
 /**
@@ -16,7 +25,7 @@ export async function GET(req: NextRequest) {
   const raw = req.nextUrl.searchParams.get('url') || ''
   let target: URL
   try { target = new URL(raw) } catch { return new NextResponse('Bad URL', { status: 400 }) }
-  if (!['http:', 'https:'].includes(target.protocol) || !ALLOWED_HOST.test(target.hostname)) {
+  if (!['http:', 'https:'].includes(target.protocol) || !ALLOWED_HOSTS.has(target.hostname.toLowerCase())) {
     return new NextResponse('Forbidden host', { status: 403 })
   }
   try {

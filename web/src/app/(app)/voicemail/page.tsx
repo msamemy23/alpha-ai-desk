@@ -2,16 +2,17 @@
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 
-const SB_URL = 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-// Publishable anon key â€” goes in apikey header to identify the project
-const SB_ANON = 'sb_publishable_EwRdKR6toaGlqbtoqQVbzw_nhXJwa8h'
+const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
+// Publishable anon key — goes in apikey header to identify the project
+const SB_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+const SB_AUTH_COOKIE = SB_URL ? `sb-${new URL(SB_URL).hostname.split('.')[0]}-auth-token` : ''
 
 // Build fetch headers: anon key identifies project, user JWT authorizes the request.
-// Reading directly from localStorage bypasses GoTrue's lock â€” instant, no 5s delays.
+// Reading directly from localStorage bypasses GoTrue's lock — instant, no 5s delays.
 function buildHeaders(): Record<string, string> {
   const base = { apikey: SB_ANON, Accept: 'application/json', 'Content-Type': 'application/json' }
   try {
-    const raw = localStorage.getItem('sb-fztnsqrhjesqcnsszqdb-auth-token')
+    const raw = SB_AUTH_COOKIE ? localStorage.getItem(SB_AUTH_COOKIE) : null
     if (raw) {
       const token = JSON.parse(raw)?.access_token
       if (token) return { ...base, Authorization: `Bearer ${token}` }

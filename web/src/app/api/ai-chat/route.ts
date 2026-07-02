@@ -10,8 +10,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { AI_BASE_URLS, isOpenRouterBaseUrl, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://alpha-ai-desk.vercel.app'
+const INTERNAL_SECRET = process.env.CRON_SECRET || process.env.INTERNAL_API_SECRET || ''
 
 const SYSTEM_PROMPT = `You are Alpha AI, the intelligent assistant for Alpha International Auto Center, an auto repair shop in Houston, TX.
 
@@ -64,11 +66,14 @@ async function getSettings() {
 
 async function callDbAction(action: string, payload: Record<string, unknown>) {
   try {
-    const baseUrl = SUPABASE_URL.replace('https://fztnsqrhjesqcnsszqdb.supabase.co', 'https://alpha-ai-desk.vercel.app')
-    // Call our own ai-action endpoint
-    const res = await fetch(`https://alpha-ai-desk.vercel.app/api/ai-action`, {
+    // Call our own ai-action endpoint using the internal secret — never ship
+    // Supabase keys in request headers to our own edge.
+    const res = await fetch(`${APP_URL}/api/ai-action`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_KEY },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(INTERNAL_SECRET ? { Authorization: `Bearer ${INTERNAL_SECRET}` } : {}),
+      },
       body: JSON.stringify({ action, payload }),
     })
     const data = await res.json()
@@ -79,6 +84,16 @@ async function callDbAction(action: string, payload: Record<string, unknown>) {
 }
 
 export async function POST(req: NextRequest) {
+  // Session or internal secret required — this endpoint runs the agent loop
+  // with real shop tools and burns AI credits.
+  {
+    const { getAuthedShop } = await import('@/lib/api-auth')
+    const secret = process.env.CRON_SECRET || process.env.INTERNAL_API_SECRET
+    const hasInternal = !!secret && req.headers.get('authorization') === `Bearer ${secret}`
+    if (!hasInternal && !(await getAuthedShop())) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+  }
   try {
     const body = await req.json()
     const { message, sessionId, history } = body as {

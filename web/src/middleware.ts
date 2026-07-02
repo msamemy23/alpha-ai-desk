@@ -1,35 +1,30 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_EwRdKR6toaGlqbtoqQVbzw_nhXJwa8h'
-const FALLBACK_SUPABASE_URL = 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const FALLBACK_SUPABASE_ANON = 'sb_publishable_EwRdKR6toaGlqbtoqQVbzw_nhXJwa8h'
-const SUPABASE_AUTH_COOKIES = Array.from(
-  new Set(
-    [SUPABASE_URL, FALLBACK_SUPABASE_URL].map(url => `sb-${new URL(url).hostname.split('.')[0]}-auth-token`)
-  )
-)
-const SUPABASE_AUTH_TARGETS = Array.from(
-  new Map(
-    [
-      [SUPABASE_URL, SUPABASE_ANON],
-      [FALLBACK_SUPABASE_URL, FALLBACK_SUPABASE_ANON],
-    ].map(([url, key]) => [url, { url, key }])
-  ).values()
-)
+// Fail closed: if the env vars are missing, auth checks below return no user and
+// every protected route 401s/redirects. Never fall back to hardcoded keys.
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
+const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+const SUPABASE_AUTH_COOKIES = SUPABASE_URL
+  ? [`sb-${new URL(SUPABASE_URL).hostname.split('.')[0]}-auth-token`]
+  : []
+const SUPABASE_AUTH_TARGETS = SUPABASE_URL && SUPABASE_ANON
+  ? [{ url: SUPABASE_URL, key: SUPABASE_ANON }]
+  : []
 
+// Only routes that genuinely must accept outside callers: auth flows, signed
+// third-party webhooks (Telnyx verifies ed25519; sms-inbound requires a shared
+// secret), the customer-facing signing link, and password reset. Everything
+// else — including growth/capture, signature reads, and voice-join — requires a
+// logged-in session.
 const PUBLIC_API_PREFIXES = [
   '/api/auth/',
   '/api/calls/webhook',
-  '/api/growth/capture',
   '/api/reset-password',
   '/api/sign',
-  '/api/signature',
   '/api/sms',
   '/api/sms-inbound',
   '/api/telnyx-voice-webhook',
-  '/api/voice-join/',
 ]
 
 function hasInternalApiSecret(req: NextRequest) {
@@ -38,7 +33,22 @@ function hasInternalApiSecret(req: NextRequest) {
 }
 
 function isPublicApiPath(pathname: string) {
-  return PUBLIC_API_PREFIXES.some(prefix => pathname === prefix || pathname.startsWith(prefix))
+  // Boundary-aware: '/api/sign' must match '/api/sign' and '/api/sign/x' but
+  // never '/api/signature'.
+  return PUBLIC_API_PREFIXES.some(prefix => {
+    const base = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix
+    return pathname === base || pathname.startsWith(`${base}/`)
+  })
+}
+
+// Baseline security headers on every response.
+function withSecurityHeaders(res: NextResponse) {
+  res.headers.set('X-Frame-Options', 'SAMEORIGIN')
+  res.headers.set('X-Content-Type-Options', 'nosniff')
+  res.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
+  res.headers.set('Strict-Transport-Security', 'max-age=63072000; includeSubDomains')
+  res.headers.set('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=()')
+  return res
 }
 
 function decodeBase64Url(value: string) {
@@ -114,7 +124,7 @@ export async function middleware(req: NextRequest) {
     pathname.startsWith('/_next/') ||
     pathname === '/favicon.ico'
   ) {
-    return NextResponse.next()
+    return withSecurityHeaders(NextResponse.next())
   }
 
   const res = NextResponse.next({ request: req })
@@ -133,18 +143,18 @@ export async function middleware(req: NextRequest) {
   const user = supabaseUser || await verifyUserFromCookie(req)
 
   if (pathname.startsWith('/api/')) {
-    if (isPublicApiPath(pathname) || hasInternalApiSecret(req)) return res
+    if (isPublicApiPath(pathname) || hasInternalApiSecret(req)) return withSecurityHeaders(res)
     if (!user) {
-      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 })
+      return withSecurityHeaders(NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 }))
     }
-    return res
+    return withSecurityHeaders(res)
   }
 
   if (!user) {
-    return NextResponse.redirect(new URL('/login', req.url))
+    return withSecurityHeaders(NextResponse.redirect(new URL('/login', req.url)))
   }
 
-  return res
+  return withSecurityHeaders(res)
 }
 
 export const config = {

@@ -11,15 +11,15 @@ import { normalizeInbound } from '@/lib/sms-normalize'
 // gateways don't sign their webhooks).
 
 export async function POST(req: NextRequest) {
-  // Optional shared-secret gate.
+  // Shared-secret gate — fail closed in every environment. The phone gateways
+  // don't sign their webhooks, so the secret is the only thing standing between
+  // this endpoint and anyone injecting fake customer texts.
   const secret = process.env.SMS_INBOUND_SECRET
-  if (!secret && process.env.NODE_ENV === 'production') {
-    return NextResponse.json({ ok: false, error: 'SMS_INBOUND_SECRET not configured' }, { status: 500 })
+  if (!secret) {
+    return NextResponse.json({ ok: false, error: 'SMS_INBOUND_SECRET not configured' }, { status: 503 })
   }
-  if (secret) {
-    const provided = req.nextUrl.searchParams.get('secret') || req.headers.get('x-sms-secret') || ''
-    if (provided !== secret) return NextResponse.json({ ok: false }, { status: 401 })
-  }
+  const provided = req.nextUrl.searchParams.get('secret') || req.headers.get('x-sms-secret') || ''
+  if (provided !== secret) return NextResponse.json({ ok: false }, { status: 401 })
 
   try {
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>

@@ -33,6 +33,12 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ callId: string }> }
 ) {
+  // Only a logged-in shop user may bridge calls — this dials real phone
+  // numbers on the shop's Telnyx account (toll fraud risk if left open).
+  const { getAuthedShop, unauthorized } = await import('@/lib/api-auth')
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
+
   try {
     const { callId } = await params
     const { ownerPhone } = await req.json()

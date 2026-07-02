@@ -24,12 +24,12 @@ export async function POST(req: NextRequest) {
       tax_rate: 8.25,
       warranty_months: 12,
       payment_methods: ['Cash', 'Card', 'Zelle', 'Cash App'],
-      ai_api_key: process.env.OPENROUTER_API_KEY || '',
+      // Never copy API secrets from env into the database — server routes read
+      // them from env directly. Rows in `settings` are visible to any
+      // authenticated shop user; secrets don't belong there.
       ai_model: DEFAULT_OPENROUTER_MODEL,
       ai_base_url: AI_BASE_URLS.OPENROUTER,
-      telnyx_api_key: process.env.TELNYX_API_KEY || '',
       telnyx_phone_number: process.env.TELNYX_PHONE_NUMBER || '',
-      resend_api_key: process.env.RESEND_API_KEY || '',
       from_email: process.env.FROM_EMAIL || 'service@alphainternationalauto.com',
     }
 

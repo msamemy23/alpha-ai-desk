@@ -1,10 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
+
+// The cron job calls this with the internal secret; everything else needs a
+// logged-in session. Leads are shop data — never expose them anonymously.
+async function requireCallerAllowed(req: NextRequest): Promise<boolean> {
+  const secret = process.env.CRON_SECRET || process.env.INTERNAL_API_SECRET
+  if (secret && req.headers.get('authorization') === `Bearer ${secret}`) return true
+  const auth = await getAuthedShop()
+  return !!auth
+}
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const TELNYX_FROM_NUMBER = process.env.TELNYX_PHONE_NUMBER || '+17134001234'
@@ -38,6 +48,7 @@ async function sendFollowUpSMS(phone: string, name: string): Promise<{ success: 
 
 // POST - Capture a walk-in or call lead
 export async function POST(req: NextRequest) {
+  if (!(await requireCallerAllowed(req))) return unauthorized()
   try {
     const body = await req.json()
     const { action } = body
@@ -188,6 +199,7 @@ export async function POST(req: NextRequest) {
 
 // GET - List all leads
 export async function GET(req: NextRequest) {
+  if (!(await requireCallerAllowed(req))) return unauthorized()
   try {
     const { searchParams } = new URL(req.url)
     const status = searchParams.get('status')

@@ -3,8 +3,9 @@ import { createServerClient } from '@supabase/ssr'
 import { createClient } from '@supabase/supabase-js'
 import { getServiceClient } from '@/lib/supabase'
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_EwRdKR6toaGlqbtoqQVbzw_nhXJwa8h'
+// Fail closed: no hardcoded fallbacks. Missing env → no session → 401.
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
+const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 
 /**
  * Reads and validates the Supabase auth session from the request cookies.
@@ -12,6 +13,7 @@ const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishab
  * Use inside API route handlers (App Router).
  */
 export async function getSessionUser() {
+  if (!SUPABASE_URL || !SUPABASE_ANON) return null
   const headerStore = await headers()
   const authHeader = headerStore.get('authorization') || ''
   const bearerToken = authHeader.toLowerCase().startsWith('bearer ')
