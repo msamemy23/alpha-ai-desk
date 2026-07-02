@@ -56,7 +56,8 @@ type PrefetchedManual = {
   intent: 'procedure' | 'diagram'
   diagramFound: boolean
 }
-type RepairChatResult = { query: string; data: RepairSearchResult; manual?: PrefetchedManual }
+type WebImage = { url: string; thumbnail?: string; title?: string; source_url?: string }
+type RepairChatResult = { query: string; data: RepairSearchResult; manual?: PrefetchedManual; webImages?: WebImage[] }
 
 // Pick the vehicle variant automatically instead of making him click an engine
 // wall: engine-keyed entries carry the deep manual content; prefer automatics;
@@ -713,13 +714,39 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
           <div className="mt-2 text-[11px] font-bold text-text-muted">Tap to enlarge. Straight from the manual.</div>
         </section>
       )}
-      {content && content.intent === 'diagram' && !content.diagramFound && (
+      {(result.webImages?.length || 0) > 0 && (
+        <section className="rounded-lg border border-purple-500/30 bg-purple-500/10 p-4">
+          <div className="text-xs font-black uppercase text-purple-300">From the web — reference pictures, not factory pages</div>
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {(result.webImages || []).map(img => (
+              <a key={img.url} href={img.source_url || img.url} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-md border border-white/10 bg-white transition-colors hover:border-purple-400/60">
+                <img
+                  src={img.thumbnail || img.url}
+                  alt={img.title || 'Web reference picture'}
+                  loading="lazy"
+                  className="h-auto max-h-72 w-full object-contain"
+                  onError={e => { const a = e.currentTarget.closest('a'); if (a) (a as HTMLElement).style.display = 'none' }}
+                />
+              </a>
+            ))}
+          </div>
+          <div className="mt-2 text-[11px] font-bold text-text-muted">Web pictures for reference — double-check against the manual before torquing anything.</div>
+        </section>
+      )}
+      {content && content.intent === 'diagram' && !content.diagramFound && !(result.webImages?.length) && (
         <section className="rounded-lg border border-amber/30 bg-amber/10 p-4">
-          <div className="text-sm font-bold text-amber">This manual doesn&apos;t carry a diagram for that.</div>
-          <p className="mt-1 text-sm text-text-secondary">The steps and specs are still here — but no drawing in the book for this one.</p>
+          <div className="text-sm font-bold text-amber">No drawing found in the book or on the web this time.</div>
+          <p className="mt-1 text-sm text-text-secondary">The steps and specs are still here. Try once more or word it differently (&quot;front caliper exploded view&quot;).</p>
           <button className="btn btn-secondary btn-sm mt-3" onClick={() => onAskNext?.(`look online for a ${query} diagram`)}>
-            Look online for one
+            Try the web again
           </button>
+        </section>
+      )}
+      {!loadingContent && !content && (
+        <section className="rounded-lg border border-amber/30 bg-amber/10 p-4">
+          <div className="text-sm font-bold text-amber">The manual site was slow — nothing came back this time.</div>
+          <p className="mt-1 text-sm text-text-secondary">It usually works on the second try (pages get remembered once fetched).</p>
+          <button className="btn btn-primary btn-sm mt-3" onClick={() => onAskNext?.(query)}>Try again</button>
         </section>
       )}
 
@@ -728,32 +755,38 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
           <div className="text-xs font-black uppercase text-blue">Open in the manual</div>
           <button className="btn btn-secondary btn-sm shrink-0" onClick={() => { window.location.href = repairWorkspaceUrl(query) }}>Repair workspace</button>
         </div>
-        {view.needsExactVehicle && <div className="mt-1 text-xs font-bold text-amber">Pick the engine below for the exact diagram, spec, or steps.</div>}
-        <div className="mt-3 grid gap-2 md:grid-cols-2">
-          {view.actionLinks.map(link => {
-            const choice = view.vehicleChoices.find(item => item.url === link.url)
-            const isManualChoice = link.confidence === 'manual_choice'
-            return isManualChoice ? (
-              <div key={`${link.kind}-${link.url}`} className="rounded-md border border-amber/25 bg-amber/10 p-3">
-                <span className="block font-black text-text-primary">{link.label}</span>
-                <span className="mt-1 block text-xs leading-5 text-text-secondary">{link.detail}</span>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button className="btn btn-primary btn-sm" onClick={() => onAskNext?.(choice?.selectionQuery || `${query} ${link.label}`)}>
-                    Use This Engine
-                  </button>
-                  <a href={link.url} target="_blank" rel="noreferrer" className="btn btn-secondary btn-sm">Open Source</a>
-                </div>
-              </div>
-            ) : (
+        {content?.sourceUrl && (
+          <a href={content.sourceUrl} target="_blank" rel="noreferrer" className="mt-3 block rounded-md border border-blue/30 bg-blue/10 p-3 transition-colors hover:border-blue/60">
+            <span className="block font-black text-text-primary">Open the exact page{content.sourceTitle ? ` — ${content.sourceTitle}` : ''}</span>
+            <span className="mt-1 block text-xs text-text-secondary">Lands directly on the page shown above — no clicking around.</span>
+          </a>
+        )}
+        {view.vehicleChoices.length > 0 && (
+          <div className="mt-3">
+            <div className="text-[11px] font-bold text-text-muted">Different engine or trim?</div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {view.vehicleChoices.slice(0, 6).map(choice => (
+                <button
+                  key={choice.url}
+                  className="rounded-md border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs font-bold text-text-secondary hover:border-blue/40 hover:text-text-primary"
+                  onClick={() => onAskNext?.(choice.selectionQuery || `${query} ${choice.label}`)}
+                >
+                  {choice.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {!content && (
+          <div className="mt-3 grid gap-2 md:grid-cols-2">
+            {view.actionLinks.filter(link => link.confidence !== 'manual_choice').slice(0, 4).map(link => (
               <a key={`${link.kind}-${link.url}`} href={link.url} target="_blank" rel="noreferrer" className="rounded-md border border-white/10 bg-white/[0.035] p-3 transition-colors hover:border-blue/50 hover:bg-blue/10">
                 <span className="block font-black text-text-primary">{link.label}</span>
                 <span className="mt-1 block text-xs leading-5 text-text-secondary">{link.detail}</span>
-                <span className="mt-2 inline-flex rounded border border-white/10 px-2 py-1 text-[10px] font-black uppercase text-text-muted">{link.provider || 'source link'}</span>
               </a>
-            )
-          })}
-          {!view.actionLinks.length && <div className="text-text-muted">Tell me the engine or VIN and I will narrow this down to the right page.</div>}
-        </div>
+            ))}
+          </div>
+        )}
       </section>
 
       {view.askNext.length > 0 && (
@@ -1339,7 +1372,27 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
             }
           } catch { /* manual content is optional — the answer still writes */ }
         }
-        const repairResultFull: RepairChatResult = { ...repairResult, manual: manual || undefined }
+        // He asked for a picture and the factory book came up dry (or the manual
+        // site choked)? Go get real pictures from the web and SHOW them — never
+        // shrug. Clearly labeled as web images, not factory pages.
+        let webImages: WebImage[] = []
+        const wantsDiagramNow = /\b(diagram|picture|schematic|wiring|pinout|exploded|drawing|photo|image)\b/i.test(text) || manual?.intent === 'diagram'
+        if (wantsDiagramNow && (!manual || !manual.diagramFound)) {
+          setStatus('No factory drawing — pulling pictures from the web...')
+          try {
+            const imgQuery = [vehicleForAnswer !== 'Vehicle not fully identified' ? vehicleForAnswer : '', lookupQuery, 'diagram'].filter(Boolean).join(' ')
+            const ir = await fetch(`/api/ai-search?q=${encodeURIComponent(imgQuery)}`, { headers: await getAuthJsonHeaders(), signal: AbortSignal.timeout(20000) })
+            const idata = await ir.json().catch(() => ({}))
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const imgs: any[] = Array.isArray(idata?.images) ? idata.images : Array.isArray(idata?.data?.images) ? idata.data.images : []
+            webImages = imgs
+              .filter(img => typeof img?.url === 'string' && /^https?:\/\//.test(img.url))
+              .slice(0, 4)
+              .map(img => ({ url: img.url, thumbnail: img.thumbnail || img.url, title: img.title || '', source_url: img.source_url || img.source || '' }))
+          } catch { /* web images are best-effort */ }
+        }
+
+        const repairResultFull: RepairChatResult = { ...repairResult, manual: manual || undefined, webImages: webImages.length ? webImages : undefined }
 
         // Pull the web in only when he explicitly asked to go online. The manual is
         // always the base; the web just fills gaps.
@@ -1372,11 +1425,13 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
                   manual?.procedureText
                     ? `\nTHE ACTUAL MANUAL CONTENT (the real steps/sections are ALSO displayed below your reply — talk him through the highlights naturally, point out gotchas, don't re-list every step verbatim):\n${manual.procedureText.slice(0, 3500)}`
                     : `\nMANUAL INFO (may be thin):\n${manualSummary}`,
-                  manual
-                    ? (manual.diagramFound
-                      ? '\nDIAGRAM STATUS: a real diagram image from the manual IS displayed below your reply — refer to it.'
-                      : '\nDIAGRAM STATUS: NO diagram image exists on this manual page. If he asked for a picture/diagram, say that straight and offer to look online for one. NEVER claim a diagram is shown.')
-                    : '',
+                  manual?.diagramFound
+                    ? '\nDIAGRAM STATUS: a real diagram image from the manual IS displayed below your reply — refer to it.'
+                    : webImages.length
+                      ? `\nDIAGRAM STATUS: the factory manual page had no drawing, so ${webImages.length} real picture${webImages.length === 1 ? '' : 's'} pulled from the web ARE displayed below your reply (labeled as web images). Refer to them naturally; remind him they're web reference pictures, not factory pages.`
+                      : wantsDiagramNow
+                        ? '\nDIAGRAM STATUS: NO diagram image was found in the manual OR on the web this time. Say that straight. NEVER claim a diagram is shown.'
+                        : '',
                   wantsOnline ? `\nWEB (he asked to look online):\n${webText || '(nothing useful came back)'}` : '',
                 ].filter(Boolean).join('\n') },
               ],

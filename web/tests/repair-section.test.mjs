@@ -310,7 +310,13 @@ test('repair agent, tool, skill, router, and chat handoff are registered', () =>
   assert.match(aiPage, /renderProcedureHtml/)
   assert.match(aiPage, /procedureText/)
   assert.match(aiPage, /proxiedImage/)
-  assert.match(aiPage, /Use This Engine/)
+  // Engine wall is gone — auto-pick with compact switch chips instead, plus the
+  // exact-page deep link and web-image fallback.
+  assert.match(aiPage, /Different engine or trim\?/)
+  assert.match(aiPage, /Open the exact page/)
+  assert.match(aiPage, /From the web/)
+  assert.match(aiPage, /pickBestManualStart/)
+  assert.match(aiPage, /webImages/)
   assert.match(aiPage, /primaryActionLabel/)
   assert.match(aiPage, /checkHeading/)
   assert.doesNotMatch(aiPage, /Repair Mode Result/)
@@ -325,7 +331,9 @@ test('repair agent, tool, skill, router, and chat handoff are registered', () =>
   assert.match(aiPage, /removalTerms/)
   assert.match(aiPage, /component location bank 1 sensor location/)
   assert.match(aiPage, /lastRepairContextRef\.current = latestRepair/)
-  assert.match(aiPage, /view\.actionLinks\.map/)
+  // Sources grid only shows when nothing landed; choices are compact chips now.
+  assert.match(aiPage, /view\.actionLinks\.filter/)
+  assert.match(aiPage, /view\.vehicleChoices\.slice/)
   assert.match(aiPage, /link\.detail/)
   assert.match(aiPage, /Repair workspace/)
   assert.match(aiPage, /repairWorkspaceUrl/)

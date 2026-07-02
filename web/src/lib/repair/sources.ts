@@ -461,6 +461,24 @@ const MANUAL_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const memoryCache = new Map<string, { html: string; at: number }>()
 const MEMORY_CACHE_MAX = 24
 
+function rememberInMemory(url: string, html: string) {
+  if (memoryCache.size >= MEMORY_CACHE_MAX) {
+    const oldest = memoryCache.keys().next().value
+    if (oldest) memoryCache.delete(oldest)
+  }
+  memoryCache.set(url, { html, at: Date.now() })
+}
+
+// One slow response must never kill the whole answer: try again once with a
+// longer window before giving up. Manual pages can be 1.5MB. Total time is capped
+// so the two attempts always fit inside the serverless 30s limit.
+async function fetchTextWithRetry(url: string, timeoutMs: number): Promise<string> {
+  const first = await fetchText(url, timeoutMs)
+  if (first) return first
+  const retryMs = Math.max(4000, Math.min(Math.round(timeoutMs * 1.8), 24000 - timeoutMs))
+  return fetchText(url, retryMs)
+}
+
 async function fetchManualHtmlCached(url: string, timeoutMs = 12000): Promise<string> {
   if (typeof window !== 'undefined') return fetchText(url, timeoutMs)
   const mem = memoryCache.get(url)
@@ -475,16 +493,13 @@ async function fetchManualHtmlCached(url: string, timeoutMs = 12000): Promise<st
         .eq('url', url)
         .maybeSingle()
       if (data?.html && Date.now() - new Date(data.fetched_at).getTime() < MANUAL_CACHE_TTL_MS) {
+        rememberInMemory(url, data.html)
         return data.html
       }
     } catch { /* cache table may not exist yet — fetch live */ }
-    const html = await fetchText(url, timeoutMs)
+    const html = await fetchTextWithRetry(url, timeoutMs)
     if (html) {
-      if (memoryCache.size >= MEMORY_CACHE_MAX) {
-        const oldest = memoryCache.keys().next().value
-        if (oldest) memoryCache.delete(oldest)
-      }
-      memoryCache.set(url, { html, at: Date.now() })
+      rememberInMemory(url, html)
       // Fire and forget — the caller never waits on the cache write.
       void db
         .from('repair_manual_cache')
@@ -493,8 +508,46 @@ async function fetchManualHtmlCached(url: string, timeoutMs = 12000): Promise<st
     }
     return html
   } catch {
-    return fetchText(url, timeoutMs)
+    return fetchTextWithRetry(url, timeoutMs)
   }
+}
+
+// Remember where the drill LANDED for a given ask, so the next identical ask
+// (any user, same warm instance — or via the cache table) skips the search
+// entirely. Stored in the same cache table under a pseudo-URL key; fails open.
+const resolvedMemo = new Map<string, string>()
+
+function resolvedKey(startUrl: string, terms: string[], intent: string) {
+  return `resolved::${intent}::${terms.join('+')}::${startUrl}`
+}
+
+async function loadResolved(key: string): Promise<string | null> {
+  const mem = resolvedMemo.get(key)
+  if (mem) return mem
+  if (typeof window !== 'undefined') return null
+  try {
+    const { getServiceClient } = await import('../supabase')
+    const { data } = await getServiceClient()
+      .from('repair_manual_cache')
+      .select('html, fetched_at')
+      .eq('url', key)
+      .maybeSingle()
+    if (data?.html && Date.now() - new Date(data.fetched_at).getTime() < MANUAL_CACHE_TTL_MS) return data.html
+  } catch { /* fails open */ }
+  return null
+}
+
+function saveResolved(key: string, landedUrl: string) {
+  resolvedMemo.set(key, landedUrl)
+  if (typeof window !== 'undefined') return
+  void (async () => {
+    try {
+      const { getServiceClient } = await import('../supabase')
+      await getServiceClient()
+        .from('repair_manual_cache')
+        .upsert({ url: key, html: landedUrl, fetched_at: new Date().toISOString() })
+    } catch { /* fails open */ }
+  })()
 }
 
 function extractManualLinks(html: string, baseUrl: string, model?: string) {
@@ -960,14 +1013,28 @@ export async function readRepairManualPageDrilled(
   const visited = new Set<string>()
   const trail: string[] = []
   // Keep the whole drill inside a tight budget so the request never hangs.
-  const deadline = Date.now() + 16000
+  const deadline = Date.now() + 20000
   const MAX_FETCHES = 12
+
+  // Same ask answered before? Jump straight to the page we landed on last time.
+  const memoKey = resolvedKey(startUrl, terms, intent)
+  const remembered = await loadResolved(memoKey)
+  if (remembered) {
+    try {
+      const page = await readRepairManualPage(remembered, 10000, 6000)
+      const hasWhatWasAsked = intent === 'diagram' ? page.images.length > 0 : (page.procedureText || '').length > 300
+      if (hasWhatWasAsked) {
+        trail.push('remembered')
+        return { ...page, trail, intent, diagramFound: page.images.length > 0 }
+      }
+    } catch { /* stale memo — do the real search */ }
+  }
 
   // Enter the Repair-and-Diagnosis tree (procedures + figures live there).
   let diagBase = diagnosisBaseFromUrl(startUrl)
   if (!diagBase) {
     try {
-      const startPage = await readRepairManualPage(startUrl, 7000, 6000)
+      const startPage = await readRepairManualPage(startUrl, 9000, 6000)
       const rd = startPage.links.find(link =>
         /repair and diagnosis/i.test(link.title) || /repair and diagnosis/i.test(decodeURIComponent(link.url)),
       )
@@ -996,7 +1063,8 @@ export async function readRepairManualPageDrilled(
   let fetches = 0
   let page: RepairManualPage
   try {
-    page = await readRepairManualPage(diagBase, 7000, 6000)
+    // The R&D tree can be 1.5MB — give the single most important fetch real room.
+    page = await readRepairManualPage(diagBase, 14000, 6000)
     fetches++
   } catch {
     const base = await readRepairManualPage(startUrl)
@@ -1018,7 +1086,7 @@ export async function readRepairManualPageDrilled(
     const batch = frontier.splice(0, 3).filter(item => !visited.has(item.url))
     if (!batch.length) break
     batch.forEach(item => visited.add(item.url))
-    const settled = await Promise.allSettled(batch.map(item => readRepairManualPage(item.url, 7000, 6000)))
+    const settled = await Promise.allSettled(batch.map(item => readRepairManualPage(item.url, 9000, 6000)))
     fetches += batch.length
     const pages = settled.filter((s): s is PromiseFulfilledResult<RepairManualPage> => s.status === 'fulfilled').map(s => s.value)
     if (!pages.length) continue
@@ -1044,6 +1112,10 @@ export async function readRepairManualPageDrilled(
       if (hit.length) procedureText = hit.map(s => `**${s.heading}**\n${s.text}`).join('\n\n').slice(0, 8000)
     }
   }
+
+  // Remember a successful landing so the next identical ask skips the search.
+  const satisfied = intent === 'diagram' ? result.images.length > 0 : (result.procedureText || '').length > 300
+  if (satisfied && result.url) saveResolved(memoKey, result.url)
 
   return { ...result, procedureText, trail, intent, diagramFound: result.images.length > 0 }
 }
