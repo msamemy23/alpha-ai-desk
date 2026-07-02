@@ -365,3 +365,20 @@ model folder), not the actual diagram page — the user has to click down the tr
 Both: build (next build) + commit + push main (auto-deploys) + live-verify in Comet (DPI clicks =
 screenshot coord / 1.25; AppActivate Comet by '*Alpha AI Desk*' title; type via SendKeys).
 
+
+## 2026-07-02 — Full six-phase overhaul (autonomous)
+Shipped in order, each built+tested+pushed: (1) Security — cron was calling internal
+endpoints without auth so nightly automations silently 401ed (fixed), SSRF guard on
+screenshot, migration 006 written and added to /api/migrate. (2) Mobile — card lists
+replace sideways tables (jobs + documents), appointments defaults to list on phones,
+chat images/history drawer fixed, shopboard dark colors. (3) repair_manual_cache with
+7-day TTL wrapped around manual fetches. (4) Appointment reminders now read the real
+appointments table (previously queried nonexistent jobs.scheduled_date — never fired),
+one-click Approve button in estimate emails, payments recorded on Paid/Partial,
+VIN decode on customers. (5) Reports read documents instead of nonexistent invoices
+table. (6) TS strict on (0 errors), openai/steel-sdk removed, junk files deleted.
+
+REMAINING FOR OWNER — one step: run web/supabase/migrations/006_security_perf_payments.sql
+in the Supabase SQL editor (or GET /api/migrate with the x-admin-secret header).
+Everything works without it (code fails open), but the cache, payments history,
+reminder dedupe, and indexes only kick in once it runs.
