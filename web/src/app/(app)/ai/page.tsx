@@ -2070,7 +2070,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             }
         lastSearchMedia = { images: d.images || [], videos: d.videos || [] }
                     if (d.knowledge_panel) {
-              searchResult += '\n\nKNOWLEDGE PANEL - ' + d.knowledge_panel.title + ':\n' + Object.entries(d.knowledge_panel.facts).map(([k, v]: [string, string]) => `- ${k}: ${v}`).join('\n')
+              searchResult += '\n\nKNOWLEDGE PANEL - ' + d.knowledge_panel.title + ':\n' + Object.entries(d.knowledge_panel.facts).map(([k, v]) => `- ${k}: ${String(v)}`).join('\n')
               if (d.knowledge_panel.source) searchResult += '\nSource: ' + d.knowledge_panel.source
             }
             if (d.related_searches?.length) {

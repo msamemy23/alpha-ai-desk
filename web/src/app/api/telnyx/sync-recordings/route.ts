@@ -11,14 +11,14 @@ async function fetchAllTelnyxRecordings(): Promise<any[]> {
   let url: string | null = `${TELNYX_BASE}/recordings?page[size]=250`
   let pages = 0
   while (url && pages < 20) {
-    const res = await fetch(url, {
+    const res: Response = await fetch(url, {
       headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` },
     })
     if (!res.ok) break
-    const data = await res.json()
+    const data: { data?: unknown[]; meta?: { cursors?: { after?: string } } } = await res.json()
     const items = data.data || []
     all.push(...items)
-    const after = data.meta?.cursors?.after
+    const after: string | undefined = data.meta?.cursors?.after
     url = after ? `${TELNYX_BASE}/recordings?page[size]=250&page[after]=${after}` : null
     pages++
   }

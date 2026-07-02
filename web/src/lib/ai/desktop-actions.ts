@@ -173,6 +173,7 @@ export function formatDownloadResult(result: DesktopDownloadResult | null | unde
     return `Image download failed verification: ${result?.error || 'file was not written and verified'}.`
   }
 
-  const opened = result.opened ? ' I also opened it.' : result.openError ? ` The file saved, but opening it failed: ${result.openError}.` : ''
-  return `Downloaded ${query} to ${result.path}. Verified the file exists on Desktop (${result.bytes} bytes).${opened}`
+  const verified = result as DesktopDownloadResult
+  const opened = verified.opened ? ' I also opened it.' : verified.openError ? ` The file saved, but opening it failed: ${verified.openError}.` : ''
+  return `Downloaded ${query} to ${verified.path}. Verified the file exists on Desktop (${verified.bytes} bytes).${opened}`
 }

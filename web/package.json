@@ -17,15 +17,14 @@
     "@vercel/functions": "^3.4.3",
     "next": "^16.2.9",
     "nodemailer": "^9.0.0",
-    "openai": "^4.52.0",
     "puppeteer-core": "^23.5.3",
     "react": "^18",
     "react-dom": "^18",
-    "resend": "^3.3.0",
-    "steel-sdk": "^0.17.0"
+    "resend": "^3.3.0"
   },
   "devDependencies": {
     "@types/node": "^20",
+    "@types/nodemailer": "^8.0.1",
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "autoprefixer": "^10",
@@ -37,5 +36,8 @@
   },
   "overrides": {
     "postcss": "8.5.15"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

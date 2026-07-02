@@ -2,3 +2,10 @@
 .env*.local
 node_modules/
 .next/
+checkpoints/
+page_temp.txt
+.codex-write-test
+*.bak
+*.tmp
+tsconfig.tsbuildinfo
+web/tsconfig.tsbuildinfo

@@ -209,7 +209,7 @@ export async function POST(req: NextRequest) {
           <tbody>
             ${doc.line_items
               .map(
-                (li) =>
+                (li: { description?: unknown; qty?: unknown; total?: unknown }) =>
                   `<tr style="border-bottom:1px solid #f3f4f6"><td style="padding:6px 8px">${li.description}</td><td style="padding:6px 8px;text-align:center">${li.qty}</td><td style="padding:6px 8px;text-align:right">$${Number(li.total).toFixed(2)}</td></tr>`
               )
               .join('')}

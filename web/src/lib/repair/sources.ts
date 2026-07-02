@@ -1060,7 +1060,7 @@ async function searchTavily(query: string, vehicle: RepairVehicle): Promise<Repa
         provider === 'NHTSA' ? 'official_government' : 'search_result',
         provider === 'AutoZone' ? 'free_account' : 'source_link',
       )
-    }).filter(item => item.url)
+    }).filter((item: RepairSource) => item.url)
   } catch {
     return []
   }

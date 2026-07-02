@@ -338,3 +338,30 @@ Owner: (1) want diagrams/pictures/info shown INSIDE Alpha AI, not links out to t
 Defaults chosen (owner said "fix both" without picking): relevant-diagram-inline (not full-page
 dump) + keep a simplified Repair tab (not delete it). Build-verified; needs deploy + live look.
 
+### NEXT UP (owner confirmed "yes and yes" 2026-06-25) — two builds queued
+LIVE-TEST RESULT: simplified Repair page works on prod (one box, 2 tabs, "Repair Answer" badge,
+Create Estimate). BUG found: clicking "Open diagram" lands on the manual DIRECTORY (year/make/
+model folder), not the actual diagram page — the user has to click down the tree themselves.
+
+1) FIX OPEN-DIAGRAM DRILL-DOWN (repair/page.tsx loadManual + /lib/repair/sources or a new helper):
+   - LEMON/CHARM manuals are nested folders: year>make>model>engine>system>diagram leaf page.
+   - readRepairManualPage returns { links, images, sections }. When a loaded page is a DIRECTORY
+     (links present, images empty), AUTO-FOLLOW the best child link (rank by query/component term
+     match via scoreManualText / tokenizeForManualSearch already in sources.ts) and recurse
+     (cap ~3-4 hops, dedupe visited) until the page has images OR no better child — then show
+     those images inline via proxied(). Surface an engine/trim picker when the fork is engine-
+     specific (e.g. 2.4L vs V6) instead of guessing.
+   - Add a server route (e.g. /api/repair-manual-drill) OR extend repair-manual to do the
+     recursive drill server-side (avoids N client round-trips + keeps the charm/lemon UA+referer).
+   - Acceptance: from a search, ONE "Open diagram"/auto-load click shows the actual diagram image,
+     zero manual tree-clicking. Verify live on a specific query (e.g. 2012 Accord P0420 wiring).
+
+2) CHAT INLINE DIAGRAMS (ai/page.tsx RepairResultCard ~line 585 + runRepairLookup):
+   - Mirror the repair page: when a repair answer in chat has a diagram match, show the diagram
+     image inline in the card (via /api/repair-image proxy + the same auto-drill), tap-to-enlarge,
+     instead of just an "Open in Repair Workspace" link.
+   - Keep manual-only default; only the proxied image render is added.
+
+Both: build (next build) + commit + push main (auto-deploys) + live-verify in Comet (DPI clicks =
+screenshot coord / 1.25; AppActivate Comet by '*Alpha AI Desk*' title; type via SendKeys).
+
