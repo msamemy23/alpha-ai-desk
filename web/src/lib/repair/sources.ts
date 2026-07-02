@@ -560,13 +560,19 @@ export function normalizeManualUrl(input: string) {
 
 function manualLinkFromAnchor(href: string, label: string, baseUrl: string): RepairManualLink | null {
   try {
+    // Fragment links are section jumps INSIDE one document, not pages to fetch.
+    if (href.startsWith('#')) return null
     const url = new URL(decodeHtml(href), baseUrl)
+    let basePath = ''
+    try { basePath = new URL(baseUrl).pathname } catch { /* relative base */ }
+    if (url.hash && url.pathname === basePath) return null
     url.hash = ''
+    if (url.pathname === basePath) return null // self-link
     const provider = providerFromUrl(url.toString())
     if (!provider) return null
     const cleanLabel = stripTags(label) || titleFromUrl(url.toString())
-    if (!cleanLabel || /^(home|temporarily|permanently|read the announcement)$/i.test(cleanLabel)) return null
-    if (/\/(style\.css|about\.html|nfo\.html)$/i.test(url.pathname)) return null
+    if (!cleanLabel || /^(home|temporarily|permanently|read the announcement|about lemon manuals|so it begins)$/i.test(cleanLabel)) return null
+    if (/\/(style\.css|about\.html|nfo\.html|script\.js)$/i.test(url.pathname)) return null
     return {
       title: cleanLabel,
       url: url.toString(),
@@ -632,10 +638,13 @@ function extractManualImages(html: string, baseUrl: string): RepairManualImage[]
   return images
 }
 
-// Pull a diagram's caption from the closest <h3> or <b> just before the <img>.
+// Pull a diagram's caption: a nearby figure-caption span, or the closest
+// heading/<b> just before the <img>. Works across both manual databases.
 function captionBeforeIndex(html: string, index: number) {
-  const before = html.slice(Math.max(0, index - 1400), index)
-  const heading = [...before.matchAll(/<h3[^>]*>([\s\S]*?)<\/h3>/gi)].pop()?.[1]
+  const before = html.slice(Math.max(0, index - 1600), index)
+  const capSpan = [...before.matchAll(/<span[^>]*class=["'][^"']*imageCaption[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi)].pop()?.[1]
+  const heading = capSpan
+    || [...before.matchAll(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi)].pop()?.[1]
     || [...before.matchAll(/<b[^>]*>([\s\S]*?)<\/b>/gi)].pop()?.[1]
     || ''
   const text = stripTags(decodeHtml(heading)).replace(/\s+/g, ' ').trim()
@@ -685,21 +694,70 @@ function extractProcedureText(html: string): string {
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
     .replace(/<img[^>]*>/gi, ' ')
+  // Number <ol> items — the newer manual database writes its steps as real
+  // ordered lists; the older one writes "1. ..." text split by <br>. After this,
+  // both come out as plain numbered lines.
+  main = main.replace(/<ol[^>]*>([\s\S]*?)<\/ol>/gi, (_m, body: string) => {
+    let i = 0
+    return '\n' + body.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_x, item: string) => `\n${++i}. ${stripTags(decodeHtml(item))}`) + '\n'
+  })
   main = main
-    .replace(/<(?:b|strong)[^>]*>([\s\S]*?)<\/(?:b|strong)>/gi, (_m, t) => `\n**${stripTags(t)}**\n`)
     .replace(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi, (_m, t) => `\n**${stripTags(t)}**\n`)
+    .replace(/<(?:b|strong)[^>]*>([\s\S]*?)<\/(?:b|strong)>/gi, (_m, t) => {
+      const txt = stripTags(t)
+      return txt.length > 2 && txt.length < 120 ? `\n**${txt}**\n` : ` ${txt} `
+    })
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|li|tr|div|section)>/gi, '\n')
+    .replace(/<\/(p|li|tr|div|section|ul)>/gi, '\n')
   const decoded = decodeHtml(main.replace(/<[^>]*>/g, ' ')).replace(/\t+/g, ' ')
   const out: string[] = []
   for (const raw of decoded.split(/\r?\n/)) {
     const line = raw.replace(/[  ]+/g, ' ').trim()
     if (!line) continue
-    if (/^(LEMON Manuals|Operation CHARM|Home >>|Database:|Free .*Manual|Expand All|Collapse All)/i.test(line)) continue
+    if (/^(LEMON Manuals|Operation CHARM|Home >>|Database:|Free .*Manual|Expand All|Collapse All|About LEMON|So it begins|Courtesy of)/i.test(line)) continue
     if (out.length && out[out.length - 1] === line) continue
     out.push(line)
   }
   return out.join('\n').slice(0, 8000)
+}
+
+// Split the extracted text into **heading**-delimited sections so a specific ask
+// ("removal", "bleeding", "testing") can pull just that part of a mega-document.
+function splitProcedureSections(docText: string): Array<{ heading: string; text: string }> {
+  const sections: Array<{ heading: string; lines: string[] }> = []
+  let current = { heading: '', lines: [] as string[] }
+  for (const line of docText.split('\n')) {
+    const h = line.match(/^\*\*(.+)\*\*$/)
+    if (h) {
+      if (current.lines.length) sections.push(current)
+      current = { heading: h[1], lines: [] }
+    } else {
+      current.lines.push(line)
+    }
+  }
+  if (current.lines.length) sections.push(current)
+  return sections.map(s => ({ heading: s.heading, text: s.lines.join('\n') }))
+}
+
+// The part of the job the user asked about — generic across all jobs.
+function requestedSectionTerms(query: string): string[] {
+  const t = query.toLowerCase()
+  if (/\b(remove|removal|take off|take out)\b/.test(t)) return ['removal', 'remove']
+  if (/\b(install|installation|put back|reassemble)\b/.test(t)) return ['installation', 'install']
+  if (/\b(test|testing|diagnos|check)\b/.test(t)) return ['diagnosis', 'testing', 'test', 'diagnostic']
+  if (/\b(bleed|bleeding)\b/.test(t)) return ['bleeding', 'bleed']
+  if (/\b(adjust|adjustment)\b/.test(t)) return ['adjustment', 'adjust']
+  if (/\b(torque|spec|specs|capacity)\b/.test(t)) return ['specification', 'torque', 'capacities']
+  if (/\b(inspect|inspection|thickness|wear)\b/.test(t)) return ['inspection', 'inspect']
+  return []
+}
+
+function positionTerms(query: string): string[] {
+  const t = query.toLowerCase()
+  const out: string[] = []
+  if (/\bfront\b/.test(t)) out.push('front')
+  if (/\brear\b|\bback\b/.test(t)) out.push('rear')
+  return out
 }
 
 export async function readRepairManualPage(url: string, timeoutMs = 12000, linkLimit = 80): Promise<RepairManualPage> {
@@ -722,12 +780,23 @@ export async function readRepairManualPage(url: string, timeoutMs = 12000, linkL
 }
 
 // Folder names that lead to an actual figure vs. text-only leaves to avoid.
-const DIAGRAM_LEAF_HINTS = /(component\s*location|locations?|connector\s*view|schematic|wiring\s*diagram|diagram|pinout|illustration|exploded)/i
+const DIAGRAM_LEAF_HINTS = /(component\s*location|locations?|connector\s*view|schematic|wiring\s*diagram|diagram|pinout|illustration|exploded|description\s*and\s*operation)/i
 // Folders that hold the actual step-by-step procedure.
-const PROCEDURE_LEAF_HINTS = /(service\s*and\s*repair|testing\s*and\s*inspection|removal|installation|replacement|overhaul|adjustment|\bprocedure\b|inspection)/i
-const TEXT_LEAF_PENALTY = /(p\s*code\s*chart|code\s*chart|dtc\s*(?:list|index)|trouble\s*code\s*(?:list|description)|technical\s*service\s*bulletin|\btsb\b|maintenance|wiring\s*repairs?|\brepairs\b|troubleshooting)/i
+const PROCEDURE_LEAF_HINTS = /(service\s*and\s*repair|testing\s*and\s*inspection|service\s*information|removal|installation|replacement|overhaul|adjustment|\bprocedure\b|inspection)/i
+const TEXT_LEAF_PENALTY = /(p\s*code\s*chart|code\s*chart|dtc\s*(?:list|index)|dtcs\b|trouble\s*code\s*(?:list|description)|diagnostic\s*code\s*index|technical\s*service\s*bulletin|\btsb\b|maintenance\s*(?:schedule|interval)|wiring\s*repairs?|verification\s*test|troubleshooting|pinpoint\s*test|routine\s*inspection|reference\s*guide|checksheet)/i
 // The part itself, not its relay/fuse/module/wiring — unless that's what we want.
 const DISTRACTOR_PENALTY = /\b(relay|module|fuse|junction|harness|circuit breaker)\b/i
+// Subsystems that hijack generic asks — penalized unless the user names them.
+const SUBSYSTEM_QUALIFIERS: Array<{ asked: RegExp; penalty: RegExp }> = [
+  { asked: /\b(abs|antilock|anti-lock)\b/i, penalty: /(antilock|anti-lock|\babs\b)/i },
+  { asked: /\btraction\b/i, penalty: /\btraction\b/i },
+  { asked: /\bparking\b/i, penalty: /\bparking\s*brake\b/i },
+  { asked: /\bhybrid\b/i, penalty: /\bhybrid\b/i },
+  { asked: /\b(lamp|light|bulb)\b/i, penalty: /\b(lamp|light|bulb)\b/i },
+  { asked: /\b(pedal|switch)\b/i, penalty: /\b(pedal|switch)\b/i },
+  { asked: /\bseat\b/i, penalty: /\bseat\b/i },
+  { asked: /\b(wiring|circuit|electrical|indicator|connector)\b/i, penalty: /\b(circuit|electrical\s*diagrams?|warning\s*indicator|wiring|connector\s*view)\b/i },
+]
 
 function detectDtcCode(value: string) {
   const full = value.match(/\b([PCBU])([0-9A-F]{4})\b/i)
@@ -741,7 +810,7 @@ function detectDtcCode(value: string) {
 // "diagnostic trouble code" are left out on purpose — they drag the drill onto ABS
 // code lists and unrelated sensors instead of the part the request is about.
 const DIAGRAM_TARGET_TERMS: Record<string, string[]> = {
-  P0420: ['catalytic', 'catalyst', 'converter', 'oxygen', 'a/f sensor', 'air fuel', 'air/fuel', 'ho2s'],
+  P0420: ['catalytic converter', 'catalytic', 'catalyst', 'oxygen', 'a/f sensor', 'air fuel', 'air/fuel', 'ho2s'],
   P0300: ['ignition', 'ignition coil', 'spark plug', 'firing order', 'distributor', 'coil', 'injector'],
   P0171: ['mass air flow', 'maf', 'oxygen', 'intake air', 'air fuel', 'air/fuel', 'throttle body'],
 }
@@ -757,21 +826,25 @@ const REPAIR_TERM_STOP = new Set([
 ])
 
 function repairTargetTerms(query: string): string[] {
+  const pos = positionTerms(query)
+  const withPos = (arr: string[]) => [...arr, ...pos]
   const dtc = detectDtcCode(query)
-  if (dtc && DIAGRAM_TARGET_TERMS[dtc]) return DIAGRAM_TARGET_TERMS[dtc]
+  if (dtc && DIAGRAM_TARGET_TERMS[dtc]) return withPos(DIAGRAM_TARGET_TERMS[dtc])
   const text = query.toLowerCase()
-  if (/\b(catalytic|catalyst|converter)\b/.test(text)) return DIAGRAM_TARGET_TERMS.P0420
-  if (/\b(o2|oxygen|a\/f|air[\s/]?fuel)\b/.test(text)) return ['oxygen', 'a/f sensor', 'air fuel', 'air/fuel', 'ho2s']
-  if (/\b(misfire|coil|spark|ignition)\b/.test(text)) return DIAGRAM_TARGET_TERMS.P0300
-  if (/\b(maf|mass air|lean)\b/.test(text)) return DIAGRAM_TARGET_TERMS.P0171
-  if (/brake|rotor|caliper|\bpad|\bdisc/.test(text)) return ['brake pad', 'brake', 'pad', 'caliper', 'rotor', 'disc']
-  if (/\b(fuse|relay|junction)\b/.test(text)) return ['fuse', 'fuse box', 'fuse block', 'junction box', 'power distribution', 'relay box']
-  if (/\b(turn signal|blinker|headlight|tail ?light|bulb|lamp)\b/.test(text)) return ['turn signal', 'bulb', 'lamp', 'headlight', 'tail light', 'exterior light']
-  if (/\b(alternator|starter|charging|battery)\b/.test(text)) return ['alternator', 'starter', 'charging', 'battery']
-  if (/\b(coolant|radiator|thermostat|water pump|overheat)\b/.test(text)) return ['radiator', 'coolant', 'thermostat', 'water pump', 'cooling']
+  if (/\b(catalytic|catalyst|converter)\b/.test(text)) return withPos(DIAGRAM_TARGET_TERMS.P0420)
+  if (/\b(o2|oxygen|a\/f|air[\s/]?fuel)\b/.test(text)) return withPos(['oxygen', 'a/f sensor', 'air fuel', 'air/fuel', 'ho2s'])
+  if (/\b(misfire|coil|spark|ignition)\b/.test(text)) return withPos(DIAGRAM_TARGET_TERMS.P0300)
+  if (/\b(maf|mass air|lean)\b/.test(text)) return withPos(DIAGRAM_TARGET_TERMS.P0171)
+  if (/brake|rotor|caliper|\bpad/.test(text)) return withPos(['brake pad', 'disc brake', 'brake', 'pad', 'caliper', 'rotor'])
+  if (/\b(fuse|relay|junction)\b/.test(text)) return withPos(['fuse', 'fuse box', 'fuse block', 'junction box', 'power distribution', 'relay box'])
+  if (/\b(turn signal|blinker|headlight|tail ?light|bulb|lamp)\b/.test(text)) return withPos(['turn signal', 'bulb', 'lamp', 'headlight', 'tail light', 'exterior light'])
+  if (/\b(alternator|starter|charging|battery)\b/.test(text)) return withPos(['alternator', 'generator', 'charging system', 'starting and charging', 'starter', 'battery'])
+  if (/\b(coolant|radiator|thermostat|water pump|overheat)\b/.test(text)) return withPos(['radiator', 'coolant', 'thermostat', 'water pump', 'cooling'])
   const fromComponent = requiredTermsForComponent(query)
-  if (fromComponent.length) return fromComponent
-  return tokenizeForManualSearch(query).filter(token => token.length >= 4 && !REPAIR_TERM_STOP.has(token) && !/^(19|20)?\d{2,4}$/.test(token))
+  if (fromComponent.length) return withPos(fromComponent)
+  return withPos(tokenizeForManualSearch(query).filter(token =>
+    token.length >= 4 && !REPAIR_TERM_STOP.has(token) && !/^(19|20)?\d{2,4}$/.test(token) && token !== 'front' && token !== 'rear',
+  ))
 }
 
 // Procedure (steps) is the default; only treat it as a diagram request when asked.
@@ -801,118 +874,138 @@ function pathMatchesComponent(url: string, terms: string[]): boolean {
   return terms.some(term => path.includes(term))
 }
 
-function scoreManualLink(title: string, urlText: string, terms: string[], intent: 'procedure' | 'diagram', penalizeDistractors: boolean) {
+function scoreManualLink(
+  title: string,
+  urlText: string,
+  terms: string[],
+  intent: 'procedure' | 'diagram',
+  penalizeDistractors: boolean,
+  sectionTerms: string[],
+  query: string,
+) {
   const text = `${title} ${urlText}`.toLowerCase().replace(/[-_]+/g, ' ')
   let score = 0
   // More matched part-words = a more specific link (e.g. "Ignition Coil" beats
   // "Ignition Switch", "Under-Dash Fuse and Relay Box" beats a bare relay folder).
   const hits = terms.filter(term => text.includes(term)).length
   if (hits) score += 25 + Math.min(hits - 1, 3) * 6
+  if (sectionTerms.some(term => text.includes(term))) score += 12
   if (intent === 'procedure') {
     if (PROCEDURE_LEAF_HINTS.test(text)) score += 14
     if (DIAGRAM_LEAF_HINTS.test(text)) score -= 6
-  } else if (DIAGRAM_LEAF_HINTS.test(text)) {
-    score += 14
+  } else {
+    if (DIAGRAM_LEAF_HINTS.test(text)) score += 14
+    if (/service\s*information/i.test(text)) score += 6
   }
   if (TEXT_LEAF_PENALTY.test(text)) score -= 18
   if (penalizeDistractors && DISTRACTOR_PENALTY.test(text)) score -= 16
+  for (const sub of SUBSYSTEM_QUALIFIERS) {
+    if (!sub.asked.test(query) && sub.penalty.test(text)) score -= 15
+  }
   return score
 }
 
-// Accept a page only when its path is about the part AND it has the content this
-// request wants: a real figure for a diagram, substantial step text for a procedure.
-function pageAccepted(page: RepairManualPage, terms: string[], intent: 'procedure' | 'diagram'): boolean {
-  if (!pathMatchesComponent(page.url, terms)) return false
-  return intent === 'diagram' ? page.images.length > 0 : (page.procedureText || '').length > 300
-}
-
-// Follow the best-scoring child link down the folder tree until we hit the page
-// that actually carries what was asked for. A close-but-wrong page is kept only as
-// a weak fallback. Icons are filtered upstream.
-async function drillManual(
-  startUrl: string,
-  terms: string[],
-  intent: 'procedure' | 'diagram',
-  penalizeDistractors: boolean,
-  maxHops: number,
-  visited: Set<string>,
-  trail: string[],
-  deadline: number,
-): Promise<{ page: RepairManualPage | null; matched: boolean }> {
-  let page: RepairManualPage
-  try { page = await readRepairManualPage(startUrl, 7000, 6000) } catch { return { page: null, matched: false } }
-  if (page.title) trail.push(page.title)
-  let fallback: RepairManualPage | null = null
-  let hops = 0
-  while (hops <= maxHops && Date.now() < deadline) {
-    if (pageAccepted(page, terms, intent)) return { page, matched: true }
-    const hasContent = page.images.length > 0 || (page.procedureText || '').length > 300
-    if (hasContent && pathMatchesComponent(page.url, terms) && !fallback) fallback = page
-    if (page.links.length === 0) break
-    visited.add(page.url)
-    const next = page.links
-      .filter(link => !visited.has(link.url))
-      .map(link => {
-        let decoded = link.url
-        try { decoded = decodeURIComponent(link.url) } catch { /* keep the raw url */ }
-        return { link, score: scoreManualLink(link.title, decoded, terms, intent, penalizeDistractors) }
-      })
-      .sort((a, b) => b.score - a.score)
-      .find(item => item.score > 0)?.link
-    if (!next) break
-    try { page = await readRepairManualPage(next.url, 7000, 6000) } catch { break }
-    if (page.title) trail.push(page.title)
-    hops += 1
-  }
-  return { page: fallback, matched: false }
+// Real content = numbered steps or substantial prose that is NOT a table of
+// contents (TOCs have many links and little text per link).
+function pageContentQuality(page: RepairManualPage, terms: string[]) {
+  const text = page.procedureText || ''
+  const stepLines = text.split('\n').filter(l => /^\d+\.\s/.test(l)).length
+  const related = pathMatchesComponent(page.url, terms) || terms.some(t => (page.title || '').toLowerCase().includes(t))
+  const isToc = page.links.length > 12 && text.length < page.links.length * 60
+  const meaty = text.length > 400 && !isToc
+  return { stepLines, related, isToc, ok: related && (stepLines >= 2 || meaty) }
 }
 
 // The big one: turn a job/diagram request + a manual URL into the exact page that
-// has the steps (or the figure). Crosses into "Repair and Diagnosis", finds the
-// component, and drills to the Service-and-Repair / Locations leaf — accepting it
-// only once the page truly matches the part and carries the asked-for content.
+// carries the steps (or the figure). Best-first search: explore the highest-scoring
+// links across ALL visited pages, never accept a table of contents as the answer.
+// Structure-based, so it works on any manual database layout — old, new, or future.
 export async function readRepairManualPageDrilled(
   startUrl: string,
   query: string,
-  maxHops = 6,
-): Promise<RepairManualPage & { trail: string[]; intent: 'procedure' | 'diagram' }> {
+): Promise<RepairManualPage & { trail: string[]; intent: 'procedure' | 'diagram'; diagramFound: boolean }> {
   const terms = repairTargetTerms(query)
   const intent = repairIntent(query)
+  const sectionTerms = requestedSectionTerms(query)
   const penalizeDistractors = !terms.some(term => DISTRACTOR_PENALTY.test(term))
   const visited = new Set<string>()
   const trail: string[] = []
   // Keep the whole drill inside a tight budget so the request never hangs.
-  const deadline = Date.now() + 12000
+  const deadline = Date.now() + 16000
+  const MAX_FETCHES = 12
 
-  // 1) Cross into the Repair-and-Diagnosis tree (procedures + figures live there).
+  // Enter the Repair-and-Diagnosis tree (procedures + figures live there).
   let diagBase = diagnosisBaseFromUrl(startUrl)
   if (!diagBase) {
-    // Find the actual "Repair and Diagnosis" link on the start page — robust to the
-    // trailing-slash / encoding quirks that vary across the manual pages.
     try {
       const startPage = await readRepairManualPage(startUrl, 7000, 6000)
       const rd = startPage.links.find(link =>
         /repair and diagnosis/i.test(link.title) || /repair and diagnosis/i.test(decodeURIComponent(link.url)),
       )
-      if (rd) diagBase = rd.url
-      else diagBase = `${startUrl.endsWith('/') ? startUrl : `${startUrl}/`}Repair%20and%20Diagnosis/`
-    } catch { /* fall through to the down-tree pass */ }
-  }
-  let fallback: RepairManualPage | null = null
-  if (diagBase) {
-    const via = await drillManual(diagBase, terms, intent, penalizeDistractors, maxHops, visited, trail, deadline)
-    if (via.matched && via.page) return { ...via.page, trail, intent }
-    fallback = via.page
+      diagBase = rd ? rd.url : `${startUrl.endsWith('/') ? startUrl : `${startUrl}/`}Repair%20and%20Diagnosis/`
+    } catch {
+      diagBase = `${startUrl.endsWith('/') ? startUrl : `${startUrl}/`}Repair%20and%20Diagnosis/`
+    }
   }
 
-  // 2) Otherwise drill straight down from the matched page.
-  const down = await drillManual(startUrl, terms, intent, penalizeDistractors, 3, visited, trail, deadline)
-  if (down.matched && down.page) return { ...down.page, trail, intent }
-  fallback = fallback || down.page
+  let bestText: RepairManualPage | null = null
+  let bestTextSteps = -1
+  let bestImgs: RepairManualPage | null = null
+  const frontier: Array<{ url: string; score: number }> = []
+  const pushLinks = (page: RepairManualPage) => {
+    for (const link of page.links) {
+      if (visited.has(link.url)) continue
+      let decoded = link.url
+      try { decoded = decodeURIComponent(link.url) } catch { /* raw */ }
+      const score = scoreManualLink(link.title, decoded, terms, intent, penalizeDistractors, sectionTerms, query)
+      if (score > 0) frontier.push({ url: link.url, score })
+    }
+    frontier.sort((a, b) => b.score - a.score)
+    if (frontier.length > 60) frontier.length = 60
+  }
 
-  // 3) Last resort: best content we found, else the start page.
-  const base = fallback || await readRepairManualPage(startUrl)
-  return { ...base, trail, intent }
+  let fetches = 0
+  let page: RepairManualPage
+  try {
+    page = await readRepairManualPage(diagBase, 7000, 6000)
+    fetches++
+  } catch {
+    const base = await readRepairManualPage(startUrl)
+    return { ...base, trail, intent, diagramFound: base.images.length > 0 }
+  }
+  visited.add(page.url)
+  pushLinks(page)
+  if (page.title) trail.push(page.title)
+
+  while (fetches < MAX_FETCHES && Date.now() < deadline) {
+    const q = pageContentQuality(page, terms)
+    if (q.ok && q.stepLines > bestTextSteps) { bestText = page; bestTextSteps = q.stepLines }
+    if (page.images.length && pathMatchesComponent(page.url, terms) && (!bestImgs || page.images.length > bestImgs.images.length)) bestImgs = page
+    // early exit once the ask is satisfied by a non-TOC page
+    if (intent === 'diagram' && bestImgs && !pageContentQuality(bestImgs, terms).isToc) break
+    if (intent === 'procedure' && bestText && bestTextSteps >= 2) break
+    const next = frontier.shift()
+    if (!next) break
+    visited.add(next.url)
+    try { page = await readRepairManualPage(next.url, 7000, 6000); fetches++ } catch { continue }
+    if (page.title) trail.push(page.title)
+    pushLinks(page)
+  }
+
+  const result = intent === 'diagram' ? (bestImgs || bestText || page) : (bestText || bestImgs || page)
+
+  // If a specific part of the job was asked for ("removal", "bleeding", specs),
+  // hand back just that section of a multi-section document.
+  let procedureText = result.procedureText || ''
+  if (sectionTerms.length) {
+    const sections = splitProcedureSections(procedureText)
+    if (sections.length > 2) {
+      const hit = sections.filter(s => sectionTerms.some(t => s.heading.toLowerCase().includes(t)))
+      if (hit.length) procedureText = hit.map(s => `**${s.heading}**\n${s.text}`).join('\n\n').slice(0, 8000)
+    }
+  }
+
+  return { ...result, procedureText, trail, intent, diagramFound: result.images.length > 0 }
 }
 
 async function browseManualDirectory(provider: 'LEMON' | 'CHARM', vehicle: RepairVehicle, component: string): Promise<RepairSource[]> {

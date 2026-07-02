@@ -48,7 +48,36 @@ interface VoiceCallState {
 }
 
 type BrowserPanelStep = {action:string;screenshot?:string;screenshotUrl?:string;url:string;title:string}
-type RepairChatResult = { query: string; data: RepairSearchResult }
+type PrefetchedManual = {
+  url: string
+  title: string
+  procedureText: string
+  images: { url: string; alt: string }[]
+  intent: 'procedure' | 'diagram'
+  diagramFound: boolean
+}
+type RepairChatResult = { query: string; data: RepairSearchResult; manual?: PrefetchedManual }
+
+// Pick the vehicle variant automatically instead of making him click an engine
+// wall: engine-keyed entries carry the deep manual content; prefer automatics;
+// avoid hybrid unless he asked for one.
+function pickBestManualStart(matches: Array<{ title: string; url: string; hasImages?: boolean }>, query: string) {
+  if (!matches?.length) return null
+  const q = query.toLowerCase()
+  return matches
+    .map(m => {
+      let decoded = m.url
+      try { decoded = decodeURIComponent(m.url) } catch { /* raw */ }
+      const t = `${m.title} ${decoded}`.toLowerCase()
+      let s = 0
+      if (/\b[lv]\d+-\d/i.test(decoded)) s += 30
+      if (/automatic/i.test(t)) s += 8
+      if (/hybrid/i.test(t) && !/hybrid/.test(q)) s -= 20
+      if (m.hasImages) s += 4
+      return { m, s }
+    })
+    .sort((a, b) => b.s - a.s)[0].m
+}
 type RepairDtcGuide = {
   meaning: string
   checks: string[]
@@ -552,7 +581,7 @@ Lead with the real answer: what the code or symptom means on his specific vehicl
 
 If the manual section is empty or thin, STILL answer from your own expertise. Never stall with "no source found" or "verify the source first." The only thing you don't do is invent a precise number you don't actually have: if you're not sure of an exact torque spec or wiring pinout, give the practical answer and tell him to confirm that exact figure on the manual page.
 
-No labeled sections, no headers, no bulleted form — just talk to him. If a diagram is shown below your reply, mention it. When it fits, end by offering the obvious next move (pull the diagram, price out the job). Keep it short and useful — a few sentences, not an essay.`
+No labeled sections, no headers, no bulleted form — just talk to him. The REAL manual steps and images may be rendered below your reply — when they are, talk him through the highlights and gotchas naturally (don't re-list every step; they can see them). Only say a diagram is below when the DIAGRAM STATUS says one is actually displayed — if the book has no drawing, say that straight and offer to look online. When it fits, end by offering the obvious next move. Keep it short and useful — a few sentences, not an essay.`
 
 function hasRepairAnchor(value: string) {
   return REPAIR_ANCHOR_TERMS.test(value) || REPAIR_FOLLOWUP_TERMS.test(value) || /\b(?:19|20)?\d{2}\b/.test(value) || /\b[PCBU][0-9A-F]{4}\b/i.test(value) || /\b[A-HJ-NPR-Z0-9]{17}\b/i.test(value)
@@ -608,19 +637,24 @@ function buildRepairLookupQuery(text: string, lastContext: RepairChatResult | nu
 function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onAskNext?: (text: string) => void }) {
   const { query, data } = result
   const view = buildRepairPresentation(query, data)
-  const [content, setContent] = useState<{ procedureText: string; images: { url: string; alt: string }[]; intent: string; sourceUrl: string; sourceTitle: string } | null>(null)
+  const [content, setContent] = useState<{ procedureText: string; images: { url: string; alt: string }[]; intent: string; sourceUrl: string; sourceTitle: string; diagramFound: boolean } | null>(null)
   const [loadingContent, setLoadingContent] = useState(false)
 
-  // Pull the actual page from the manual: the step-by-step procedure (default) or
-  // the diagram, drilled to the exact leaf and rendered right here in the chat.
+  // The lookup usually prefetched the manual content along with the answer — use
+  // it directly. Only fetch here for older messages restored from history.
   useEffect(() => {
-    const matches = data.manualMatches || []
-    // Prefer an engine-keyed page (the detailed database) — it carries the real steps + figures.
-    const best =
-      matches.find(m => /\b[lv]\d-\d/i.test(decodeURIComponent(m.url))) ||
-      matches.find(m => m.matchType === 'diagram_or_spec') ||
-      matches.find(m => m.hasImages) ||
-      matches[0]
+    if (result.manual) {
+      setContent({
+        procedureText: result.manual.procedureText,
+        images: result.manual.images,
+        intent: result.manual.intent,
+        sourceUrl: result.manual.url,
+        sourceTitle: result.manual.title,
+        diagramFound: result.manual.diagramFound,
+      })
+      return
+    }
+    const best = pickBestManualStart(data.manualMatches || [], query)
     if (!best) { setContent(null); return }
     let cancelled = false
     setLoadingContent(true)
@@ -641,6 +675,7 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
           intent: typeof d.intent === 'string' ? d.intent : 'procedure',
           sourceUrl: typeof d.url === 'string' ? d.url : best.url,
           sourceTitle: typeof d.title === 'string' ? d.title : best.title,
+          diagramFound: imgs.length > 0,
         })
       } catch {
         if (!cancelled) setContent(null)
@@ -649,7 +684,7 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
       }
     })()
     return () => { cancelled = true }
-  }, [data, query])
+  }, [data, query, result.manual])
 
   return (
     <div className="space-y-3 text-sm">
@@ -674,6 +709,15 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
             ))}
           </div>
           <div className="mt-2 text-[11px] font-bold text-text-muted">Tap to enlarge. Straight from the manual.</div>
+        </section>
+      )}
+      {content && content.intent === 'diagram' && !content.diagramFound && (
+        <section className="rounded-lg border border-amber/30 bg-amber/10 p-4">
+          <div className="text-sm font-bold text-amber">This manual doesn&apos;t carry a diagram for that.</div>
+          <p className="mt-1 text-sm text-text-secondary">The steps and specs are still here — but no drawing in the book for this one.</p>
+          <button className="btn btn-secondary btn-sm mt-3" onClick={() => onAskNext?.(`look online for a ${query} diagram`)}>
+            Look online for one
+          </button>
         </section>
       )}
 
@@ -1265,16 +1309,35 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         const manualSummary = formatRepairSearchText(lookupQuery, repairData)
         const vehicleForAnswer = repairVehicleLabel(repairData.normalizedVehicle)
 
-        // When he's asking for a procedure or a diagram, don't write a chatty
-        // link-dump — the card below pulls the actual steps/figure from the manual
-        // and shows them inline. Just lead in, then let the real content land.
-        const wantsDiagram = /\b(diagram|picture|schematic|wiring|pinout|exploded|drawing)\b/i.test(text)
-        const wantsProcedure = /\b(procedure|steps?|how\s+(to|do)|remove|removal|replace|replacement|install|overhaul|inspect|adjust|service|bleed|rotate|all\s*(four|4))\b/i.test(text)
-          || /\b(brakes?|rotors?|calipers?|pads?|fuse|relay|alternator|starter|radiator|thermostat|water\s*pump|timing\s*belt|spark\s*plugs?|clutch|axle|wheel\s*bearing|struts?|shocks?)\b/i.test(text)
-        if (wantsDiagram || wantsProcedure) {
-          const lead = `Here's the ${wantsDiagram ? 'diagram' : 'procedure'} from the manual for your ${vehicleForAnswer || 'vehicle'} — straight from the page below.`
-          return finish({ role: 'assistant', content: lead, repairResult })
+        // Pull the ACTUAL manual content before writing a word, so the answer
+        // talks about what's really below — real steps, a real diagram, or an
+        // honest "this book doesn't have that picture".
+        let manual: PrefetchedManual | null = null
+        const bestStart = pickBestManualStart(repairData.manualMatches || [], lookupQuery)
+        if (bestStart) {
+          setStatus('Pulling it from the manual...')
+          try {
+            const mr = await fetch('/api/repair-manual', {
+              method: 'POST',
+              headers: await getAuthJsonHeaders(),
+              body: JSON.stringify({ url: bestStart.url, query: lookupQuery }),
+              signal: AbortSignal.timeout(45000),
+            })
+            const mj = await mr.json().catch(() => ({}))
+            if (mr.ok && mj?.ok && mj.data) {
+              const d = mj.data
+              manual = {
+                url: typeof d.url === 'string' ? d.url : bestStart.url,
+                title: typeof d.title === 'string' ? d.title : bestStart.title,
+                procedureText: typeof d.procedureText === 'string' ? d.procedureText : '',
+                images: Array.isArray(d.images) ? d.images.slice(0, 6) : [],
+                intent: d.intent === 'diagram' ? 'diagram' : 'procedure',
+                diagramFound: !!d.diagramFound,
+              }
+            }
+          } catch { /* manual content is optional — the answer still writes */ }
         }
+        const repairResultFull: RepairChatResult = { ...repairResult, manual: manual || undefined }
 
         // Pull the web in only when he explicitly asked to go online. The manual is
         // always the base; the web just fills gaps.
@@ -1301,7 +1364,19 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
             body: JSON.stringify({
               messages: [
                 { role: 'system', content: REPAIR_VOICE_PROMPT },
-                { role: 'user', content: `He asked: ${text}\nVehicle: ${vehicleForAnswer || 'not given yet'}\n\nMANUAL INFO (vehicle-specific specifics — use what's useful; it may be thin or empty):\n${manualSummary}${wantsOnline ? `\n\nWEB (he asked to look online):\n${webText || '(nothing useful came back)'}` : ''}` },
+                { role: 'user', content: [
+                  `He asked: ${text}`,
+                  `Vehicle: ${vehicleForAnswer || 'not given yet'}${manual?.title ? ` (manual page found: "${manual.title}")` : ''}`,
+                  manual?.procedureText
+                    ? `\nTHE ACTUAL MANUAL CONTENT (the real steps/sections are ALSO displayed below your reply — talk him through the highlights naturally, point out gotchas, don't re-list every step verbatim):\n${manual.procedureText.slice(0, 3500)}`
+                    : `\nMANUAL INFO (may be thin):\n${manualSummary}`,
+                  manual
+                    ? (manual.diagramFound
+                      ? '\nDIAGRAM STATUS: a real diagram image from the manual IS displayed below your reply — refer to it.'
+                      : '\nDIAGRAM STATUS: NO diagram image exists on this manual page. If he asked for a picture/diagram, say that straight and offer to look online for one. NEVER claim a diagram is shown.')
+                    : '',
+                  wantsOnline ? `\nWEB (he asked to look online):\n${webText || '(nothing useful came back)'}` : '',
+                ].filter(Boolean).join('\n') },
               ],
               max_tokens: 700,
               temperature: 0.4,
@@ -1312,7 +1387,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
           if (synth.ok && out) answer = out
         } catch { /* fall back to the manual summary below */ }
 
-        return finish({ role: 'assistant', content: answer || manualSummary, repairResult })
+        return finish({ role: 'assistant', content: answer || manualSummary, repairResult: repairResultFull })
       }
 
       addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'error', detail: rd?.error || 'Repair lookup failed' })
