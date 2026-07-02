@@ -49,6 +49,24 @@ export async function GET(req: NextRequest) {
     "CREATE POLICY repair_research_sessions_shop_select ON public.repair_research_sessions FOR SELECT USING (shop_id IN (SELECT id FROM public.shop_profiles WHERE user_id = auth.uid()))",
     "DROP POLICY IF EXISTS repair_research_sessions_shop_insert ON public.repair_research_sessions",
     "CREATE POLICY repair_research_sessions_shop_insert ON public.repair_research_sessions FOR INSERT WITH CHECK (shop_id IN (SELECT id FROM public.shop_profiles WHERE user_id = auth.uid()))",
+    // ── 006: security + performance + payments/cache/reminders ──
+    "CREATE INDEX IF NOT EXISTS idx_messages_shop_id ON public.messages(shop_id)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_customer_id ON public.messages(customer_id)",
+    "CREATE INDEX IF NOT EXISTS idx_documents_shop_id ON public.documents(shop_id)",
+    "CREATE INDEX IF NOT EXISTS idx_documents_shop_type_status ON public.documents(shop_id, type, status)",
+    "CREATE INDEX IF NOT EXISTS idx_jobs_shop_status ON public.jobs(shop_id, status)",
+    "CREATE INDEX IF NOT EXISTS idx_appointments_shop_start ON public.appointments(shop_id, start_time)",
+    "CREATE TABLE IF NOT EXISTS public.repair_manual_cache (url text PRIMARY KEY, html text NOT NULL, fetched_at timestamptz NOT NULL DEFAULT now())",
+    "ALTER TABLE public.repair_manual_cache ENABLE ROW LEVEL SECURITY",
+    "CREATE TABLE IF NOT EXISTS public.payments (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), shop_id uuid, document_id uuid REFERENCES public.documents(id) ON DELETE CASCADE, amount numeric NOT NULL, method text NOT NULL DEFAULT 'cash', note text DEFAULT '', paid_at timestamptz NOT NULL DEFAULT now(), created_at timestamptz NOT NULL DEFAULT now())",
+    "CREATE INDEX IF NOT EXISTS idx_payments_document_id ON public.payments(document_id)",
+    "CREATE INDEX IF NOT EXISTS idx_payments_shop_paid_at ON public.payments(shop_id, paid_at DESC)",
+    "ALTER TABLE public.payments ENABLE ROW LEVEL SECURITY",
+    "DROP POLICY IF EXISTS payments_shop_all ON public.payments",
+    "CREATE POLICY payments_shop_all ON public.payments FOR ALL USING (shop_id IN (SELECT id FROM public.shop_profiles WHERE user_id = auth.uid())) WITH CHECK (shop_id IN (SELECT id FROM public.shop_profiles WHERE user_id = auth.uid()))",
+    "ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS reminder_sent_at timestamptz",
+    "ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS approved_at timestamptz",
+    "ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS approved_by text",
   ]
 
   const results: Record<string, string> = {}

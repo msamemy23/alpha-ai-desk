@@ -11,11 +11,18 @@ function getBaseUrl(): string {
 
 async function callApi(path: string, body?: Record<string, unknown>) {
   const baseUrl = getBaseUrl()
+  // Internal steps require the cron secret to pass the auth middleware —
+  // without it every step silently 401s and the nightly automations never run.
+  const secret = process.env.CRON_SECRET || process.env.INTERNAL_API_SECRET || ''
   try {
     const res = await fetch(`${baseUrl}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(secret ? { Authorization: `Bearer ${secret}` } : {}),
+      },
       body: body ? JSON.stringify(body) : '{}',
+      signal: AbortSignal.timeout(30000),
     })
     const text = await res.text()
     try {

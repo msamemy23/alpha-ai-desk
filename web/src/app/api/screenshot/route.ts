@@ -6,6 +6,23 @@ export async function GET(req: NextRequest) {
   const url = req.nextUrl.searchParams.get('url')
   if (!url) return new NextResponse('Missing url', { status: 400 })
 
+  // Only screenshot real public websites — never internal/private addresses.
+  try {
+    const target = new URL(url)
+    if (!['http:', 'https:'].includes(target.protocol)) return new NextResponse('Bad URL', { status: 400 })
+    const host = target.hostname.toLowerCase()
+    if (
+      host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal') ||
+      /^(127\.|10\.|192\.168\.|169\.254\.|0\.)/.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+      host === '::1' || host === '[::1]'
+    ) {
+      return new NextResponse('Forbidden host', { status: 403 })
+    }
+  } catch {
+    return new NextResponse('Bad URL', { status: 400 })
+  }
+
   const encoded = encodeURIComponent(url)
   const services = [
     `https://api.microlink.io/?url=${encoded}&screenshot=true&meta=false&embed=screenshot.url`,
