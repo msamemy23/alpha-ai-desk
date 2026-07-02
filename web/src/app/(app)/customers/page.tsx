@@ -18,6 +18,7 @@ export default function CustomersPage() {
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState<string|null|'new'>(null)
   const [form, setForm] = useState<Partial<Customer>>({})
+  const [vinDecoding, setVinDecoding] = useState(false)
   const [search, setSearch] = useState('')
   const [sentimentFilter, setSentimentFilter] = useState('all')
   const [sendModal, setSendModal] = useState<{ customer: Customer; channel: 'sms'|'email' }|null>(null)
@@ -206,7 +207,30 @@ export default function CustomersPage() {
                 </div>
               </div>
               <div className="card space-y-4">
-                <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Vehicle Info</div>
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Vehicle Info</div>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    disabled={vinDecoding || !(form.vehicle_vin || '').trim()}
+                    onClick={async () => {
+                      const vin = (form.vehicle_vin || '').trim().toUpperCase()
+                      if (vin.length < 11) { alert('Enter the full VIN first (17 characters).'); return }
+                      setVinDecoding(true)
+                      try {
+                        const res = await fetch(`https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/${encodeURIComponent(vin)}?format=json`, { signal: AbortSignal.timeout(15000) })
+                        const data = await res.json()
+                        const row = data?.Results?.[0] || {}
+                        const year = row.ModelYear || ''
+                        const make = row.Make ? String(row.Make).charAt(0) + String(row.Make).slice(1).toLowerCase() : ''
+                        const model = row.Model || ''
+                        if (!year && !make && !model) { alert('Could not decode that VIN — double-check it.') }
+                        else setForm(f => ({ ...f, vehicle_year: year || f.vehicle_year, vehicle_make: make || f.vehicle_make, vehicle_model: model || f.vehicle_model }))
+                      } catch { alert('VIN lookup failed — try again in a second.') }
+                      setVinDecoding(false)
+                    }}
+                  >{vinDecoding ? 'Decoding…' : 'Decode VIN'}</button>
+                </div>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   {(['vehicle_year','vehicle_make','vehicle_model'] as const).map(k=>(
                     <div key={k}><label className="form-label">{k.split('_').pop()!.charAt(0).toUpperCase()+k.split('_').pop()!.slice(1)}</label><input className="form-input" value={form[k]||''} onChange={e=>setForm(f=>({...f,[k]:e.target.value}))} /></div>

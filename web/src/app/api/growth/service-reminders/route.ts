@@ -94,29 +94,41 @@ export async function POST(req: NextRequest) {
   }
 
   if (action === 'appointment_reminders') {
-    // Look for jobs/appointments scheduled for tomorrow
+    // Text everyone with an appointment tomorrow. Reads the real appointments
+    // table (this used to query jobs.scheduled_date, which doesn't exist — the
+    // reminder never fired once).
     const tomorrow = new Date()
     tomorrow.setDate(tomorrow.getDate() + 1)
     const tomorrowStr = tomorrow.toISOString().split('T')[0]
 
-    const { data: jobs } = await sb
-      .from('jobs')
-      .select('*, customers(name, phone)')
-      .gte('scheduled_date', tomorrowStr + 'T00:00:00')
-      .lt('scheduled_date', tomorrowStr + 'T23:59:59')
-      .eq('status', 'scheduled')
+    const { data: appts } = await sb
+      .from('appointments')
+      .select('*')
+      .eq('date', tomorrowStr)
+      .in('status', ['Scheduled', 'Confirmed'])
 
     const results: Array<Record<string, unknown>> = []
 
-    for (const job of jobs || []) {
-      const customer = job.customers as Record<string, string> | null
-      if (!customer?.phone) continue
-      const msg = `Hi ${customer.name}! Reminder: you have a service appointment at Alpha International Auto Center tomorrow. Call (713) 663-6979 if you need to reschedule. See you then!`
+    for (const appt of appts || []) {
+      const phone = (appt.phone || '').trim()
+      if (!phone) continue
+      // Never double-text: skip if a reminder already went out for this one.
+      if (appt.reminder_sent_at) continue
+
+      const timeText = appt.time ? ` at ${appt.time}` : ''
+      const serviceText = appt.service ? ` for ${appt.service}` : ''
+      const msg = `Hi ${appt.customer_name || 'there'}! Reminder: you have an appointment${serviceText} at Alpha International Auto Center tomorrow${timeText}. Call (713) 663-6979 if you need to reschedule. See you then!`
+
       if (!dry_run) {
-        const result = await sendSMS(customer.phone, msg)
-        results.push({ job: job.id, customer: customer.name, sent: result.success })
+        const result = await sendSMS(phone, msg)
+        if (result.success) {
+          try {
+            await sb.from('appointments').update({ reminder_sent_at: new Date().toISOString() }).eq('id', appt.id)
+          } catch { /* column may not exist yet — reminder still went out */ }
+        }
+        results.push({ appointment: appt.id, customer: appt.customer_name, time: appt.time, sent: result.success, error: result.error })
       } else {
-        results.push({ job: job.id, customer: customer.name, sent: false, dry_run: true })
+        results.push({ appointment: appt.id, customer: appt.customer_name, time: appt.time, sent: false, dry_run: true, message: msg })
       }
     }
 

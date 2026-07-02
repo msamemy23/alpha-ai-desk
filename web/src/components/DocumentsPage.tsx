@@ -4,7 +4,23 @@ import { supabase, calcTotals, formatCurrency } from '@/lib/supabase'
 import { getLaborFlatAmount, laborLineTotal } from '@/lib/document-money'
 
 interface Customer { id: string; name: string; phone: string; email: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin: string; vehicle_plate: string; vehicle_mileage: string }
-interface Doc { id: string; type: string; doc_number: string; status: string; doc_date: string; customer_name: string; customer_id: string; customer_phone?: string; customer_email?: string; signature_requested_at?: string; signature_signed_at?: string; signature_signer_name?: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin?: string; vehicle_plate?: string; vehicle_mileage?: string | number; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; warranty_months: number | null; warranty_mileage: number | null; warranty_start: string | null; warranty_exclusions: string | null; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
+interface Doc { id: string; type: string; doc_number: string; status: string; shop_id?: string; doc_date: string; customer_name: string; customer_id: string; customer_phone?: string; customer_email?: string; signature_requested_at?: string; signature_signed_at?: string; signature_signer_name?: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin?: string; vehicle_plate?: string; vehicle_mileage?: string | number; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; warranty_months: number | null; warranty_mileage: number | null; warranty_start: string | null; warranty_exclusions: string | null; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
+
+// Every dollar received gets a real payment record — that's what makes revenue
+// reports and "who actually paid" trustworthy. Fire-and-forget: if the payments
+// table isn't there yet, marking the document still works.
+async function recordPayment(doc: Pick<Doc, 'id' | 'shop_id'>, amount: number, method = 'unspecified', note = '') {
+  if (!(amount > 0)) return
+  try {
+    await supabase.from('payments').insert({
+      shop_id: doc.shop_id || null,
+      document_id: doc.id,
+      amount: Math.round(amount * 100) / 100,
+      method,
+      note,
+    })
+  } catch { /* payments table may not exist yet */ }
+}
 
 async function getAuthJsonHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -470,6 +486,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               {editing !== 'new' && form.status !== 'Paid' && <button type="button" className="btn btn-sm" style={{background:'#16a34a',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={async () => {
                 if (!form.id) return;
                 const t = calcTotals(form as unknown as Record<string,unknown>);
+                await recordPayment(form as Doc, t.total - (Number(form.amount_paid) || 0), form.payment_method || 'unspecified', `Marked paid from ${form.type} editor`);
                 setForm(f => ({...f, status: 'Paid', deposit: t.total, amount_paid: t.total}));
                 await supabase.from('documents').update({ status: 'Paid', deposit: t.total, amount_paid: t.total, updated_at: new Date().toISOString() }).eq('id', form.id);
                 await load();
@@ -993,10 +1010,21 @@ tr, td, th, thead, table { break-inside: avoid; }
                         <div className="flex gap-1">
                           {d.status !== 'Paid' && <button className="btn btn-sm" style={{background:'#16a34a',color:'white',fontSize:'11px',padding:'4px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}} onClick={async () => {
                             const t = calcTotals(d as unknown as Record<string,unknown>);
+                            await recordPayment(d, t.total - (Number(d.amount_paid) || 0), d.payment_method || 'unspecified', 'Marked paid from list');
                             await supabase.from('documents').update({ status: 'Paid', deposit: t.total, amount_paid: t.total, updated_at: new Date().toISOString() }).eq('id', d.id);
                             await load();
                           }} title="Mark as Paid (balance → $0)">💰 Paid</button>}
-                          {type === 'Invoice' && d.status !== 'Partial' && d.status !== 'Paid' && <button className="btn btn-sm" style={{background:'#f59e0b',color:'white',fontSize:'11px',padding:'4px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}} onClick={async () => { await supabase.from('documents').update({ status: 'Partial', updated_at: new Date().toISOString() }).eq('id', d.id); await load() }} title="Mark as Partial (still owed)">💵 Partial</button>}
+                          {type === 'Invoice' && d.status !== 'Paid' && <button className="btn btn-sm" style={{background:'#f59e0b',color:'white',fontSize:'11px',padding:'4px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}} onClick={async () => {
+                            const t = calcTotals(d as unknown as Record<string,unknown>);
+                            const owed = Math.max(0, t.total - (Number(d.amount_paid) || 0));
+                            const raw = window.prompt(`How much did they pay? (Owed: $${owed.toFixed(2)})`);
+                            const amt = parseFloat((raw || '').replace(/[^0-9.]/g, ''));
+                            if (!raw || !(amt > 0)) return;
+                            const newPaid = Math.min(t.total, (Number(d.amount_paid) || 0) + amt);
+                            await recordPayment(d, amt, d.payment_method || 'unspecified', 'Partial payment');
+                            await supabase.from('documents').update({ status: newPaid >= t.total ? 'Paid' : 'Partial', amount_paid: newPaid, updated_at: new Date().toISOString() }).eq('id', d.id);
+                            await load();
+                          }} title="Record a partial payment">💵 Partial</button>}
                           <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:'11px',padding:'4px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}} onClick={() => { setSigModal(d); setSigResult(null) }} title="Send for e-signature">✍️ Sign</button>
                           {/* Feature 9: Quick email button */}
                           <button

@@ -99,7 +99,43 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
   }
 }
 
+// One-click approval from the estimate email. Uses the same token as signing —
+// the customer taps Approve and the estimate is marked approved, no pen needed.
+function approvalPage(title: string, message: string) {
+  return new NextResponse(
+    `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title></head>
+<body style="font-family:Arial,sans-serif;background:#f4f4f4;margin:0;padding:40px 16px;text-align:center">
+<div style="max-width:440px;margin:0 auto;background:#fff;border-radius:12px;padding:32px 24px">
+<div style="font-size:44px">✅</div>
+<h2 style="margin:12px 0 8px">${title}</h2>
+<p style="color:#555;margin:0">${message}</p>
+</div></body></html>`,
+    { headers: { 'content-type': 'text/html; charset=utf-8' } },
+  )
+}
+
 export async function GET(req: NextRequest) {
+  const approveToken = req.nextUrl.searchParams.get('approve')
+  if (approveToken) {
+    const db = getServiceClient()
+    const { data: sig } = await db.from('signatures').select('*, documents(*)').eq('token', approveToken).single()
+    if (!sig?.documents) return approvalPage('Link not found', 'This approval link is invalid. Call the shop and we will sort it out.')
+    if (sig.expires_at && new Date(sig.expires_at) < new Date()) {
+      return approvalPage('Link expired', 'This approval link has expired. Call the shop for a fresh one.')
+    }
+    const doc = sig.documents as Record<string, unknown>
+    if (!doc.approved_at) {
+      try {
+        await db.from('documents').update({
+          approved_at: new Date().toISOString(),
+          approved_by: sig.customer_email || 'customer',
+          ...(doc.type === 'Estimate' ? { status: 'Approved' } : {}),
+        }).eq('id', doc.id as string)
+      } catch { /* approved_at column missing — page still confirms receipt */ }
+    }
+    return approvalPage('You\'re approved!', `Thanks — ${String(doc.type || 'document')} #${String(doc.doc_number || '')} is approved and we\'ll get started. We\'ll text you when it\'s ready.`)
+  }
+
   const token = req.nextUrl.searchParams.get('token')
   if (!token) return NextResponse.json({ error: 'Token required' }, { status: 400 })
   const db = getServiceClient()
@@ -208,9 +244,12 @@ export async function POST(req: NextRequest) {
       </tr>
     </table>
     <p>Click below to review the full document and sign electronically:</p>
-    <p style="text-align:center;margin:24px 0">
+    <p style="text-align:center;margin:24px 0 8px">
       <a href="${signUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:14px 32px;border-radius:6px;font-size:16px;font-weight:600">Review and Sign</a>
     </p>
+    ${doc.type === 'Estimate' ? `<p style="text-align:center;margin:0 0 24px">
+      <a href="${siteUrl}/api/sign?approve=${token}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;padding:12px 32px;border-radius:6px;font-size:15px;font-weight:600">Approve — Start the Work</a>
+    </p>` : ''}
     <p style="font-size:12px;color:#888">Questions? Call us at ${settings?.shop_phone || ''}.</p>
   </div>
   <div style="border-top:1px solid #eee;padding:16px;text-align:center;font-size:12px;color:#888">${shopName} · ${settings?.shop_address || ''}</div>
