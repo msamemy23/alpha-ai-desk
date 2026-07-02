@@ -399,3 +399,16 @@ Verified headlessly on live manuals — 8/8: 04 Accord steps+diagram, 18 Wrangle
 removal+diagram, 16 F-150 alternator, 19 Camry front pads (16 steps/10 figs),
 15 Silverado thermostat, 05 Civic P0420 O2 figures. Tests 34/34. Prototype harness:
 scratchpad/general-drill.mjs (session temp).
+
+## 2026-07-02 (later) — "Diagram ask always ends in a picture" (4 phases, autonomous)
+Root cause of the live "no drawing here" failures: the drill logic was sound but the
+pipe was fragile — one 7s shot at a 1.5MB tree page, no retry, silent empty fallback.
+Fixes shipped: (1) fetch hardened — retry with capped window, memory cache fills from
+DB hits, 14s budget on the tree page, resolved-page memo (identical asks skip the
+search; stored in repair_manual_cache under resolved:: keys, fails open). (2) Diagram
+ask with no factory figure auto-pulls web pictures via /api/ai-search images and shows
+them inline labeled "From the web"; AI narrates them honestly. (3) Card fails loud
+("manual site was slow" + retry) instead of blank. (4) "Open the exact page" deep link;
+engine wall replaced by compact switch chips. 8/8 live-manual matrix + 34/34 tests.
+NOTE: running migration 006 in Supabase makes the cache persistent across servers —
+without it the cache is per-warm-instance only (still works, just colder).
