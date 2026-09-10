@@ -34,7 +34,7 @@ export function normalizeInbound(body: Record<string, unknown>): { from: string;
     'data.to', 'data.recipient', 'data.destination',
     'payload.to', 'payload.recipient')
   return { from, text, messageId, toNumber }
-
+}
 
 const OPT_OUT_KEYWORDS = new Set(['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT', 'REVOKE', 'OPTOUT'])
 

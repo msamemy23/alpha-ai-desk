@@ -77,7 +77,7 @@ export default function AppointmentsPage() {
     getShopId().then(shopId => {
       if (!shopId) { setCustomers([]); return }
       return supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).order('name').then(({ data }) => setCustomers((data||[]) as Customer[]))
-    }))
+    })
     const ch = supabase.channel('appts').on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, load).subscribe()
     return () => { supabase.removeChannel(ch) }
   }, [load])

@@ -231,26 +231,23 @@ export default function DVIPage() {
 
       const reds = dvi.sections?.flatMap(s => s.items.filter(i => i.status === 'red').map(i => i.name)) || []
       const yellows = dvi.sections?.flatMap(s => s.items.filter(i => i.status === 'yellow').map(i => i.name)) || []
-      const smsBody = 'Hi ' + dvi.customer_name + ', your vehicle inspection is complete!
+      const smsBody = `Hi ${dvi.customer_name}, your vehicle inspection is complete!
 
-' +
-        (reds.length ? '🔴 Needs Attention:
-' + reds.map(r => '• ' + r).join('
-') + '
+` +
+        (reds.length ? `🔴 Needs Attention:
+${reds.map(r => '• ' + r).join('\n')}
 
-' : '') +
-        (yellows.length ? '⚠️ Monitor:
-' + yellows.map(y => '• ' + y).join('
-') + '
+` : '') +
+        (yellows.length ? `⚠️ Monitor:
+${yellows.map(y => '• ' + y).join('\n')}
 
-' : '') +
-        (!reds.length && !yellows.length ? '✅ Everything looks great!
+` : '') +
+        (!reds.length && !yellows.length ? `✅ Everything looks great!
 
-' : '') +
-        'Please call us' + (shopPhone ? ' at ' + shopPhone : '') + ' to discuss.
+` : '') +
+        `Please call us${shopPhone ? ' at ' + shopPhone : ''} to discuss.
 
-— ' + shopName
-
+— ${shopName}`
       const response = await fetch('/api/send-message', {
         method: 'POST',
         headers: await getAuthJsonHeaders(),

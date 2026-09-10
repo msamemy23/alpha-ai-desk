@@ -310,7 +310,8 @@ export async function POST(req: NextRequest) {
         method: 'POST',
         headers: forwardedHeaders,
         body: JSON.stringify({ ...mergedBody, shopId: auth!.shopId }),
-      })      const data = await res.json()
+      })
+      const data = await res.json()
       const resultStr = JSON.stringify(data).slice(0, 500)
 
       config[id].last_run = new Date().toISOString()

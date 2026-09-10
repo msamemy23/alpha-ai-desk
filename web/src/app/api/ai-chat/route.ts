@@ -170,7 +170,7 @@ export async function POST(req: NextRequest) {
     const model = normalizeAiModel(settings.ai_model, baseUrl)
 
     if (!apiKey) {
-      const reply = 'AI is not configured yet. Please add this shop's AI API key in Settings on the web dashboard.'
+      const reply = 'AI is not configured yet. Please add this shop AI API key in Settings on the web dashboard.'
       await saveChatHistory(caller.shopId, caller.userId, sessionId, message, reply)
       return NextResponse.json({ reply, sessionId })
     }

@@ -1925,7 +1925,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
           body: JSON.stringify({
             model: 'meta-llama/llama-3.2-11b-vision-instruct:free',
             messages: [
-              { role: 'system', content: 'You are the configured shop's AI assistant. The user uploaded a photo. Analyze it in context of the auto shop. If it shows vehicle damage, describe it and suggest repair steps and estimated cost. If it shows an engine or mechanical issue, diagnose it. If it shows something else, describe what you see.' },
+              { role: 'system', content: 'You are the configured shop AI assistant. The user uploaded a photo. Analyze it in context of the auto shop. If it shows vehicle damage, describe it and suggest repair steps and estimated cost. If it shows an engine or mechanical issue, diagnose it. If it shows something else, describe what you see.' },
               { role: 'user', content: [
                 { type: 'image_url', image_url: { url: base64 } },
                 { type: 'text', text: 'Analyze this image for our auto shop.' }
