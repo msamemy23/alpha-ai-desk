@@ -1,5 +1,5 @@
 ﻿'use client'
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { getShopId, supabase, calcTotals, formatCurrency } from '@/lib/supabase'
 import { getLaborFlatAmount, laborLineTotal } from '@/lib/document-money'
 
@@ -11,16 +11,17 @@ async function recordPayment(
   doc: Pick<Doc, 'id' | 'shop_id'>,
   amount: number,
   method = 'unspecified',
-  note = ''
+  note = '',
+  idempotencyKey: string
 ): Promise<{ amount_paid?: number; status?: string; balance_due?: number; total?: number } | null> {
   if (!(amount > 0)) return null
   if (!doc.shop_id) throw new Error('Payment is missing its shop')
-  const { data, error } = await supabase.rpc('record_document_payment', {
+  const { data, error } = await supabase.rpc('record_document_payment_safe', {
     p_document_id: doc.id,
     p_amount: Math.round(amount * 100) / 100,
     p_method: method,
     p_note: note,
-    p_idempotency_key: `document-payment-${doc.id}-${crypto.randomUUID()}`,
+    p_idempotency_key: idempotencyKey,
   })
   if (error) throw new Error(`Payment could not be recorded: ${error.message}`)
   return (data || null) as { amount_paid?: number; status?: string; balance_due?: number; total?: number } | null
@@ -260,6 +261,17 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     const [emailSending, setEmailSending] = useState<string | null>(null)
   const [signatureImg, setSignatureImg] = useState<string | null>(null)
   const [shopSettings, setShopSettings] = useState<Record<string, string>>({})
+  const paymentOperationKeys = useRef(new Map<string, string>())
+
+  const getPaymentOperation = (docId: string, amount: number, method: string, operation: string) => {
+    const fingerprint = `${docId}:${operation}:${Math.round(amount * 100) / 100}:${method || 'unspecified'}`
+    let key = paymentOperationKeys.current.get(fingerprint)
+    if (!key) {
+      key = `document-payment-${docId}-${crypto.randomUUID()}`
+      paymentOperationKeys.current.set(fingerprint, key)
+    }
+    return { fingerprint, key }
+  }
 
   const shopName = shopSettings.shop_name?.trim() || 'Your Shop'
   const shopAddress = shopSettings.shop_address?.trim() || 'Your shop address'
@@ -527,7 +539,9 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                 const owed = Math.max(0, t.total - (Number(form.amount_paid) || 0));
                 if (!(owed > 0)) return;
                 try {
-                  const result = await recordPayment(form as Doc, owed, form.payment_method || 'unspecified', `Marked paid from ${form.type} editor`);
+                  const operation = getPaymentOperation(form.id, owed, form.payment_method || 'unspecified', 'editor-mark-paid')
+                  const result = await recordPayment(form as Doc, owed, form.payment_method || 'unspecified', `Marked paid from ${form.type} editor`, operation.key);
+                  paymentOperationKeys.current.delete(operation.fingerprint)
                   setForm(f => ({...f, status: result?.status || 'Paid', amount_paid: Number(result?.amount_paid ?? t.total)}));
                   await load();
                 } catch (error) {
@@ -545,7 +559,9 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                 if (!(amount > 0)) { alert('Enter a payment greater than zero.'); return; }
                 if (amount > owed + 0.005) { alert(`Payment cannot exceed the remaining balance of $${owed.toFixed(2)}.`); return; }
                 try {
-                  const result = await recordPayment(form as Doc, amount, form.payment_method || 'unspecified', 'Partial payment from invoice editor');
+                  const operation = getPaymentOperation(form.id, amount, form.payment_method || 'unspecified', 'editor-partial')
+                  const result = await recordPayment(form as Doc, amount, form.payment_method || 'unspecified', 'Partial payment from invoice editor', operation.key);
+                  paymentOperationKeys.current.delete(operation.fingerprint)
                   setForm(f => ({...f, status: result?.status || 'Partial', amount_paid: Number(result?.amount_paid ?? ((Number(f.amount_paid) || 0) + amount))}));
                   await load();
                 } catch (error) {
@@ -1070,7 +1086,9 @@ tr, td, th, thead, table { break-inside: avoid; }
                             const owed = Math.max(0, t.total - (Number(d.amount_paid) || 0));
                             if (!(owed > 0)) return;
                             try {
-                              await recordPayment(d, owed, d.payment_method || 'unspecified', 'Marked paid from list');
+                              const operation = getPaymentOperation(d.id, owed, d.payment_method || 'unspecified', 'list-mark-paid')
+                              await recordPayment(d, owed, d.payment_method || 'unspecified', 'Marked paid from list', operation.key);
+                              paymentOperationKeys.current.delete(operation.fingerprint)
                               await load();
                             } catch (error) {
                               alert('Payment failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
@@ -1089,7 +1107,9 @@ tr, td, th, thead, table { break-inside: avoid; }
                               return;
                             }
                             try {
-                              await recordPayment(d, amt, d.payment_method || 'unspecified', 'Partial payment');
+                              const operation = getPaymentOperation(d.id, amt, d.payment_method || 'unspecified', 'list-partial')
+                              await recordPayment(d, amt, d.payment_method || 'unspecified', 'Partial payment', operation.key);
+                              paymentOperationKeys.current.delete(operation.fingerprint)
                               await load();
                             } catch (error) {
                               alert('Payment failed: ' + (error instanceof Error ? error.message : 'Unknown error'));

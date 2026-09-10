@@ -5,6 +5,7 @@ import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { sendSMS, formatPhone } from '@/lib/telnyx'
 import { sendEmail } from '@/lib/email'
 import { getIdempotencyKey } from '@/lib/api-response'
+import { normalizePhoneDigits } from '@/lib/sms-normalize'
 
 export async function POST(req: NextRequest) {
   try {
@@ -39,40 +40,50 @@ export async function POST(req: NextRequest) {
     if (resolvedCustomerId) {
       const { data: allowedCustomer, error: customerError } = await db
         .from('customers')
-        .select('id,email,sms_opted_out')
+        .select('id,email,phone,sms_opted_out')
         .eq('id', resolvedCustomerId)
         .eq('shop_id', auth.shopId)
         .maybeSingle()
       if (customerError) return NextResponse.json({ error: 'Customer could not be loaded' }, { status: 500 })
       if (!allowedCustomer) return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
+      if (channel === 'sms' && allowedCustomer.phone && normalizePhoneDigits(allowedCustomer.phone) !== normalizePhoneDigits(to)) {
+        return NextResponse.json({ error: 'The recipient phone does not match the selected customer' }, { status: 409 })
+      }
       if (!resolvedEmail && allowedCustomer.email) resolvedEmail = allowedCustomer.email
       smsOptedOut = allowedCustomer.sms_opted_out === true
     }
 
     if (!resolvedCustomerId && customerName) {
-      const { data: found } = await db
+      const { data: found, error: foundError } = await db
         .from('customers')
-        .select('id, email, sms_opted_out')
+        .select('id, email, phone, sms_opted_out')
         .eq('shop_id', auth.shopId)
         .ilike('name', `%${customerName}%`)
-        .limit(1)
-        .maybeSingle()
-      if (found) {
-        resolvedCustomerId = found.id
-        if (!resolvedEmail && found.email) resolvedEmail = found.email
-        smsOptedOut = found.sms_opted_out === true
+        .limit(10)
+      if (foundError) return NextResponse.json({ error: 'Customer could not be loaded' }, { status: 500 })
+      if (found && found.length > 1) return NextResponse.json({ error: 'More than one customer matches that name; select a customer explicitly' }, { status: 409 })
+      const matchedCustomer = found?.[0]
+      if (matchedCustomer) {
+        if (channel === 'sms' && matchedCustomer.phone && normalizePhoneDigits(matchedCustomer.phone) !== normalizePhoneDigits(to)) {
+          return NextResponse.json({ error: 'The recipient phone does not match the named customer' }, { status: 409 })
+        }
+        resolvedCustomerId = matchedCustomer.id
+        if (!resolvedEmail && matchedCustomer.email) resolvedEmail = matchedCustomer.email
+        smsOptedOut = matchedCustomer.sms_opted_out === true
       }
     }
 
     if (!resolvedCustomerId && channel === 'sms') {
-      const { data: phoneMatches, error: phoneError } = await db
+      const { data: customers, error: phoneError } = await db
         .from('customers')
-        .select('id,email,sms_opted_out')
+        .select('id,email,phone,sms_opted_out')
         .eq('shop_id', auth.shopId)
-        .in('phone', [...new Set([to, formattedPhone])])
-        .limit(1)
+        .not('phone', 'is', null)
+        .limit(5000)
       if (phoneError) return NextResponse.json({ error: 'Customer could not be loaded' }, { status: 500 })
-      const phoneCustomer = phoneMatches?.[0]
+      const phoneMatches = (customers || []).filter(customer => normalizePhoneDigits(customer.phone) === normalizePhoneDigits(to))
+      if (phoneMatches.length > 1) return NextResponse.json({ error: 'More than one customer matches this phone number; select a customer explicitly' }, { status: 409 })
+      const phoneCustomer = phoneMatches[0]
       if (phoneCustomer) {
         resolvedCustomerId = phoneCustomer.id
         if (!resolvedEmail && phoneCustomer.email) resolvedEmail = phoneCustomer.email

@@ -38,14 +38,19 @@ export default function InventoryPage() {
   const [catFilter, setCatFilter] = useState('All')
   const [saving, setSaving] = useState(false)
   const [tab, setTab] = useState<'all'|'low'|'on-order'>('all')
+  const [loadError, setLoadError] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
       const shopId = await getShopId()
-      if (!shopId) { setParts([]); return }
-      const { data } = await supabase.from('inventory').select('*').eq('shop_id', shopId).order('name')
+      if (!shopId) { setParts([]); setLoadError('No shop is associated with the signed-in user'); return }
+      const { data, error } = await supabase.from('inventory').select('*').eq('shop_id', shopId).order('name')
+      if (error) throw error
       setParts((data || []) as Part[])
+      setLoadError('')
+    } catch (error) {
+      setLoadError('Inventory could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error'))
     } finally { setLoading(false) }
   }, [])
   useEffect(() => {
@@ -209,6 +214,10 @@ export default function InventoryPage() {
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
+      {loadError && <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red/30 bg-red/10 px-4 py-3 text-sm text-red">
+        <span>{loadError}</span>
+        <button className="btn btn-secondary btn-sm" onClick={load}>Retry</button>
+      </div>}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <div>
           <h1 className="text-2xl font-bold">Inventory</h1>

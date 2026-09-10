@@ -43,6 +43,7 @@ export default function InsurancePage() {
   const [search, setSearch] = useState('')
   const [editing, setEditing] = useState<Job | null>(null)
   const [saving, setSaving] = useState(false)
+  const [loadError, setLoadError] = useState('')
   // AI Claim Assistant
   const [claimJob, setClaimJob] = useState<Job | null>(null)
   const [claimChat, setClaimChat] = useState<ClaimMsg[]>([])
@@ -53,10 +54,16 @@ export default function InsurancePage() {
   const [noteType, setNoteType] = useState('Call')
 
   const load = useCallback(async () => {
-    const shopId = await getShopId()
-    if (!shopId) { setJobs([]); return }
-    const { data } = await supabase.from('jobs').select('*').eq('shop_id', shopId).eq('is_insurance', true).order('created_at', { ascending: false })
-    setJobs((data || []) as Job[])
+    try {
+      const shopId = await getShopId()
+      if (!shopId) { setJobs([]); setLoadError('No shop is associated with the signed-in user'); return }
+      const { data, error } = await supabase.from('jobs').select('*').eq('shop_id', shopId).eq('is_insurance', true).order('created_at', { ascending: false })
+      if (error) throw error
+      setJobs((data || []) as Job[])
+      setLoadError('')
+    } catch (error) {
+      setLoadError('Insurance claims could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    }
   }, [])
 
   useEffect(() => {
@@ -323,6 +330,10 @@ export default function InsurancePage() {
   // === MAIN LIST VIEW ===
   return (
     <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
+      {loadError && <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+        <span>{loadError}</span>
+        <button className="btn btn-secondary btn-sm" onClick={load}>Retry</button>
+      </div>}
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
         <div className="card text-center">

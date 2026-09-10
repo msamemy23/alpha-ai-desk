@@ -23,7 +23,10 @@ export function formatPhone(phone: string): string {
 }
 
 export async function sendSMS(to: string, body: string, from?: string, options?: { apiKey?: string; messagingProfileId?: string; idempotencyKey?: string }) {
-  const provider = (process.env.SMS_PROVIDER || 'telnyx').toLowerCase()
+  // Tenant-bound calls always use the shop's Telnyx credentials. The legacy
+  // deployment-wide phone gateways remain available only to callers that do
+  // not supply shop credentials (for backwards-compatible internal jobs).
+  const provider = options ? 'telnyx' : (process.env.SMS_PROVIDER || 'telnyx').toLowerCase()
   const dest = formatPhone(to)
   switch (provider) {
     case 'textbee': return sendViaTextbee(dest, body)

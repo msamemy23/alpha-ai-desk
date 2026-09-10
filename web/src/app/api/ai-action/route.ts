@@ -6,6 +6,7 @@ import { sendEmail, estimateEmailHtml } from '@/lib/email'
 import { getIdempotencyKey } from '@/lib/api-response'
 import { writeAuditLog } from '@/lib/audit-log'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
+import { createHash } from 'node:crypto'
 
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
 function fail(error: string, status = 400) { return NextResponse.json({ ok: false, error }, { status }) }
@@ -16,7 +17,7 @@ const mutatingActions = new Set([
   'convertEstimateToInvoice', 'addStaff', 'removeStaff', 'updateDocument',
   'createAppointment', 'deleteAppointment', 'updateAppointment', 'updateInventory',
 ])
-const aiActionIdempotency = new Map<string, { createdAt: number; data: unknown }>()
+const aiActionIdempotency = new Map<string, { createdAt: number; fingerprint: string; data: unknown }>()
 
 function safeSearchTerm(value: unknown, maxLength = 120): string {
   return String(value ?? '').replace(/[%,().*]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maxLength)
@@ -26,12 +27,12 @@ function pickFields(payload: Record<string, unknown>, allowed: readonly string[]
   return Object.fromEntries(allowed.filter((key) => Object.prototype.hasOwnProperty.call(payload, key)).map((key) => [key, payload[key]]))
 }
 
-function rememberAiAction(key: string, data: unknown) {
+function rememberAiAction(key: string, fingerprint: string, data: unknown) {
   const now = Date.now()
   for (const [existingKey, value] of aiActionIdempotency) {
     if (now - value.createdAt > 10 * 60_000) aiActionIdempotency.delete(existingKey)
   }
-  aiActionIdempotency.set(key, { createdAt: now, data })
+  aiActionIdempotency.set(key, { createdAt: now, fingerprint, data })
 }
 
 export async function POST(req: NextRequest) {
@@ -62,7 +63,12 @@ export async function POST(req: NextRequest) {
   const payload = body?.payload && typeof body.payload === 'object' && !Array.isArray(body.payload) ? body.payload as Record<string, unknown> : {}
   const safePayload = payload
   if (JSON.stringify(safePayload).length > 20000) return fail('Action payload is too large', 413)
-  const idempotencyKey = getIdempotencyKey(req, [shopId, action, JSON.stringify(safePayload).slice(0, 500)])
+  const payloadHash = createHash('sha256').update(JSON.stringify(safePayload)).digest('hex')
+  const requestedKey = getIdempotencyKey(req, [shopId, action, payloadHash])
+  // Never allow a caller-supplied key to cross a tenant boundary or silently
+  // replay a different action/payload in the process-local retry cache.
+  const idempotencyKey = `${shopId}:${requestedKey}`.slice(0, 160)
+  const idempotencyFingerprint = `${action}:${payloadHash}`
   const isMutation = mutatingActions.has(action)
   if (isMutation && req.headers.get('x-ai-approval') !== 'confirm') {
     return NextResponse.json({
@@ -74,11 +80,14 @@ export async function POST(req: NextRequest) {
     }, { status: 409 })
   }
   const existing = isMutation ? aiActionIdempotency.get(idempotencyKey) : undefined
-  if (existing) return ok(existing.data)
+  if (existing) {
+    if (existing.fingerprint !== idempotencyFingerprint) return fail('Idempotency-Key was already used for a different action or payload', 409)
+    return ok(existing.data)
+  }
 
   const auditedOk = async (data: unknown, targetType?: string, targetId?: string) => {
     if (isMutation) {
-      rememberAiAction(idempotencyKey, data)
+      rememberAiAction(idempotencyKey, idempotencyFingerprint, data)
       await writeAuditLog({
         shopId,
         userId: caller.userId,
@@ -458,7 +467,7 @@ export async function POST(req: NextRequest) {
             replyTo: settings?.shop_email,
             apiKey: settings?.resend_api_key,
             from: fromEmail,
-            idempotencyKey: getIdempotencyKey(req, [shopId, 'ai-document-email', String(doc.id), toEmail]),
+            idempotencyKey,
           })
         } catch (error) {
           return fail(error instanceof Error ? error.message : 'Email could not be sent', 502)

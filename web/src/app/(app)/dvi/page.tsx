@@ -115,6 +115,7 @@ export default function DVIPage() {
   const [saving, setSaving] = useState(false)
   const [sending, setSending] = useState(false)
   const [search, setSearch] = useState('')
+  const [loadError, setLoadError] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [activePhotoItem, setActivePhotoItem] = useState<{secIdx:number;itemIdx:number}|null>(null)
 
@@ -122,19 +123,29 @@ export default function DVIPage() {
     setLoading(true)
     try {
       const shopId = await getShopId()
-      if (!shopId) { setInspections([]); return }
-      const { data } = await supabase.from('dvi').select('*').eq('shop_id', shopId).order('created_at', { ascending: false })
+      if (!shopId) { setInspections([]); setLoadError('No shop is associated with the signed-in user'); return }
+      const { data, error } = await supabase.from('dvi').select('*').eq('shop_id', shopId).order('created_at', { ascending: false })
+      if (error) throw error
       setInspections((data || []) as DVI[])
+      setLoadError('')
+    } catch (error) {
+      setLoadError('Inspections could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error'))
     } finally { setLoading(false) }
   }, [])
   useEffect(() => {
     load()
-    fetch('/api/staff?role=technician').then(r=>r.json()).then(d=>{ if(d.ok&&d.staff) setTechs(['Unassigned',...d.staff.map((s:{name:string})=>s.name)]) }).catch(()=>{})
+    fetch('/api/staff?role=technician').then(r=>r.json()).then(d=>{ if(d.ok&&d.staff) setTechs(['Unassigned',...d.staff.map((s:{name:string})=>s.name)]) }).catch(error => setLoadError('Technicians could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error')))
     getShopId().then(shopId => {
       if (!shopId) return
-      supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).order('name').then(({data})=>setCustomers((data||[]) as typeof customers))
-      supabase.from('jobs').select('id,customer_name,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).order('created_at',{ascending:false}).limit(200).then(({data})=>setJobs((data||[]) as typeof jobs))
-    })
+      void Promise.resolve(supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).order('name').then(({data, error}) => {
+        if (error) throw error
+        setCustomers((data||[]) as typeof customers)
+      })).catch(error => setLoadError('Customers could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error')))
+      void Promise.resolve(supabase.from('jobs').select('id,customer_name,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).order('created_at',{ascending:false}).limit(200).then(({data, error}) => {
+        if (error) throw error
+        setJobs((data||[]) as typeof jobs)
+      })).catch(error => setLoadError('Jobs could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error')))
+    }).catch(error => setLoadError('Shop could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error')))
   }, [load])
   const openNew = () => {
     setForm({ overall_status: 'pending', sent_to_customer: false, customer_approved: false })
@@ -387,6 +398,10 @@ ${yellows.map(y => '• ' + y).join('\n')}
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
+      {loadError && <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red/30 bg-red/10 px-4 py-3 text-sm text-red">
+        <span>{loadError}</span>
+        <button className="btn btn-secondary btn-sm" onClick={load}>Retry</button>
+      </div>}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <div>
           <h1 className="text-2xl font-bold">Digital Vehicle Inspections</h1>

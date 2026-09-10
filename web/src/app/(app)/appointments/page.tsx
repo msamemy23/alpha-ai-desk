@@ -56,6 +56,7 @@ export default function AppointmentsPage() {
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [loadError, setLoadError] = useState('')
 
   const weekDays = getWeekDays(weekBase)
 
@@ -63,9 +64,13 @@ export default function AppointmentsPage() {
     setLoading(true)
     try {
       const shopId = await getShopId()
-      if (!shopId) { setAppts([]); return }
-      const { data } = await supabase.from('appointments').select('*').eq('shop_id', shopId).order('date').order('time')
+      if (!shopId) { setAppts([]); setLoadError('No shop is associated with the signed-in user'); return }
+      const { data, error } = await supabase.from('appointments').select('*').eq('shop_id', shopId).order('date').order('time')
+      if (error) throw error
       setAppts((data || []) as Appointment[])
+      setLoadError('')
+    } catch (error) {
+      setLoadError('Appointments could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error'))
     } finally { setLoading(false) }
   }, [])
 
@@ -73,11 +78,14 @@ export default function AppointmentsPage() {
     load()
     fetch('/api/staff?role=technician').then(r => r.json()).then(d => {
       if (d.ok && d.staff) setTechs(['Unassigned', ...d.staff.map((s: {name: string}) => s.name)])
-    }).catch(() => {})
+    }).catch(error => setLoadError('Technicians could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error')))
     getShopId().then(shopId => {
       if (!shopId) { setCustomers([]); return }
-      return supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).order('name').then(({ data }) => setCustomers((data||[]) as Customer[]))
-    })
+      return supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).order('name').then(({ data, error }) => {
+        if (error) throw error
+        setCustomers((data||[]) as Customer[])
+      })
+    }).catch(error => setLoadError('Customers could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error')))
     const ch = supabase.channel('appts').on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, load).subscribe()
     return () => { supabase.removeChannel(ch) }
   }, [load])
@@ -241,6 +249,11 @@ export default function AppointmentsPage() {
           <button className="btn btn-primary btn-sm" onClick={() => openNew()}>+ New Appointment</button>
         </div>
       </div>
+
+      {loadError && <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red/30 bg-red/10 px-4 py-3 text-sm text-red">
+        <span>{loadError}</span>
+        <button className="btn btn-secondary btn-sm" onClick={load}>Retry</button>
+      </div>}
 
       {view === 'week' ? (
         <>

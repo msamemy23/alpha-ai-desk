@@ -5,6 +5,7 @@ import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { sendEmail, estimateEmailHtml } from '@/lib/email'
 import { sendSMS, formatPhone } from '@/lib/telnyx'
 import { getIdempotencyKey } from '@/lib/api-response'
+import { normalizePhoneDigits } from '@/lib/sms-normalize'
 
 export async function POST(req: NextRequest) {
   try {
@@ -38,6 +39,9 @@ export async function POST(req: NextRequest) {
         .single()
       if (customerError) return NextResponse.json({ error: 'Customer could not be loaded' }, { status: 500 })
       if (cust) {
+        if (reqPhone && cust.phone && normalizePhoneDigits(reqPhone) !== normalizePhoneDigits(cust.phone)) {
+          return NextResponse.json({ error: 'The requested phone does not match the document customer' }, { status: 409 })
+        }
         if (!custEmail) custEmail = cust.email || ''
         if (!custPhone) custPhone = cust.phone || ''
         smsOptedOut = cust.sms_opted_out === true

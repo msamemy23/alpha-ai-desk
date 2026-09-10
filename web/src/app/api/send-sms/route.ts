@@ -5,6 +5,7 @@ import { sendSMS, formatPhone } from '@/lib/telnyx'
 import { apiFail, apiOk, getIdempotencyKey, readJsonObject } from '@/lib/api-response'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
 import { writeAuditLog } from '@/lib/audit-log'
+import { normalizePhoneDigits } from '@/lib/sms-normalize'
 
 export const dynamic = 'force-dynamic'
 
@@ -52,21 +53,26 @@ export async function POST(req: NextRequest) {
 
     const formatted = formatPhone(to)
     if (customerId) {
-      const { data: customer, error: customerError } = await db.from('customers').select('id,sms_opted_out').eq('id', customerId).eq('shop_id', auth.shopId).maybeSingle()
+      const { data: customer, error: customerError } = await db.from('customers').select('id,phone,sms_opted_out').eq('id', customerId).eq('shop_id', auth.shopId).maybeSingle()
       if (customerError) return apiFail('Customer could not be loaded', 500, 'INTERNAL_ERROR')
       if (!customer) return apiFail('Customer not found', 404, 'NOT_FOUND')
       if (customer.sms_opted_out) return apiFail('Customer has opted out of SMS', 409, 'CONFLICT')
+      if (customer.phone && normalizePhoneDigits(customer.phone) !== normalizePhoneDigits(to)) {
+        return apiFail('The recipient phone does not match the selected customer', 409, 'CONFLICT')
+      }
     } else {
       // A phone-only request still has to honor the shop customer's opt-out.
       // Callers cannot bypass consent simply by omitting customer_id.
-      const { data: phoneMatches, error: phoneError } = await db
+      const { data: customers, error: phoneError } = await db
         .from('customers')
-        .select('id,sms_opted_out')
+        .select('id,phone,sms_opted_out')
         .eq('shop_id', auth.shopId)
-        .in('phone', [...new Set([to, formatted])])
-        .limit(1)
+        .not('phone', 'is', null)
+        .limit(5000)
       if (phoneError) return apiFail('Customer could not be loaded', 500, 'INTERNAL_ERROR')
-      if (phoneMatches?.[0]?.sms_opted_out) return apiFail('Customer has opted out of SMS', 409, 'CONFLICT')
+      const phoneMatches = (customers || []).filter(customer => normalizePhoneDigits(customer.phone) === normalizePhoneDigits(to))
+      if (phoneMatches.length > 1) return apiFail('More than one customer matches this phone number; select a customer explicitly', 409, 'CONFLICT')
+      if (phoneMatches[0]?.sms_opted_out) return apiFail('Customer has opted out of SMS', 409, 'CONFLICT')
     }
 
     const idempotencyKey = getIdempotencyKey(req, [auth.shopId, 'sms', formatted, text.slice(0, 80)])

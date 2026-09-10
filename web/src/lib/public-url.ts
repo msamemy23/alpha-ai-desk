@@ -45,7 +45,10 @@ export function isPrivateIp(address: string): boolean {
   const isUnspecified = words.every((word) => word === 0)
   const isLoopback = isUnspecified || (words.slice(0, 7).every((word) => word === 0) && words[7] === 1)
   const isUniqueLocal = (first & 0xfe00) === 0xfc00
-  const isLinkLocal = first === 0xfe80 && (second & 0xc000) === 0x8000
+  // fe80::/10 covers fe80 through febf in the first 16-bit word. The old
+  // check only matched one small sub-range and allowed link-local addresses
+  // such as fe80::1 through the SSRF guard.
+  const isLinkLocal = (first & 0xffc0) === 0xfe80
   const isDocumentation = first === 0x2001 && second === 0x0db8
   const isMulticast = (first & 0xff00) === 0xff00
   return isUnspecified || isLoopback || isUniqueLocal || isLinkLocal || isDocumentation || isMulticast
@@ -54,7 +57,8 @@ export function isPrivateIp(address: string): boolean {
 export function isPrivateHostname(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/\.$/, '')
   if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.test')) return true
-  if (isIP(host)) return isPrivateIp(host)
+  const ipLiteral = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+  if (isIP(ipLiteral)) return isPrivateIp(ipLiteral)
   return false
 }
 
@@ -69,8 +73,11 @@ export async function assertPublicUrl(raw: string, base?: URL): Promise<URL> {
     throw new Error('Only public http(s) URLs are allowed')
   }
 
-  if (isIP(url.hostname)) {
-    if (isPrivateIp(url.hostname)) throw new Error('Only public http(s) URLs are allowed')
+  const ipLiteral = url.hostname.startsWith('[') && url.hostname.endsWith(']')
+    ? url.hostname.slice(1, -1)
+    : url.hostname
+  if (isIP(ipLiteral)) {
+    if (isPrivateIp(ipLiteral)) throw new Error('Only public http(s) URLs are allowed')
     return url
   }
 

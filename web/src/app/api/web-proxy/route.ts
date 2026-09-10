@@ -76,6 +76,11 @@ export async function GET(req: NextRequest) {
     if (body.byteLength > MAX_BYTES) return new NextResponse('Response too large', { status: 413 })
 
     if (!contentType.includes('text/html')) {
+      // SVG can contain script/event content and would be served same-origin
+      // by this proxy. Keep active vector documents out of the response path.
+      if (contentType.toLowerCase().startsWith('image/svg+xml')) {
+        return new NextResponse('Unsupported active image type', { status: 415 })
+      }
       if (!contentType.startsWith('image/') && !contentType.startsWith('text/plain')) {
         return new NextResponse('Unsupported content type', { status: 415 })
       }

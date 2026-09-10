@@ -1,6 +1,6 @@
 // Runnable unit test for the phone-SMS inbound parsing and opt-out logic.
 // Run: node web/test/sms-normalize.test.mjs
-import { normalizeInbound, isOptOut } from '../src/lib/sms-normalize.ts'
+import { normalizeInbound, isOptOut, normalizePhoneDigits } from '../src/lib/sms-normalize.ts'
 
 let pass = 0
 let fail = 0
@@ -43,6 +43,8 @@ check('STOP punctuation', isOptOut('STOP!') === true)
 check('QUIT', isOptOut('QUIT') === true)
 check('normal text not opt-out', isOptOut('how much for an oil change') === false)
 check('STOP bugging me not opt-out', isOptOut('STOP bugging me') === false)
+check('formatted US phone matches E.164', normalizePhoneDigits('(713) 555-1234') === normalizePhoneDigits('+1 713 555 1234'))
+check('international phone keeps its digits', normalizePhoneDigits('+44 20 7946 0958') === '442079460958')
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

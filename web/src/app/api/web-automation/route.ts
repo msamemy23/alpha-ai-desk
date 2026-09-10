@@ -167,6 +167,7 @@ async function runBrowserTask(task: string, url: string, actions: BrowserAction[
         ${actionCode}
         steps.push({action:${successLabel},screenshot:(await page.screenshot({type:'png',fullPage:false})).toString('base64'),url:page.url(),title:await page.title()});
       } catch(stepErr) {
+        stepFailures += 1;
         steps.push({action:${failureLabel}+' — '+String(stepErr?.message || stepErr),screenshot:'',url:page.url(),title:await page.title()});
       }`
   }).join('\n    ')
@@ -191,6 +192,7 @@ async function runBrowserTask(task: string, url: string, actions: BrowserAction[
       }
     });
     const steps = [];
+    let stepFailures = 0;
     try {
       await page.goto(${JSON.stringify(url)}, {waitUntil:'networkidle2',timeout:15000});
       steps.push({action:'Opened page',screenshot:(await page.screenshot({type:'png',fullPage:false})).toString('base64'),url:page.url(),title:await page.title()});
@@ -199,7 +201,14 @@ async function runBrowserTask(task: string, url: string, actions: BrowserAction[
       const finalTitle = await page.title();
       await browser.close();
       const lastStep = steps[steps.length-1];
-      return {steps, screenshot:lastStep?lastStep.screenshot:'', text, title:finalTitle, success:true};
+      return {
+        steps,
+        screenshot:lastStep?lastStep.screenshot:'',
+        text,
+        title:finalTitle,
+        success: stepFailures === 0,
+        ...(stepFailures > 0 ? {error: String(stepFailures) + ' browser step(s) failed'} : {}),
+      };
     } catch(e) {
       try { steps.push({action:'Error: '+e.message,screenshot:(await page.screenshot({type:'png',fullPage:false})).toString('base64'),url:page.url(),title:await page.title()}); } catch(_){}
       await browser.close();
