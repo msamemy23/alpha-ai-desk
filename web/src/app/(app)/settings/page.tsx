@@ -234,6 +234,7 @@ export default function SettingsPage() {
             <div><label className="form-label">Telnyx API Key</label><input className="form-input font-mono" type="password" value={settings.telnyx_api_key as string||''} onChange={sf('telnyx_api_key')} placeholder="KEY01..." /></div>
             <div><label className="form-label">Your Telnyx Phone Number</label><input className="form-input" value={settings.telnyx_phone_number as string||''} onChange={sf('telnyx_phone_number')} placeholder="+17135550000" /></div>
             <div><label className="form-label">Telnyx Connection ID</label><input className="form-input font-mono" value={settings.telnyx_connection_id as string||''} onChange={sf('telnyx_connection_id')} placeholder="Your Telnyx connection/application ID" /></div>
+             <div><label className="form-label">Outbound Voice Profile ID (optional)</label><input className="form-input font-mono" value={settings.telnyx_outbound_voice_profile_id as string||''} onChange={sf('telnyx_outbound_voice_profile_id')} placeholder="Use your Telnyx account's profile ID" /><p className="text-xs text-text-muted mt-1">Leave blank when your Telnyx account has one default outbound profile; it will be detected automatically.</p></div>
             <div><label className="form-label">Messaging Profile ID (optional)</label><input className="form-input font-mono" value={settings.telnyx_messaging_profile_id as string||''} onChange={sf('telnyx_messaging_profile_id')} /></div>
           </div>
           <div className="card space-y-4">

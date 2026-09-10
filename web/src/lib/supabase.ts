@@ -85,7 +85,7 @@ export async function updateSettings(updates: Record<string, unknown>) {
     'payment_methods', 'disclaimer', 'techs',
     'ai_api_key', 'ai_model', 'ai_base_url',
     'telnyx_api_key', 'telnyx_phone_number', 'telnyx_messaging_profile_id',
-    'telnyx_connection_id',
+    'telnyx_connection_id', 'telnyx_outbound_voice_profile_id',
     'resend_api_key', 'from_email',
     'browserless_token',
     'google_review_url', 'timezone', 'automation_config',

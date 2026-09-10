@@ -11,17 +11,21 @@ export async function POST(req: NextRequest) {
     const shopId = typeof body?.shopId === 'string' ? body.shopId : ''
     if (!shopId) return NextResponse.json({ error: 'shopId is required' }, { status: 400 })
     const supabase = getServiceClient()
-    const { data: shop } = await supabase.from('shop_profiles').select('id').eq('id', shopId).maybeSingle()
+    const { data: shop } = await supabase.from('shop_profiles').select('id,shop_name,phone,address,city_state_zip').eq('id', shopId).maybeSingle()
     if (!shop) return NextResponse.json({ error: 'Shop not found' }, { status: 404 })
     const { data: existing } = await supabase.from('settings').select('id').eq('shop_id', shopId).maybeSingle()
 
-    // Only include columns that definitely exist in the schema
+    // Seed only from this shop's profile. Never copy the original deployment's
+    // name, address, phone, or sender into another tenant.
+    const profileName = typeof shop.shop_name === 'string' ? shop.shop_name.trim() : ''
+    const profileAddress = [shop.address, shop.city_state_zip].filter(value => typeof value === 'string' && value.trim()).map(value => String(value).trim()).join(', ')
+    const profilePhone = typeof shop.phone === 'string' ? shop.phone.trim() : ''
     const defaults: Record<string, unknown> = {
       shop_id: shopId,
-      shop_name: 'Alpha International Auto Center',
-      shop_address: '10710 S Main St, Houston TX 77025',
-      shop_phone: '(713) 663-6979',
-      shop_email: process.env.FROM_EMAIL || 'service@alphainternationalauto.com',
+      shop_name: profileName || 'Your Auto Repair Shop',
+      shop_address: profileAddress,
+      shop_phone: profilePhone,
+      shop_email: '',
       labor_rate: 120,
       tax_rate: 8.25,
       warranty_months: 12,
@@ -31,8 +35,9 @@ export async function POST(req: NextRequest) {
       // authenticated shop user; secrets don't belong there.
       ai_model: DEFAULT_OPENROUTER_MODEL,
       ai_base_url: AI_BASE_URLS.OPENROUTER,
-      telnyx_phone_number: process.env.TELNYX_PHONE_NUMBER || '',
-      from_email: process.env.FROM_EMAIL || 'service@alphainternationalauto.com',
+      // Provider numbers and sender identities are tenant-owned settings.
+      telnyx_phone_number: '',
+      from_email: '',
     }
 
     if (existing?.id) {
