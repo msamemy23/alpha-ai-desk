@@ -7,14 +7,13 @@ import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
 
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
-const OUTBOUND_VOICE_PROFILE_ID = '2668698936952227186'
-
 type ShopConfig = {
   shopId: string
   apiKey: string
   fromPhone: string
   connectionId: string
   credentialId: string
+  outboundVoiceProfileId: string
   shopName: string
 }
 
@@ -22,7 +21,7 @@ async function getShopConfig(shopId: string): Promise<ShopConfig> {
   const db = getServiceClient()
   const { data, error } = await db
     .from('settings')
-    .select('shop_id,shop_name,telnyx_api_key,telnyx_phone_number,telnyx_connection_id,webrtc_connection_id,webrtc_credential_id')
+    .select('shop_id,shop_name,telnyx_api_key,telnyx_phone_number,telnyx_connection_id,webrtc_connection_id,webrtc_credential_id,telnyx_outbound_voice_profile_id')
     .eq('shop_id', shopId)
     .limit(1)
     .maybeSingle()
@@ -33,6 +32,7 @@ async function getShopConfig(shopId: string): Promise<ShopConfig> {
     fromPhone: String(data?.telnyx_phone_number || ''),
     connectionId: String(data?.webrtc_connection_id || data?.telnyx_connection_id || ''),
     credentialId: String(data?.webrtc_credential_id || ''),
+    outboundVoiceProfileId: String(data?.telnyx_outbound_voice_profile_id || ''),
     shopName: String(data?.shop_name || 'Your Auto Shop'),
   }
 }
@@ -66,7 +66,7 @@ async function findConnectionByName(apiKey: string, name: string): Promise<strin
   return typeof connection?.id === 'string' ? connection.id : null
 }
 
-async function createCredentialConnection(config: ShopConfig): Promise<string> {
+async function createCredentialConnection(config: ShopConfig, outboundVoiceProfileId: string): Promise<string> {
   const connectionName = 'Alpha WebRTC ' + config.shopId.slice(0, 8)
   const response = await fetch(TELNYX_BASE + '/credential_connections', {
     method: 'POST',
@@ -79,7 +79,7 @@ async function createCredentialConnection(config: ShopConfig): Promise<string> {
       connection_name: connectionName,
       user_name: 'alphawebrtc' + config.shopId.slice(0, 8),
       password: 'P' + crypto.randomUUID().replace(/-/g, '') + '!',
-      outbound: { outbound_voice_profile_id: OUTBOUND_VOICE_PROFILE_ID },
+      outbound: { outbound_voice_profile_id: outboundVoiceProfileId },
     }),
     signal: AbortSignal.timeout(20000),
   })
@@ -97,17 +97,48 @@ async function createCredentialConnection(config: ShopConfig): Promise<string> {
   return id
 }
 
-async function ensureOutboundProfile(apiKey: string, connectionId: string): Promise<boolean> {
+async function ensureOutboundProfile(apiKey: string, connectionId: string, outboundVoiceProfileId: string): Promise<boolean> {
+  if (!outboundVoiceProfileId) return false
   const response = await fetch(TELNYX_BASE + '/credential_connections/' + encodeURIComponent(connectionId), {
     method: 'PATCH',
     headers: {
       Authorization: 'Bearer ' + apiKey,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ outbound: { outbound_voice_profile_id: OUTBOUND_VOICE_PROFILE_ID } }),
+    body: JSON.stringify({ outbound: { outbound_voice_profile_id: outboundVoiceProfileId } }),
     signal: AbortSignal.timeout(15000),
   })
   return response.ok
+}
+
+async function resolveOutboundVoiceProfile(apiKey: string, configuredId: string, shopId: string): Promise<string> {
+  const requestedId = configuredId.trim()
+  if (requestedId) {
+    const response = await fetch(TELNYX_BASE + '/outbound_voice_profiles/' + encodeURIComponent(requestedId), {
+      headers: { Authorization: 'Bearer ' + apiKey },
+      signal: AbortSignal.timeout(15000),
+    })
+    if (response.ok) return requestedId
+  }
+
+  const response = await fetch(TELNYX_BASE + '/outbound_voice_profiles?page[size]=250', {
+    headers: { Authorization: 'Bearer ' + apiKey },
+    signal: AbortSignal.timeout(15000),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(String(data?.errors?.[0]?.detail || 'Telnyx outbound voice profiles could not be loaded'))
+  }
+
+  const profiles = Array.isArray(data?.data) ? data.data as Array<Record<string, unknown>> : []
+  const expectedName = 'Alpha WebRTC ' + shopId.slice(0, 8)
+  const preferred = profiles.find(profile => profile.name === expectedName)
+    || (profiles.length === 1 ? profiles[0] : profiles.find(profile => /default/i.test(String(profile.name || ''))))
+  const profileId = preferred && typeof preferred.id === 'string' ? preferred.id : ''
+  if (!profileId) {
+    throw new Error('No unambiguous Telnyx outbound voice profile is configured for this shop. Add its profile ID in Settings and try again.')
+  }
+  return profileId
 }
 
 async function createCredential(config: ShopConfig, connectionId: string): Promise<string> {
@@ -145,6 +176,7 @@ async function generateToken(apiKey: string, credentialId: string): Promise<stri
 
 async function buildToken(config: ShopConfig) {
   if (!config.apiKey || !config.fromPhone) throw new Error('Telnyx SMS/voice settings are not configured for this shop')
+  const outboundVoiceProfileId = await resolveOutboundVoiceProfile(config.apiKey, config.outboundVoiceProfileId, config.shopId)
 
   let connectionId = config.connectionId
   let credentialId = config.credentialId
@@ -152,22 +184,22 @@ async function buildToken(config: ShopConfig) {
   if (credentialId) {
     try {
       const token = await generateToken(config.apiKey, credentialId)
-      if (connectionId && await ensureOutboundProfile(config.apiKey, connectionId)) {
-        return { token, connectionId, credentialId }
+      if (connectionId && await ensureOutboundProfile(config.apiKey, connectionId, outboundVoiceProfileId)) {
+        return { token, connectionId, credentialId, outboundVoiceProfileId }
       }
     } catch {
       // Rebuild the tenant-owned resource below.
     }
   }
 
-  if (connectionId && !await ensureOutboundProfile(config.apiKey, connectionId)) {
+  if (connectionId && !await ensureOutboundProfile(config.apiKey, connectionId, outboundVoiceProfileId)) {
     connectionId = ''
     credentialId = ''
   }
-  if (!connectionId) connectionId = await createCredentialConnection(config)
+  if (!connectionId) connectionId = await createCredentialConnection(config, outboundVoiceProfileId)
   if (!credentialId) credentialId = await createCredential(config, connectionId)
   const token = await generateToken(config.apiKey, credentialId)
-  return { token, connectionId, credentialId }
+  return { token, connectionId, credentialId, outboundVoiceProfileId }
 }
 
 async function requireConfig() {
@@ -188,6 +220,7 @@ export async function GET() {
     await saveShopConfig(result.auth.shopId, {
       webrtc_connection_id: setup.connectionId,
       webrtc_credential_id: setup.credentialId,
+      telnyx_outbound_voice_profile_id: setup.outboundVoiceProfileId,
     })
     return NextResponse.json({
       ok: true,
@@ -213,6 +246,7 @@ export async function POST(req: NextRequest) {
       await saveShopConfig(result.auth.shopId, {
         webrtc_connection_id: setup.connectionId,
         webrtc_credential_id: setup.credentialId,
+        telnyx_outbound_voice_profile_id: setup.outboundVoiceProfileId,
       })
       return NextResponse.json({ ok: true, ...setup, fromPhone: result.config.fromPhone, shopName: result.config.shopName })
     }

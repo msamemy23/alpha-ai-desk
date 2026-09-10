@@ -1,3 +1,12 @@
+-- Normalize legacy payment schemas before the function references their columns.
+alter table public.payments add column if not exists customer_id uuid;
+alter table public.payments add column if not exists note text;
+alter table public.payments add column if not exists notes text;
+update public.payments
+   set note = coalesce(note, notes)
+ where note is null
+   and notes is not null;
+
 -- Enforce the payment ledger as an append-only, atomic workflow.
 -- Direct client writes cannot create fake payment history or bypass amount_paid.
 create or replace function public.prevent_direct_payment_ledger_change()
