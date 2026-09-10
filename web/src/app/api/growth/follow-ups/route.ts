@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
+import { isSmsOptedOut } from '@/lib/sms-consent'
 
 
 async function generateFollowUpMessage(customerName: string, lastService: string, monthsAgo: number, shopName: string, shopPhone: string, aiKey: string, aiBase: string, aiModel: string): Promise<string> {
@@ -172,7 +173,7 @@ export async function POST(req: NextRequest) {
       
       const message = await generateFollowUpMessage(customer.name, visit.service, monthsAgo, shopName, shopPhone, aiKey, aiBase, aiModel)
 
-      if (customer.sms_opted_out) {
+      if (customer.sms_opted_out || await isSmsOptedOut(supabase, auth.shopId, customer.phone)) {
         results.push({
           customer: customer.name,
           phone: customer.phone || 'N/A',

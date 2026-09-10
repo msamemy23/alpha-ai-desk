@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { sendEmail } from '@/lib/email'
-import { getLaborFlatAmount, laborLineTotal } from '@/lib/document-money'
+import { calculateDocumentTotals, getLaborFlatAmount, laborLineTotal } from '@/lib/document-money'
 import crypto from 'crypto'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 
@@ -24,49 +24,27 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
   balance_due: number
 } {
   if (!doc) return doc as never
-  const parts = (doc.parts as Record<string, unknown>[]) || []
-  const labors = (doc.labors as Record<string, unknown>[]) || []
-  const rawTaxRate = Number(doc.tax_rate)
-  const taxRate = Number.isFinite(rawTaxRate) && rawTaxRate >= 0 ? rawTaxRate : 8.25
-  const applyTax = doc.apply_tax !== false
-  const shopSupplies = Number(doc.shop_supplies) || 0
-  const sublet = Number(doc.sublet) || 0
-  const rawAmountPaid = Number(doc.amount_paid)
-  const amountPaid = Number.isFinite(rawAmountPaid) && rawAmountPaid >= 0 ? rawAmountPaid : 0
-
-  const partsTotal = parts.reduce(
-    (s, p) => s + (Number(p.qty) || 1) * (Number(p.unitPrice) || 0),
-    0
-  )
-  const laborTotal = labors.reduce((s, l) => s + laborLineTotal(l), 0)
-  const taxableBase = applyTax
-    ? parts
-        .filter((p) => p.taxable !== false)
-        .reduce((s, p) => s + (Number(p.qty) || 1) * (Number(p.unitPrice) || 0), 0) +
-      shopSupplies +
-      sublet
-    : 0
-  const taxAmount = taxableBase * (taxRate / 100)
-  const subtotal = laborTotal + partsTotal + shopSupplies + sublet
-  // Prefer an explicitly persisted total if present and non-zero, otherwise compute.
-  const persistedTotal = Number(doc.total) || 0
-  const total = persistedTotal > 0 ? persistedTotal : subtotal + taxAmount
-  const balanceDue = Math.max(total - amountPaid, 0)
+  const parts = Array.isArray(doc.parts) ? doc.parts.filter((line): line is Record<string, unknown> => Boolean(line && typeof line === 'object')) : []
+  const labors = Array.isArray(doc.labors) ? doc.labors.filter((line): line is Record<string, unknown> => Boolean(line && typeof line === 'object')) : []
+  const { partsTotal, laborTotal, coreTotal, shopSupplies, sublet, taxAmount, total, balanceDue } = calculateDocumentTotals(doc)
 
   // Build line_items from parts + labors so the sign page renders rows.
   // Keep any existing line_items if already populated.
   const existingLineItems = (doc.line_items as unknown[]) || []
   const built = [
-    ...parts.map((p) => {
+    ...parts.flatMap((p) => {
       const qty = Number(p.qty) || 1
       const unitPrice = Number(p.unitPrice) || 0
-      return {
+      const lines = [{
         description: (p.name as string) || (p.description as string) || (p.brand ? `${p.brand} part` : 'Part'),
         qty,
         unit_price: unitPrice,
         unitPrice,
-        total: qty * unitPrice,
-      }
+        total: roundDocumentLine(qty * unitPrice),
+      }]
+      const core = roundDocumentLine(qty * (Number(p.core) || 0))
+      if (core > 0) lines.push({ description: 'Core charge (refundable)', qty, unit_price: Number(p.core) || 0, unitPrice: Number(p.core) || 0, total: core })
+      return lines
     }),
     ...labors.map((l) => {
       const hours = Number(l.hours) || 0
@@ -78,10 +56,11 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
         qty: flatAmount !== null ? 1 : hours,
         unit_price: flatAmount !== null ? flatAmount : rate,
         unitPrice: flatAmount !== null ? flatAmount : rate,
-        total: flatAmount !== null ? flatAmount : hours * rate,
+        total: roundDocumentLine(flatAmount !== null ? flatAmount : hours * rate),
       }
     }),
   ]
+  if (sublet > 0) built.push({ description: 'Sublet', qty: 1, unit_price: sublet, unitPrice: sublet, total: sublet })
   const line_items = existingLineItems.length > 0 ? (existingLineItems as typeof built) : built
 
   return {
@@ -90,6 +69,8 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
     total,
     parts_total: partsTotal,
     labor_total: laborTotal,
+    core_total: coreTotal,
+    sublet_total: sublet,
     tax_amount: taxAmount,
     balance_due: balanceDue,
   } as T & {
@@ -100,6 +81,10 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
     tax_amount: number
     balance_due: number
   }
+}
+
+function roundDocumentLine(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100
 }
 
 function escapeHtml(value: unknown): string {
@@ -276,7 +261,9 @@ export async function POST(req: NextRequest) {
     <table style="width:260px;margin-left:auto;font-size:13px;margin-bottom:16px">
       ${doc.parts_total > 0 ? `<tr><td style="padding:3px 8px">Parts</td><td style="padding:3px 8px;text-align:right">$${doc.parts_total.toFixed(2)}</td></tr>` : ''}
       ${doc.labor_total > 0 ? `<tr><td style="padding:3px 8px">Labor</td><td style="padding:3px 8px;text-align:right">$${doc.labor_total.toFixed(2)}</td></tr>` : ''}
+      ${doc.core_total > 0 ? `<tr><td style="padding:3px 8px">Core Charges</td><td style="padding:3px 8px;text-align:right">$${doc.core_total.toFixed(2)}</td></tr>` : ''}
       ${Number(doc.shop_supplies) > 0 ? `<tr><td style="padding:3px 8px">Shop Supplies</td><td style="padding:3px 8px;text-align:right">$${Number(doc.shop_supplies).toFixed(2)}</td></tr>` : ''}
+      ${doc.sublet_total > 0 ? `<tr><td style="padding:3px 8px">Sublet</td><td style="padding:3px 8px;text-align:right">$${doc.sublet_total.toFixed(2)}</td></tr>` : ''}
       ${doc.tax_amount > 0 ? `<tr><td style="padding:3px 8px">Tax</td><td style="padding:3px 8px;text-align:right">$${doc.tax_amount.toFixed(2)}</td></tr>` : ''}
       <tr style="font-size:15px;font-weight:bold;border-top:2px solid #111">
         <td style="padding:6px 8px">Total</td>

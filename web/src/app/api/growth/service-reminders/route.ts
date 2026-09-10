@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { isSmsOptedOut } from '@/lib/sms-consent'
 
 export const dynamic = 'force-dynamic'
 
@@ -103,7 +104,7 @@ export async function POST(req: NextRequest) {
 
       const msg = `Hi ${customer.name}! Your ${vehicle.year || ''} ${vehicle.make || ''} ${vehicle.model || ''} is due for an oil change. ${shopName} is ready for you${shopPhone ? ` — call ${shopPhone}` : ''} or just reply to this text!`
 
-      if (customer.sms_opted_out) {
+      if (customer.sms_opted_out || await isSmsOptedOut(sb, auth.shopId, customer.phone)) {
         results.push({ vehicle: `${vehicle.year} ${vehicle.make} ${vehicle.model}`, customer: customer.name, sent: false, skipped: true, error: 'Customer has opted out of SMS' })
         continue
       }
@@ -164,7 +165,7 @@ export async function POST(req: NextRequest) {
       const serviceText = appt.service ? ` for ${appt.service}` : ''
       const msg = `Hi ${appt.customer_name || 'there'}! Reminder: you have an appointment${serviceText} at ${shopName} tomorrow${timeText}.${shopPhone ? ` Call ${shopPhone}` : ''} if you need to reschedule. See you then!`
 
-      if (appointmentCustomer?.sms_opted_out) {
+      if (appointmentCustomer?.sms_opted_out || await isSmsOptedOut(sb, auth.shopId, phone)) {
         results.push({ appointment: appt.id, customer: appt.customer_name, time: appt.time, sent: false, skipped: true, error: 'Customer has opted out of SMS' })
         continue
       }

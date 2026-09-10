@@ -1,6 +1,6 @@
 // Gmail SMTP email helper using nodemailer
 import nodemailer from 'nodemailer'
-import { getLaborFlatAmount, laborLineTotal } from '@/lib/document-money'
+import { calculateDocumentTotals, getLaborFlatAmount, laborLineTotal, partLineTotal } from '@/lib/document-money'
 
 function escapeHtml(value: unknown): string {
   return String(value ?? '')
@@ -71,22 +71,10 @@ export function estimateEmailHtml(
   const shopPhone = (settings?.shop_phone as string) || ''
   const shopAddress = (settings?.shop_address as string) || ''
 
-  const parts = (doc.parts as Record<string, unknown>[]) || []
-  const labors = (doc.labors as Record<string, unknown>[]) || []
-  const rawTaxRate = Number(doc.tax_rate)
-  const taxRate = Number.isFinite(rawTaxRate) && rawTaxRate >= 0 ? rawTaxRate : 8.25
-  const applyTax = doc.apply_tax !== false
-  const shopSupplies = Number(doc.shop_supplies) || 0
-  const rawAmountPaid = Number(doc.amount_paid)
-  const amountPaid = Number.isFinite(rawAmountPaid) && rawAmountPaid >= 0 ? rawAmountPaid : 0
-  const partsTotal = parts.reduce(
-    (s, p) => s + (Number(p.qty) || 1) * (Number(p.unitPrice) || 0),
-    0
-  )
-  const laborTotal = labors.reduce((s, l) => s + laborLineTotal(l), 0)
-  const tax = applyTax ? partsTotal * (taxRate / 100) : 0
-  const total = partsTotal + laborTotal + shopSupplies + tax
-  const balanceDue = Math.max(total - amountPaid, 0)
+  const parts = Array.isArray(doc.parts) ? doc.parts.filter((line): line is Record<string, unknown> => Boolean(line && typeof line === 'object')) : []
+  const labors = Array.isArray(doc.labors) ? doc.labors.filter((line): line is Record<string, unknown> => Boolean(line && typeof line === 'object')) : []
+  const totals = calculateDocumentTotals(doc)
+  const { partsTotal, laborTotal, coreTotal, shopSupplies, sublet, taxRate, applyTax, taxAmount: tax, total, balanceDue, amountPaid } = totals
   const vehicle = [doc.vehicle_year, doc.vehicle_make, doc.vehicle_model]
     .filter(Boolean)
     .join(' ')
@@ -103,7 +91,7 @@ export function estimateEmailHtml(
   const partsRows = parts
     .map(
       (p) =>
-        `<tr><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${escapeHtml(p.name || p.description || '')}</td><td style="padding:4px 8px;text-align:center;border-bottom:1px solid #f0f0f0">${escapeHtml(p.qty || 1)}</td><td style="padding:4px 8px;text-align:right;border-bottom:1px solid #f0f0f0">$${((Number(p.qty) || 1) * (Number(p.unitPrice) || 0)).toFixed(2)}</td></tr>`
+        `<tr><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${escapeHtml(p.name || p.description || '')}</td><td style="padding:4px 8px;text-align:center;border-bottom:1px solid #f0f0f0">${escapeHtml(p.qty || 1)}</td><td style="padding:4px 8px;text-align:right;border-bottom:1px solid #f0f0f0">$${partLineTotal(p).toFixed(2)}</td></tr>`
     )
     .join('')
 
@@ -141,7 +129,9 @@ export function estimateEmailHtml(
     <table style="width:260px;margin-left:auto;font-size:14px;margin-bottom:24px">
       ${partsTotal > 0 ? `<tr><td style="padding:3px 8px">Parts</td><td style="padding:3px 8px;text-align:right">$${partsTotal.toFixed(2)}</td></tr>` : ''}
       ${laborTotal > 0 ? `<tr><td style="padding:3px 8px">Labor</td><td style="padding:3px 8px;text-align:right">$${laborTotal.toFixed(2)}</td></tr>` : ''}
+      ${coreTotal > 0 ? `<tr><td style="padding:3px 8px">Core Charges</td><td style="padding:3px 8px;text-align:right">$${coreTotal.toFixed(2)}</td></tr>` : ''}
       ${shopSupplies > 0 ? `<tr><td style="padding:3px 8px">Shop Supplies</td><td style="padding:3px 8px;text-align:right">$${shopSupplies.toFixed(2)}</td></tr>` : ''}
+      ${sublet > 0 ? `<tr><td style="padding:3px 8px">Sublet</td><td style="padding:3px 8px;text-align:right">$${sublet.toFixed(2)}</td></tr>` : ''}
       ${applyTax ? `<tr><td style="padding:3px 8px">Tax (${taxRate}%)</td><td style="padding:3px 8px;text-align:right">$${tax.toFixed(2)}</td></tr>` : ''}
       <tr style="font-size:16px;font-weight:bold;border-top:2px solid #111">
         <td style="padding:8px">Total</td>

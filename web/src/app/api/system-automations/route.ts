@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getAuthedShop, hasInternalApiSecret, unauthorized } from '@/lib/api-auth'
 import { isScheduleDue, scheduleWindowKey } from '@/lib/schedules'
+import { getIdempotencyKey } from '@/lib/api-response'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,7 +13,7 @@ const SYSTEM_AUTOMATIONS = [
     name: 'Review Requests',
     description: 'Auto-text customers after job completion asking for a Google review',
     category: 'retention',
-    schedule: 'Every 2 hours',
+    schedule: 'Daily at 6pm',
     icon: '⭐',
     endpoint: '/api/growth/reviews',
     endpointBody: { action: 'bulk_request' },
@@ -240,8 +241,10 @@ export async function POST(req: NextRequest) {
           continue
         }
         if (claimed !== true) continue
+        let childInvocationStarted = false
         try {
           const mergedBody = { ...auto.endpointBody, ...(state.config || {}), shopId }
+          childInvocationStarted = true
           const res = await fetch(`${baseUrl}${auto.endpoint}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${secret}` },
@@ -260,8 +263,12 @@ export async function POST(req: NextRequest) {
             error: success ? null : (data?.error || `Child job returned HTTP ${res.status}`),
           }).eq('shop_id', shopId).eq('automation_id', auto.id).eq('window_key', windowKey).eq('status', 'running')
           if (runUpdateError) {
+            await sb.from('automation_runs').update({
+              status: 'unknown', finished_at: new Date().toISOString(), next_attempt_at: null,
+              error: 'Child job completed, but its durable run state could not be saved',
+            }).eq('shop_id', shopId).eq('automation_id', auto.id).eq('window_key', windowKey).eq('status', 'running')
             allOk = false
-            results[`${shopId}:${auto.id}`] = { ok: false, error: 'Automation result could not be recorded' }
+            results[`${shopId}:${auto.id}`] = { ok: false, error: 'Automation result could not be recorded; manual reconciliation required' }
             continue
           }
           if (success) {
@@ -275,12 +282,12 @@ export async function POST(req: NextRequest) {
           state.last_status = 'error'
           state.last_result = error instanceof Error ? error.message : 'Unknown error'
           await sb.from('automation_runs').update({
-            status: 'failed',
+            status: childInvocationStarted ? 'unknown' : 'failed',
             finished_at: new Date().toISOString(),
-            next_attempt_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-            error: state.last_result,
+            next_attempt_at: childInvocationStarted ? null : new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+            error: childInvocationStarted ? 'Child job outcome is uncertain; manual reconciliation required' : state.last_result,
           }).eq('shop_id', shopId).eq('automation_id', auto.id).eq('window_key', windowKey).eq('status', 'running')
-          results[`${shopId}:${auto.id}`] = { ok: false, error: state.last_result }
+          results[`${shopId}:${auto.id}`] = { ok: false, error: childInvocationStarted ? 'Child job outcome is uncertain; manual reconciliation required' : state.last_result }
         }
       }
 
@@ -328,6 +335,16 @@ export async function POST(req: NextRequest) {
     const auto = SYSTEM_AUTOMATIONS.find(a => a.id === id)
     if (!auto) return NextResponse.json({ ok: false, error: 'Unknown automation' }, { status: 404 })
 
+    const manualWindowKey = `manual:${getIdempotencyKey(req, [auth!.shopId, id, new Date().toISOString().slice(0, 16)])}`
+    const { data: claimed, error: claimError } = await sb.rpc('claim_automation_run', {
+      p_shop_id: auth!.shopId,
+      p_automation_id: id,
+      p_window_key: manualWindowKey,
+    })
+    if (claimError) return NextResponse.json({ ok: false, error: 'Automation run could not be claimed' }, { status: 503 })
+    if (claimed !== true) return NextResponse.json({ ok: false, error: 'This automation run is already in progress or already completed' }, { status: 409 })
+
+    let childInvocationStarted = false
     try {
       const baseUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
       const userConfig = config[id].config || {}
@@ -341,6 +358,7 @@ export async function POST(req: NextRequest) {
         if (authorization) forwardedHeaders.Authorization = authorization
         if (cookie) forwardedHeaders.Cookie = cookie
       }
+      childInvocationStarted = true
       const res = await fetch(`${baseUrl}${auto.endpoint}`, {
         method: 'POST',
         headers: forwardedHeaders,
@@ -356,13 +374,35 @@ export async function POST(req: NextRequest) {
         config[id].last_run = new Date().toISOString()
         config[id].run_count = (config[id].run_count || 0) + 1
       }
+      const { error: runUpdateError } = await sb.from('automation_runs').update({
+        status: success ? 'succeeded' : 'failed',
+        finished_at: new Date().toISOString(),
+        next_attempt_at: success ? null : new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+        result: data,
+        error: success ? null : (data?.error || `Child job returned HTTP ${res.status}`),
+      }).eq('shop_id', auth!.shopId).eq('automation_id', id).eq('window_key', manualWindowKey).eq('status', 'running')
+      if (runUpdateError) {
+        await sb.from('automation_runs').update({
+          status: 'unknown', finished_at: new Date().toISOString(), next_attempt_at: null,
+          error: 'Child job completed, but its durable run state could not be saved',
+        }).eq('shop_id', auth!.shopId).eq('automation_id', id).eq('window_key', manualWindowKey).eq('status', 'running')
+        return NextResponse.json({ ok: false, error: 'Automation ran, but its final state could not be saved; manual reconciliation required' }, { status: 502 })
+      }
       await saveConfig(sb, config, auth!.shopId)
 
       return NextResponse.json({ ok: success, success, result: data, state: config[id] }, { status: success ? 200 : 502 })
     } catch (e) {
       config[id].last_status = 'error'
       config[id].last_result = (e as Error).message
+      const runStatus = childInvocationStarted ? 'unknown' : 'failed'
+      await sb.from('automation_runs').update({
+        status: runStatus,
+        finished_at: new Date().toISOString(),
+        next_attempt_at: null,
+        error: childInvocationStarted ? 'Child job outcome is uncertain; manual reconciliation required' : config[id].last_result,
+      }).eq('shop_id', auth!.shopId).eq('automation_id', id).eq('window_key', manualWindowKey).eq('status', 'running')
       await saveConfig(sb, config, auth!.shopId)
+      if (childInvocationStarted) return NextResponse.json({ ok: false, error: 'Automation outcome is uncertain; manual reconciliation required' }, { status: 502 })
       return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 })
     }
   }

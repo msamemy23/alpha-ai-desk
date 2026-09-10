@@ -6,6 +6,7 @@ import { sendSMS, formatPhone } from '@/lib/telnyx'
 import { sendEmail } from '@/lib/email'
 import { getIdempotencyKey } from '@/lib/api-response'
 import { normalizePhoneDigits } from '@/lib/sms-normalize'
+import { isSmsOptedOut } from '@/lib/sms-consent'
 
 export async function POST(req: NextRequest) {
   try {
@@ -108,7 +109,9 @@ export async function POST(req: NextRequest) {
     let messageId: string | null = null
 
     if (channel === 'sms') {
-      if (smsOptedOut) return NextResponse.json({ error: 'Customer has opted out of SMS' }, { status: 409 })
+      if (smsOptedOut || await isSmsOptedOut(db, auth.shopId, formattedPhone)) {
+        return NextResponse.json({ error: 'This destination has opted out of SMS' }, { status: 409 })
+      }
       const idempotencyKey = getIdempotencyKey(req, [auth.shopId, 'send-message', channel, resolvedCustomerId || formattedPhone, body.slice(0, 80)])
       const telnyxMsg = await sendSMS(formattedPhone, body, settings?.telnyx_phone_number || '', {
         apiKey: settings?.telnyx_api_key || '',

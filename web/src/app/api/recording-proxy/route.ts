@@ -9,7 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
-import { assertPublicUrl } from '@/lib/public-url'
+import { assertPublicUrl, fetchPublicUrl } from '@/lib/public-url'
 
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
 const MAX_RECORDING_BYTES = 50 * 1024 * 1024
@@ -57,7 +57,11 @@ async function fetchRecording(url: URL, apiKey: string): Promise<Response | null
     const headers = isTelnyxApiUrl(current.toString()) && apiKey
       ? { Authorization: `Bearer ${apiKey}` }
       : undefined
-    const response = await fetch(current.toString(), { headers, cache: 'no-store', redirect: 'manual' })
+    const response = await fetchPublicUrl(current, {
+      headers,
+      signal: AbortSignal.timeout(30000),
+      maxBytes: MAX_RECORDING_BYTES,
+    })
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location')
       if (!location || attempt === MAX_REDIRECTS) return null

@@ -6,6 +6,8 @@ const route = readFileSync(new URL('../src/app/api/parts-lookup/route.ts', impor
 const partsPage = readFileSync(new URL('../src/app/(app)/parts/page.tsx', import.meta.url), 'utf8')
 const sendSms = readFileSync(new URL('../src/app/api/send-sms/route.ts', import.meta.url), 'utf8')
 const aiAction = readFileSync(new URL('../src/app/api/ai-action/route.ts', import.meta.url), 'utf8')
+const saveDocument = readFileSync(new URL('../src/app/api/save-document/route.ts', import.meta.url), 'utf8')
+const smsConsent = readFileSync(new URL('../src/lib/sms-consent.ts', import.meta.url), 'utf8')
 
 test('parts lookup is authenticated, shop scoped, rate limited, and audited', () => {
   assert.match(route, /getAuthedShop/)
@@ -28,4 +30,12 @@ test('SMS and AI shop actions have rate limit, audit, and idempotency safeguards
     assert.match(source, /writeAuditLog/)
     assert.match(source, /Idempotency|idempotency/i)
   }
+})
+
+test('financial and SMS safeguards are durable and tenant-bound', () => {
+  assert.doesNotMatch(sendSms, /sentSmsKeys/)
+  assert.match(sendSms, /claim_sms_send_operation/)
+  assert.match(sendSms, /isSmsOptedOut/)
+  assert.match(smsConsent, /shop_id/)
+  assert.match(saveDocument, /Paid or partially paid documents are financially immutable/)
 })

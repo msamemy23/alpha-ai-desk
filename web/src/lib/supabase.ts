@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import { laborLineTotal, partLineTotal } from '@/lib/document-money'
+import { calculateDocumentTotals } from '@/lib/document-money'
 import { createBrowserClient } from '@supabase/ssr'
 
 // Publishable URL + anon key (safe to ship to the browser; access is governed
@@ -177,28 +177,7 @@ export function formatCurrency(n: number | string) {
 }
 
 export function calcTotals(doc: Record<string, unknown>) {
-  const parts = (doc.parts as Record<string,unknown>[]) || []
-  const labors = (doc.labors as Record<string,unknown>[]) || []
-  const rawTaxRate = Number(doc.tax_rate)
-  const taxRate = Number.isFinite(rawTaxRate) && rawTaxRate >= 0 ? rawTaxRate : 8.25
-  const shopSupplies = Number(doc.shop_supplies) || 0
-  const sublet = Number(doc.sublet) || 0
-  const deposit = Number(doc.deposit) || 0
-  const rawAmountPaid = Number(doc.amount_paid)
-  // amount_paid is the authoritative cash ledger. A deposit is a core charge,
-  // not a payment, so it must never silently make an invoice appear paid.
-  const amountPaid = Number.isFinite(rawAmountPaid) && rawAmountPaid >= 0 ? rawAmountPaid : 0
-  const applyTax = doc.apply_tax !== false
-
-  const laborTotal = labors.reduce((s, l) => s + laborLineTotal(l), 0)
-  const partsTotal = parts.reduce((s, p) => s + partLineTotal(p), 0)
-  // Core charges: a refundable deposit on the old unit (alternators, batteries,
-  // calipers…). The customer pays it now and gets it back when the core is returned.
-  const coreTotal = parts.reduce((s, p) => s + (Number(p.qty)||1) * (Number(p.core)||0), 0)
-  const taxableBase = applyTax ? parts.filter(p => p.taxable !== false).reduce((s,p) => s + (Number(p.qty)||1)*(Number(p.unitPrice)||0), 0) + shopSupplies + sublet : 0
-  const taxAmount = taxableBase * (taxRate / 100)
-  const subtotal = laborTotal + partsTotal + shopSupplies + sublet + coreTotal
-  const total = subtotal + taxAmount
-  const balanceDue = Math.max(total - amountPaid, 0)
-  return { laborTotal, partsTotal, coreTotal, taxAmount, subtotal, total, balanceDue, deposit, amountPaid }
+  // amount_paid is the authoritative payment ledger. A deposit is a core
+  // charge, not a payment, so it must never silently reduce the balance.
+  return calculateDocumentTotals(doc)
 }

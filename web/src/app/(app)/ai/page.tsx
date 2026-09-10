@@ -4,7 +4,7 @@ import { getShopId, supabase } from '@/lib/supabase'
 import { AGENTS, SKILLS } from '@/lib/ai/capabilities'
 import { classifyRequest, type RouteDecision } from '@/lib/ai/router'
 import { normalizeDocumentDraft } from '@/lib/ai/document-draft'
-import { getLaborFlatAmount, laborLineTotal, partLineTotal } from '@/lib/document-money'
+import { calculateDocumentTotals, getLaborFlatAmount, laborLineTotal, partLineTotal } from '@/lib/document-money'
 import type { RepairSearchResult } from '@/lib/repair/sources'
 import { parseRepairQuery } from '@/lib/repair/sources'
 import { buildRepairPresentation, detectRepairDtc, repairVehicleLabel, repairWorkspaceUrl, REPAIR_DTC_GUIDES } from '@/lib/repair/presentation'
@@ -457,7 +457,7 @@ GOOGLE CALENDAR CREATE EVENT:
  
  
  
-    SCHEDULE TASK - Schedule automated tasks to run at specific times. Use when user says "post at 5am", "remind me at", "schedule", "every morning", "do this at 7pm": {"tool":"scheduleTask","name":"Morning Post","schedule":"5:00am","task_prompt":"Post to Facebook: Good morning the configured service area!"} Schedule formats: "5:00am" (daily), "mon 9:00am" (weekly), "every 2h" (repeating) The task_prompt should be exactly what you'd type in the AI chat to execute the task.  FACEBOOK POST TARGET: When posting to Facebook, ALWAYS include "target" in payload. Ask the user: "Want me to post to the business page, your personal profile, or both?" Target options: "page" (connected business page), "profile" (connected personal profile), "both" (default)  NAVIGATE: {"tool":"navigate","view":"jobs"} - For app views OR URLs. Pass full URL for web pages.  GOOGLE CALENDAR DELETE EVENT:
+    SCHEDULE TASK - Schedule automated tasks to run at specific times. Use when user says "post at 5am", "remind me at", "schedule", "every morning", "do this at 7pm": {"tool":"scheduleTask","name":"Morning Post","schedule":"5:00am","task_prompt":"Post to Facebook: Good morning the configured service area!"} Schedule formats: "5:00am" (daily) and "mon 9:00am" (weekly). Background checks run once per day on this deployment; use Run Now for immediate execution. Every-run tasks create proposals for approval, and the task_prompt should be exactly what you'd type in the AI chat.  FACEBOOK POST TARGET: When posting to Facebook, ALWAYS include "target" in payload. Ask the user: "Want me to post to the business page, your personal profile, or both?" Target options: "page" (connected business page), "profile" (connected personal profile), "both" (default)  NAVIGATE: {"tool":"navigate","view":"jobs"} - For app views OR URLs. Pass full URL for web pages.  GOOGLE CALENDAR DELETE EVENT:
 {"tool":"connector","connector":"google_calendar","action":"delete_event","payload":{"event_id":"..."}}
 STAFF MANAGEMENT - Add, remove, or list shop employees. Use when user says "add employee", "hire someone", "remove staff", "fire", "who works here", "list the team":
 Add employee:    {"tool":"action","action":"addStaff","payload":{"name":"Carlos","role":"technician"}}
@@ -3119,6 +3119,9 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           type: normalized.type || 'Estimate',
           apply_tax: normalized.apply_tax,
           tax_rate: normalized.tax_rate,
+          shop_supplies: normalized.shop_supplies,
+          sublet: normalized.sublet,
+          deposit: normalized.deposit,
         })
       })
       if (!res.ok) throw new Error('Failed')
@@ -3199,12 +3202,8 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
     const normalized = normalizeDocumentDraft(parsed, { userText })
     const parts = (normalized.parts as Record<string,unknown>[]) || []
     const labors = (normalized.labors as Record<string,unknown>[]) || []
-    const partsTotal = parts.reduce((s,p) => s + partLineTotal(p), 0)
-    const laborTotal = labors.reduce((s,l) => s + laborLineTotal(l), 0)
-    const taxRate = normalized.tax_rate !== undefined ? Number(normalized.tax_rate) : 8.25
-    const applyTax = normalized.apply_tax !== undefined ? normalized.apply_tax !== false : true
-    const tax = applyTax ? partsTotal * (taxRate / 100) : 0
-    const total = partsTotal + laborTotal + tax
+    const totals = calculateDocumentTotals(normalized)
+    const { partsTotal, laborTotal, coreTotal, shopSupplies, sublet, taxRate, applyTax, taxAmount: tax, total } = totals
     const fmt = (n: number) => '$' + n.toFixed(2)
     const docType = (normalized.type as string) || 'Estimate'
     const encodedData = encodeProposalPayload(normalized)
@@ -3215,6 +3214,9 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       <div class="border-t border-border pt-2 space-y-1 text-xs">
         <div class="flex justify-between"><span>Parts</span><span>${fmt(partsTotal)}</span></div>
         <div class="flex justify-between"><span>Labor</span><span>${fmt(laborTotal)}</span></div>
+        ${coreTotal > 0 ? `<div class="flex justify-between"><span>Core Charges</span><span>${fmt(coreTotal)}</span></div>` : ''}
+        ${shopSupplies > 0 ? `<div class="flex justify-between"><span>Shop Supplies</span><span>${fmt(shopSupplies)}</span></div>` : ''}
+        ${sublet > 0 ? `<div class="flex justify-between"><span>Sublet</span><span>${fmt(sublet)}</span></div>` : ''}
         <div class="flex justify-between"><span>Tax${applyTax ? ` (${taxRate}%)` : ''}</span><span>${fmt(tax)}</span></div>
         <div class="flex justify-between font-bold text-base mt-1 pt-1 border-t border-border"><span>Total</span><span class="text-green">${fmt(total)}</span></div>
       </div>

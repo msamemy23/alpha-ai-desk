@@ -7,6 +7,7 @@ import { getIdempotencyKey } from '@/lib/api-response'
 import { writeAuditLog } from '@/lib/audit-log'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
 import { createHash } from 'node:crypto'
+import { isSmsOptedOut } from '@/lib/sms-consent'
 
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
 function fail(error: string, status = 400) { return NextResponse.json({ ok: false, error }, { status }) }
@@ -240,7 +241,7 @@ export async function POST(req: NextRequest) {
           resolvedCustomerId = data?.id || ''
         }
         if (!customer || !resolvedCustomerId) return fail('Customer must be found before scheduling a follow-up', 404)
-        if (selectedChannel === 'sms' && customer.sms_opted_out) return fail('Customer has opted out of SMS', 409)
+        if (selectedChannel === 'sms' && (customer.sms_opted_out || await isSmsOptedOut(sb, shopId, customer.phone))) return fail('This destination has opted out of SMS', 409)
         const { data, error } = await sb.from('scheduled_messages').insert({
           customer_id: resolvedCustomerId,
           customer_name: customer.name || customer_name || 'Customer',

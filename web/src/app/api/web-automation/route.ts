@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
-import { assertPublicUrl, tryPublicUrl } from '@/lib/public-url'
+import { assertPublicUrl, fetchPublicUrl, tryPublicUrl } from '@/lib/public-url'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 30
@@ -23,10 +23,10 @@ async function fetchAndParse(url: string, selector?: string): Promise<ParsedPage
     let currentUrl = await assertPublicUrl(url)
     let r: Response | null = null
     for (let redirect = 0; redirect <= 3; redirect += 1) {
-      r = await fetch(currentUrl.toString(), {
+      r = await fetchPublicUrl(currentUrl, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
         signal: AbortSignal.timeout(15000),
-        redirect: 'manual',
+        maxBytes: 2 * 1024 * 1024,
       })
       if (r.status < 300 || r.status >= 400) break
       const location = r.headers.get('location')
@@ -163,11 +163,13 @@ async function runBrowserTask(task: string, url: string, actions: BrowserAction[
     const successLabel = JSON.stringify(actionLabel)
     const failureLabel = JSON.stringify(`Failed: ${actionLabel}`)
     return `
+      if (halted) break;
       try {
         ${actionCode}
         steps.push({action:${successLabel},screenshot:(await page.screenshot({type:'png',fullPage:false})).toString('base64'),url:page.url(),title:await page.title()});
       } catch(stepErr) {
         stepFailures += 1;
+        halted = true;
         steps.push({action:${failureLabel}+' — '+String(stepErr?.message || stepErr),screenshot:'',url:page.url(),title:await page.title()});
       }`
   }).join('\n    ')
@@ -193,6 +195,7 @@ async function runBrowserTask(task: string, url: string, actions: BrowserAction[
     });
     const steps = [];
     let stepFailures = 0;
+    let halted = false;
     try {
       await page.goto(${JSON.stringify(url)}, {waitUntil:'networkidle2',timeout:15000});
       steps.push({action:'Opened page',screenshot:(await page.screenshot({type:'png',fullPage:false})).toString('base64'),url:page.url(),title:await page.title()});

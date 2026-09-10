@@ -4,6 +4,7 @@ import {
   moneyFromUnknown,
   partLineTotal,
   roundMoney,
+  calculateDocumentTotals,
 } from '@/lib/document-money'
 
 type DraftLine = Record<string, unknown>
@@ -38,25 +39,38 @@ export function allocateAmounts(total: number, count: number): number[] {
 export function extractHardTotal(text?: string, draft?: Record<string, unknown>): number | null {
   const source = text?.trim() || ''
   if (source) {
+    // A dollar amount is not automatically a hard document total: itemized
+    // requests commonly contain a part price, a labor rate, and a tax rate.
+    // Only explicit total language, or an unambiguous "for $X" phrase, may
+    // collapse the proposal into a flat total.
     const strongPattern =
-      /(?:make\s+(?:the\s+)?(?:total|price)|(?:total|price)\s*(?:to\s*be|for|is|=)?|flat(?:\s*rate)?|for\s+everything|everything\s+for|all\s+in|out\s+the\s+door|parts\s+and\s+labor)\D{0,30}\$?\s*([0-9][0-9,]*(?:\.\d{1,2})?)/gi
+      /(?:make\s+(?:the\s+)?(?:total|price)|(?:grand\s+)?total(?:\s*(?:to\s*be|for|is|=))?|final\s+price(?:\s*(?:to\s*be|for|is|=))?|price\s+(?:to\s*be|for|is|=)|flat(?:\s*rate)?(?:\s*(?:total|price|for))?|for\s+everything|everything\s+for|all\s+in|out\s+the\s+door|parts\s+and\s+labor(?:\s+for)?)\D{0,40}\$?\s*([0-9][0-9,]*(?:\.\d{1,2})?)/gi
     const strongMatches = [...source.matchAll(strongPattern)]
       .map((match) => moneyFromUnknown(match[1]))
       .filter((amount): amount is number => amount !== null)
     if (strongMatches.length > 0) return strongMatches[strongMatches.length - 1]
 
+    const partsLaborTotalMatches = [...source.matchAll(/\bfor\s+\$?\s*([0-9][0-9,]*(?:\.\d{1,2})?)\s+parts\s+and\s+labor\b/gi)]
+      .map((match) => moneyFromUnknown(match[1]))
+      .filter((amount): amount is number => amount !== null)
+    if (partsLaborTotalMatches.length > 0) return partsLaborTotalMatches[partsLaborTotalMatches.length - 1]
+
+    const forTotalMatches = [...source.matchAll(/\bfor\s+\$\s*([0-9][0-9,]*(?:\.\d{1,2})?)/gi)]
+      .map((match) => moneyFromUnknown(match[1]))
+      .filter((amount): amount is number => amount !== null)
+    if (forTotalMatches.length > 0) return forTotalMatches[forTotalMatches.length - 1]
+
     const dollarMatches = [...source.matchAll(/\$\s*([0-9][0-9,]*(?:\.\d{1,2})?)/g)]
       .map((match) => moneyFromUnknown(match[1]))
       .filter((amount): amount is number => amount !== null)
-    if (dollarMatches.length > 0) return dollarMatches[dollarMatches.length - 1]
-
-    const hasDocumentIntent = /\b(invoice|estimate|quote|total|price|flat|parts\s+and\s+labor)\b/i.test(source)
-    if (hasDocumentIntent) {
-      const forAmountMatches = [...source.matchAll(/\bfor\s+\$?\s*([0-9][0-9,]*(?:\.\d{1,2})?)\b/gi)]
-        .map((match) => moneyFromUnknown(match[1]))
-        .filter((amount): amount is number => amount !== null && amount > 0 && amount < 100000)
-      if (forAmountMatches.length > 0) return forAmountMatches[forAmountMatches.length - 1]
+    if (dollarMatches.length === 1 && /\b(?:flat|for\s+everything|all\s+in|out\s+the\s+door|parts\s+and\s+labor)\b/i.test(source)) {
+      return dollarMatches[0]
     }
+
+    const explicitNumericMatches = [...source.matchAll(/(?:\b(?:total|grand\s+total|final\s+price|price)\b\D{0,30})([0-9][0-9,]*(?:\.\d{1,2})?)/gi)]
+      .map((match) => moneyFromUnknown(match[1]))
+      .filter((amount): amount is number => amount !== null && amount > 0 && amount < 100000)
+    if (explicitNumericMatches.length > 0) return explicitNumericMatches[explicitNumericMatches.length - 1]
   }
 
   if (draft) {
@@ -186,12 +200,7 @@ function normalizeLabors(labors: unknown): DraftLine[] {
 }
 
 function draftTotal(parts: DraftLine[], labors: DraftLine[], draft: Record<string, unknown>): number {
-  const partsTotal = parts.reduce((sum, part) => sum + partLineTotal(part), 0)
-  const laborTotal = labors.reduce((sum, labor) => sum + laborLineTotal(labor), 0)
-  const applyTax = draft.apply_tax !== undefined ? draft.apply_tax !== false : true
-  const taxRate = moneyFromUnknown(draft.tax_rate) ?? 8.25
-  const tax = applyTax ? partsTotal * (taxRate / 100) : 0
-  return roundMoney(partsTotal + laborTotal + tax)
+  return calculateDocumentTotals({ ...draft, parts, labors }).total
 }
 
 function deriveServiceNames(userText: string, parts: DraftLine[], labors: DraftLine[]): string[] {

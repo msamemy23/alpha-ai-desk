@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
+import { isSmsOptedOut } from '@/lib/sms-consent'
 
 
 async function generateReviewResponse(reviewerName: string, rating: number, reviewText: string, shopName: string, shopPhone: string, aiKey: string, aiBase: string, aiModel: string): Promise<string> {
@@ -96,6 +97,9 @@ export async function POST(req: NextRequest) {
       if (typeof customer_phone !== 'string' || !customer_phone.trim()) {
         return NextResponse.json({ error: 'Customer phone required' }, { status: 400 })
       }
+      if (await isSmsOptedOut(supabase, auth.shopId, customer_phone)) {
+        return NextResponse.json({ ok: false, success: false, error: 'This destination has opted out of SMS' }, { status: 409 })
+      }
 
       const result = await sendReviewRequestSMS(customer_phone, customer_name || 'Valued Customer', shopName, reviewLink, telnyxKey, telnyxFrom, customer_id ? `review-request-${customer_id}` : undefined)
 
@@ -165,7 +169,7 @@ export async function POST(req: NextRequest) {
 
       for (const cust of customers || []) {
         if (!cust.phone || alreadySent.has(cust.phone)) continue
-        if (cust.sms_opted_out) {
+        if (cust.sms_opted_out || await isSmsOptedOut(supabase, auth.shopId, cust.phone)) {
           results.push({ name: cust.name, sent: false, skipped: true, error: 'Customer has opted out of SMS' })
           continue
         }

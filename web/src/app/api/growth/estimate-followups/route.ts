@@ -3,6 +3,7 @@ import { getServiceClient } from '@/lib/supabase'
 import { sendEmail } from '@/lib/email'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { calcTotals } from '@/lib/supabase'
+import { isSmsOptedOut } from '@/lib/sms-consent'
 
 export const dynamic = 'force-dynamic'
 
@@ -87,7 +88,7 @@ export async function POST(req: NextRequest) {
     if (!dryRun) {
       // Try SMS first, then email
       let sentBySms = false
-      if (customer.phone && !customer.sms_opted_out) {
+      if (customer.phone && !customer.sms_opted_out && !(await isSmsOptedOut(sb, auth.shopId, customer.phone))) {
         const smsResult = await sendSMS(customer.phone, msg, telnyxKey, telnyxFrom, `estimate-followup-${est.id}`)
         sent = smsResult.success
         sentBySms = smsResult.success

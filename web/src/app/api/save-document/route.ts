@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { getAuthedShop, unauthorized, forbidden } from '@/lib/api-auth'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 
 export async function POST(req: Request) {
   try {
@@ -15,7 +15,7 @@ export async function POST(req: Request) {
     // Look up the existing record and confirm it belongs to the caller's shop.
     const { data: existing, error: fetchErr } = await sb
       .from('documents')
-      .select('shop_id,status')
+      .select('shop_id,status,parts,labors,shop_supplies,sublet,tax_rate,apply_tax,deposit,line_items,payment_plan')
       .eq('id', id)
       .eq('shop_id', auth.shopId)
       .single()
@@ -33,7 +33,16 @@ export async function POST(req: Request) {
         .filter(key => Object.prototype.hasOwnProperty.call(data, key))
         .map(key => [key, data[key]])
     )
-    if (cleanData.status && ['Paid', 'Partial'].includes(String(cleanData.status)) && cleanData.status !== existing.status) {
+    const paidStatuses = new Set(['Paid', 'Partial'])
+    const financialFields = new Set(['parts', 'labors', 'shop_supplies', 'sublet', 'tax_rate', 'apply_tax', 'deposit', 'line_items', 'payment_plan'])
+    const existingIsPaid = paidStatuses.has(String(existing.status))
+    if (existingIsPaid && Object.keys(cleanData).some((key) => financialFields.has(key))) {
+      return NextResponse.json({ error: 'Paid or partially paid documents are financially immutable; use a supported adjustment or refund action' }, { status: 409 })
+    }
+    if (existingIsPaid && cleanData.status !== undefined && cleanData.status !== existing.status) {
+      return NextResponse.json({ error: 'Use the payment or refund action to change a paid document status' }, { status: 409 })
+    }
+    if (cleanData.status && paidStatuses.has(String(cleanData.status)) && cleanData.status !== existing.status) {
       return NextResponse.json({ error: 'Use the payment action to change an invoice to Paid or Partial' }, { status: 409 })
     }
 

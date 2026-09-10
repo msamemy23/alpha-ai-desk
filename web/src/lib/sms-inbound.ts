@@ -8,7 +8,8 @@
 
 import { getServiceClient } from '@/lib/supabase'
 import { sendSMS } from '@/lib/sms'
-import { isOptOut } from '@/lib/sms-normalize'
+import { isOptOut, normalizePhoneDigits } from '@/lib/sms-normalize'
+import { isSmsOptedOut, recordSmsOptOut } from '@/lib/sms-consent'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 
 // One auto-reply per number per 10 min (resets on cold start, which is fine).
@@ -29,8 +30,7 @@ type ShopSettings = {
 }
 
 function phoneDigits(value: string): string {
-  const digits = String(value || '').replace(/\D/g, '')
-  return digits.length > 10 ? digits.slice(-10) : digits
+  return normalizePhoneDigits(value)
 }
 
 async function findShopSettings(db: ReturnType<typeof getServiceClient>, toNumber: string): Promise<ShopSettings | null> {
@@ -112,6 +112,12 @@ export async function handleInboundSms(opts: {
 
   // STOP/UNSUBSCRIBE is recorded but never receives an auto-reply.
   if (isOptOut(msgBody)) {
+    try {
+      await recordSmsOptOut(db, settings.shop_id, fromRaw, 'inbound_stop')
+    } catch (error) {
+      console.error('Inbound SMS opt-out could not be recorded:', error)
+      return
+    }
     if (customer?.id) {
       try {
         await db.from('customers').update({ sms_opted_out: true }).eq('id', customer.id).eq('shop_id', settings.shop_id)
@@ -121,8 +127,18 @@ export async function handleInboundSms(opts: {
   }
 
   // A previous STOP remains effective until the customer explicitly opts back
-  // in through the shop's consent process. Never auto-reply around that flag.
+  // in through the shop's consent process. Check the durable, exact
+  // shop/phone consent record even when the customer lookup is missing or
+  // stale; never auto-reply around an opt-out.
   if (customer?.sms_opted_out) return
+  try {
+    if (await isSmsOptedOut(db, settings.shop_id, fromRaw)) return
+  } catch (error) {
+    // Fail closed if consent cannot be read. A transient database failure must
+    // not turn into an unsolicited automated reply.
+    console.error('Inbound SMS consent lookup failed:', error)
+    return
+  }
 
   const now = Date.now()
   const cooldownKey = settings.shop_id + ':' + fromDigits

@@ -6,6 +6,7 @@ import { sendEmail, estimateEmailHtml } from '@/lib/email'
 import { sendSMS, formatPhone } from '@/lib/telnyx'
 import { getIdempotencyKey } from '@/lib/api-response'
 import { normalizePhoneDigits } from '@/lib/sms-normalize'
+import { isSmsOptedOut } from '@/lib/sms-consent'
 
 export async function POST(req: NextRequest) {
   try {
@@ -94,9 +95,9 @@ export async function POST(req: NextRequest) {
     if (channel === 'sms') {
       const phone = custPhone
       if (!phone) return NextResponse.json({ error: 'No phone number on file for this customer' }, { status: 400 })
-      if (smsOptedOut) return NextResponse.json({ error: 'Customer has opted out of SMS' }, { status: 409 })
       if (!settings?.telnyx_api_key || !settings?.telnyx_phone_number) return NextResponse.json({ error: 'SMS is not configured for this shop' }, { status: 503 })
       const formatted = formatPhone(phone)
+      if (smsOptedOut || await isSmsOptedOut(db, auth.shopId, formatted)) return NextResponse.json({ error: 'This destination has opted out of SMS' }, { status: 409 })
       const smsBody = `Hi! Your ${docType} #${doc.doc_number} from ${shopName} is ready. Total: ${calcTotals(doc).total.toFixed(2)}. Call us at ${settings?.shop_phone || ''} with any questions.`
       await sendSMS(formatted, smsBody, settings.telnyx_phone_number, {
         apiKey: settings.telnyx_api_key,

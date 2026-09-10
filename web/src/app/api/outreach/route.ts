@@ -5,6 +5,7 @@ import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { sendSMS, formatPhone } from '@/lib/telnyx'
 import { sendEmail } from '@/lib/email'
 import { createHash } from 'node:crypto'
+import { isSmsOptedOut } from '@/lib/sms-consent'
 
 function escapeHtml(value: unknown) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char))
@@ -72,7 +73,7 @@ export async function POST(req: NextRequest) {
           .replace('{shopName}', shopName)
           .replace('{phone}', settings?.shop_phone || '')
 
-        if (channel === 'sms' && c.sms_opted_out) {
+        if (channel === 'sms' && (c.sms_opted_out || await isSmsOptedOut(db, auth.shopId, c.phone))) {
           continue
         }
 

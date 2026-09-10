@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
-import { assertPublicUrl } from '@/lib/public-url'
+import { assertPublicUrl, fetchPublicUrl } from '@/lib/public-url'
 
 export const dynamic = 'force-dynamic'
 
@@ -26,14 +26,14 @@ function isAllowedHost(hostname: string) {
 async function fetchAllowedImage(target: URL): Promise<{ response: Response; url: URL } | null> {
   let current = target
   for (let attempt = 0; attempt <= MAX_REDIRECTS; attempt += 1) {
-    const response = await fetch(current.toString(), {
+    const response = await fetchPublicUrl(current, {
       headers: {
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'referer': `${current.protocol}//${current.hostname}/`,
         'accept': 'image/avif,image/webp,image/png,image/*,*/*;q=0.8',
       },
       signal: AbortSignal.timeout(15000),
-      redirect: 'manual',
+      maxBytes: MAX_BYTES,
     })
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location')

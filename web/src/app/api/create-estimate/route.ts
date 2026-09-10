@@ -107,6 +107,7 @@ export async function POST(req: NextRequest) {
     tax_rate: taxRate,
     apply_tax: applyTax,
     shop_supplies: body.shop_supplies || 0,
+    sublet: body.sublet || 0,
     deposit: body.deposit || 0,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),

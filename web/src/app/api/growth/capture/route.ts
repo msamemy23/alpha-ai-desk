@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { isSmsOptedOut } from '@/lib/sms-consent'
 
 // Leads are shop data — every caller must resolve to one shop.
 
@@ -141,6 +142,7 @@ export async function POST(req: NextRequest) {
 
       for (const lead of pendingLeads || []) {
         if (!lead.phone) continue
+        if (await isSmsOptedOut(supabase, auth.shopId, lead.phone)) continue
 
         const smsResult = await sendFollowUpSMS(lead.phone, lead.name, shopName, shopPhone, telnyxKey, telnyxFrom)
         

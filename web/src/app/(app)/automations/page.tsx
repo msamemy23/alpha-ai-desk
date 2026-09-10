@@ -221,6 +221,9 @@ export default function AutomationsPage() {
           <p className="text-sm text-text-muted mt-0.5">
             {totalOn} automation{totalOn !== 1 ? 's' : ''} running — you control everything
           </p>
+          <p className="text-xs text-yellow-400/80 mt-2 max-w-xl">
+            Background checks run once per day on this deployment. Use <span className="font-medium">Run Now</span> for an immediate run; repeating intervals require a scheduler plan that supports them.
+          </p>
         </div>
         <div className="flex items-center gap-3">
           <span className={`text-xs px-3 py-1.5 rounded-full font-medium ${totalOn > 0 ? 'bg-green-500/15 text-green-400' : 'bg-bg-hover text-text-muted'}`}>
@@ -239,7 +242,7 @@ export default function AutomationsPage() {
       {showNewForm && (
         <div className="bg-bg-card border border-blue/30 rounded-xl p-5 mb-8">
           <h2 className="text-base font-semibold mb-1">Add Your Own Automation</h2>
-          <p className="text-xs text-text-muted mb-4">Tell the AI what to do and when — it runs automatically on your schedule</p>
+          <p className="text-xs text-text-muted mb-4">Tell the AI what to do and when. Scheduled checks run daily here, and every run creates a proposal for approval.</p>
 
           {/* Presets */}
           <div className="mb-4">
@@ -271,11 +274,11 @@ export default function AutomationsPage() {
               <label className="text-xs font-medium text-text-secondary mb-1 block">Schedule *</label>
               <input
                 className="form-input w-full"
-                placeholder="8:00am · mon 9:00am · every 2h"
+                placeholder="8:00am · mon 9:00am"
                 value={newSchedule}
                 onChange={e => setNewSchedule(e.target.value)}
               />
-              <p className="text-xs text-text-muted mt-1">Daily: "8:00am" · Weekly: "mon 9:00am" · Repeating: "every 2h"</p>
+              <p className="text-xs text-text-muted mt-1">Daily: "8:00am" · Weekly: "mon 9:00am" · Background checks run once daily on this deployment.</p>
             </div>
           </div>
           <div className="mb-4">

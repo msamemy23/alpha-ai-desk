@@ -961,8 +961,13 @@ tr, td, th, thead, table { break-inside: avoid; }
                       <span>Shop Supplies</span><span>{formatCurrency(Number(form.shop_supplies))}</span>
                     </div>
                   )}
+                  {totals.sublet > 0 && (
+                    <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
+                      <span>Sublet</span><span>{formatCurrency(totals.sublet)}</span>
+                    </div>
+                  )}
                   <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
-                    <span>Tax ({(form.tax_rate as number) ?? 8.25}%)</span><span>{formatCurrency(totals.taxAmount)}</span>
+                    <span>Tax ({totals.taxRate}%)</span><span>{formatCurrency(totals.taxAmount)}</span>
                   </div>
                   <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0 4px',fontSize:'16px',fontWeight:700,color:'#111',borderTop:'2px solid #111',marginTop:'6px'}}>
                     <span>TOTAL</span><span>{formatCurrency(totals.total)}</span>

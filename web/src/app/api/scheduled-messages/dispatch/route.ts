@@ -3,6 +3,7 @@ import { getServiceClient } from '@/lib/supabase'
 import { getAuthedShop, hasInternalApiSecret, unauthorized } from '@/lib/api-auth'
 import { sendEmail } from '@/lib/email'
 import { sendSMS, formatPhone } from '@/lib/telnyx'
+import { isSmsOptedOut } from '@/lib/sms-consent'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -52,6 +53,7 @@ export async function POST(req: NextRequest) {
   let sent = 0
   let failed = 0
   let cancelled = 0
+  let unknown = 0
   const results: Array<Record<string, unknown>> = []
 
   for (const row of due) {
@@ -76,6 +78,7 @@ export async function POST(req: NextRequest) {
     const { data: claimed, error: claimError } = await claimQuery.select('*').maybeSingle()
     if (claimError || !claimed) continue
 
+    let providerAccepted = false
     try {
       let customer: { id: string; phone?: string | null; email?: string | null; sms_opted_out?: boolean } | null = null
       if (row.customer_id) {
@@ -113,11 +116,23 @@ export async function POST(req: NextRequest) {
       if (row.channel === 'sms') {
         const phone = customer?.phone || ''
         if (!phone) throw new Error('Customer has no phone number')
-        const result = await sendSMS(formatPhone(phone), body, String(settings.telnyx_phone_number || ''), {
+        const formattedPhone = formatPhone(phone)
+        if (await isSmsOptedOut(db, row.shop_id, formattedPhone)) {
+          const { error: cancelError } = await db.from('scheduled_messages').update({
+            status: 'cancelled', claimed_at: null, next_attempt_at: null,
+            last_error: 'Destination has opted out of SMS', updated_at: new Date().toISOString(),
+          }).eq('id', row.id).eq('shop_id', row.shop_id).eq('status', 'sending')
+          if (cancelError) throw cancelError
+          cancelled++
+          results.push({ id: row.id, status: 'cancelled', reason: 'sms_opted_out' })
+          continue
+        }
+        const result = await sendSMS(formattedPhone, body, String(settings.telnyx_phone_number || ''), {
           apiKey: String(settings.telnyx_api_key || ''),
           messagingProfileId: String(settings.telnyx_messaging_profile_id || ''),
           idempotencyKey,
         })
+        providerAccepted = true
         providerId = result?.id || null
       } else {
         const email = customer?.email || ''
@@ -132,6 +147,7 @@ export async function POST(req: NextRequest) {
           replyTo: String(settings.shop_email || ''),
           idempotencyKey,
         })
+        providerAccepted = true
       }
 
       // Provider success is the point of no duplicate retry. The message log
@@ -141,7 +157,7 @@ export async function POST(req: NextRequest) {
         direction: 'outbound',
         channel: row.channel,
         from_address: row.channel === 'sms' ? String(settings.telnyx_phone_number || '') : String(settings.from_email || ''),
-        to_address: row.channel === 'sms' ? String(customer?.phone || '') : String(customer?.email || ''),
+        to_address: row.channel === 'sms' ? formatPhone(String(customer?.phone || '')) : String(customer?.email || ''),
         subject: row.subject || null,
         body,
         status: 'sent',
@@ -154,10 +170,29 @@ export async function POST(req: NextRequest) {
         last_error: messageError ? 'Delivered, but the message log could not be saved' : null,
         updated_at: new Date().toISOString(),
       }).eq('id', row.id).eq('shop_id', row.shop_id).eq('status', 'sending')
-      if (sentError) throw new Error('Message was delivered but its delivery state could not be saved')
+      if (sentError) {
+        const stateMessage = 'Provider accepted delivery, but the scheduled message state could not be saved; manual reconciliation required'
+        await db.from('scheduled_messages').update({
+          status: 'unknown', claimed_at: null, next_attempt_at: null,
+          last_error: stateMessage, updated_at: new Date().toISOString(),
+        }).eq('id', row.id).eq('shop_id', row.shop_id).eq('status', 'sending')
+        unknown++
+        results.push({ id: row.id, status: 'unknown', error: stateMessage, logged: !messageError })
+        continue
+      }
       sent++
       results.push({ id: row.id, status: 'sent', logged: !messageError })
     } catch (error) {
+      if (providerAccepted) {
+        const stateMessage = 'Provider accepted delivery, but the scheduled message state could not be saved; manual reconciliation required'
+        await db.from('scheduled_messages').update({
+          status: 'unknown', claimed_at: null, next_attempt_at: null,
+          last_error: stateMessage, updated_at: new Date().toISOString(),
+        }).eq('id', row.id).eq('shop_id', row.shop_id).eq('status', 'sending')
+        unknown++
+        results.push({ id: row.id, status: 'unknown', error: stateMessage })
+        continue
+      }
       failed++
       const attempts = Number((claimed as ScheduledMessage).attempts || 1)
       const message = error instanceof Error ? error.message : 'Scheduled delivery failed'
@@ -172,7 +207,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ ok: failed === 0, success: failed === 0, inspected: due.length, sent, failed, cancelled, results }, { status: failed === 0 ? 200 : 502 })
+  return NextResponse.json({ ok: failed === 0 && unknown === 0, success: failed === 0 && unknown === 0, inspected: due.length, sent, failed, cancelled, unknown, results }, { status: failed === 0 && unknown === 0 ? 200 : 502 })
 }
 
 export async function GET(req: NextRequest) {

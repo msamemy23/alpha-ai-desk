@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { isSmsOptedOut } from '@/lib/sms-consent'
 
 export async function GET() {
   const auth = await getAuthedShop()
@@ -53,13 +54,13 @@ export async function POST(req: NextRequest) {
   if (resolvedCustomerId) {
     const { data: customer, error: customerError } = await sb
       .from('customers')
-      .select('id,sms_opted_out')
+      .select('id,sms_opted_out,phone')
       .eq('id', resolvedCustomerId)
       .eq('shop_id', auth.shopId)
       .maybeSingle()
     if (customerError) return NextResponse.json({ error: customerError.message }, { status: 500 })
     if (!customer) return NextResponse.json({ error: 'Customer not found in this shop' }, { status: 404 })
-    if (selectedChannel === 'sms' && customer.sms_opted_out) return NextResponse.json({ error: 'Customer has opted out of SMS' }, { status: 409 })
+    if (selectedChannel === 'sms' && (customer.sms_opted_out || await isSmsOptedOut(sb, auth.shopId, customer.phone))) return NextResponse.json({ error: 'This destination has opted out of SMS' }, { status: 409 })
   }
 
   const { data, error } = await sb.from('scheduled_messages').insert({
@@ -131,13 +132,13 @@ export async function PATCH(req: NextRequest) {
   {
     const { data: customer, error: customerError } = await sb
       .from('customers')
-      .select('id,sms_opted_out')
+      .select('id,sms_opted_out,phone')
       .eq('id', nextCustomerId)
       .eq('shop_id', auth.shopId)
       .maybeSingle()
     if (customerError) return NextResponse.json({ error: customerError.message }, { status: 500 })
     if (!customer) return NextResponse.json({ error: 'Customer not found in this shop' }, { status: 404 })
-    if (nextChannel === 'sms' && customer.sms_opted_out) return NextResponse.json({ error: 'Customer has opted out of SMS' }, { status: 409 })
+    if (nextChannel === 'sms' && (customer.sms_opted_out || await isSmsOptedOut(sb, auth.shopId, customer.phone))) return NextResponse.json({ error: 'This destination has opted out of SMS' }, { status: 409 })
   }
 
   const { data, error } = await sb

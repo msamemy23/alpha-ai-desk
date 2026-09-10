@@ -1,5 +1,9 @@
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
+import type { LookupFunction } from 'node:net'
+import { request as httpRequest } from 'node:http'
+import type { RequestOptions } from 'node:http'
+import { request as httpsRequest } from 'node:https'
 
 /**
  * Validate a URL before the server fetches it. Hostname text checks alone are
@@ -91,6 +95,108 @@ export async function assertPublicUrl(raw: string, base?: URL): Promise<URL> {
     throw new Error('Only public http(s) URLs are allowed')
   }
   return url
+}
+
+/**
+ * Fetch a public URL using the address resolved during validation. Calling
+ * fetch(url) after assertPublicUrl(url) would leave a DNS check-to-use race:
+ * the hostname could resolve to a different address between those operations.
+ */
+export async function fetchPublicUrl(
+  raw: string | URL,
+  init: {
+    method?: string
+    headers?: HeadersInit
+    signal?: AbortSignal
+    maxBytes?: number
+    base?: URL
+  } = {}
+): Promise<Response> {
+  const url = await assertPublicUrl(String(raw), init.base)
+  const ipLiteral = url.hostname.startsWith('[') && url.hostname.endsWith(']')
+    ? url.hostname.slice(1, -1)
+    : url.hostname
+  let address: { address: string; family: number }
+  if (isIP(ipLiteral)) {
+    address = { address: ipLiteral, family: isIP(ipLiteral) }
+  } else {
+    const addresses = await lookup(url.hostname, { all: true, verbatim: true })
+    const publicAddresses = addresses.filter(({ address: candidate }) => !isPrivateIp(candidate))
+    if (!publicAddresses.length || publicAddresses.length !== addresses.length) {
+      throw new Error('Only public http(s) URLs are allowed')
+    }
+    address = publicAddresses[0]
+  }
+
+  const headers = new Headers(init.headers)
+  headers.set('host', url.host)
+  headers.set('accept-encoding', 'identity')
+  const requestHeaders: Record<string, string> = {}
+  headers.forEach((value, key) => { requestHeaders[key] = value })
+  const maxBytes = init.maxBytes ?? 5 * 1024 * 1024
+  const hostname = ipLiteral
+  const pinnedLookup: LookupFunction = (_hostname, _options, callback) => {
+    callback(null, address.address, address.family as 4 | 6)
+  }
+  const requestOptions: RequestOptions = {
+    hostname: address.address,
+    port: url.port || (url.protocol === 'https:' ? 443 : 80),
+    path: `${url.pathname}${url.search}`,
+    method: init.method || 'GET',
+    headers: requestHeaders,
+    lookup: pinnedLookup,
+    ...(url.protocol === 'https:' && !isIP(hostname) ? { servername: hostname } : {}),
+  }
+  const requestFn = url.protocol === 'https:' ? httpsRequest : httpRequest
+
+  return await new Promise<Response>((resolve, reject) => {
+    let settled = false
+    const finishError = (error: Error) => {
+      if (settled) return
+      settled = true
+      reject(error)
+    }
+    const onAbort = () => {
+      request.destroy(new Error('Request aborted'))
+      finishError(new Error('Request aborted'))
+    }
+    const request = requestFn(requestOptions, (response) => {
+      const chunks: Buffer[] = []
+      let size = 0
+      response.on('data', (chunk: Buffer | string) => {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+        size += buffer.length
+        if (size > maxBytes) {
+          request.destroy(new Error('Response too large'))
+          finishError(new Error('Response too large'))
+          return
+        }
+        chunks.push(buffer)
+      })
+      response.on('error', (error) => finishError(error instanceof Error ? error : new Error('Upstream response failed')))
+      response.on('end', () => {
+        if (settled) return
+        settled = true
+        init.signal?.removeEventListener('abort', onAbort)
+        const responseHeaders = new Headers()
+        for (const [key, value] of Object.entries(response.headers)) {
+          if (Array.isArray(value)) responseHeaders.set(key, value.join(', '))
+          else if (value !== undefined) responseHeaders.set(key, value)
+        }
+        resolve(new Response(Buffer.concat(chunks), {
+          status: response.statusCode || 502,
+          statusText: response.statusMessage || '',
+          headers: responseHeaders,
+        }))
+      })
+    })
+    init.signal?.addEventListener('abort', onAbort, { once: true })
+    request.on('error', (error) => {
+      init.signal?.removeEventListener('abort', onAbort)
+      finishError(error instanceof Error ? error : new Error('Upstream request failed'))
+    })
+    request.end()
+  })
 }
 
 export async function tryPublicUrl(raw: string, base?: URL): Promise<URL | null> {

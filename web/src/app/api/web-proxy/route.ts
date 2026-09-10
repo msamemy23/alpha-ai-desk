@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
-import { assertPublicUrl, tryPublicUrl } from '@/lib/public-url'
+import { assertPublicUrl, fetchPublicUrl, tryPublicUrl } from '@/lib/public-url'
 
 export const dynamic = 'force-dynamic'
 
@@ -35,13 +35,13 @@ function sanitizeHtml(html: string): string {
 async function fetchPublic(target: URL): Promise<{ response: Response; url: URL } | null> {
   let current = target
   for (let attempt = 0; attempt <= MAX_REDIRECTS; attempt += 1) {
-    const response = await fetch(current.toString(), {
+    const response = await fetchPublicUrl(current, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,image/*,text/plain;q=0.8,*/*;q=0.5',
       },
-      redirect: 'manual',
       signal: AbortSignal.timeout(20000),
+      maxBytes: MAX_BYTES,
     })
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location')

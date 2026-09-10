@@ -4,6 +4,7 @@ import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-con
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { createVoiceClientState } from '@/lib/voice-state'
 import { createHash } from 'node:crypto'
+import { isSmsOptedOut } from '@/lib/sms-consent'
 
 const AI_URL = 'https://openrouter.ai/api/v1/chat/completions'
 
@@ -178,7 +179,7 @@ async function runSmsBlast(
   if (error) throw error
   const results: Array<Record<string, unknown>> = []
   for (const customer of customers || []) {
-    if (customer.sms_opted_out || !customer.phone) continue
+    if (customer.sms_opted_out || !customer.phone || await isSmsOptedOut(db, shopId, customer.phone)) continue
     const firstName = String(customer.name || 'there').trim().split(/\s+/)[0] || 'there'
     const message = template.replace(/\{name\}/gi, firstName)
     try {
@@ -236,6 +237,7 @@ export async function POST(req: NextRequest) {
 
     if (method === 'sms') {
       if (!lead.phone) return NextResponse.json({ error: 'No phone number for this lead' }, { status: 400 })
+      if (await isSmsOptedOut(db, auth.shopId, lead.phone)) return NextResponse.json({ error: 'This destination has opted out of SMS' }, { status: 409 })
       toContact = lead.phone
       const outboundMessage = finalMessage || `Hi ${lead.name?.split(' ')[0]}! ${shop.shopName} here. We can help with ${lead.service_needed || 'your vehicle'}. Call ${shop.shopPhone}!`
       const smsResult = await sendSMS(lead.phone, outboundMessage, shop.telnyxApiKey, shop.telnyxPhone, idempotencyKey([auth.shopId, 'lead-sms', String(lead.id), outboundMessage]))

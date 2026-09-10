@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
-import { nextScheduledRun } from '@/lib/schedules'
+import { nextScheduledRun, scheduleWindowKey } from '@/lib/schedules'
+import { getIdempotencyKey } from '@/lib/api-response'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,7 +12,9 @@ function fail(msg: string, status = 400) { return NextResponse.json({ ok: false,
 
 // Automations CRUD + execution
 // Table: automations { id, name, description, schedule, task_prompt, enabled, last_run, next_run, run_count, status, created_at }
-// schedule examples: '05:00' (daily at 5am), 'mon 09:00' (mondays at 9am), 'every 2h'
+// schedule examples: '05:00' (daily at 5am) and 'mon 09:00' (mondays at 9am).
+// The deployed Vercel Hobby scheduler invokes the worker once per day; manual
+// Run Now remains available for immediate execution.
 
 function hasInternalSecret(req: NextRequest) {
   const secret = process.env.CRON_SECRET || process.env.INTERNAL_API_SECRET
@@ -30,6 +33,15 @@ async function getTimezone(shopId?: string): Promise<string> {
 
 function parseNextRun(schedule: string, tz: string = 'America/Chicago'): string {
   return nextScheduledRun(schedule, tz).toISOString()
+}
+
+function isUnsupportedFrequentSchedule(schedule: string): boolean {
+  const match = schedule.trim().match(/^every\s+(\d+)\s*(m|min|h|hr|hour|hours|minute|minutes)?$/i)
+  if (!match) return false
+  const amount = Number(match[1])
+  const unit = (match[2] || 'h').toLowerCase()
+  const minutes = amount * (unit.startsWith('m') ? 1 : 60)
+  return Number.isFinite(minutes) && minutes < 24 * 60
 }
 
 export async function GET() {
@@ -72,6 +84,7 @@ export async function POST(req: NextRequest) {
     if (typeof name !== 'string' || !name.trim() || typeof schedule !== 'string' || !schedule.trim() || typeof task_prompt !== 'string' || !task_prompt.trim()) {
       return fail('name, schedule, and task_prompt are required')
     }
+    if (isUnsupportedFrequentSchedule(schedule)) return fail('Repeating intervals shorter than one day are not available on this deployment; choose a daily or weekly schedule, or use Run Now.')
     const tz = await getTimezone(shopId)
     const next_run = parseNextRun(schedule, tz)
     const { data, error } = await sb.from('automations').insert({
@@ -99,6 +112,7 @@ export async function POST(req: NextRequest) {
     }
     if (Object.prototype.hasOwnProperty.call(body, 'name') && (typeof body.name !== 'string' || !body.name.trim())) return fail('name must be a non-empty string')
     if (Object.prototype.hasOwnProperty.call(body, 'schedule') && (typeof body.schedule !== 'string' || !body.schedule.trim())) return fail('schedule must be a non-empty string')
+    if (typeof body.schedule === 'string' && isUnsupportedFrequentSchedule(body.schedule)) return fail('Repeating intervals shorter than one day are not available on this deployment; choose a daily or weekly schedule, or use Run Now.')
     if (Object.prototype.hasOwnProperty.call(body, 'task_prompt') && (typeof body.task_prompt !== 'string' || !body.task_prompt.trim())) return fail('task_prompt must be a non-empty string')
     if (typeof allowedUpdates.name === 'string') allowedUpdates.name = allowedUpdates.name.trim().slice(0, 160)
     if (typeof allowedUpdates.description === 'string') allowedUpdates.description = allowedUpdates.description.slice(0, 1000)
@@ -150,6 +164,15 @@ export async function POST(req: NextRequest) {
     if (automationError) return fail(automationError.message)
     if (!automation) return fail('Automation not found')
 
+    const manualWindowKey = `manual:${getIdempotencyKey(req, [shopId, id, new Date().toISOString().slice(0, 16)])}`
+    const { data: claimed, error: claimError } = await sb.rpc('claim_automation_run', {
+      p_shop_id: shopId,
+      p_automation_id: id,
+      p_window_key: manualWindowKey,
+    })
+    if (claimError) return fail('Automation run could not be claimed', 503)
+    if (claimed !== true) return fail('This automation run is already in progress or already completed', 409)
+
     // Execute via the AI
     try {
       const { data: settings } = await sb.from('settings').select('ai_api_key,ai_model,ai_base_url,shop_name').eq('shop_id', shopId).limit(1).single()
@@ -183,11 +206,32 @@ export async function POST(req: NextRequest) {
         next_run: parseNextRun(automation.schedule, tz),
         status: 'awaiting_approval',
       }).eq('id', id).eq('shop_id', shopId)
-      if (proposalError) return fail(proposalError.message, 500)
+      if (proposalError) {
+        await sb.from('automation_runs').update({
+          status: 'failed', finished_at: new Date().toISOString(),
+          next_attempt_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(), error: proposalError.message,
+        }).eq('shop_id', shopId).eq('automation_id', id).eq('window_key', manualWindowKey).eq('status', 'running')
+        return fail(proposalError.message, 500)
+      }
+      const { error: runUpdateError } = await sb.from('automation_runs').update({
+        status: 'succeeded', finished_at: new Date().toISOString(), next_attempt_at: null,
+        result: { proposal: result.slice(0, 500) }, error: null,
+      }).eq('shop_id', shopId).eq('automation_id', id).eq('window_key', manualWindowKey).eq('status', 'running')
+      if (runUpdateError) {
+        await sb.from('automation_runs').update({
+          status: 'unknown', finished_at: new Date().toISOString(), next_attempt_at: null,
+          error: 'Proposal was saved, but its durable run state could not be saved',
+        }).eq('shop_id', shopId).eq('automation_id', id).eq('window_key', manualWindowKey).eq('status', 'running')
+        return fail('Proposal was saved, but the durable run state could not be saved', 502)
+      }
 
       return ok({ executed: false, proposal: result, approvalRequired: true, message: 'The AI generated a proposal; no external action was executed.' })
     } catch (err) {
       await sb.from('automations').update({ status: 'error', last_result: String(err) }).eq('id', id).eq('shop_id', shopId)
+      await sb.from('automation_runs').update({
+        status: 'failed', finished_at: new Date().toISOString(),
+        next_attempt_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(), error: String(err),
+      }).eq('shop_id', shopId).eq('automation_id', id).eq('window_key', manualWindowKey).eq('status', 'running')
       return fail(err instanceof Error ? err.message : 'Execution failed')
     }
   }
@@ -209,11 +253,23 @@ export async function POST(req: NextRequest) {
 
     let ran = 0
     for (const automation of dueItems) {
+      const targetShopId = automation.shop_id || shopId
+      if (!targetShopId) continue
+      let runWindowKey: string | null = null
       try {
-        const targetShopId = automation.shop_id || shopId
-        if (!targetShopId) throw new Error('Automation has no tenant')
-        let settingsQuery = sb.from('settings').select('ai_api_key,ai_model,ai_base_url,shop_name').eq('shop_id', targetShopId).limit(1)
+        let settingsQuery = sb.from('settings').select('ai_api_key,ai_model,ai_base_url,shop_name,timezone').eq('shop_id', targetShopId).limit(1)
         const { data: settings } = await settingsQuery.single()
+        const timezone = typeof settings?.timezone === 'string' && settings.timezone ? settings.timezone : 'America/Chicago'
+        const windowKey = scheduleWindowKey(automation.schedule, timezone)
+        runWindowKey = windowKey
+        const { data: claimed, error: claimError } = await sb.rpc('claim_automation_run', {
+          p_shop_id: targetShopId,
+          p_automation_id: String(automation.id),
+          p_window_key: windowKey,
+        })
+        if (claimError) throw new Error('Automation run could not be claimed')
+        if (claimed !== true) continue
+
         const apiKey = settings?.ai_api_key
         if (!apiKey) throw new Error('No AI API key')
         const aiBaseUrl = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
@@ -237,20 +293,32 @@ export async function POST(req: NextRequest) {
         const aiData = await res.json()
         const result = aiData.choices?.[0]?.message?.content || ''
         if (!result) throw new Error('AI did not return a proposal')
-        const tz = await getTimezone(targetShopId)
+        const tz = timezone
         let updateQuery = sb.from('automations').update({
           last_result: result.slice(0, 500),
           next_run: parseNextRun(automation.schedule, tz),
           status: 'awaiting_approval',
         }).eq('id', automation.id)
         if (targetShopId) updateQuery = updateQuery.eq('shop_id', targetShopId)
-        await updateQuery
+        const { error: proposalError } = await updateQuery
+        if (proposalError) throw proposalError
+        const { error: runUpdateError } = await sb.from('automation_runs').update({
+          status: 'succeeded', finished_at: new Date().toISOString(), next_attempt_at: null,
+          result: { proposal: result.slice(0, 500) }, error: null,
+        }).eq('shop_id', targetShopId).eq('automation_id', String(automation.id)).eq('window_key', windowKey).eq('status', 'running')
+        if (runUpdateError) throw runUpdateError
         ran++
       } catch (err) {
-        const targetShopId = automation.shop_id || shopId
         let updateQuery = sb.from('automations').update({ status: 'error', last_result: String(err) }).eq('id', automation.id)
         if (targetShopId) updateQuery = updateQuery.eq('shop_id', targetShopId)
-        await updateQuery
+        const { error: stateError } = await updateQuery
+        if (stateError) console.error('[automations] could not save error state:', stateError.message)
+        if (runWindowKey) {
+          await sb.from('automation_runs').update({
+            status: 'failed', finished_at: new Date().toISOString(),
+            next_attempt_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(), error: String(err),
+          }).eq('shop_id', targetShopId).eq('automation_id', String(automation.id)).eq('window_key', runWindowKey).eq('status', 'running')
+        }
       }
     }
 
