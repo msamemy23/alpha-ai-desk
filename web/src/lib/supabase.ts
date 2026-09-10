@@ -62,23 +62,17 @@ export async function getShopId(): Promise<string | null> {
 }
 
 export async function getSettings() {
-  const shopId = await getShopId()
-  if (!shopId) return null
-  const { data } = await supabase
-    .from('settings')
-    .select('*')
-    .eq('shop_id', shopId)
-    .limit(1)
-    .single()
-  return data
+  try {
+    const response = await fetch('/api/settings', { cache: 'no-store' })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok || data.ok !== true) return null
+    return data.settings || null
+  } catch {
+    return null
+  }
 }
 
 export async function updateSettings(updates: Record<string, unknown>) {
-  const shopId = await getShopId()
-  if (!shopId) return { error: new Error('No shop is associated with the signed-in user') }
-
-  // Keep the browser helper from sending UI-only or legacy fields to PostgREST.
-  // The server/database remains the authority for tenant ownership.
   const allowed = new Set([
     'shop_name', 'shop_address', 'shop_phone', 'shop_email',
     'labor_rate', 'tax_rate', 'warranty_months', 'payment_terms',
@@ -94,26 +88,20 @@ export async function updateSettings(updates: Record<string, unknown>) {
   const payload = Object.fromEntries(
     Object.entries(updates).filter(([key, value]) => allowed.has(key) && value !== undefined)
   )
-
-  const existingResult = await supabase
-    .from('settings')
-    .select('id')
-    .eq('shop_id', shopId)
-    .limit(1)
-    .maybeSingle()
-  if (existingResult.error) return { error: existingResult.error }
-
-  if (existingResult.data) {
-    const result = await supabase
-      .from('settings')
-      .update({ ...payload, updated_at: new Date().toISOString() })
-      .eq('id', existingResult.data.id)
-      .eq('shop_id', shopId)
-    return { error: result.error || null }
+  try {
+    const response = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok || data.ok !== true) {
+      return { error: new Error(data.error || 'Settings could not be saved') }
+    }
+    return { error: null }
+  } catch (error) {
+    return { error: error instanceof Error ? error : new Error('Settings could not be saved') }
   }
-
-  const result = await supabase.from('settings').insert({ ...payload, shop_id: shopId })
-  return { error: result.error || null }
 }
 
 export async function getCustomers() {

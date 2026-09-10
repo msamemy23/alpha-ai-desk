@@ -11,9 +11,11 @@ export async function POST(req: NextRequest) {
     const shopId = typeof body?.shopId === 'string' ? body.shopId : ''
     if (!shopId) return NextResponse.json({ error: 'shopId is required' }, { status: 400 })
     const supabase = getServiceClient()
-    const { data: shop } = await supabase.from('shop_profiles').select('id,shop_name,phone,address,city_state_zip').eq('id', shopId).maybeSingle()
-    if (!shop) return NextResponse.json({ error: 'Shop not found' }, { status: 404 })
-    const { data: existing } = await supabase.from('settings').select('id').eq('shop_id', shopId).maybeSingle()
+    const { data: shop, error: shopError } = await supabase.from('shop_profiles').select('id,shop_name,phone,address,city_state_zip').eq('id', shopId).maybeSingle()
+    if (shopError) return NextResponse.json({ ok: false, error: 'Shop profile could not be loaded' }, { status: 500 })
+    if (!shop) return NextResponse.json({ ok: false, error: 'Shop not found' }, { status: 404 })
+    const { data: existing, error: existingError } = await supabase.from('settings').select('id').eq('shop_id', shopId).maybeSingle()
+    if (existingError) return NextResponse.json({ ok: false, error: 'Shop settings could not be loaded' }, { status: 500 })
 
     // Seed only from this shop's profile. Never copy the original deployment's
     // name, address, phone, or sender into another tenant.
@@ -41,24 +43,25 @@ export async function POST(req: NextRequest) {
     }
 
     if (existing?.id) {
-      const { data: current } = await supabase.from('settings').select('*').eq('shop_id', shopId).maybeSingle()
+      const { data: current, error: currentError } = await supabase.from('settings').select('*').eq('shop_id', shopId).maybeSingle()
+      if (currentError) return NextResponse.json({ ok: false, error: 'Shop settings could not be read' }, { status: 500 })
       const updates: Record<string, unknown> = {}
       for (const [k, v] of Object.entries(defaults)) {
-        if (!current?.[k]) updates[k] = v
+        const value = current?.[k]
+        if (value === null || value === undefined || value === '') updates[k] = v
       }
       if (Object.keys(updates).length > 0) {
         const { error } = await supabase.from('settings').update(updates).eq('id', existing.id).eq('shop_id', shopId)
-        if (error) console.warn('seed-settings update warn:', error.message)
+        if (error) return NextResponse.json({ ok: false, error: 'Shop settings could not be updated' }, { status: 500 })
       }
     } else {
       const { error } = await supabase.from('settings').insert(defaults)
-      if (error) console.warn('seed-settings insert warn:', error.message)
+      if (error) return NextResponse.json({ ok: false, error: 'Shop settings could not be created' }, { status: 500 })
     }
 
-    return NextResponse.json({ status: 'ok' })
+    return NextResponse.json({ ok: true, status: 'ok' })
   } catch (e) {
-    // Never return 500 — dashboard should not crash on seed failure
     console.error('seed-settings error:', e)
-    return NextResponse.json({ status: 'ok', warning: (e as Error).message })
+    return NextResponse.json({ ok: false, error: 'Settings could not be initialized' }, { status: 500 })
   }
 }

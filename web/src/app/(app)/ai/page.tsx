@@ -1224,12 +1224,14 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   const loadConnectors = useCallback(async () => {
     setConnectorsLoading(true)
     try {
-      const shopId = await getShopId()
-      if (!shopId) throw new Error('No shop is associated with the signed-in user')
-      const { data, error } = await supabase.from('connectors').select('*').eq('shop_id', shopId)
-      if (error) throw error
+      const response = await fetch('/api/connectors', {
+        headers: await getAuthJsonHeaders(),
+        cache: 'no-store',
+      })
+      const data = await response.json().catch(() => null) as { ok?: boolean; connectors?: ConnectorRecord[]; error?: unknown } | null
+      if (!response.ok || data?.ok !== true) throw new Error(getAIErrorMessage(data, 'Could not load connections'))
       const map: Record<string, ConnectorRecord> = {}
-      for (const c of (data || [])) map[c.service] = c
+      for (const c of (data.connectors || [])) map[c.service] = c
       setConnectors(map)
     } catch (error) {
       setConnectorToast(error instanceof Error ? error.message : 'Could not load connections')
@@ -1241,10 +1243,13 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   const handleConnectorDisconnect = useCallback(async (service: string) => {
     setDisconnecting(service)
     try {
-      const shopId = await getShopId()
-      if (!shopId) throw new Error('No shop is associated with the signed-in user')
-      const { error } = await supabase.from('connectors').update({ enabled: false, access_token: null, refresh_token: null, token_expires_at: null, page_id: null, page_access_token: null, metadata: {}, updated_at: new Date().toISOString() }).eq('service', service).eq('shop_id', shopId)
-      if (error) throw error
+      const response = await fetch('/api/connectors/disconnect', {
+        method: 'POST',
+        headers: await getAuthJsonHeaders(),
+        body: JSON.stringify({ service }),
+      })
+      const data = await response.json().catch(() => null) as { ok?: boolean; error?: unknown } | null
+      if (!response.ok || data?.ok !== true) throw new Error(getAIErrorMessage(data, 'Disconnect failed'))
       setConnectorToast((CONNECTOR_SERVICE_INFO[service]?.name || service) + ' disconnected')
       setTimeout(() => setConnectorToast(''), 3000)
       await loadConnectors()

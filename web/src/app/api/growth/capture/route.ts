@@ -137,7 +137,7 @@ export async function POST(req: NextRequest) {
 
       if (error) throw error
 
-      const results: Array<{ name: string; phone: string; sent: boolean; error?: string }> = []
+      const results: Array<{ name: string; phone: string; sent: boolean; recorded?: boolean; error?: string }> = []
 
       for (const lead of pendingLeads || []) {
         if (!lead.phone) continue
@@ -146,6 +146,8 @@ export async function POST(req: NextRequest) {
         
         // Update only after recording whether the attempt succeeded. Keep a failed
         // lead eligible for a later retry instead of silently marking it contacted.
+        let recorded = true
+        let recordError = ''
         if (smsResult.success) {
           const { error: updateError } = await supabase
             .from('growth_leads')
@@ -155,22 +157,30 @@ export async function POST(req: NextRequest) {
             })
             .eq('id', lead.id)
             .eq('shop_id', auth.shopId)
-          if (updateError) console.error('Lead follow-up update error:', updateError.message)
+          if (updateError) {
+            recorded = false
+            recordError = 'Follow-up sent, but the lead could not be updated for retry protection'
+            console.error('Lead follow-up update error:', updateError.message)
+          }
         }
 
         results.push({
           name: lead.name,
           phone: lead.phone,
           sent: smsResult.success,
-          error: smsResult.error
+          recorded,
+          error: smsResult.error || recordError || undefined
         })
       }
 
+      const success = results.every(result => result.sent === true && result.recorded !== false)
       return NextResponse.json({
+        ok: success,
+        success,
         total_pending: (pendingLeads || []).length,
         followed_up: results.filter(r => r.sent).length,
         results
-      })
+      }, { status: success ? 200 : 502 })
     }
 
     if (action === 'convert') {
