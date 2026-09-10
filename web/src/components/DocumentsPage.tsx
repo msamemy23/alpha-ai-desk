@@ -20,6 +20,7 @@ async function recordPayment(
     p_amount: Math.round(amount * 100) / 100,
     p_method: method,
     p_note: note,
+    p_idempotency_key: `document-payment-${doc.id}-${crypto.randomUUID()}`,
   })
   if (error) throw new Error(`Payment could not be recorded: ${error.message}`)
   return (data || null) as { amount_paid?: number; status?: string; balance_due?: number; total?: number } | null
@@ -291,13 +292,9 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   const genDocNumber = async () => {
     const shopId = await getShopId()
     if (!shopId) throw new Error('No shop is associated with the signed-in user')
-    const prefix = type === 'Estimate' ? 'EST' : type === 'Invoice' ? 'INV' : 'REC'
-    const year = new Date().getFullYear()
-    const { data, error } = await supabase.from('documents').select('doc_number').eq('shop_id', shopId).in('type', type === 'Invoice' ? ['Invoice', 'Receipt'] : [type]).like('doc_number', prefix + '-' + year + '-%')
-    if (error) throw error
-    const nums = (data || []).map((d: Record<string,string>) => parseInt(d.doc_number.split('-').pop() || '0'))
-    const next = Math.max(0, ...nums) + 1
-    return prefix + '-' + year + '-' + String(next).padStart(4,'0')
+    const { data, error } = await supabase.rpc('next_document_number', { p_shop_id: shopId, p_type: type })
+    if (error || typeof data !== 'string') throw error || new Error('Document numbering failed')
+    return data
   }
   const openNew = async () => {
     const docNumber = await genDocNumber()
@@ -558,12 +555,8 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               {editing !== 'new' && type === 'Estimate' && <button className="btn btn-primary btn-sm" onClick={async () => {
                 if (!form.id) return;
                 if (!confirm('Convert this estimate to an invoice? The estimate will become the invoice (it will no longer appear under Estimates).')) return;
-                const prefix = 'INV';
-                const year = new Date().getFullYear();
-                const shopId = await getShopId(); if (!shopId) { alert('No shop is associated with the signed-in user'); return }; const { data: existing } = await supabase.from('documents').select('doc_number').eq('shop_id', shopId).eq('type','Invoice').like('doc_number',`${prefix}-${year}-%`);
-                const nums = (existing||[]).map((d:Record<string,string>) => parseInt(d.doc_number.split('-').pop()||'0'));
-                const next = Math.max(0,...nums)+1;
-                const doc_number = `${prefix}-${year}-${String(next).padStart(4,'0')}`;
+                const shopId = await getShopId(); if (!shopId) { alert('No shop is associated with the signed-in user'); return }; const { data: doc_number, error: numberingError } = await supabase.rpc('next_document_number', { p_shop_id: shopId, p_type: 'Invoice' });
+                if (numberingError || typeof doc_number !== 'string') { alert('Invoice numbering failed: ' + (numberingError?.message || 'Unknown error')); return }
                 // UPDATE the existing row in place — don't insert a duplicate.
                 const { error: convertError } = await supabase.from('documents').update({ type:'Invoice', doc_number, status:'Draft', updated_at: new Date().toISOString() }).eq('id', form.id).eq('shop_id', shopId); if (convertError) { alert('Conversion failed: ' + convertError.message); return }
                 setEditing(null);

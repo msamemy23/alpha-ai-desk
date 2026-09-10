@@ -34,25 +34,13 @@ export async function POST(req: NextRequest) {
       : crypto.randomUUID()
     const db = getServiceClient()
 
-    // A session is replaced atomically at the application level so repeated
-    // saves do not create duplicate copies of the same conversation.
-    const { error: deleteError } = await db.from('ai_chat_history')
-      .delete()
-      .eq('shop_id', auth.shopId)
-      .eq('user_id', auth.userId)
-      .eq('session_id', sessionId)
-    if (deleteError) throw deleteError
-
-    const rows = messages.map(message => ({
-      shop_id: auth.shopId,
-      user_id: auth.userId,
-      session_id: sessionId,
-      role: message.role,
-      content: JSON.stringify(message),
-      created_at: new Date().toISOString(),
-    }))
-    const { error: insertError } = await db.from('ai_chat_history').insert(rows)
-    if (insertError) throw insertError
+    const { error: replaceError } = await db.rpc('replace_ai_chat_history', {
+      p_shop_id: auth.shopId,
+      p_user_id: auth.userId,
+      p_session_id: sessionId,
+      p_messages: messages,
+    })
+    if (replaceError) throw replaceError
 
     return NextResponse.json({
       ok: true,
@@ -63,6 +51,22 @@ export async function POST(req: NextRequest) {
     console.error('[ai-chat-history] save failed:', e)
     return NextResponse.json({ ok: false, error: 'Conversation could not be saved' }, { status: 500 })
   }
+}
+
+export async function DELETE(req: NextRequest) {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
+  const sessionId = req.nextUrl.searchParams.get('sessionId')
+  const deleteAll = req.nextUrl.searchParams.get('all') === 'true'
+  if (!deleteAll && (!sessionId || !/^[A-Za-z0-9._:-]{1,120}$/.test(sessionId))) {
+    return NextResponse.json({ ok: false, error: 'A valid sessionId or all=true is required' }, { status: 400 })
+  }
+  const db = getServiceClient()
+  let query = db.from('ai_chat_history').delete().eq('shop_id', auth.shopId).eq('user_id', auth.userId)
+  if (!deleteAll) query = query.eq('session_id', sessionId as string)
+  const { error } = await query
+  if (error) return NextResponse.json({ ok: false, error: 'Conversation could not be deleted' }, { status: 500 })
+  return NextResponse.json({ ok: true })
 }
 
 export async function GET(req: NextRequest) {

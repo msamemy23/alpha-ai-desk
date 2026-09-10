@@ -3,6 +3,7 @@ import { getServiceClient } from '@/lib/supabase-service'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { createVoiceClientState } from '@/lib/voice-state'
+import { createHash } from 'node:crypto'
 
 const AI_URL = 'https://openrouter.ai/api/v1/chat/completions'
 
@@ -64,11 +65,15 @@ async function generateMessage(lead: any, method: string, shopName: string, shop
   }
 }
 
-async function sendSMS(to: string, message: string, telnyxKey: string, telnyxPhone: string) {
+function idempotencyKey(parts: string[]) {
+  return `growth-outreach-${createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 32)}`
+}
+
+async function sendSMS(to: string, message: string, telnyxKey: string, telnyxPhone: string, key?: string) {
   if (!telnyxKey || !telnyxPhone) throw new Error('Telnyx not configured')
   const res = await fetchT('https://api.telnyx.com/v2/messages', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${telnyxKey}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${telnyxKey}`, ...(key ? { 'Idempotency-Key': key } : {}) },
     body: JSON.stringify({ from: telnyxPhone, to, text: message, type: 'SMS' })
   }, 10000)
   if (!res.ok) throw new Error(`SMS failed: ${res.status}`)
@@ -79,11 +84,11 @@ function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char))
 }
 
-async function sendEmailMsg(to: string, subject: string, body: string, shopName: string, shopPhone: string, shopAddress: string, fromEmail: string, apiKey: string) {
+async function sendEmailMsg(to: string, subject: string, body: string, shopName: string, shopPhone: string, shopAddress: string, fromEmail: string, apiKey: string, key?: string) {
   if (!apiKey || !fromEmail) throw new Error('Email is not configured for this shop')
   const res = await fetchT('https://api.resend.com/emails', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}`, ...(key ? { 'Idempotency-Key': key } : {}) },
     body: JSON.stringify({
       from: fromEmail,
       to: [to], subject,
@@ -139,7 +144,8 @@ async function runAutoOutreach(
       const subject = typeof generated === 'object' && generated?.subject
         ? String(generated.subject).slice(0, 200)
         : `${shop.shopName} - ${lead.service_needed || 'Auto Repair Services'}`
-      const emailResult = await sendEmailMsg(lead.email, subject, message, shop.shopName, shop.shopPhone, shop.shopAddress, shop.fromEmail, shop.resendApiKey)
+      const key = idempotencyKey([shopId, 'lead-email', String(lead.id), message])
+      const emailResult = await sendEmailMsg(lead.email, subject, message, shop.shopName, shop.shopPhone, shop.shopAddress, shop.fromEmail, shop.resendApiKey, key)
       const { error: historyError } = await db.from('outreach_history').insert({
         shop_id: shopId, lead_id: lead.id, method: 'email', status: 'sent', message,
         to_contact: lead.email, ai_mode: true, metadata: { email: emailResult }, created_at: new Date().toISOString(),
@@ -176,7 +182,7 @@ async function runSmsBlast(
     const firstName = String(customer.name || 'there').trim().split(/\s+/)[0] || 'there'
     const message = template.replace(/\{name\}/gi, firstName)
     try {
-      const result = await sendSMS(customer.phone, message, shop.telnyxApiKey, shop.telnyxPhone)
+      const result = await sendSMS(customer.phone, message, shop.telnyxApiKey, shop.telnyxPhone, idempotencyKey([shopId, 'sms-blast', String(customer.id), message]))
       const { error: logError } = await db.from('messages').insert({
         shop_id: shopId, direction: 'outbound', channel: 'sms', from_address: shop.telnyxPhone,
         to_address: customer.phone, body: message, status: result?.id ? 'sent' : 'failed',
@@ -231,7 +237,8 @@ export async function POST(req: NextRequest) {
     if (method === 'sms') {
       if (!lead.phone) return NextResponse.json({ error: 'No phone number for this lead' }, { status: 400 })
       toContact = lead.phone
-      const smsResult = await sendSMS(lead.phone, finalMessage || `Hi ${lead.name?.split(' ')[0]}! ${shop.shopName} here. We can help with ${lead.service_needed || 'your vehicle'}. Call ${shop.shopPhone}!`, shop.telnyxApiKey, shop.telnyxPhone)
+      const outboundMessage = finalMessage || `Hi ${lead.name?.split(' ')[0]}! ${shop.shopName} here. We can help with ${lead.service_needed || 'your vehicle'}. Call ${shop.shopPhone}!`
+      const smsResult = await sendSMS(lead.phone, outboundMessage, shop.telnyxApiKey, shop.telnyxPhone, idempotencyKey([auth.shopId, 'lead-sms', String(lead.id), outboundMessage]))
       result.sms = smsResult
     } else if (method === 'email') {
       if (!lead.email) return NextResponse.json({ error: 'No email for this lead' }, { status: 400 })

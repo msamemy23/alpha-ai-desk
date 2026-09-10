@@ -192,10 +192,11 @@ export async function POST(req: NextRequest) {
     if (!auth) return unauthorized()
     const { documentId } = body as { documentId: string }
     if (typeof documentId !== 'string' || !documentId) return NextResponse.json({ error: 'documentId required' }, { status: 400 })
-    const [{ data: docRaw }, { data: settings }] = await Promise.all([
+    const [{ data: docRaw, error: docError }, { data: settings, error: settingsError }] = await Promise.all([
       db.from('documents').select('*').eq('id', documentId).eq('shop_id', auth.shopId).maybeSingle(),
       db.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle(),
     ])
+    if (docError || settingsError) return NextResponse.json({ error: 'The document or shop settings could not be loaded' }, { status: 500 })
     if (!docRaw) return NextResponse.json({ error: 'Document not found' }, { status: 404 })
     const doc = normalizeDocForSigning(docRaw)
 
@@ -213,13 +214,13 @@ export async function POST(req: NextRequest) {
 
     const token = crypto.randomUUID()
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-    const { error: insertErr } = await db.from('signatures').insert({
+    const { data: signatureRecord, error: insertErr } = await db.from('signatures').insert({
       shop_id: auth.shopId,
       token,
       document_id: documentId,
       customer_email: email,
       expires_at: expiresAt,
-    })
+    }).select('id').single()
     if (insertErr) return NextResponse.json({ error: insertErr.message }, { status: 500 })
 
     const shopName = settings?.shop_name || 'your shop'
@@ -227,6 +228,14 @@ export async function POST(req: NextRequest) {
     const signUrl = `${siteUrl}/sign/${token}`
     const total = Number(doc.total || 0).toFixed(2)
     const vehicle = [doc.vehicle_year, doc.vehicle_make, doc.vehicle_model].filter(Boolean).join(' ') || ''
+    const safeShopName = escapeHtml(shopName)
+    const safeCustomerName = escapeHtml(doc.customer_name || 'Valued Customer')
+    const safeType = escapeHtml(doc.type)
+    const safeDocNumber = escapeHtml(doc.doc_number)
+    const safeVehicle = escapeHtml(vehicle)
+    const safeDocDate = escapeHtml(doc.doc_date)
+    const safeSignUrl = escapeHtml(signUrl)
+    const safeApproveUrl = escapeHtml(`${siteUrl}/api/sign?approve=${token}`)
 
     // Build a small line-item table for the email so the customer sees the
     // breakdown right in the inbox, not just a button to click.
@@ -241,7 +250,7 @@ export async function POST(req: NextRequest) {
             ${doc.line_items
               .map(
                 (li: { description?: unknown; qty?: unknown; total?: unknown }) =>
-                  `<tr style="border-bottom:1px solid #f3f4f6"><td style="padding:6px 8px">${li.description}</td><td style="padding:6px 8px;text-align:center">${li.qty}</td><td style="padding:6px 8px;text-align:right">$${Number(li.total).toFixed(2)}</td></tr>`
+                  `<tr style="border-bottom:1px solid #f3f4f6"><td style="padding:6px 8px">${escapeHtml(li.description)}</td><td style="padding:6px 8px;text-align:center">${escapeHtml(li.qty)}</td><td style="padding:6px 8px;text-align:right">$${Number(li.total).toFixed(2)}</td></tr>`
               )
               .join('')}
           </tbody>
@@ -253,15 +262,15 @@ export async function POST(req: NextRequest) {
 <body style="font-family:Arial,sans-serif;margin:0;padding:20px;background:#f4f4f4">
 <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden">
   <div style="background:#111827;padding:24px;text-align:center;color:#fff">
-    <h2 style="margin:0;font-size:20px">${shopName}</h2>
+    <h2 style="margin:0;font-size:20px">${safeShopName}</h2>
   </div>
   <div style="padding:24px">
-    <p>Hi ${doc.customer_name || 'Valued Customer'},</p>
-    <p>Your ${doc.type} #${doc.doc_number} is ready for your electronic signature.</p>
+    <p>Hi ${safeCustomerName},</p>
+    <p>Your ${safeType} #${safeDocNumber} is ready for your electronic signature.</p>
     <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px">
-      <tr><td style="padding:6px 0"><strong>Document:</strong></td><td style="padding:6px 0">${doc.type} #${doc.doc_number}</td></tr>
-      ${vehicle ? `<tr><td style="padding:6px 0"><strong>Vehicle:</strong></td><td style="padding:6px 0">${vehicle}</td></tr>` : ''}
-      <tr><td style="padding:6px 0"><strong>Date:</strong></td><td style="padding:6px 0">${doc.doc_date || ''}</td></tr>
+      <tr><td style="padding:6px 0"><strong>Document:</strong></td><td style="padding:6px 0">${safeType} #${safeDocNumber}</td></tr>
+      ${vehicle ? `<tr><td style="padding:6px 0"><strong>Vehicle:</strong></td><td style="padding:6px 0">${safeVehicle}</td></tr>` : ''}
+      <tr><td style="padding:6px 0"><strong>Date:</strong></td><td style="padding:6px 0">${safeDocDate}</td></tr>
     </table>
     ${itemsTable}
     <table style="width:260px;margin-left:auto;font-size:13px;margin-bottom:16px">
@@ -276,14 +285,14 @@ export async function POST(req: NextRequest) {
     </table>
     <p>Click below to review the full document and sign electronically:</p>
     <p style="text-align:center;margin:24px 0 8px">
-      <a href="${signUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:14px 32px;border-radius:6px;font-size:16px;font-weight:600">Review and Sign</a>
+      <a href="${safeSignUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:14px 32px;border-radius:6px;font-size:16px;font-weight:600">Review and Sign</a>
     </p>
     ${doc.type === 'Estimate' ? `<p style="text-align:center;margin:0 0 24px">
-      <a href="${siteUrl}/api/sign?approve=${token}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;padding:12px 32px;border-radius:6px;font-size:15px;font-weight:600">Approve — Start the Work</a>
+      <a href="${safeApproveUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;padding:12px 32px;border-radius:6px;font-size:15px;font-weight:600">Approve — Start the Work</a>
     </p>` : ''}
-    <p style="font-size:12px;color:#888">Questions? Call us at ${settings?.shop_phone || ''}.</p>
+    <p style="font-size:12px;color:#888">Questions? Call us at ${escapeHtml(settings?.shop_phone)}.</p>
   </div>
-  <div style="border-top:1px solid #eee;padding:16px;text-align:center;font-size:12px;color:#888">${shopName} · ${settings?.shop_address || ''}</div>
+  <div style="border-top:1px solid #eee;padding:16px;text-align:center;font-size:12px;color:#888">${safeShopName} · ${escapeHtml(settings?.shop_address)}</div>
 </div>
 </body></html>`
 
@@ -294,6 +303,7 @@ export async function POST(req: NextRequest) {
         subject: `${doc.type} #${doc.doc_number} — Please review and sign`,
         html,
         replyTo: settings?.shop_email,
+        idempotencyKey: signatureRecord?.id ? `signature-request-${signatureRecord.id}` : undefined,
       })
     } catch (err: unknown) {
       emailError = err instanceof Error ? err.message : String(err)
@@ -347,6 +357,14 @@ export async function POST(req: NextRequest) {
     const shopName = settings?.shop_name || 'your shop'
     const vehicle = [doc.vehicle_year, doc.vehicle_make, doc.vehicle_model].filter(Boolean).join(' ') || ''
     const total = Number(doc.total || 0).toFixed(2)
+    const safeShopName = escapeHtml(shopName)
+    const safeSignerName = escapeHtml(signerName.trim())
+    const safeCustomerName = escapeHtml(doc.customer_name || 'Valued Customer')
+    const safeType = escapeHtml(doc.type)
+    const safeDocNumber = escapeHtml(doc.doc_number)
+    const safeVehicle = escapeHtml(vehicle)
+    const safeIp = escapeHtml(ip)
+    const safeSignatureData = escapeHtml(signatureData)
 
     const confirmHtml = `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -361,24 +379,24 @@ body{font-family:Arial,sans-serif;background:#f0f0f0;margin:0;padding:20px}
 .ftr{background:#f9fafb;border-top:1px solid #e5e7eb;padding:20px;text-align:center;font-size:12px;color:#6b7280}
 </style></head>
 <body><div class="wrap">
-  <div class="hdr"><h1>Document Signed</h1><p>${shopName}</p></div>
+  <div class="hdr"><h1>Document Signed</h1><p>${safeShopName}</p></div>
   <div class="body">
-    <p style="font-size:16px">Hi <strong>${signerName || doc.customer_name || 'Valued Customer'}</strong>,</p>
+    <p style="font-size:16px">Hi <strong>${safeSignerName || safeCustomerName}</strong>,</p>
     <p>Thank you! Your electronic signature has been recorded.</p>
     <div class="info">
-      <strong>Document:</strong> ${doc.type} #${doc.doc_number}<br>
-      ${vehicle ? `<strong>Vehicle:</strong> ${vehicle}<br>` : ''}
+      <strong>Document:</strong> ${safeType} #${safeDocNumber}<br>
+      ${vehicle ? `<strong>Vehicle:</strong> ${safeVehicle}<br>` : ''}
       <strong>Total:</strong> $${total}<br>
-      <strong>Signed by:</strong> ${signerName}<br>
+      <strong>Signed by:</strong> ${safeSignerName}<br>
       <strong>Signed on:</strong> ${new Date(now).toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' })}<br>
-      <strong>IP Address:</strong> ${ip}
+      <strong>IP Address:</strong> ${safeIp}
     </div>
     <div class="sig-box">
-      ${signatureData ? `<img src="${signatureData}" style="max-width:300px;max-height:120px" alt="Your Signature"/>` : ''}
+      ${signatureData ? `<img src="${safeSignatureData}" style="max-width:300px;max-height:120px" alt="Your Signature"/>` : ''}
     </div>
-    <p style="font-size:13px;color:#6b7280">Keep this email for your records. Questions? Call ${settings?.shop_phone || ''}.</p>
+    <p style="font-size:13px;color:#6b7280">Keep this email for your records. Questions? Call ${escapeHtml(settings?.shop_phone)}.</p>
   </div>
-  <div class="ftr">${shopName} · ${settings?.shop_address || ''}</div>
+  <div class="ftr">${safeShopName} · ${escapeHtml(settings?.shop_address)}</div>
 </div></body></html>`
 
     await sendEmail({
@@ -386,6 +404,7 @@ body{font-family:Arial,sans-serif;background:#f0f0f0;margin:0;padding:20px}
       subject: `Signature Confirmed — ${doc.type} #${doc.doc_number}`,
       html: confirmHtml,
       replyTo: settings?.shop_email,
+      idempotencyKey: `signature-confirmation-${sig.id}`,
     })
 
     // Also notify shop
@@ -393,8 +412,9 @@ body{font-family:Arial,sans-serif;background:#f0f0f0;margin:0;padding:20px}
       await sendEmail({
         to: settings.shop_email,
         subject: `Customer signed ${doc.type} #${doc.doc_number} — ${signerName}`,
-        html: `<p><strong>${signerName}</strong> signed <strong>${doc.type} #${doc.doc_number}</strong> for ${vehicle} on ${new Date(now).toLocaleString()} — Total: $${total}.</p>`,
+        html: `<p><strong>${safeSignerName}</strong> signed <strong>${safeType} #${safeDocNumber}</strong> for ${safeVehicle} on ${escapeHtml(new Date(now).toLocaleString())} — Total: $${total}.</p>`,
         replyTo: settings.shop_email,
+        idempotencyKey: `signature-shop-notification-${sig.id}`,
       }).catch(() => {})
     }
 

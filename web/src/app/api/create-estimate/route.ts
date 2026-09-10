@@ -74,18 +74,14 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Generate doc number using correct prefix for type
-  const year = new Date().getFullYear()
-  const { data: existingDocs, error: existingDocsError } = await sb
-    .from('documents')
-    .select('doc_number')
-    .eq('shop_id', shopId)
-    .eq('type', docType)
-    .like('doc_number', `${prefix}-${year}-%`)
-  if (existingDocsError) return NextResponse.json({ error: 'Document numbering lookup failed' }, { status: 500 })
-  const nums = (existingDocs || []).map((d: Record<string, string>) => parseInt(d.doc_number.split('-').pop() || '0'))
-  const next = Math.max(0, ...nums) + 1
-  const doc_number = `${prefix}-${year}-${String(next).padStart(4, '0')}`
+  // Numbering is serialized in the database so concurrent browser/API writes
+  // cannot receive the same document number.
+  const { data: generatedNumber, error: numberingError } = await sb.rpc('next_document_number', {
+    p_shop_id: shopId,
+    p_type: docType,
+  })
+  if (numberingError || typeof generatedNumber !== 'string') return NextResponse.json({ error: 'Document numbering failed' }, { status: 500 })
+  const doc_number = generatedNumber
 
   // Handle tax - if type is Receipt and body.apply_tax is explicitly false, no tax
   const applyTax = body.apply_tax !== undefined ? body.apply_tax !== false : true
@@ -117,5 +113,5 @@ export async function POST(req: NextRequest) {
   }).select().single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ success: true, estimate: data, doc_number, type: docType })
+  return NextResponse.json({ success: true, estimate: data, document: data, doc_number, type: docType })
 }

@@ -4,6 +4,7 @@ import { getServiceClient, calcTotals } from '@/lib/supabase'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { sendEmail, estimateEmailHtml } from '@/lib/email'
 import { sendSMS, formatPhone } from '@/lib/telnyx'
+import { getIdempotencyKey } from '@/lib/api-response'
 
 export async function POST(req: NextRequest) {
   try {
@@ -27,21 +28,25 @@ export async function POST(req: NextRequest) {
     // Resolve customer contact info: request body > document fields > customer table
     let custEmail = reqEmail || doc.customer_email || ''
     let custPhone = reqPhone || doc.customer_phone || ''
-    if ((!custEmail || !custPhone) && doc.customer_id) {
-      const { data: cust } = await db
+    let smsOptedOut = false
+    if (doc.customer_id) {
+      const { data: cust, error: customerError } = await db
         .from('customers')
-        .select('email,phone')
+        .select('email,phone,sms_opted_out')
         .eq('id', doc.customer_id)
         .eq('shop_id', auth.shopId)
         .single()
+      if (customerError) return NextResponse.json({ error: 'Customer could not be loaded' }, { status: 500 })
       if (cust) {
         if (!custEmail) custEmail = cust.email || ''
         if (!custPhone) custPhone = cust.phone || ''
+        smsOptedOut = cust.sms_opted_out === true
       }
     }
 
     const shopName = settings?.shop_name || 'Your Auto Shop'
     const docType = doc.type as string
+    const idempotencyKey = getIdempotencyKey(req, [auth.shopId, 'send-document', documentId, channel, custEmail || custPhone])
 
     if (channel === 'email') {
       const email = custEmail
@@ -56,9 +61,10 @@ export async function POST(req: NextRequest) {
         replyTo: settings?.shop_email,
         apiKey: settings.resend_api_key,
         from: settings.from_email,
+        idempotencyKey,
       })
 
-      await db.from('messages').insert({
+      const { error: emailMessageError } = await db.from('messages').insert({
         shop_id: auth.shopId,
         direction: 'outbound',
         channel: 'email',
@@ -71,25 +77,29 @@ export async function POST(req: NextRequest) {
         status: 'sent',
         read: true,
       })
+      if (emailMessageError) return NextResponse.json({ error: 'Email sent, but its message record could not be saved' }, { status: 502 })
 
-      await db
+      const { error: emailDocumentError } = await db
         .from('documents')
         .update({ sent_at: new Date().toISOString() })
         .eq('id', documentId)
         .eq('shop_id', auth.shopId)
+      if (emailDocumentError) return NextResponse.json({ error: 'Email sent, but the document could not be marked as sent' }, { status: 502 })
     }
 
     if (channel === 'sms') {
       const phone = custPhone
       if (!phone) return NextResponse.json({ error: 'No phone number on file for this customer' }, { status: 400 })
+      if (smsOptedOut) return NextResponse.json({ error: 'Customer has opted out of SMS' }, { status: 409 })
       if (!settings?.telnyx_api_key || !settings?.telnyx_phone_number) return NextResponse.json({ error: 'SMS is not configured for this shop' }, { status: 503 })
       const formatted = formatPhone(phone)
       const smsBody = `Hi! Your ${docType} #${doc.doc_number} from ${shopName} is ready. Total: ${calcTotals(doc).total.toFixed(2)}. Call us at ${settings?.shop_phone || ''} with any questions.`
       await sendSMS(formatted, smsBody, settings.telnyx_phone_number, {
         apiKey: settings.telnyx_api_key,
         messagingProfileId: settings.telnyx_messaging_profile_id || '',
+        idempotencyKey,
       })
-      await db.from('messages').insert({
+      const { error: smsMessageError } = await db.from('messages').insert({
         shop_id: auth.shopId,
         direction: 'outbound',
         channel: 'sms',
@@ -101,6 +111,7 @@ export async function POST(req: NextRequest) {
         status: 'sent',
         read: true,
       })
+      if (smsMessageError) return NextResponse.json({ error: 'SMS sent, but its message record could not be saved' }, { status: 502 })
     }
 
     return NextResponse.json({ ok: true })

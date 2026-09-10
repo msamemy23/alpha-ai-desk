@@ -75,6 +75,7 @@ export async function GET(req: NextRequest) {
   // These workers fan out internally because they own their per-shop schedule.
   results.custom_automations = await callApi('/api/automations', { action: 'check_due' })
   results.system_automations = await callApi('/api/system-automations', { action: 'run_all_due' })
+  results.scheduled_messages = await callApi('/api/scheduled-messages/dispatch')
 
   results.transcribe_calls = await callForEachShop('/api/telnyx/transcribe-calls?action=batch', { limit: 10 })
   results.score_leads = await callForEachShop('/api/telnyx/transcribe-calls?action=score', { limit: 20 })

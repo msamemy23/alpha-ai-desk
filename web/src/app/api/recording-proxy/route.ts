@@ -9,9 +9,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
+import { assertPublicUrl } from '@/lib/public-url'
 
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
 const MAX_RECORDING_BYTES = 50 * 1024 * 1024
+const MAX_REDIRECTS = 3
 
 async function getFreshDownloadUrl(recordingId: string, callSessionId: string | undefined, apiKey: string): Promise<string | null> {
   try {
@@ -42,13 +44,31 @@ function isTelnyxApiUrl(value: string): boolean {
   try { return new URL(value).hostname.toLowerCase() === 'api.telnyx.com' } catch { return false }
 }
 
-function isSafeRecordingUrl(value: string): boolean {
+async function getSafeRecordingUrl(value: string, base?: URL): Promise<URL | null> {
   try {
-    const url = new URL(value)
-    const hostname = url.hostname.toLowerCase()
-    const privateHost = hostname === 'localhost' || hostname === '::1' || hostname.endsWith('.local') || /^(10|127)\./.test(hostname) || /^192\.168\./.test(hostname) || /^169\.254\./.test(hostname) || /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname)
-    return url.protocol === 'https:' && !url.username && !url.password && !privateHost
-  } catch { return false }
+    const url = await assertPublicUrl(value, base)
+    return url.protocol === 'https:' ? url : null
+  } catch { return null }
+}
+
+async function fetchRecording(url: URL, apiKey: string): Promise<Response | null> {
+  let current = url
+  for (let attempt = 0; attempt <= MAX_REDIRECTS; attempt += 1) {
+    const headers = isTelnyxApiUrl(current.toString()) && apiKey
+      ? { Authorization: `Bearer ${apiKey}` }
+      : undefined
+    const response = await fetch(current.toString(), { headers, cache: 'no-store', redirect: 'manual' })
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location')
+      if (!location || attempt === MAX_REDIRECTS) return null
+      const next = await getSafeRecordingUrl(location, current)
+      if (!next) return null
+      current = next
+      continue
+    }
+    return response
+  }
+  return null
 }
 
 export async function GET(req: NextRequest) {
@@ -91,31 +111,25 @@ export async function GET(req: NextRequest) {
   if (!recordingUrl) {
     return NextResponse.json({ error: 'No recording URL' }, { status: 404 })
   }
-  if (!isSafeRecordingUrl(recordingUrl)) {
+  const safeRecordingUrl = await getSafeRecordingUrl(recordingUrl)
+  if (!safeRecordingUrl) {
     return NextResponse.json({ error: 'Recording URL is not allowed' }, { status: 400 })
   }
+  recordingUrl = safeRecordingUrl.toString()
 
   // Proxy the audio
   try {
-    let audioRes = await fetch(recordingUrl, { cache: 'no-store' })
-    if (!audioRes.ok && telnyxKey && isTelnyxApiUrl(recordingUrl)) {
-      audioRes = await fetch(recordingUrl, {
-        headers: { 'Authorization': `Bearer ${telnyxKey}` }, cache: 'no-store',
-      })
-    }
+    let audioRes = await fetchRecording(safeRecordingUrl, telnyxKey)
     // If URL expired and we have recording_id, try getting fresh URL
-    if (!audioRes.ok && recordingId && telnyxKey) {
+    if ((!audioRes || !audioRes.ok) && recordingId && telnyxKey) {
       const freshUrl = await getFreshDownloadUrl(recordingId, callSessionId || undefined, telnyxKey)
-      if (freshUrl && freshUrl !== recordingUrl) {
-        audioRes = await fetch(freshUrl, { cache: 'no-store' })
-        if (!audioRes.ok && isTelnyxApiUrl(freshUrl)) {
-          audioRes = await fetch(freshUrl, {
-            headers: { 'Authorization': `Bearer ${telnyxKey}` }, cache: 'no-store',
-          })
-        }
+      const safeFreshUrl = freshUrl ? await getSafeRecordingUrl(freshUrl) : null
+      if (safeFreshUrl && safeFreshUrl.toString() !== recordingUrl) {
+        recordingUrl = safeFreshUrl.toString()
+        audioRes = await fetchRecording(safeFreshUrl, telnyxKey)
       }
     }
-    if (!audioRes.ok) {
+    if (!audioRes || !audioRes.ok) {
       return NextResponse.json({ error: 'Recording expired or unavailable' }, { status: 404 })
     }
     const declaredLength = Number(audioRes.headers.get('content-length') || 0)

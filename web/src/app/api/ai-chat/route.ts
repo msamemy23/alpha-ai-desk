@@ -89,7 +89,7 @@ async function getSettings(shopId: string): Promise<AiChatSettings> {
     .maybeSingle()
   if (error) {
     console.error('[ai-chat] settings lookup failed:', error.message)
-    return {}
+    throw new Error('Unable to load shop AI settings')
   }
   return (data || {}) as AiChatSettings
 }

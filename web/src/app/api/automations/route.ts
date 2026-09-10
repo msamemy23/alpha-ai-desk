@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
+import { nextScheduledRun } from '@/lib/schedules'
 
 export const dynamic = 'force-dynamic'
 
@@ -28,58 +29,7 @@ async function getTimezone(shopId?: string): Promise<string> {
 }
 
 function parseNextRun(schedule: string, tz: string = 'America/Chicago'): string {
-  const now = new Date()
-  const nowCT = new Date(now.toLocaleString('en-US', { timeZone: tz }))
-
-  // Daily time: '05:00', '7:30pm', '14:30'
-  const timeMatch = schedule.match(/^(\d{1,2}):(\d{2})\s*(am|pm)?$/i)
-  if (timeMatch) {
-    let hour = parseInt(timeMatch[1])
-    const min = parseInt(timeMatch[2])
-    const ampm = timeMatch[3]?.toLowerCase()
-    if (ampm === 'pm' && hour < 12) hour += 12
-    if (ampm === 'am' && hour === 12) hour = 0
-    const next = new Date(nowCT)
-    next.setHours(hour, min, 0, 0)
-    if (next <= nowCT) next.setDate(next.getDate() + 1)
-    return next.toISOString()
-  }
-
-  // Day of week + time: 'mon 09:00', 'monday 9am'
-  const dayMatch = schedule.match(/^(sun|mon|tue|wed|thu|fri|sat|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\s+(\d{1,2}):(\d{2})\s*(am|pm)?$/i)
-  if (dayMatch) {
-    const days = ['sun','mon','tue','wed','thu','fri','sat']
-    const dayName = dayMatch[1].slice(0,3).toLowerCase()
-    const targetDay = days.indexOf(dayName)
-    let hour = parseInt(dayMatch[2])
-    const min = parseInt(dayMatch[3])
-    const ampm = dayMatch[4]?.toLowerCase()
-    if (ampm === 'pm' && hour < 12) hour += 12
-    if (ampm === 'am' && hour === 12) hour = 0
-    const next = new Date(nowCT)
-    const currentDay = next.getDay()
-    let daysUntil = (targetDay - currentDay + 7) % 7
-    if (daysUntil === 0) {
-      next.setHours(hour, min, 0, 0)
-      if (next <= nowCT) daysUntil = 7
-      else daysUntil = 0
-    }
-    next.setDate(next.getDate() + daysUntil)
-    next.setHours(hour, min, 0, 0)
-    return next.toISOString()
-  }
-
-  // Every X minutes/hours: 'every 30m', 'every 2h', 'every 1h'
-  const intervalMatch = schedule.match(/^every\s+(\d+)\s*(m|min|h|hr|hour|hours|minute|minutes)?$/i)
-  if (intervalMatch) {
-    const num = parseInt(intervalMatch[1])
-    const unit = intervalMatch[2]?.toLowerCase() || 'h'
-    const ms = unit.startsWith('m') ? num * 60 * 1000 : num * 3600 * 1000
-    return new Date(Date.now() + ms).toISOString()
-  }
-
-  // Default: 24 hours from now
-  return new Date(Date.now() + 86400000).toISOString()
+  return nextScheduledRun(schedule, tz).toISOString()
 }
 
 export async function GET() {
@@ -252,7 +202,8 @@ export async function POST(req: NextRequest) {
       .lte('next_run', now)
       .limit(10)
     if (shopId) dueQuery = dueQuery.eq('shop_id', shopId)
-    const { data: dueItems } = await dueQuery
+    const { data: dueItems, error: dueError } = await dueQuery
+    if (dueError) return fail('Unable to load due automations', 500)
 
     if (!dueItems?.length) return ok({ ran: 0 })
 

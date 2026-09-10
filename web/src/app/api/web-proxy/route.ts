@@ -1,37 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { assertPublicUrl, tryPublicUrl } from '@/lib/public-url'
 
 export const dynamic = 'force-dynamic'
 
 const MAX_BYTES = 8 * 1024 * 1024
 const MAX_REDIRECTS = 3
 
-function isPrivateHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/\.$/, '')
-  if (
-    !host ||
-    host === 'localhost' ||
-    host.endsWith('.localhost') ||
-    host.endsWith('.local') ||
-    host.endsWith('.internal') ||
-    host === '::1' ||
-    host === '[::1]' ||
-    host === '0.0.0.0' ||
-    host.startsWith('127.') ||
-    host.startsWith('10.') ||
-    host.startsWith('192.168.') ||
-    host.startsWith('169.254.') ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
-    host.includes(':')
-  ) return true
-  return false
-}
-
-function parsePublicUrl(raw: string, base?: URL): URL | null {
+async function parsePublicUrl(raw: string, base?: URL): Promise<URL | null> {
   try {
-    const url = base ? new URL(raw, base) : new URL(raw)
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || isPrivateHost(url.hostname)) return null
-    return url
+    return await assertPublicUrl(raw, base)
   } catch {
     return null
   }
@@ -67,7 +45,7 @@ async function fetchPublic(target: URL): Promise<{ response: Response; url: URL 
     })
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location')
-      const next = location ? parsePublicUrl(location, current) : null
+      const next = location ? await tryPublicUrl(location, current) : null
       if (!next) return null
       current = next
       continue
@@ -82,7 +60,7 @@ export async function GET(req: NextRequest) {
   if (!auth) return unauthorized()
 
   const raw = req.nextUrl.searchParams.get('url') || ''
-  const target = parsePublicUrl(raw)
+  const target = await parsePublicUrl(raw)
   if (!target) return new NextResponse('Forbidden or invalid URL', { status: 400 })
 
   try {

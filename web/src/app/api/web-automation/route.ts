@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
+import { assertPublicUrl, tryPublicUrl } from '@/lib/public-url'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 30
@@ -19,16 +20,22 @@ type AutomationSettings = {
 // -- Fetch + parse page (no browser needed) --
 async function fetchAndParse(url: string, selector?: string): Promise<ParsedPage> {
   try {
-    const parsedUrl = new URL(url)
-    const hostname = parsedUrl.hostname.toLowerCase()
-    const privateHost = hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '0.0.0.0' || hostname === '::1' || hostname.endsWith('.local') || /^(10|127)\./.test(hostname) || /^192\.168\./.test(hostname) || /^169\.254\./.test(hostname) || /^(172\.(1[6-9]|2[0-9]|3[0-1]))\./.test(hostname)
-    if (!['http:', 'https:'].includes(parsedUrl.protocol) || parsedUrl.username || parsedUrl.password || privateHost) {
-      return { text: '', links: [], title: '', error: 'Only public http(s) URLs are allowed' }
+    let currentUrl = await assertPublicUrl(url)
+    let r: Response | null = null
+    for (let redirect = 0; redirect <= 3; redirect += 1) {
+      r = await fetch(currentUrl.toString(), {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+        signal: AbortSignal.timeout(15000),
+        redirect: 'manual',
+      })
+      if (r.status < 300 || r.status >= 400) break
+      const location = r.headers.get('location')
+      const nextUrl = location ? await tryPublicUrl(location, currentUrl) : null
+      if (!nextUrl) return { text: '', links: [], title: '', error: 'Redirected to a non-public URL' }
+      currentUrl = nextUrl
+      if (redirect === 3) return { text: '', links: [], title: '', error: 'Too many redirects' }
     }
-    const r = await fetch(parsedUrl.toString(), {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-      signal: AbortSignal.timeout(15000),
-    })
+    if (!r) return { text: '', links: [], title: '', error: 'Page fetch failed' }
     if (!r.ok) return { text: '', links: [], title: '', error: `Page returned ${r.status}` }
     const html = await r.text()
 
@@ -125,6 +132,14 @@ interface BrowserResult {
   requiresSetup?: boolean
 }
 
+// This textual guard runs inside Browserless for subresources and redirects.
+// The initial URL and every explicit navigate action are also DNS-validated on
+// our server before the remote browser is allowed to run.
+function hasBlockedBrowserHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.$/, '')
+  return !host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.test') || host === '0.0.0.0' || host === '::1' || host === '[::1]' || host.includes(':') || /^(0|10|127)\./.test(host) || /^169\.254\./.test(host) || /^192\.0\.2\./.test(host) || /^192\.168\./.test(host) || /^198\.51\.100\./.test(host) || /^203\.0\.113\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+}
+
 // -- Browserless full automation --
 async function runBrowserTask(task: string, url: string, actions: BrowserAction[], browserlessKey: string): Promise<BrowserResult> {
   if (!browserlessKey) {
@@ -156,10 +171,25 @@ async function runBrowserTask(task: string, url: string, actions: BrowserAction[
       }`
   }).join('\n    ')
 
+  const blockedHostFunction = hasBlockedBrowserHost.toString()
   const script = `
     const browser = await puppeteer.launch();
     const page = await browser.newPage();
     await page.setViewport({width:1280,height:800});
+    const hasBlockedBrowserHost = ${blockedHostFunction};
+    await page.setRequestInterception(true);
+    page.on('request', request => {
+      try {
+        const requested = new URL(request.url());
+        if (!['http:', 'https:'].includes(requested.protocol) || hasBlockedBrowserHost(requested.hostname)) {
+          request.abort();
+        } else {
+          request.continue();
+        }
+      } catch (_) {
+        request.abort();
+      }
+    });
     const steps = [];
     try {
       await page.goto(${JSON.stringify(url)}, {waitUntil:'networkidle2',timeout:15000});
@@ -218,19 +248,24 @@ export async function POST(req: NextRequest) {
     const type = typeof body?.type === 'string' ? body.type : 'scrape'
     const actions = Array.isArray(body?.actions) ? body.actions.slice(0, 20) : []
     const query = typeof body?.query === 'string' ? body.query.trim().slice(0, 500) : ''
-    const validateUrl = (value: string) => {
+    const validateUrl = async (value: string) => {
       if (!value) return 'URL required'
       try {
-        const parsed = new URL(value)
-        const hostname = parsed.hostname.toLowerCase()
-        const privateHost = hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '0.0.0.0' || hostname === '::1' || hostname.endsWith('.local') || /^(10|127)\./.test(hostname) || /^192\.168\./.test(hostname) || /^169\.254\./.test(hostname) || /^(172\.(1[6-9]|2[0-9]|3[0-1]))\./.test(hostname)
-        if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || privateHost) return 'Only public http(s) URLs are allowed'
-      } catch { return 'Valid public URL required' }
+        await assertPublicUrl(value)
+      } catch (error) {
+        return error instanceof Error ? error.message : 'Valid public URL required'
+      }
       return null
     }
     if (url) {
-      const urlError = validateUrl(url)
+      const urlError = await validateUrl(url)
       if (urlError) return NextResponse.json({ ok: false, error: urlError }, { status: 400 })
+    }
+    for (const action of actions) {
+      if (action && action.type === 'navigate') {
+        const actionError = await validateUrl(typeof action.url === 'string' ? action.url.trim() : '')
+        if (actionError) return NextResponse.json({ ok: false, error: `Navigate action rejected: ${actionError}` }, { status: 400 })
+      }
     }
     const log = (kind: string, label: string, result: string, success: boolean) => logRun(auth.shopId, kind, label, result, success)
 
@@ -348,7 +383,7 @@ export async function POST(req: NextRequest) {
       if (!target) return NextResponse.json({ ok: false, error: 'URL or competitor name required' }, { status: 400 })
       let pageData: ParsedPage = { text: '', title: '', links: [] }
       if (target.startsWith('http')) {
-        const targetError = validateUrl(target)
+        const targetError = await validateUrl(target)
         if (targetError) return NextResponse.json({ ok: false, error: targetError }, { status: 400 })
         pageData = await fetchAndParse(target)
         if (pageData.error) return NextResponse.json({ ok: false, error: pageData.error }, { status: 502 })

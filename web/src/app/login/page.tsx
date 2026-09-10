@@ -389,6 +389,12 @@ export default function LoginPage() {
               </button>
             )}
           </div>
+
+          <div className="auth-footer" aria-label="Help and legal links">
+            <a href="/help">Help</a>
+            <a href="/privacy">Privacy</a>
+            <a href="/terms">Terms</a>
+          </div>
         </form>
       </section>
 
@@ -792,6 +798,26 @@ export default function LoginPage() {
 
         .mode-row button:hover {
           color: #bae6fd;
+        }
+
+        .auth-footer {
+          display: flex;
+          justify-content: center;
+          gap: 16px;
+          margin-top: 22px;
+          padding-top: 16px;
+          border-top: 1px solid rgba(148, 163, 184, 0.14);
+          font-size: 12px;
+        }
+
+        .auth-footer a {
+          color: #94a3b8;
+          text-decoration: none;
+        }
+
+        .auth-footer a:hover {
+          color: #bae6fd;
+          text-decoration: underline;
         }
 
         @media (max-width: 920px) {

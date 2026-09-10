@@ -2,15 +2,16 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { sendEmail } from '@/lib/email'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { calcTotals } from '@/lib/supabase'
 
 export const dynamic = 'force-dynamic'
 
 
-async function sendSMS(to: string, message: string, apiKey: string, fromNumber: string) {
+async function sendSMS(to: string, message: string, apiKey: string, fromNumber: string, idempotencyKey?: string) {
   if (!apiKey || !fromNumber) return { success: false, error: 'Telnyx not configured' }
   const r = await fetch('https://api.telnyx.com/v2/messages', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) },
     body: JSON.stringify({ from: fromNumber, to, text: message }),
   })
   const d = await r.json().catch(() => ({}))
@@ -39,20 +40,33 @@ export async function POST(req: NextRequest) {
 
   // Find estimates older than followup_hours that don't have a matching invoice
   const { data: estimates, error: estimatesError } = await sb
-    .from('estimates')
-    .select('*, customers(name, phone, email)')
+    .from('documents')
+    .select('id,customer_id,customer_name,customer_phone,customer_email,parts,labors,line_items,created_at,status,type')
     .lte('created_at', cutoff)
     .gte('created_at', twoWeeksAgo)
     .eq('shop_id', auth.shopId)
+    .eq('type', 'Estimate')
     .neq('status', 'converted')
     .neq('status', 'cancelled')
   if (estimatesError) return NextResponse.json({ ok: false, error: 'Unable to load estimates' }, { status: 500 })
 
+  const customerIds = [...new Set((estimates || []).map(est => est.customer_id).filter(Boolean))]
+  const { data: customers, error: customersError } = customerIds.length
+    ? await sb.from('customers').select('id,name,phone,email,sms_opted_out').eq('shop_id', auth.shopId).in('id', customerIds)
+    : { data: [], error: null }
+  if (customersError) return NextResponse.json({ ok: false, error: 'Unable to load estimate customers' }, { status: 500 })
+  const customerById = new Map((customers || []).map(customer => [customer.id, customer]))
+
   const results: Array<Record<string, unknown>> = []
 
   for (const est of estimates || []) {
-    const customer = est.customers as Record<string, string> | null
-    if (!customer) continue
+    const customer = (est.customer_id ? customerById.get(est.customer_id) : null) || {
+      id: est.customer_id,
+      name: est.customer_name || 'Customer',
+      phone: est.customer_phone || '',
+      email: est.customer_email || '',
+      sms_opted_out: false,
+    }
 
     // Check if already followed up on this estimate
     const { data: existing, error: existingError } = await sb
@@ -66,15 +80,17 @@ export async function POST(req: NextRequest) {
 
     if (existing && existing.length > 0) continue
 
-    const total = typeof est.total === 'number' ? `$${est.total.toFixed(2)}` : 'your estimate'
+    const total = `$${calcTotals(est as Record<string, unknown>).total.toFixed(2)}`
     const msg = `Hi ${customer.name}! Just checking in — we sent you an estimate for ${total} for your vehicle. We'd love to help you get it done. ${contactLine} ${shopName}`
 
     let sent = false
     if (!dryRun) {
       // Try SMS first, then email
-      if (customer.phone) {
-        const smsResult = await sendSMS(customer.phone, msg, telnyxKey, telnyxFrom)
+      let sentBySms = false
+      if (customer.phone && !customer.sms_opted_out) {
+        const smsResult = await sendSMS(customer.phone, msg, telnyxKey, telnyxFrom, `estimate-followup-${est.id}`)
         sent = smsResult.success
+        sentBySms = smsResult.success
       }
       if (!sent && customer.email) {
         try {
@@ -82,26 +98,27 @@ export async function POST(req: NextRequest) {
           await sendEmail({
             to: customer.email,
             subject: `Following up on your estimate — ${shopName}`,
-            html: `<p>Hi ${customer.name},</p><p>We wanted to follow up on the estimate we sent you. We're ready to help get your vehicle taken care of!</p><p>Total estimate: <strong>${total}</strong></p><p>${contactLine}</p><p>${shopName}</p>`,
+            html: `<p>Hi ${escapeHtml(String(customer.name))},</p><p>We wanted to follow up on the estimate we sent you. We're ready to help get your vehicle taken care of!</p><p>Total estimate: <strong>${escapeHtml(total)}</strong></p><p>${escapeHtml(contactLine)}</p><p>${escapeHtml(shopName)}</p>`,
             apiKey: settings.resend_api_key,
             from: settings.from_email,
             replyTo: settings.shop_email,
+            idempotencyKey: `estimate-followup-${est.id}`,
           })
           sent = true
         } catch { /* ignore */ }
       }
 
-      // Log it
-      try {
-        await sb.from('estimate_followups_sent').insert({
-          shop_id: auth.shopId,
-          estimate_id: est.id,
-          customer_id: est.customer_id,
-          method: customer.phone && sent ? 'sms' : 'email',
-          sent,
-          created_at: new Date().toISOString(),
-        })
-      } catch { /* table may not exist yet */ }
+      // Log it and surface a provider/logging mismatch instead of pretending
+      // the workflow completed.
+      const { error: logError } = await sb.from('estimate_followups_sent').insert({
+        shop_id: auth.shopId,
+        estimate_id: est.id,
+        customer_id: est.customer_id,
+        method: sentBySms ? 'sms' : 'email',
+        sent,
+        created_at: new Date().toISOString(),
+      })
+      if (logError) return NextResponse.json({ ok: false, error: 'Estimate follow-up was sent but could not be logged' }, { status: 502 })
     }
 
     results.push({
@@ -116,4 +133,8 @@ export async function POST(req: NextRequest) {
   const failed = !dryRun && results.some(result => result.sent !== true)
   const success = dryRun || !failed
   return NextResponse.json({ ok: success, success, processed: results.length, followed_up: results.filter(r => r.sent).length, results }, { status: success ? 200 : 502 })
+}
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char))
 }

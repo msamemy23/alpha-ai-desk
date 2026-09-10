@@ -65,13 +65,19 @@ export default function CustomersPage() {
           ? supabase.from('call_history').select('id,direction,duration_secs,start_time,status').eq('shop_id', shopId).or('from_number.ilike.%' + phone + '%,to_number.ilike.%' + phone + '%').order('start_time',{ascending:false}).limit(30)
           : Promise.resolve({ data: [] }),
         supabase.from('jobs').select('id,concern,status,created_at').eq('shop_id', shopId).or('customer_id.eq.' + customer.id + ',customer_name.ilike.%' + name + '%').order('created_at',{ascending:false}).limit(20),
-        supabase.from('invoices').select('id,total,amount_paid,status,created_at').eq('shop_id', shopId).eq('customer_id',customer.id).order('created_at',{ascending:false}).limit(20)
+        supabase.from('documents').select('id,parts,labors,line_items,amount_paid,status,created_at').eq('shop_id', shopId).eq('customer_id',customer.id).in('type',['Invoice','Receipt']).order('created_at',{ascending:false}).limit(20)
       ])
 
       for (const m of (msgs||[])) results.push({ id: m.id, type: 'sms', direction: m.direction, body: m.body, created_at: m.created_at })
       for (const c of (calls||[])) results.push({ id: c.id, type: 'call', direction: c.direction, duration_secs: c.duration_secs, status: c.status, created_at: c.start_time })
       for (const j of (jobs||[])) results.push({ id: j.id, type: 'job', concern: j.concern, status: j.status, created_at: j.created_at })
-      for (const inv of (invoices||[])) results.push({ id: inv.id, type: 'invoice', amount: inv.total, status: inv.status, created_at: inv.created_at })
+      for (const inv of (invoices||[])) {
+        const parts = Array.isArray(inv.parts) ? inv.parts : []
+        const labors = Array.isArray(inv.labors) ? inv.labors : []
+        const lineItems = Array.isArray(inv.line_items) ? inv.line_items : []
+        const amount = [...parts, ...labors, ...lineItems].reduce((sum: number, item: Record<string, unknown>) => sum + Number(item.amount || item.total || item.unitPrice || 0), 0)
+        results.push({ id: inv.id, type: 'invoice', amount, status: inv.status, created_at: inv.created_at })
+      }
 
       results.sort((a,b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       setTimeline(results)

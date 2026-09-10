@@ -4,6 +4,15 @@ import { getServiceClient } from '@/lib/supabase'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { sendSMS, formatPhone } from '@/lib/telnyx'
 import { sendEmail } from '@/lib/email'
+import { createHash } from 'node:crypto'
+
+function escapeHtml(value: unknown) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char))
+}
+
+function idempotencyKey(parts: string[]) {
+  return `outreach-${createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 32)}`
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -37,7 +46,7 @@ export async function POST(req: NextRequest) {
       if (recentCustomerIdsError) return NextResponse.json({ ok: false, error: 'Customer activity could not be loaded' }, { status: 500 })
       const activeIds = (recentCustomerIds || []).map((j: Record<string,unknown>) => j.customer_id).filter(Boolean)
 
-      const query = db.from('customers').select('id,name,phone,email').eq('shop_id', auth.shopId).not('id', 'in', `(${activeIds.map((id: unknown) => `"${id}"`).join(',') || '"00000000-0000-0000-0000-000000000000"'})`)
+      const query = db.from('customers').select('id,name,phone,email,sms_opted_out').eq('shop_id', auth.shopId).not('id', 'in', `(${activeIds.map((id: unknown) => `"${id}"`).join(',') || '"00000000-0000-0000-0000-000000000000"'})`)
       if (channel === 'sms') query.not('phone', 'is', null)
       if (channel === 'email') query.not('email', 'is', null)
       const { data, error: customersError } = await query.limit(500)
@@ -46,7 +55,7 @@ export async function POST(req: NextRequest) {
     } else if (type === 'custom' && filter?.status) {
       const { data: jobs, error: jobsError } = await db
         .from('jobs')
-        .select('customer_id, customer_name, customer:customers(id,name,phone,email)')
+        .select('customer_id, customer_name, customer:customers(id,name,phone,email,sms_opted_out)')
         .eq('shop_id', auth.shopId)
         .eq('status', filter.status)
       if (jobsError) return NextResponse.json({ ok: false, error: 'Jobs could not be loaded' }, { status: 500 })
@@ -63,13 +72,18 @@ export async function POST(req: NextRequest) {
           .replace('{shopName}', shopName)
           .replace('{phone}', settings?.shop_phone || '')
 
+        if (channel === 'sms' && c.sms_opted_out) {
+          continue
+        }
+
         if (channel === 'sms' && c.phone) {
-          await sendSMS(formatPhone(c.phone as string), msg, settings.telnyx_phone_number, { apiKey: settings.telnyx_api_key, messagingProfileId: settings.telnyx_messaging_profile_id || '' })
+          const formatted = formatPhone(c.phone as string)
+          await sendSMS(formatted, msg, settings.telnyx_phone_number, { apiKey: settings.telnyx_api_key, messagingProfileId: settings.telnyx_messaging_profile_id || '', idempotencyKey: idempotencyKey([auth.shopId, 'cold-followup', String(c.id), msg]) })
           const { error: messageError } = await db.from('messages').insert({
             shop_id: auth.shopId,
             direction: 'outbound', channel: 'sms',
             from_address: settings?.telnyx_phone_number,
-            to_address: c.phone,
+            to_address: formatted,
             body: msg, customer_id: c.id,
             status: 'sent', read: true, ai_handled: true,
           })
@@ -79,9 +93,10 @@ export async function POST(req: NextRequest) {
           await sendEmail({
             to: c.email as string,
             subject: `${shopName} — We miss you!`,
-            html: `<div style="font-family:Arial;padding:20px"><p>Hi ${name},</p><p>${msg.replace(/\n/g,'<br>')}</p><p style="color:#888;font-size:12px;margin-top:20px">${shopName} | ${settings?.shop_phone}</p></div>`,
+            html: `<div style="font-family:Arial;padding:20px"><p>Hi ${escapeHtml(name)},</p><p>${escapeHtml(msg).replace(/\n/g,'<br>')}</p><p style="color:#888;font-size:12px;margin-top:20px">${escapeHtml(shopName)} | ${escapeHtml(settings?.shop_phone)}</p></div>`,
             apiKey: settings?.resend_api_key,
             from: settings?.from_email,
+            idempotencyKey: idempotencyKey([auth.shopId, 'cold-followup', String(c.id), msg]),
           })
           const { error: messageError } = await db.from('messages').insert({
             shop_id: auth.shopId,

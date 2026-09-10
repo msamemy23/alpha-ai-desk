@@ -15,7 +15,7 @@ import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-con
 const lastAutoReply: Record<string, number> = {}
 const AUTO_REPLY_COOLDOWN_MS = 10 * 60 * 1000
 
-type Customer = { id: string; name: string; phone: string; email?: string } | undefined
+type Customer = { id: string; name: string; phone: string; email?: string; sms_opted_out?: boolean } | undefined
 type ShopSettings = {
   shop_id: string
   shop_name?: string
@@ -86,7 +86,7 @@ export async function handleInboundSms(opts: {
 
   const { data: customers } = await db
     .from('customers')
-    .select('id,name,phone,email')
+    .select('id,name,phone,email,sms_opted_out')
     .eq('shop_id', settings.shop_id)
     .ilike('phone', '%' + fromDigits + '%')
     .limit(1)
@@ -120,6 +120,10 @@ export async function handleInboundSms(opts: {
     return
   }
 
+  // A previous STOP remains effective until the customer explicitly opts back
+  // in through the shop's consent process. Never auto-reply around that flag.
+  if (customer?.sms_opted_out) return
+
   const now = Date.now()
   const cooldownKey = settings.shop_id + ':' + fromDigits
   if (lastAutoReply[cooldownKey] && now - lastAutoReply[cooldownKey] < AUTO_REPLY_COOLDOWN_MS) return
@@ -130,6 +134,7 @@ export async function handleInboundSms(opts: {
       await sendSMS(fromRaw, reply, shopNumber, {
         apiKey: settings.telnyx_api_key || '',
         messagingProfileId: settings.telnyx_messaging_profile_id || '',
+        idempotencyKey: `inbound-reply-${messageId || settings.shop_id + '-' + fromDigits + '-' + msgBody.slice(0, 40)}`,
       })
       lastAutoReply[cooldownKey] = Date.now()
       await db.from('messages').insert({

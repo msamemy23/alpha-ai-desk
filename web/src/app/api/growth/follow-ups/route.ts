@@ -39,7 +39,14 @@ async function generateFollowUpMessage(customerName: string, lastService: string
   }
 }
 
-async function sendSMS(to: string, message: string, apiKey: string, fromNumber: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
+function normalizePhone(value: string): string {
+  const digits = value.replace(/\D/g, '')
+  if (digits.length === 10) return `+1${digits}`
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`
+  return value.trim()
+}
+
+async function sendSMS(to: string, message: string, apiKey: string, fromNumber: string, idempotencyKey?: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
   if (!apiKey || !fromNumber) {
     return { success: false, error: 'Telnyx API key not configured' }
   }
@@ -49,7 +56,8 @@ async function sendSMS(to: string, message: string, apiKey: string, fromNumber: 
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
+        'Authorization': `Bearer ${apiKey}`,
+        ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
       },
       body: JSON.stringify({
         from: fromNumber,
@@ -97,17 +105,19 @@ export async function POST(req: NextRequest) {
     // Get customers with their last invoice date
     const { data: customers, error: custError } = await supabase
       .from('customers')
-      .select('id, name, phone, email')
+      .select('id, name, phone, email, sms_opted_out')
       .eq('shop_id', auth.shopId)
 
     if (custError) throw custError
 
-    // Get invoices to find last visit per customer
+    // Documents are the canonical financial/work-history table. The old
+    // invoices/items tables are not part of this deployment.
     const { data: invoices, error: invError } = await supabase
-      .from('invoices')
-      .select('customer_id, created_at, items')
+      .from('documents')
+      .select('customer_id, created_at, parts, labors, line_items')
       .order('created_at', { ascending: false })
       .eq('shop_id', auth.shopId)
+      .in('type', ['Invoice', 'Receipt'])
 
     if (invError) throw invError
 
@@ -115,9 +125,13 @@ export async function POST(req: NextRequest) {
     const lastVisit: Record<string, { date: string; service: string }> = {}
     for (const inv of invoices || []) {
       if (!lastVisit[inv.customer_id]) {
-        const items = typeof inv.items === 'string' ? JSON.parse(inv.items) : inv.items
-        const serviceName = Array.isArray(items) && items.length > 0 
-          ? (items[0].description || items[0].name || 'service') 
+        const items = [
+          ...(Array.isArray(inv.parts) ? inv.parts : []),
+          ...(Array.isArray(inv.labors) ? inv.labors : []),
+          ...(Array.isArray(inv.line_items) ? inv.line_items : []),
+        ]
+        const serviceName = items.length > 0
+          ? (items[0].operation || items[0].description || items[0].name || 'service')
           : 'service'
         lastVisit[inv.customer_id] = { date: inv.created_at, service: serviceName }
       }
@@ -146,6 +160,7 @@ export async function POST(req: NextRequest) {
       sent: boolean
       messageId?: string
       error?: string
+      skipped?: boolean
       months_since_visit: number
       last_service: string
     }> = []
@@ -156,6 +171,20 @@ export async function POST(req: NextRequest) {
       const monthsAgo = Math.floor((Date.now() - new Date(visit.date).getTime()) / (1000 * 60 * 60 * 24 * 30))
       
       const message = await generateFollowUpMessage(customer.name, visit.service, monthsAgo, shopName, shopPhone, aiKey, aiBase, aiModel)
+
+      if (customer.sms_opted_out) {
+        results.push({
+          customer: customer.name,
+          phone: customer.phone || 'N/A',
+          message,
+          sent: false,
+          skipped: true,
+          months_since_visit: monthsAgo,
+          last_service: visit.service,
+          error: 'Customer has opted out of SMS',
+        })
+        continue
+      }
       
       if (dryRun || !customer.phone) {
         results.push({
@@ -168,10 +197,10 @@ export async function POST(req: NextRequest) {
           error: dryRun ? 'Dry run mode' : 'No phone number'
         })
       } else {
-        const smsResult = await sendSMS(customer.phone, message, telnyxKey, telnyxFrom)
+        const smsResult = await sendSMS(normalizePhone(customer.phone), message, telnyxKey, telnyxFrom, `follow-up-${auth.shopId}-${customer.id}`)
         
         // Log the follow-up
-        await supabase.from('growth_followups').insert({
+        const { error: followupError } = await supabase.from('growth_followups').insert({
           shop_id: auth.shopId,
           customer_id: customer.id,
           customer_name: customer.name,
@@ -184,6 +213,7 @@ export async function POST(req: NextRequest) {
           last_service: visit.service,
           created_at: new Date().toISOString()
         })
+        if (followupError) throw followupError
 
         results.push({
           customer: customer.name,
@@ -198,14 +228,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const failed = !dryRun && results.some(result => result.sent !== true)
+    const failed = !dryRun && results.some(result => !result.skipped && result.sent !== true)
     const success = dryRun || !failed
     return NextResponse.json({
       ok: success,
       success,
       total_stale_customers: staleCustomers.length,
       messages_sent: results.filter(r => r.sent).length,
-      messages_failed: results.filter(r => !r.sent).length,
+      messages_failed: results.filter(r => !r.sent && !r.skipped).length,
       threshold_months: monthsThreshold,
       dry_run: dryRun,
       results

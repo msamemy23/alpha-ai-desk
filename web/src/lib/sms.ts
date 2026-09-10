@@ -22,7 +22,7 @@ export function formatPhone(phone: string): string {
   return phone
 }
 
-export async function sendSMS(to: string, body: string, from?: string, options?: { apiKey?: string; messagingProfileId?: string }) {
+export async function sendSMS(to: string, body: string, from?: string, options?: { apiKey?: string; messagingProfileId?: string; idempotencyKey?: string }) {
   const provider = (process.env.SMS_PROVIDER || 'telnyx').toLowerCase()
   const dest = formatPhone(to)
   switch (provider) {
@@ -34,7 +34,7 @@ export async function sendSMS(to: string, body: string, from?: string, options?:
 }
 
 // ── Telnyx (original behavior) ───────────────────────────────────────────────
-async function sendViaTelnyx(to: string, body: string, from?: string, options?: { apiKey?: string; messagingProfileId?: string }) {
+async function sendViaTelnyx(to: string, body: string, from?: string, options?: { apiKey?: string; messagingProfileId?: string; idempotencyKey?: string }) {
   // When a shop-specific options object is supplied, do not fall back to a
   // shared deployment credential for that shop.
   const apiKey = options ? options.apiKey : process.env.TELNYX_API_KEY
@@ -43,7 +43,11 @@ async function sendViaTelnyx(to: string, body: string, from?: string, options?: 
 
   const res = await fetch('https://api.telnyx.com/v2/messages', {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      ...(options?.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : {}),
+    },
     body: JSON.stringify({
       from: fromNumber,
       to,

@@ -37,7 +37,7 @@ async function generateReviewResponse(reviewerName: string, rating: number, revi
   }
 }
 
-async function sendReviewRequestSMS(phone: string, customerName: string, shopName: string, reviewLink: string, apiKey: string, fromNumber: string): Promise<{ success: boolean; error?: string }> {
+async function sendReviewRequestSMS(phone: string, customerName: string, shopName: string, reviewLink: string, apiKey: string, fromNumber: string, idempotencyKey?: string): Promise<{ success: boolean; error?: string }> {
   if (!apiKey || !fromNumber) {
     return { success: false, error: 'Telnyx not configured' }
   }
@@ -49,7 +49,8 @@ async function sendReviewRequestSMS(phone: string, customerName: string, shopNam
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
+        'Authorization': `Bearer ${apiKey}`,
+        ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {})
       },
       body: JSON.stringify({
         from: fromNumber,
@@ -87,15 +88,16 @@ export async function POST(req: NextRequest) {
       // Send review request to recent customers
       const { customer_name, customer_phone, customer_id } = body
       if (customer_id) {
-        const { data: customer } = await supabase.from('customers').select('id, name, phone').eq('id', customer_id).eq('shop_id', auth.shopId).maybeSingle()
+        const { data: customer } = await supabase.from('customers').select('id, name, phone, sms_opted_out').eq('id', customer_id).eq('shop_id', auth.shopId).maybeSingle()
         if (!customer) return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
+        if (customer.sms_opted_out) return NextResponse.json({ ok: false, success: false, error: 'Customer has opted out of SMS' }, { status: 409 })
       }
 
       if (typeof customer_phone !== 'string' || !customer_phone.trim()) {
         return NextResponse.json({ error: 'Customer phone required' }, { status: 400 })
       }
 
-      const result = await sendReviewRequestSMS(customer_phone, customer_name || 'Valued Customer', shopName, reviewLink, telnyxKey, telnyxFrom)
+      const result = await sendReviewRequestSMS(customer_phone, customer_name || 'Valued Customer', shopName, reviewLink, telnyxKey, telnyxFrom, customer_id ? `review-request-${customer_id}` : undefined)
 
       // Log the request
       const { error: requestError } = await supabase.from('growth_review_requests').insert({
@@ -127,9 +129,11 @@ export async function POST(req: NextRequest) {
       sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
 
       const { data: recentInvoices, error: recentInvoicesError } = await supabase
-        .from('invoices')
+        .from('documents')
         .select('customer_id')
         .eq('shop_id', auth.shopId)
+        .in('type', ['Invoice', 'Receipt'])
+        .neq('status', 'Void')
         .gte('created_at', sevenDaysAgo.toISOString())
       if (recentInvoicesError) return NextResponse.json({ ok: false, error: 'Unable to load recent invoices' }, { status: 500 })
 
@@ -141,7 +145,7 @@ export async function POST(req: NextRequest) {
       if (customerIds.length === 0) return NextResponse.json({ ok: true, success: true, message: 'No recent customers found', sent: 0 })
       const { data: customers, error: customersError } = await supabase
         .from('customers')
-        .select('id, name, phone')
+        .select('id, name, phone, sms_opted_out')
         .eq('shop_id', auth.shopId)
         .in('id', customerIds)
       if (customersError) return NextResponse.json({ ok: false, error: 'Unable to load customers' }, { status: 500 })
@@ -157,12 +161,16 @@ export async function POST(req: NextRequest) {
       const alreadySent = new Set((recentRequests || []).map((r: { phone: string }) => r.phone))
 
       let sentCount = 0
-      const results: Array<{ name: string; sent: boolean }> = []
+      const results: Array<{ name: string; sent: boolean; skipped?: boolean; error?: string }> = []
 
       for (const cust of customers || []) {
         if (!cust.phone || alreadySent.has(cust.phone)) continue
+        if (cust.sms_opted_out) {
+          results.push({ name: cust.name, sent: false, skipped: true, error: 'Customer has opted out of SMS' })
+          continue
+        }
 
-        const result = await sendReviewRequestSMS(cust.phone, cust.name, shopName, reviewLink, telnyxKey, telnyxFrom)
+        const result = await sendReviewRequestSMS(cust.phone, cust.name, shopName, reviewLink, telnyxKey, telnyxFrom, `review-request-${cust.id}`)
         
         const { error: bulkRequestError } = await supabase.from('growth_review_requests').insert({
           shop_id: auth.shopId,
@@ -179,7 +187,7 @@ export async function POST(req: NextRequest) {
         results.push({ name: cust.name, sent: result.success })
       }
 
-      const success = results.every(result => result.sent === true)
+      const success = results.every(result => result.skipped || result.sent === true)
       return NextResponse.json({ ok: success, success, sent: sentCount, total: results.length, results }, { status: success ? 200 : 502 })
     }
 

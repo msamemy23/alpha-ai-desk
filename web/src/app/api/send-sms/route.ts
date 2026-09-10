@@ -50,19 +50,32 @@ export async function POST(req: NextRequest) {
     const fromNum = settings?.telnyx_phone_number || ''
     if (!settings?.telnyx_api_key || !fromNum) return apiFail('Telnyx SMS is not configured for this shop', 503, 'NOT_CONFIGURED')
 
+    const formatted = formatPhone(to)
     if (customerId) {
-      const { data: customer } = await db.from('customers').select('id').eq('id', customerId).eq('shop_id', auth.shopId).maybeSingle()
+      const { data: customer, error: customerError } = await db.from('customers').select('id,sms_opted_out').eq('id', customerId).eq('shop_id', auth.shopId).maybeSingle()
+      if (customerError) return apiFail('Customer could not be loaded', 500, 'INTERNAL_ERROR')
       if (!customer) return apiFail('Customer not found', 404, 'NOT_FOUND')
+      if (customer.sms_opted_out) return apiFail('Customer has opted out of SMS', 409, 'CONFLICT')
+    } else {
+      // A phone-only request still has to honor the shop customer's opt-out.
+      // Callers cannot bypass consent simply by omitting customer_id.
+      const { data: phoneMatches, error: phoneError } = await db
+        .from('customers')
+        .select('id,sms_opted_out')
+        .eq('shop_id', auth.shopId)
+        .in('phone', [...new Set([to, formatted])])
+        .limit(1)
+      if (phoneError) return apiFail('Customer could not be loaded', 500, 'INTERNAL_ERROR')
+      if (phoneMatches?.[0]?.sms_opted_out) return apiFail('Customer has opted out of SMS', 409, 'CONFLICT')
     }
 
-    const formatted = formatPhone(to)
     const idempotencyKey = getIdempotencyKey(req, [auth.shopId, 'sms', formatted, text.slice(0, 80)])
     const existing = sentSmsKeys.get(idempotencyKey)
     if (existing) {
       return apiOk({ message_id: existing.messageId, idempotent: true })
     }
 
-    const result = await sendSMS(formatted, text, fromNum, { apiKey: settings.telnyx_api_key, messagingProfileId: settings.telnyx_messaging_profile_id || '' }) as Record<string,unknown>
+    const result = await sendSMS(formatted, text, fromNum, { apiKey: settings.telnyx_api_key, messagingProfileId: settings.telnyx_messaging_profile_id || '', idempotencyKey }) as Record<string,unknown>
     rememberSmsKey(idempotencyKey, result?.id)
 
     try {

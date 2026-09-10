@@ -2,6 +2,15 @@
 import nodemailer from 'nodemailer'
 import { getLaborFlatAmount, laborLineTotal } from '@/lib/document-money'
 
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -18,6 +27,7 @@ export async function sendEmail({
   from,
   replyTo,
   apiKey,
+  idempotencyKey,
 }: {
   to: string
   subject: string
@@ -26,13 +36,18 @@ export async function sendEmail({
   from?: string
   replyTo?: string
   apiKey?: string
+  idempotencyKey?: string
 }): Promise<void> {
   const content = html || body || ''
   const fromAddress = from || process.env.GMAIL_USER || process.env.FROM_EMAIL || 'onboarding@resend.dev'
   if (apiKey) {
     const response = await fetch('https://api.resend.com/emails', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+      },
       body: JSON.stringify({ from: fromAddress, to: [to], subject, html: content, reply_to: replyTo || undefined }),
     })
     const data = await response.json().catch(() => ({}))
@@ -76,10 +91,19 @@ export function estimateEmailHtml(
     .filter(Boolean)
     .join(' ')
 
+  const safeShopName = escapeHtml(shopName)
+  const safeShopPhone = escapeHtml(shopPhone)
+  const safeShopAddress = escapeHtml(shopAddress)
+  const safeType = escapeHtml(doc.type)
+  const safeDocNumber = escapeHtml(doc.doc_number)
+  const safeDocDate = escapeHtml(doc.doc_date)
+  const safeCustomerName = escapeHtml(doc.customer_name)
+  const safeVehicle = escapeHtml(vehicle)
+
   const partsRows = parts
     .map(
       (p) =>
-        `<tr><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${p.name || p.description || ''}</td><td style="padding:4px 8px;text-align:center;border-bottom:1px solid #f0f0f0">${p.qty || 1}</td><td style="padding:4px 8px;text-align:right;border-bottom:1px solid #f0f0f0">$${((Number(p.qty) || 1) * (Number(p.unitPrice) || 0)).toFixed(2)}</td></tr>`
+        `<tr><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${escapeHtml(p.name || p.description || '')}</td><td style="padding:4px 8px;text-align:center;border-bottom:1px solid #f0f0f0">${escapeHtml(p.qty || 1)}</td><td style="padding:4px 8px;text-align:right;border-bottom:1px solid #f0f0f0">$${((Number(p.qty) || 1) * (Number(p.unitPrice) || 0)).toFixed(2)}</td></tr>`
     )
     .join('')
 
@@ -88,7 +112,7 @@ export function estimateEmailHtml(
       (l) => {
         const flatAmount = getLaborFlatAmount(l)
         const qtyLabel = flatAmount !== null ? 'Flat' : `${l.hours || 0}h @ $${l.rate || 0}`
-        return `<tr><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${l.operation || l.description || 'Labor'}</td><td style="padding:4px 8px;text-align:center;border-bottom:1px solid #f0f0f0">${qtyLabel}</td><td style="padding:4px 8px;text-align:right;border-bottom:1px solid #f0f0f0">$${laborLineTotal(l).toFixed(2)}</td></tr>`
+        return `<tr><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${escapeHtml(l.operation || l.description || 'Labor')}</td><td style="padding:4px 8px;text-align:center;border-bottom:1px solid #f0f0f0">${escapeHtml(qtyLabel)}</td><td style="padding:4px 8px;text-align:right;border-bottom:1px solid #f0f0f0">$${laborLineTotal(l).toFixed(2)}</td></tr>`
       }
     )
     .join('')
@@ -98,13 +122,13 @@ export function estimateEmailHtml(
 <body style="font-family:Arial,sans-serif;margin:0;padding:20px;background:#f4f4f4">
 <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)">
   <div style="background:#111827;padding:24px;text-align:center;color:#fff">
-    <h2 style="margin:0;font-size:22px">${shopName}</h2>
+    <h2 style="margin:0;font-size:22px">${safeShopName}</h2>
   </div>
   <div style="padding:24px">
-    <h3 style="margin:0 0 4px;font-size:18px">${doc.type} #${doc.doc_number}</h3>
-    <p style="margin:0 0 16px;color:#6b7280;font-size:14px">${doc.doc_date || ''}</p>
-    <p style="margin:0 0 6px"><strong>Customer:</strong> ${doc.customer_name || ''}</p>
-    ${vehicle ? `<p style="margin:0 0 16px"><strong>Vehicle:</strong> ${vehicle}</p>` : '<br>'}
+    <h3 style="margin:0 0 4px;font-size:18px">${safeType} #${safeDocNumber}</h3>
+    <p style="margin:0 0 16px;color:#6b7280;font-size:14px">${safeDocDate}</p>
+    <p style="margin:0 0 6px"><strong>Customer:</strong> ${safeCustomerName}</p>
+    ${vehicle ? `<p style="margin:0 0 16px"><strong>Vehicle:</strong> ${safeVehicle}</p>` : '<br>'}
     ${partsRows || laborRows ? `
     <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:16px">
       <thead><tr style="background:#f9fafb;text-align:left">
@@ -129,10 +153,10 @@ export function estimateEmailHtml(
         <td style="padding:8px;text-align:right">$${balanceDue.toFixed(2)}</td>
       </tr>` : ''}
     </table>
-    <p style="font-size:13px;color:#6b7280">Questions? Call us at ${shopPhone}.</p>
+    <p style="font-size:13px;color:#6b7280">Questions? Call us at ${safeShopPhone}.</p>
   </div>
   <div style="border-top:1px solid #eee;padding:16px;text-align:center;font-size:12px;color:#888">
-    ${shopName} · ${shopAddress}
+    ${safeShopName} · ${safeShopAddress}
   </div>
 </div>
 </body></html>`

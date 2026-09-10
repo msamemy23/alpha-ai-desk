@@ -595,7 +595,7 @@ export default function ShopBoardPage() {
                           {(job.vehicle_year || job.vehicle_make || job.vehicle_model) && (
                             <span>🚗 {[job.vehicle_year, job.vehicle_make, job.vehicle_model].filter(Boolean).join(' ')}</span>
                           )}
-                          {job.vehicle_plate && <span>🪪 {job.vehicle_plate}</span>}
+          {job.vehicle_plate && <span>🪪 {job.vehicle_plate}</span>}
                         </div>
                       </div>
                       <span className={`flex-shrink-0 text-xs px-2.5 py-1 rounded-full border font-medium capitalize ${

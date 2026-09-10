@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getAuthedShop, hasInternalApiSecret, unauthorized } from '@/lib/api-auth'
+import { isScheduleDue, scheduleWindowKey } from '@/lib/schedules'
 
 export const dynamic = 'force-dynamic'
 
@@ -210,7 +211,7 @@ export async function POST(req: NextRequest) {
     if (!internal) return unauthorized()
     const { data: settingsRows, error: settingsError } = await sb
       .from('settings')
-      .select('id,shop_id,automation_config')
+      .select('id,shop_id,timezone,automation_config')
       .not('shop_id', 'is', null)
     if (settingsError) return NextResponse.json({ ok: false, error: settingsError.message }, { status: 500 })
 
@@ -222,10 +223,23 @@ export async function POST(req: NextRequest) {
 
     for (const row of settingsRows || []) {
       const shopId = String(row.shop_id)
+      const timezone = typeof row.timezone === 'string' && row.timezone ? row.timezone : 'America/Chicago'
       const shopConfig = (row.automation_config as Record<string, AutomationState>) || {}
       for (const auto of SYSTEM_AUTOMATIONS) {
         const state = shopConfig[auto.id]
-        if (!state?.enabled || (state.last_run && !isScheduleDue(auto.schedule, state.last_run))) continue
+        if (!state?.enabled || !isScheduleDue(auto.schedule, state.last_run, timezone)) continue
+        const windowKey = scheduleWindowKey(auto.schedule, timezone)
+        const { data: claimed, error: claimError } = await sb.rpc('claim_automation_run', {
+          p_shop_id: shopId,
+          p_automation_id: auto.id,
+          p_window_key: windowKey,
+        })
+        if (claimError) {
+          allOk = false
+          results[`${shopId}:${auto.id}`] = { ok: false, error: 'Automation run could not be claimed' }
+          continue
+        }
+        if (claimed !== true) continue
         try {
           const mergedBody = { ...auto.endpointBody, ...(state.config || {}), shopId }
           const res = await fetch(`${baseUrl}${auto.endpoint}`, {
@@ -236,16 +250,36 @@ export async function POST(req: NextRequest) {
           })
           const data = await res.json().catch(() => ({}))
           const success = res.ok && data?.success !== false && data?.ok !== false && !data?.error
-          state.last_run = new Date().toISOString()
-          state.run_count = (state.run_count || 0) + 1
           state.last_result = JSON.stringify(data).slice(0, 500)
           state.last_status = success ? 'ok' : 'error'
+          const { error: runUpdateError } = await sb.from('automation_runs').update({
+            status: success ? 'succeeded' : 'failed',
+            finished_at: new Date().toISOString(),
+            next_attempt_at: success ? null : new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+            result: data,
+            error: success ? null : (data?.error || `Child job returned HTTP ${res.status}`),
+          }).eq('shop_id', shopId).eq('automation_id', auto.id).eq('window_key', windowKey).eq('status', 'running')
+          if (runUpdateError) {
+            allOk = false
+            results[`${shopId}:${auto.id}`] = { ok: false, error: 'Automation result could not be recorded' }
+            continue
+          }
+          if (success) {
+            state.last_run = new Date().toISOString()
+            state.run_count = (state.run_count || 0) + 1
+          }
           if (!success) allOk = false
           results[`${shopId}:${auto.id}`] = { ok: success, result: data }
         } catch (error) {
           allOk = false
           state.last_status = 'error'
           state.last_result = error instanceof Error ? error.message : 'Unknown error'
+          await sb.from('automation_runs').update({
+            status: 'failed',
+            finished_at: new Date().toISOString(),
+            next_attempt_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+            error: state.last_result,
+          }).eq('shop_id', shopId).eq('automation_id', auto.id).eq('window_key', windowKey).eq('status', 'running')
           results[`${shopId}:${auto.id}`] = { ok: false, error: state.last_result }
         }
       }
@@ -315,11 +349,13 @@ export async function POST(req: NextRequest) {
       const data = await res.json()
       const resultStr = JSON.stringify(data).slice(0, 500)
 
-      config[id].last_run = new Date().toISOString()
-      config[id].run_count = (config[id].run_count || 0) + 1
       config[id].last_result = resultStr
       const success = res.ok && data?.success !== false && data?.ok !== false && !data?.error
       config[id].last_status = success ? 'ok' : 'error'
+      if (success) {
+        config[id].last_run = new Date().toISOString()
+        config[id].run_count = (config[id].run_count || 0) + 1
+      }
       await saveConfig(sb, config, auth!.shopId)
 
       return NextResponse.json({ ok: success, success, result: data, state: config[id] }, { status: success ? 200 : 502 })
@@ -334,17 +370,4 @@ export async function POST(req: NextRequest) {
 
 
   return NextResponse.json({ ok: false, error: 'Unknown action' }, { status: 400 })
-}
-
-function isScheduleDue(schedule: string, lastRun: string): boolean {
-  const now = Date.now()
-  const last = new Date(lastRun).getTime()
-  const elapsed = now - last
-
-  const s = schedule.toLowerCase()
-  if (s.includes('every 2 hours') || s.includes('2h')) return elapsed > 2 * 3600 * 1000
-  if (s.includes('daily') || s.includes('day')) return elapsed > 22 * 3600 * 1000
-  if (s.includes('weekly') || s.includes('week')) return elapsed > 6 * 24 * 3600 * 1000
-  if (s.includes('monthly') || s.includes('month')) return elapsed > 28 * 24 * 3600 * 1000
-  return elapsed > 24 * 3600 * 1000 // default: daily
 }

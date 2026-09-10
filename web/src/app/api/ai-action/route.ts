@@ -141,13 +141,8 @@ export async function POST(req: NextRequest) {
           if (customerError) return fail(customerError.message, 500)
           if (!customer) return fail('Customer not found in this shop', 404)
         }
-        const prefix = docType === 'Estimate' ? 'EST' : docType === 'Receipt' ? 'REC' : 'INV'
-        const year = new Date().getFullYear()
-        const { data: existing, error: existingError } = await sb.from('documents').select('doc_number').eq('shop_id', shopId).eq('type', docType).like('doc_number', `${prefix}-${year}-%`)
-        if (existingError) return fail('Document numbering lookup failed', 500)
-        const nums = (existing || []).map((d: Record<string, string>) => parseInt(d.doc_number.split('-').pop() || '0'))
-        const next = Math.max(0, ...nums) + 1
-        const doc_number = `${prefix}-${year}-${String(next).padStart(4, '0')}`
+        const { data: doc_number, error: numberingError } = await sb.rpc('next_document_number', { p_shop_id: shopId, p_type: docType })
+        if (numberingError || typeof doc_number !== 'string') return fail('Document numbering failed', 500)
 
         const { data, error } = await sb.from('documents').insert({
           type: docType, doc_number, shop_id: shopId, status: 'Draft',
@@ -218,17 +213,31 @@ export async function POST(req: NextRequest) {
       // ── Schedule Follow-Up ───────────────────────────────────
       case 'scheduleFollowUp': {
         const { customer_id, customer_name, channel, scheduled_for, message_body, subject } = payload
-        if (customer_id) {
-          const { data: customer, error: customerError } = await sb.from('customers').select('id').eq('id', customer_id).eq('shop_id', shopId).maybeSingle()
+        const selectedChannel = channel || 'sms'
+        if (!['sms', 'email'].includes(String(selectedChannel))) return fail('Channel must be sms or email')
+        if (typeof message_body !== 'string' || !message_body.trim()) return fail('Message body is required')
+        const requestedDate = scheduled_for ? new Date(String(scheduled_for)) : new Date(Date.now() + 86400000)
+        if (Number.isNaN(requestedDate.getTime())) return fail('scheduled_for must be a valid date')
+        let resolvedCustomerId = typeof customer_id === 'string' ? customer_id : ''
+        let customer: { id: string; name?: string; phone?: string; email?: string; sms_opted_out?: boolean } | null = null
+        if (resolvedCustomerId) {
+          const { data, error: customerError } = await sb.from('customers').select('id,name,phone,email,sms_opted_out').eq('id', resolvedCustomerId).eq('shop_id', shopId).maybeSingle()
           if (customerError) return fail(customerError.message, 500)
-          if (!customer) return fail('Customer not found in this shop', 404)
+          customer = data
+        } else if (typeof customer_name === 'string' && customer_name.trim()) {
+          const { data, error: customerError } = await sb.from('customers').select('id,name,phone,email,sms_opted_out').eq('shop_id', shopId).ilike('name', customer_name.trim()).limit(1).maybeSingle()
+          if (customerError) return fail(customerError.message, 500)
+          customer = data
+          resolvedCustomerId = data?.id || ''
         }
+        if (!customer || !resolvedCustomerId) return fail('Customer must be found before scheduling a follow-up', 404)
+        if (selectedChannel === 'sms' && customer.sms_opted_out) return fail('Customer has opted out of SMS', 409)
         const { data, error } = await sb.from('scheduled_messages').insert({
-          customer_id: customer_id || null,
-          customer_name: customer_name || 'Customer',
-          channel: channel || 'sms',
-          scheduled_for: scheduled_for || new Date(Date.now() + 86400000).toISOString(),
-          message_body: message_body || '',
+          customer_id: resolvedCustomerId,
+          customer_name: customer.name || customer_name || 'Customer',
+          channel: selectedChannel,
+          scheduled_for: requestedDate.toISOString(),
+          message_body: message_body.trim(),
           subject: subject || null,
           status: 'pending',
           shop_id: shopId,
@@ -449,6 +458,7 @@ export async function POST(req: NextRequest) {
             replyTo: settings?.shop_email,
             apiKey: settings?.resend_api_key,
             from: fromEmail,
+            idempotencyKey: getIdempotencyKey(req, [shopId, 'ai-document-email', String(doc.id), toEmail]),
           })
         } catch (error) {
           return fail(error instanceof Error ? error.message : 'Email could not be sent', 502)
@@ -483,13 +493,8 @@ export async function POST(req: NextRequest) {
           if (!estId) return fail('Estimate id is required')
           const { data: est, error: estErr } = await sb.from('documents').select('*').eq('id', estId).eq('shop_id', shopId).single()
           if (estErr || !est) return fail('Estimate not found')
-          const invPrefix = 'INV'
-          const invYear = new Date().getFullYear()
-          const { data: invExisting, error: invExistingError } = await sb.from('documents').select('doc_number').eq('shop_id', shopId).eq('type', 'Invoice').like('doc_number', `${invPrefix}-${invYear}-%`)
-          if (invExistingError) return fail('Invoice numbering lookup failed', 500)
-          const invNums = (invExisting || []).map((d: Record<string, string>) => parseInt(d.doc_number.split('-').pop() || '0'))
-          const invNext = Math.max(0, ...invNums) + 1
-          const invDocNumber = `${invPrefix}-${invYear}-${String(invNext).padStart(4, '0')}`
+          const { data: invDocNumber, error: numberingError } = await sb.rpc('next_document_number', { p_shop_id: shopId, p_type: 'Invoice' })
+          if (numberingError || typeof invDocNumber !== 'string') return fail('Invoice numbering failed', 500)
           const { id: _rmId, doc_number: _rmDn, type: _rmType, created_at: _rmCa, ...estFields } = est
           const { data: invData, error: invErr } = await sb.from('documents').insert({
             ...estFields,
@@ -665,4 +670,3 @@ export async function POST(req: NextRequest) {
     return fail(message, 500)
   }
 }
-

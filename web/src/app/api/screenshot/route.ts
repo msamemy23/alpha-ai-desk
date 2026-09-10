@@ -1,5 +1,6 @@
 ﻿import { NextRequest, NextResponse } from 'next/server'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { assertPublicUrl } from '@/lib/public-url'
 
 export const maxDuration = 30
 
@@ -10,23 +11,14 @@ export async function GET(req: NextRequest) {
   if (!url) return new NextResponse('Missing url', { status: 400 })
 
   // Only screenshot real public websites — never internal/private addresses.
+  let targetUrl: URL
   try {
-    const target = new URL(url)
-    if (!['http:', 'https:'].includes(target.protocol)) return new NextResponse('Bad URL', { status: 400 })
-    const host = target.hostname.toLowerCase()
-    if (
-      host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal') ||
-      /^(127\.|10\.|192\.168\.|169\.254\.|0\.)/.test(host) ||
-      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
-      host === '::1' || host === '[::1]'
-    ) {
-      return new NextResponse('Forbidden host', { status: 403 })
-    }
+    targetUrl = await assertPublicUrl(url)
   } catch {
-    return new NextResponse('Bad URL', { status: 400 })
+    return new NextResponse('Forbidden or invalid URL', { status: 400 })
   }
 
-  const encoded = encodeURIComponent(url)
+  const encoded = encodeURIComponent(targetUrl.toString())
   const services = [
     `https://api.microlink.io/?url=${encoded}&screenshot=true&meta=false&embed=screenshot.url`,
     `https://s.wordpress.com/mshots/v1/${encoded}?w=1280`,

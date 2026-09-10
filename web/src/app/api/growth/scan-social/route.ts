@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { assertPublicUrl } from '@/lib/public-url'
 
 // Scan social media / web for people in Houston posting about car trouble
 // Uses SearXNG (if configured) or direct web search via AI
@@ -51,7 +52,15 @@ export async function POST(req: NextRequest) {
     let searchSucceeded = false
 
     // Try SearXNG first (self-hosted search)
-    const searxUrl = settings?.searxng_url as string
+    const rawSearxUrl = typeof settings?.searxng_url === 'string' ? settings.searxng_url.trim() : ''
+    let searxUrl = ''
+    if (rawSearxUrl) {
+      try {
+        searxUrl = (await assertPublicUrl(rawSearxUrl)).toString().replace(/\/$/, '')
+      } catch {
+        return NextResponse.json({ error: 'Configured search endpoint is not a public HTTPS URL' }, { status: 400 })
+      }
+    }
 
     if (searxUrl) {
       for (const term of searchTerms.slice(0, 5)) {
