@@ -1,13 +1,17 @@
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
-import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
+import { validateAutomationInvocation } from '@/lib/automation-fencing'
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}))
     const auth = await getRouteShop(req, body?.shopId)
     if (!auth) return unauthorized()
+    const automationCheck = await validateAutomationInvocation(req, body as Record<string, unknown> | null, auth.shopId, ['social_posts'])
+    if (!automationCheck.ok) return NextResponse.json({ ok: false, error: automationCheck.error }, { status: automationCheck.status })
+    if (auth.role === 'viewer') return forbidden()
 
     const db = getServiceClient()
     const { data: settings, error: settingsError } = await db.from('settings').select('shop_name').eq('shop_id', auth.shopId).maybeSingle()

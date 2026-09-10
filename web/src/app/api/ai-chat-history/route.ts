@@ -5,6 +5,7 @@ import { getServiceClient } from '@/lib/supabase'
 export const dynamic = 'force-dynamic'
 
 type HistoryMessage = { role: 'user' | 'assistant' | 'browser'; content: string; [key: string]: unknown }
+type StoredHistoryMessage = HistoryMessage & { sequence: number }
 
 function normalizeMessages(value: unknown): HistoryMessage[] {
   if (!Array.isArray(value)) return []
@@ -78,16 +79,16 @@ export async function GET(req: NextRequest) {
     const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.floor(rawLimit), 1), 30) : 30
     const db = getServiceClient()
     const { data: rows, error } = await db.from('ai_chat_history')
-      .select('session_id,role,content,created_at')
+      .select('session_id,role,content,created_at,sequence_no')
       .eq('shop_id', auth.shopId)
       .eq('user_id', auth.userId)
       .order('created_at', { ascending: false })
       .limit(limit * 60)
     if (error) throw error
 
-    const sessions = new Map<string, { id: string; date: string; messages: HistoryMessage[] }>()
+    const sessions = new Map<string, { id: string; date: string; messages: StoredHistoryMessage[] }>()
     for (const row of rows || []) {
-      const entry: { id: string; date: string; messages: HistoryMessage[] } = sessions.get(row.session_id) || { id: row.session_id, date: row.created_at, messages: [] }
+      const entry: { id: string; date: string; messages: StoredHistoryMessage[] } = sessions.get(row.session_id) || { id: row.session_id, date: row.created_at, messages: [] }
       let message: HistoryMessage | undefined
       try {
         const parsed = JSON.parse(row.content)
@@ -95,7 +96,10 @@ export async function GET(req: NextRequest) {
       } catch {
         message = { role: row.role === 'user' ? 'user' : row.role === 'browser' ? 'browser' : 'assistant', content: row.content }
       }
-      if (message) entry.messages.push(message)
+      if (message) entry.messages.push({
+        ...message,
+        sequence: Number.isFinite(Number(row.sequence_no)) ? Number(row.sequence_no) : entry.messages.length + 1,
+      })
       entry.date = row.created_at > entry.date ? row.created_at : entry.date
       sessions.set(row.session_id, entry)
     }
@@ -103,7 +107,9 @@ export async function GET(req: NextRequest) {
     const history = [...sessions.values()]
       .map(entry => ({
         ...entry,
-        messages: entry.messages.reverse(),
+        messages: entry.messages
+          .sort((a, b) => a.sequence - b.sequence)
+          .map(({ sequence: _sequence, ...message }) => message),
         preview: entry.messages.find(message => message.role === 'user')?.content.slice(0, 60) || 'Conversation',
       }))
       .filter(entry => entry.messages.length >= 2)

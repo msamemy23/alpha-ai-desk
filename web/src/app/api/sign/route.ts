@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { sendEmail } from '@/lib/email'
-import { calculateDocumentTotals, getLaborFlatAmount, laborLineTotal } from '@/lib/document-money'
+import { calculateDocumentTotals, getLaborFlatAmount, nonNegativeDecimal, quantityFromUnknown } from '@/lib/document-money'
 import crypto from 'crypto'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 
@@ -21,6 +21,7 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
   parts_total: number
   labor_total: number
   tax_amount: number
+  shop_supplies: number
   balance_due: number
 } {
   if (!doc) return doc as never
@@ -33,8 +34,8 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
   const existingLineItems = (doc.line_items as unknown[]) || []
   const built = [
     ...parts.flatMap((p) => {
-      const qty = Number(p.qty) || 1
-      const unitPrice = Number(p.unitPrice) || 0
+      const qty = quantityFromUnknown(p.qty)
+      const unitPrice = nonNegativeDecimal(p.unitPrice)
       const lines = [{
         description: (p.name as string) || (p.description as string) || (p.brand ? `${p.brand} part` : 'Part'),
         qty,
@@ -42,13 +43,14 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
         unitPrice,
         total: roundDocumentLine(qty * unitPrice),
       }]
-      const core = roundDocumentLine(qty * (Number(p.core) || 0))
-      if (core > 0) lines.push({ description: 'Core charge (refundable)', qty, unit_price: Number(p.core) || 0, unitPrice: Number(p.core) || 0, total: core })
+      const coreAmount = nonNegativeDecimal(p.core)
+      const core = roundDocumentLine(qty * coreAmount)
+      if (core > 0) lines.push({ description: 'Core charge (refundable)', qty, unit_price: coreAmount, unitPrice: coreAmount, total: core })
       return lines
     }),
     ...labors.map((l) => {
-      const hours = Number(l.hours) || 0
-      const rate = Number(l.rate) || 0
+      const hours = nonNegativeDecimal(l.hours)
+      const rate = nonNegativeDecimal(l.rate)
       const flatAmount = getLaborFlatAmount(l)
       const opName = (l.operation as string) || (l.description as string) || 'Labor'
       return {
@@ -70,6 +72,7 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
     parts_total: partsTotal,
     labor_total: laborTotal,
     core_total: coreTotal,
+    shop_supplies: shopSupplies,
     sublet_total: sublet,
     tax_amount: taxAmount,
     balance_due: balanceDue,
@@ -79,6 +82,7 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
     parts_total: number
     labor_total: number
     tax_amount: number
+    shop_supplies: number
     balance_due: number
   }
 }
@@ -262,7 +266,7 @@ export async function POST(req: NextRequest) {
       ${doc.parts_total > 0 ? `<tr><td style="padding:3px 8px">Parts</td><td style="padding:3px 8px;text-align:right">$${doc.parts_total.toFixed(2)}</td></tr>` : ''}
       ${doc.labor_total > 0 ? `<tr><td style="padding:3px 8px">Labor</td><td style="padding:3px 8px;text-align:right">$${doc.labor_total.toFixed(2)}</td></tr>` : ''}
       ${doc.core_total > 0 ? `<tr><td style="padding:3px 8px">Core Charges</td><td style="padding:3px 8px;text-align:right">$${doc.core_total.toFixed(2)}</td></tr>` : ''}
-      ${Number(doc.shop_supplies) > 0 ? `<tr><td style="padding:3px 8px">Shop Supplies</td><td style="padding:3px 8px;text-align:right">$${Number(doc.shop_supplies).toFixed(2)}</td></tr>` : ''}
+      ${doc.shop_supplies > 0 ? `<tr><td style="padding:3px 8px">Shop Supplies</td><td style="padding:3px 8px;text-align:right">$${doc.shop_supplies.toFixed(2)}</td></tr>` : ''}
       ${doc.sublet_total > 0 ? `<tr><td style="padding:3px 8px">Sublet</td><td style="padding:3px 8px;text-align:right">$${doc.sublet_total.toFixed(2)}</td></tr>` : ''}
       ${doc.tax_amount > 0 ? `<tr><td style="padding:3px 8px">Tax</td><td style="padding:3px 8px;text-align:right">$${doc.tax_amount.toFixed(2)}</td></tr>` : ''}
       <tr style="font-size:15px;font-weight:bold;border-top:2px solid #111">

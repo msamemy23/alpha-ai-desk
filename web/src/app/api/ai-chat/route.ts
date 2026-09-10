@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getAuthedShop, hasInternalApiSecret } from '@/lib/api-auth'
 import { AI_BASE_URLS, isOpenRouterBaseUrl, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
+import { chatGptModel, fetchOpenAIChatCompletion, getOpenAIOAuthTransport } from '@/lib/openai-oauth-server'
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://alpha-ai-desk.vercel.app'
 const INTERNAL_SECRET = process.env.CRON_SECRET || process.env.INTERNAL_API_SECRET || ''
@@ -157,7 +158,7 @@ export async function POST(req: NextRequest) {
         .eq('id', requestedShopId)
         .maybeSingle()
       if (!profile) return NextResponse.json({ error: 'Shop not found' }, { status: 404 })
-      caller = { shopId: String(profile.id), userId: String(profile.user_id) }
+      caller = { shopId: String(profile.id), userId: String(profile.user_id), role: 'service' }
     }
     if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
@@ -177,11 +178,12 @@ export async function POST(req: NextRequest) {
       : []
 
     const settings = await getSettings(caller.shopId)
+    const chatGptTransport = getOpenAIOAuthTransport(req)
     const apiKey = typeof settings.ai_api_key === 'string' ? settings.ai_api_key.trim() : ''
     const baseUrl = normalizeAiBaseUrl(settings.ai_base_url || AI_BASE_URLS.OPENROUTER)
-    const model = normalizeAiModel(settings.ai_model, baseUrl)
+    const model = chatGptTransport ? chatGptModel(settings.ai_model) : normalizeAiModel(settings.ai_model, baseUrl)
 
-    if (!apiKey) {
+    if (!apiKey && !chatGptTransport) {
       const reply = 'AI is not configured yet. Please add this shop AI API key in Settings on the web dashboard.'
       await saveChatHistory(caller.shopId, caller.userId, sessionId, message, reply)
       return NextResponse.json({ reply, sessionId })
@@ -194,27 +196,37 @@ export async function POST(req: NextRequest) {
 
     // Agent loop — up to 5 steps to handle read-only tool calls.
     for (let step = 0; step < 5; step++) {
-      const res = await fetch(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-          ...(isOpenRouterBaseUrl(baseUrl) ? {
-            'HTTP-Referer': 'https://alpha-ai-desk.vercel.app',
-            'X-Title': 'Alpha AI Desk',
-          } : {}),
-        },
-        body: JSON.stringify({
-          model,
-          messages: [{ role: 'system', content: buildSystemPrompt(settings as Record<string, unknown>) }, ...agentMessages],
-          max_tokens: 600,
-          temperature: 0.3,
-        }),
-      })
+      const completion = chatGptTransport
+        ? await fetchOpenAIChatCompletion(chatGptTransport, {
+            model,
+            messages: [{ role: 'system', content: buildSystemPrompt(settings as Record<string, unknown>) }, ...agentMessages],
+            max_tokens: 600,
+          }, AbortSignal.timeout(120000))
+        : await (async () => {
+            const res = await fetch(`${baseUrl}/chat/completions`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+                ...(isOpenRouterBaseUrl(baseUrl) ? {
+                  'HTTP-Referer': 'https://alpha-ai-desk.vercel.app',
+                  'X-Title': 'Alpha AI Desk',
+                } : {}),
+              },
+              body: JSON.stringify({
+                model,
+                messages: [{ role: 'system', content: buildSystemPrompt(settings as Record<string, unknown>) }, ...agentMessages],
+                max_tokens: 600,
+                temperature: 0.3,
+              }),
+              signal: AbortSignal.timeout(120000),
+            })
+            return { ok: res.ok, status: res.status, data: await res.json().catch(() => ({})) }
+          })()
 
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok || data.error) {
-        const detail = data.error?.message || `provider returned HTTP ${res.status}`
+      const data = completion.data
+      if (!completion.ok || data.error) {
+        const detail = data.error?.message || `provider returned HTTP ${completion.status}`
         const reply = `AI error: ${detail}`
         await saveChatHistory(caller.shopId, caller.userId, sessionId, message, reply)
         return NextResponse.json({ reply, sessionId }, { status: 502 })

@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { supabase, calcTotals, formatCurrency, getShopProfile, getShopId } from '@/lib/supabase'
+import { addOpenAIOAuthHeaders } from '@/lib/openai-oauth-client'
 import { laborLineTotal } from '@/lib/document-money'
 
 interface ShopProfile {
@@ -35,7 +36,7 @@ async function getAuthJsonHeaders(): Promise<Record<string, string>> {
   } catch {
     // Cookie auth can still succeed; the API will return the real error if not.
   }
-  return headers
+  return addOpenAIOAuthHeaders(headers)
 }
 
 export default function DashboardPage() {

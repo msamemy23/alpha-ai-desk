@@ -1,13 +1,14 @@
 ﻿export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { getAuthedShop, hasInternalApiSecret, unauthorized } from '@/lib/api-auth'
+import { forbidden, getAuthedShop, hasInternalApiSecret, unauthorized } from '@/lib/api-auth'
 import { sendEmail, estimateEmailHtml } from '@/lib/email'
 import { getIdempotencyKey } from '@/lib/api-response'
 import { writeAuditLog } from '@/lib/audit-log'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { nonNegativeMoney } from '@/lib/document-money'
 
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
 function fail(error: string, status = 400) { return NextResponse.json({ ok: false, error }, { status }) }
@@ -18,22 +19,12 @@ const mutatingActions = new Set([
   'convertEstimateToInvoice', 'addStaff', 'removeStaff', 'updateDocument',
   'createAppointment', 'deleteAppointment', 'updateAppointment', 'updateInventory',
 ])
-const aiActionIdempotency = new Map<string, { createdAt: number; fingerprint: string; data: unknown }>()
-
 function safeSearchTerm(value: unknown, maxLength = 120): string {
   return String(value ?? '').replace(/[%,().*]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maxLength)
 }
 
 function pickFields(payload: Record<string, unknown>, allowed: readonly string[]): Record<string, unknown> {
   return Object.fromEntries(allowed.filter((key) => Object.prototype.hasOwnProperty.call(payload, key)).map((key) => [key, payload[key]]))
-}
-
-function rememberAiAction(key: string, fingerprint: string, data: unknown) {
-  const now = Date.now()
-  for (const [existingKey, value] of aiActionIdempotency) {
-    if (now - value.createdAt > 10 * 60_000) aiActionIdempotency.delete(existingKey)
-  }
-  aiActionIdempotency.set(key, { createdAt: now, fingerprint, data })
 }
 
 export async function POST(req: NextRequest) {
@@ -50,7 +41,7 @@ export async function POST(req: NextRequest) {
     if (!requestedShopId) return fail('shopId is required for internal calls', 400)
     const { data: profile } = await sb.from('shop_profiles').select('id,user_id').eq('id', requestedShopId).maybeSingle()
     if (!profile) return fail('Shop not found', 404)
-    caller = { userId: String(profile.user_id), shopId: String(profile.id) }
+    caller = { userId: String(profile.user_id), shopId: String(profile.id), role: 'service' }
   }
   if (!caller) return unauthorized()
 
@@ -65,12 +56,18 @@ export async function POST(req: NextRequest) {
   const safePayload = payload
   if (JSON.stringify(safePayload).length > 20000) return fail('Action payload is too large', 413)
   const payloadHash = createHash('sha256').update(JSON.stringify(safePayload)).digest('hex')
-  const requestedKey = getIdempotencyKey(req, [shopId, action, payloadHash])
-  // Never allow a caller-supplied key to cross a tenant boundary or silently
-  // replay a different action/payload in the process-local retry cache.
-  const idempotencyKey = `${shopId}:${requestedKey}`.slice(0, 160)
-  const idempotencyFingerprint = `${action}:${payloadHash}`
   const isMutation = mutatingActions.has(action)
+  if (isMutation && caller.role === 'viewer') return forbidden()
+  // A caller-provided key makes retries safe. A request without one gets a
+  // fresh operation identity so two intentional, identical actions do not
+  // collapse into one forever.
+  const requestedKey = getIdempotencyKey(req, isMutation ? [randomUUID()] : [shopId, action, payloadHash])
+  // Never allow a caller-supplied key to cross a tenant boundary or silently
+  // replay a different action/payload in another tenant's durable operation.
+  const idempotencyKey = `${shopId}:${requestedKey}`.slice(0, 160)
+  let operationId: string | null = null
+  let operationFinalized = false
+  let mutationCommitted = false
   if (isMutation && req.headers.get('x-ai-approval') !== 'confirm') {
     return NextResponse.json({
       ok: false,
@@ -80,26 +77,114 @@ export async function POST(req: NextRequest) {
       payload: safePayload,
     }, { status: 409 })
   }
-  const existing = isMutation ? aiActionIdempotency.get(idempotencyKey) : undefined
-  if (existing) {
-    if (existing.fingerprint !== idempotencyFingerprint) return fail('Idempotency-Key was already used for a different action or payload', 409)
-    return ok(existing.data)
+  if (isMutation) {
+    const { data: claimData, error: claimError } = await sb.rpc('claim_ai_action_operation', {
+      p_shop_id: shopId,
+      p_user_id: caller.userId,
+      p_action: action,
+      p_idempotency_key: idempotencyKey,
+      p_payload_hash: payloadHash,
+    })
+    if (claimError) {
+      console.error('[ai-action] durable operation claim failed:', claimError.message)
+      return fail('AI action could not be safely started', 503)
+    }
+    const claim = (claimData || {}) as {
+      claimed?: boolean
+      status?: string
+      id?: string
+      result?: unknown
+      error?: string
+      audit_status?: string
+      audit_error?: string | null
+      audit_target_type?: string | null
+      audit_target_id?: string | null
+      audit_permission?: string | null
+      audit_approved?: boolean
+      audit_metadata?: Record<string, unknown> | null
+    }
+    operationId = typeof claim.id === 'string' ? claim.id : null
+    if (claim.status === 'conflict') return fail(claim.error || 'Idempotency key conflict', 409)
+    if (claim.status === 'succeeded') {
+      // A completed mutation may have returned while its audit insert was
+      // temporarily unavailable. Replays repair that audit state before
+      // returning the durable result again, without repeating the mutation.
+      if (claim.audit_status !== 'delivered') {
+        const auditResult = await writeAuditLog({
+          shopId,
+          userId: caller.userId,
+          action: `ai.${action}`,
+          targetType: claim.audit_target_type || undefined,
+          targetId: claim.audit_target_id || undefined,
+          permission: claim.audit_permission || 'write',
+          approved: claim.audit_approved ?? true,
+          idempotencyKey,
+          metadata: claim.audit_metadata || { payload: safePayload },
+        })
+        if (!auditResult.ok) return fail('The previous action completed, but its audit record still needs repair', 502)
+        const { error: auditStateError } = await sb.from('ai_action_operations').update({
+          audit_status: auditResult.pending ? 'queued' : 'delivered',
+          audit_error: null,
+          updated_at: new Date().toISOString(),
+        }).eq('id', operationId).eq('shop_id', shopId).eq('status', 'succeeded')
+        if (auditStateError) return fail('The previous action completed, but its audit state could not be updated', 502)
+        if (auditResult.pending) return NextResponse.json({ ok: true, data: claim.result, auditPending: true })
+      }
+      return ok(claim.result)
+    }
+    if (claim.status === 'failed') return fail(claim.error || 'This AI action already failed and will not be replayed', 409)
+    if (claim.status === 'unknown') return fail(claim.error || 'The previous AI action outcome is uncertain; reconcile it before retrying', 409)
+    if (claim.claimed !== true || claim.status !== 'running' || !operationId) {
+      return fail('This AI action is already in progress', 409)
+    }
   }
 
   const auditedOk = async (data: unknown, targetType?: string, targetId?: string) => {
     if (isMutation) {
-      rememberAiAction(idempotencyKey, idempotencyFingerprint, data)
-      await writeAuditLog({
+      // Every mutating branch calls this only after its business write has
+      // succeeded. If durable completion then fails, the operation is
+      // uncertain—not failed—so a retry cannot repeat a completed mutation.
+      mutationCommitted = true
+      const auditPermission = action.toLowerCase().includes('delete') || action.toLowerCase().includes('void') ? 'destructive' : 'write'
+      const { data: finalizedOperation, error: operationError } = await sb.from('ai_action_operations').update({
+        status: 'succeeded',
+        result: data,
+        error: null,
+        audit_status: 'pending',
+        audit_error: null,
+        audit_target_type: targetType || null,
+        audit_target_id: targetId || null,
+        audit_permission: auditPermission,
+        audit_approved: true,
+        audit_metadata: { payload: safePayload },
+        updated_at: new Date().toISOString(),
+      }).eq('id', operationId).eq('shop_id', shopId).eq('status', 'running').select('id').maybeSingle()
+      if (operationError || !finalizedOperation) {
+        console.error('[ai-action] durable operation completion failed:', operationError?.message || 'operation row was not updated')
+        return fail('Action completed, but its durable result could not be recorded', 502)
+      }
+      // Once the durable result is stored, a retry returns it instead of
+      // repeating the shop mutation or external side effect.
+      operationFinalized = true
+      const auditResult = await writeAuditLog({
         shopId,
         userId: caller.userId,
         action: `ai.${action}`,
         targetType,
         targetId,
-        permission: action.toLowerCase().includes('delete') || action.toLowerCase().includes('void') ? 'destructive' : 'write',
+        permission: auditPermission,
         approved: true,
         idempotencyKey,
         metadata: { payload: safePayload },
       })
+      if (!auditResult.ok) return fail('Action completed, but its audit record could not be saved', 502)
+      const { error: auditStateError } = await sb.from('ai_action_operations').update({
+        audit_status: auditResult.pending ? 'queued' : 'delivered',
+        audit_error: null,
+        updated_at: new Date().toISOString(),
+      }).eq('id', operationId).eq('shop_id', shopId).eq('status', 'succeeded')
+      if (auditStateError) return fail('Action completed, but its audit state could not be recorded', 502)
+      if (auditResult.pending) return NextResponse.json({ ok: true, data, auditPending: true })
     }
     return ok(data)
   }
@@ -118,7 +203,7 @@ export async function POST(req: NextRequest) {
           created_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return auditedOk(data, 'customer', data?.id)
+        return await auditedOk(data, 'customer', data?.id)
       }
 
       // ── Create Job ───────────────────────────────────────────
@@ -139,7 +224,7 @@ export async function POST(req: NextRequest) {
           created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return auditedOk(data, 'job', data?.id)
+        return await auditedOk(data, 'job', data?.id)
       }
 
       // ── Create Invoice / Estimate ────────────────────────────
@@ -164,13 +249,13 @@ export async function POST(req: NextRequest) {
           vehicle_year: payload.vehicle_year || '', vehicle_make: payload.vehicle_make || '',
           vehicle_model: payload.vehicle_model || '',
           parts: payload.parts || [], labors: payload.labors || [],
-          notes: payload.notes || '', tax_rate: payload.tax_rate ?? 8.25,
-          apply_tax: payload.apply_tax !== false, shop_supplies: payload.shop_supplies || 0,
-          sublet: payload.sublet || 0, deposit: payload.deposit || 0,
+          notes: payload.notes || '', tax_rate: nonNegativeMoney(payload.tax_rate, 8.25),
+          apply_tax: payload.apply_tax !== false, shop_supplies: nonNegativeMoney(payload.shop_supplies),
+          sublet: nonNegativeMoney(payload.sublet), deposit: nonNegativeMoney(payload.deposit),
           created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return auditedOk(data, 'document', data?.id)
+        return await auditedOk(data, 'document', data?.id)
       }
 
       // ── Update Job Status ────────────────────────────────────
@@ -181,7 +266,7 @@ export async function POST(req: NextRequest) {
           status: newStatus, updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return auditedOk(data, 'job', String(id))
+        return await auditedOk(data, 'job', String(id))
       }
 
       // ── Update Customer ──────────────────────────────────────
@@ -193,7 +278,7 @@ export async function POST(req: NextRequest) {
            ...updates, updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return auditedOk(data, 'customer', String(id))
+        return await auditedOk(data, 'customer', String(id))
       }
 
       // ── Void Document ────────────────────────────────────────
@@ -204,7 +289,7 @@ export async function POST(req: NextRequest) {
           status: 'Void', updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return auditedOk(data, 'document', String(id))
+        return await auditedOk(data, 'document', String(id))
       }
 
       // ── Delete Record ────────────────────────────────────────
@@ -217,7 +302,7 @@ export async function POST(req: NextRequest) {
          const { data: deleted, error } = await sb.from(table).delete().eq('id', id).eq('shop_id', shopId).select('id').maybeSingle()
          if (error) return fail(error.message, 500)
          if (!deleted) return fail('Record not found in this shop', 404)
-         return auditedOk({ deleted: true, table, id }, table, id)
+         return await auditedOk({ deleted: true, table, id }, table, id)
       }
 
       // ── Schedule Follow-Up ───────────────────────────────────
@@ -254,7 +339,7 @@ export async function POST(req: NextRequest) {
           created_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return auditedOk(data, 'scheduled_message', data?.id)
+        return await auditedOk(data, 'scheduled_message', data?.id)
       }
 
       // ── Get Customer History ─────────────────────────────────
@@ -495,7 +580,7 @@ export async function POST(req: NextRequest) {
           .eq('shop_id', shopId)
         if (documentError) return fail('Email sent, but the document could not be marked as sent', 500)
 
-        return auditedOk({ sent: true, to: toEmail, doc_number: doc.doc_number, type: doc.type }, 'document', doc.id)
+        return await auditedOk({ sent: true, to: toEmail, doc_number: doc.doc_number, type: doc.type }, 'document', doc.id)
       }
 
         case 'convertEstimateToInvoice': {
@@ -515,7 +600,7 @@ export async function POST(req: NextRequest) {
             updated_at: new Date().toISOString(),
           }).select().single()
           if (invErr) return fail(invErr.message, 500)
-          return auditedOk(invData, 'document', invData?.id)
+          return await auditedOk(invData, 'document', invData?.id)
         }
       // ── Add Staff Member ────────────────────────────────────
       case 'addStaff': {
@@ -530,7 +615,7 @@ export async function POST(req: NextRequest) {
           created_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return auditedOk(data, 'staff', data?.id)
+        return await auditedOk(data, 'staff', data?.id)
       }
 
       // ── Remove Staff Member ──────────────────────────────────
@@ -542,7 +627,7 @@ export async function POST(req: NextRequest) {
         else return fail('Provide staff name or id')
         const { data, error } = await query.select().single()
         if (error) return fail(error.message, 500)
-        return auditedOk({ removed: true, staff: data }, 'staff', data?.id)
+        return await auditedOk({ removed: true, staff: data }, 'staff', data?.id)
       }
 
       // ── List Staff ───────────────────────────────────────────
@@ -562,7 +647,7 @@ export async function POST(req: NextRequest) {
            ...updates, updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return auditedOk(data, 'document', String(id))
+        return await auditedOk(data, 'document', String(id))
       }
 
       // ── Create Appointment ───────────────────────────────────
@@ -594,7 +679,7 @@ export async function POST(req: NextRequest) {
            updated_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return auditedOk(data, 'appointment', data?.id)
+        return await auditedOk(data, 'appointment', data?.id)
       }
 
       // ── Time Clock Report ────────────────────────────────────
@@ -628,7 +713,7 @@ export async function POST(req: NextRequest) {
          const { data: deleted, error } = await sb.from('appointments').delete().eq('id', id).eq('shop_id', shopId).select('id').maybeSingle()
          if (error) return fail(error.message, 500)
          if (!deleted) return fail('Appointment not found in this shop', 404)
-         return auditedOk({ deleted: true, id }, 'appointment', String(id))
+         return await auditedOk({ deleted: true, id }, 'appointment', String(id))
       }
 
       // ── Update Appointment ───────────────────────────────────
@@ -648,7 +733,7 @@ export async function POST(req: NextRequest) {
          updates.updated_at = new Date().toISOString()
          const { data, error } = await sb.from('appointments').update(updates).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return auditedOk(data, 'appointment', String(id))
+        return await auditedOk(data, 'appointment', String(id))
       }
 
       // ── Get Inventory ────────────────────────────────────────
@@ -670,7 +755,7 @@ export async function POST(req: NextRequest) {
            ...updates, updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return auditedOk(data, 'inventory', String(id))
+        return await auditedOk(data, 'inventory', String(id))
       }
       default:
         return fail(`Unknown action: ${action}`)
@@ -678,5 +763,17 @@ export async function POST(req: NextRequest) {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error'
     return fail(message, 500)
+  } finally {
+    if (isMutation && operationId && !operationFinalized) {
+      const { error } = await sb.from('ai_action_operations').update({
+        status: mutationCommitted ? 'unknown' : 'failed',
+        error: mutationCommitted
+          ? 'AI action business write completed, but its durable result is uncertain; reconcile before retrying'
+          : 'AI action did not complete',
+        lease_expires_at: null,
+        updated_at: new Date().toISOString(),
+      }).eq('id', operationId).eq('shop_id', shopId).eq('status', 'running')
+      if (error) console.error('[ai-action] durable operation failure state could not be saved:', error.message)
+    }
   }
 }

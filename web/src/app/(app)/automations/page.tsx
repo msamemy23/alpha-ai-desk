@@ -104,7 +104,7 @@ export default function AutomationsPage() {
     try {
       await fetch('/api/system-automations', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
         body: JSON.stringify({ action: 'toggle', id, enabled }),
       })
       const name = systemAutomations.find(a => a.id === id)?.name || id
@@ -117,7 +117,7 @@ export default function AutomationsPage() {
     try {
       const r = await fetch('/api/system-automations', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
         body: JSON.stringify({ action: 'run_now', id }),
       })
       const d = await r.json()
@@ -130,7 +130,7 @@ export default function AutomationsPage() {
   const saveSystemConfig = async (id: string, config: Record<string, unknown>) => {
     await fetch('/api/system-automations', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
       body: JSON.stringify({ action: 'configure', id, config }),
     })
     showToast('Settings saved')
@@ -145,7 +145,7 @@ export default function AutomationsPage() {
     try {
       const r = await fetch('/api/automations', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
         body: JSON.stringify({ action: 'create', name: newName, description: newDesc, schedule: newSchedule, task_prompt: newPrompt }),
       })
       const d = await r.json()
@@ -162,7 +162,7 @@ export default function AutomationsPage() {
     setCustomItems(prev => prev.map(a => a.id === id ? { ...a, enabled } : a))
     await fetch('/api/automations', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
       body: JSON.stringify({ action: 'toggle', id, enabled }),
     })
     const name = customItems.find(a => a.id === id)?.name || id
@@ -174,7 +174,7 @@ export default function AutomationsPage() {
     try {
       const r = await fetch('/api/automations', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
         body: JSON.stringify({ action: 'run_now', id }),
       })
       const d = await r.json()
@@ -188,7 +188,7 @@ export default function AutomationsPage() {
     if (!confirm(`Delete "${name}"?`)) return
     await fetch('/api/automations', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
       body: JSON.stringify({ action: 'delete', id }),
     })
     showToast('Deleted')

@@ -3,6 +3,7 @@ import { getServiceClient } from '@/lib/supabase'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { validateAutomationInvocation } from '@/lib/automation-fencing'
 
 
 async function generateFollowUpMessage(customerName: string, lastService: string, monthsAgo: number, shopName: string, shopPhone: string, aiKey: string, aiBase: string, aiModel: string): Promise<string> {
@@ -79,9 +80,11 @@ async function sendSMS(to: string, message: string, apiKey: string, fromNumber: 
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json().catch(() => null)
-    const auth = await getRouteShop(req, body?.shopId)
-    if (!auth) return unauthorized()
+  const body = await req.json().catch(() => null)
+  const auth = await getRouteShop(req, body?.shopId)
+  if (!auth) return unauthorized()
+  const automationCheck = await validateAutomationInvocation(req, body as Record<string, unknown> | null, auth.shopId, ['re_engagement'])
+  if (!automationCheck.ok) return NextResponse.json({ ok: false, error: automationCheck.error }, { status: automationCheck.status })
 
     const rawThreshold = Number(body?.months_threshold ?? 6)
     const monthsThreshold = Number.isFinite(rawThreshold) && rawThreshold >= 1 && rawThreshold <= 60

@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
 
 export async function POST(req: Request) {
   try {
     const auth = await getAuthedShop()
     if (!auth) return unauthorized()
+    if (auth.role === 'viewer') return forbidden()
 
     const { id, data } = await req.json()
     if (!id || !data) return NextResponse.json({ error: 'Missing id or data' }, { status: 400 })

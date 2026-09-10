@@ -52,6 +52,17 @@ test('invoice totals include core, sublet, supplies, and the configured tax rate
   assert.equal(totals.balanceDue, 191)
 })
 
+test('invoice line rounding matches the database final-line convention', () => {
+  assert.equal(money.laborLineTotal({ hours: 1.005, rate: 100 }), 100.5)
+  assert.equal(money.partLineTotal({ qty: 2, unitPrice: 0.335 }), 0.67)
+  assert.equal(money.partLineTotal({ qty: 1, unitPrice: 10.075 }), 10.08)
+  assert.equal(money.calculateDocumentTotals({
+    parts: [{ name: 'Small part', qty: 2, unitPrice: 0.335 }],
+    labors: [{ operation: 'Precision labor', hours: 1.005, rate: 100 }],
+    apply_tax: false,
+  }).total, 101.17)
+})
+
 test('item prices and labor rates are not mistaken for a hard invoice total', () => {
   const normalized = draftTools.normalizeDocumentDraft(
     {

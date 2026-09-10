@@ -1,13 +1,14 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
 import { getShopId, supabase } from '@/lib/supabase'
+import { addOpenAIOAuthHeaders } from '@/lib/openai-oauth-client'
 async function getAuthJsonHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   try {
     const { data } = await supabase.auth.getSession()
     if (data.session?.access_token) headers.Authorization = 'Bearer ' + data.session.access_token
   } catch {}
-  return headers
+  return addOpenAIOAuthHeaders(headers)
 }
 
 const STATUSES = ['New', 'Estimate Sent', 'Approved', 'In Repair', 'Supplement', 'Waiting on Customer', 'Ready for Pickup', 'Paid', 'Closed']

@@ -1,11 +1,13 @@
 ﻿export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { nonNegativeMoney } from '@/lib/document-money'
 
 export async function POST(req: NextRequest) {
   const auth = await getAuthedShop()
   if (!auth) return unauthorized()
+  if (auth.role === 'viewer') return forbidden()
 
   const sb = getServiceClient()
   const body = await req.json().catch(() => null)
@@ -85,8 +87,7 @@ export async function POST(req: NextRequest) {
 
   // Handle tax - if type is Receipt and body.apply_tax is explicitly false, no tax
   const applyTax = body.apply_tax !== undefined ? body.apply_tax !== false : true
-  const rawTaxRate = Number(body.tax_rate)
-  const taxRate = Number.isFinite(rawTaxRate) && rawTaxRate >= 0 ? rawTaxRate : 8.25
+  const taxRate = nonNegativeMoney(body.tax_rate, 8.25)
 
   const { data, error } = await sb.from('documents').insert({
     type: docType,
@@ -106,9 +107,9 @@ export async function POST(req: NextRequest) {
     notes: notes || `Generated from AI conversation`,
     tax_rate: taxRate,
     apply_tax: applyTax,
-    shop_supplies: body.shop_supplies || 0,
-    sublet: body.sublet || 0,
-    deposit: body.deposit || 0,
+    shop_supplies: nonNegativeMoney(body.shop_supplies),
+    sublet: nonNegativeMoney(body.sublet),
+    deposit: nonNegativeMoney(body.deposit),
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }).select().single()

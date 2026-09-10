@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { validateAutomationInvocation } from '@/lib/automation-fencing'
 
 export const dynamic = 'force-dynamic'
 
@@ -22,6 +23,8 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   const auth = await getRouteShop(req, body?.shopId)
   if (!auth) return unauthorized()
+  const automationCheck = await validateAutomationInvocation(req, body as Record<string, unknown> | null, auth.shopId, ['service_reminders', 'appointment_reminders'])
+  if (!automationCheck.ok) return NextResponse.json({ ok: false, error: automationCheck.error }, { status: automationCheck.status })
   const action = body?.action || 'run'
   const dryRun = body?.dry_run === true
   const sb = getServiceClient()

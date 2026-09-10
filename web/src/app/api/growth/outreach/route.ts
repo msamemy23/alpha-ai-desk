@@ -5,6 +5,7 @@ import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { createVoiceClientState } from '@/lib/voice-state'
 import { createHash } from 'node:crypto'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { validateAutomationInvocation } from '@/lib/automation-fencing'
 
 const AI_URL = 'https://openrouter.ai/api/v1/chat/completions'
 
@@ -204,6 +205,8 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null)
     const auth = await getRouteShop(req, body?.shopId)
     if (!auth) return unauthorized()
+    const automationCheck = await validateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['lead_outreach', 'sms_blast'])
+    if (!automationCheck.ok) return NextResponse.json({ ok: false, error: automationCheck.error }, { status: automationCheck.status })
 
     const { lead_id, method, ai_mode = false } = body || {}
     const rawMessage = typeof body?.message === 'string' ? body.message.trim() : ''

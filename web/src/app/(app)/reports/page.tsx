@@ -14,6 +14,24 @@ function collectedAmount(value: unknown): number {
   return Number.isFinite(amount) && amount > 0 ? amount : 0
 }
 
+async function fetchAllShopRows<T>(table: string, select: string, shopId: string, orderColumn: string, pageSize = 1000): Promise<T[]> {
+  const rows: T[] = []
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await supabase
+      .from(table)
+      .select(select)
+      .eq('shop_id', shopId)
+      .order(orderColumn, { ascending: false })
+      // Timestamps are not unique. The stable id tie-breaker keeps adjacent
+      // 1,000-row pages deterministic instead of dropping/repeating rows.
+      .order('id', { ascending: false })
+      .range(offset, offset + pageSize - 1)
+    if (error) throw new Error(error.message)
+    rows.push(...((data || []) as T[]))
+    if (!data || data.length < pageSize) return rows
+  }
+}
+
 type Period = '7d' | '30d' | '90d' | 'ytd'
 
 function exportCsv(rows: string[][], filename: string) {
@@ -43,18 +61,14 @@ export default function ReportsPage() {
         if (!shopId) { setInvoices([]); setJobs([]); setCalls([]); setPayments([]); return }
         // Invoices live in the documents table (this page used to query a
         // nonexistent `invoices` table, so every report showed zero).
-        const [invoiceResult, paymentResult, jobResult, callResult] = await Promise.all([
-          supabase.from('documents').select('*').eq('shop_id', shopId).in('type', ['Invoice', 'Receipt']).order('created_at', { ascending: false }).limit(1000),
-          supabase.from('payments').select('id,document_id,amount,method,paid_at,created_at').eq('shop_id', shopId).order('paid_at', { ascending: false }).limit(5000),
-          supabase.from('jobs').select('id,status,tech,concern,created_at').eq('shop_id', shopId).order('created_at', { ascending: false }).limit(2000),
-          supabase.from('call_history').select('id,direction,duration_secs,start_time,status').eq('shop_id', shopId).order('start_time', { ascending: false }).limit(2000),
+        const [inv, paymentRows, j, c] = await Promise.all([
+          fetchAllShopRows<Record<string, unknown>>('documents', '*', shopId, 'created_at'),
+          fetchAllShopRows<Payment>('payments', 'id,document_id,amount,method,paid_at,created_at', shopId, 'paid_at'),
+          fetchAllShopRows<Job>('jobs', 'id,status,tech,concern,created_at', shopId, 'created_at'),
+          fetchAllShopRows<CallRecord>('call_history', 'id,direction,duration_secs,start_time,status', shopId, 'start_time'),
         ])
-        const firstError = invoiceResult.error || paymentResult.error || jobResult.error || callResult.error
-        if (firstError) throw new Error(firstError.message)
-        const inv = invoiceResult.data
-        const j = jobResult.data
-        const c = callResult.data
-        const mapped = (inv || []).map((d: Record<string, unknown>) => ({
+        const invoiceRows = inv.filter(row => row.type === 'Invoice' || row.type === 'Receipt')
+        const mapped = invoiceRows.map((d: Record<string, unknown>) => ({
           id: d.id as string,
           customer_name: (d.customer_name as string) || '',
           total: calcTotals(d).total,
@@ -64,9 +78,9 @@ export default function ReportsPage() {
           payment_method: (d.payment_method as string) || '',
         }))
         setInvoices(mapped as Invoice[])
-        setPayments((paymentResult.data || []) as Payment[])
-        setJobs((j || []) as Job[])
-        setCalls((c || []) as CallRecord[])
+        setPayments(paymentRows)
+        setJobs(j)
+        setCalls(c)
         setLoadError('')
       } catch (error) {
         setLoadError(error instanceof Error ? error.message : 'Reports could not be loaded')
@@ -76,11 +90,12 @@ export default function ReportsPage() {
   }, [])
 
   function periodStart(): Date {
-    const d = new Date()
+    const now = new Date()
+    if (period === 'ytd') return new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0)
+    const d = new Date(now)
     if (period === '7d') d.setDate(d.getDate() - 7)
     else if (period === '30d') d.setDate(d.getDate() - 30)
     else if (period === '90d') d.setDate(d.getDate() - 90)
-    else { d.setMonth(0); d.setDate(1) }
     return d
   }
 
@@ -289,7 +304,7 @@ export default function ReportsPage() {
           <table className="data-table">
             <thead><tr><th>Date</th><th>Customer</th><th>Total</th><th>Paid</th><th>Method</th><th>Status</th></tr></thead>
             <tbody>
-              {filteredCollections.slice(0, 100).map(payment => (
+              {filteredCollections.map(payment => (
                 <tr key={payment.id}>
                   <td className="text-sm text-text-muted">{new Date(payment.paid_at || payment.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</td>
                   <td className="font-medium">{payment.customer_name}</td>
@@ -310,7 +325,7 @@ export default function ReportsPage() {
           <table className="data-table">
             <thead><tr><th>Date</th><th>Concern</th><th>Technician</th><th>Status</th></tr></thead>
             <tbody>
-              {filteredJobs.slice(0, 100).map(j => (
+              {filteredJobs.map(j => (
                 <tr key={j.id}>
                   <td className="text-sm text-text-muted">{new Date(j.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</td>
                   <td className="text-sm">{j.concern || '-'}</td>
@@ -335,7 +350,7 @@ export default function ReportsPage() {
             <table className="data-table">
               <thead><tr><th>Date</th><th>Direction</th><th>Duration</th><th>Status</th></tr></thead>
               <tbody>
-                {filteredCalls.slice(0, 100).map(c => (
+                {filteredCalls.map(c => (
                   <tr key={c.id}>
                     <td className="text-sm text-text-muted">{new Date(c.start_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</td>
                     <td><span className={`tag ${c.direction === 'inbound' ? 'tag-blue' : 'tag-gray'}`}>{c.direction}</span></td>

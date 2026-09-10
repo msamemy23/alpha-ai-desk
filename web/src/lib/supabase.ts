@@ -7,6 +7,14 @@ import { createBrowserClient } from '@supabase/ssr'
 // from Vercel env / .env.local; no hardcoded fallbacks.
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+
+// Next evaluates route modules during a production build, before deployment
+// environment variables are necessarily present. The SSR client rejects empty
+// configuration at module load, which turned a missing build-time environment
+// into a hard build crash. Keep the placeholder unreachable for real requests:
+// API helpers still fail closed when the required server variables are absent.
+const browserClientUrl = supabaseUrl || 'https://placeholder.invalid'
+const browserClientKey = supabaseAnonKey || 'placeholder-anon-key'
 export const supabaseBrowserUrl = supabaseUrl
 export const supabaseBrowserAnonKey = supabaseAnonKey
 export const supabaseAuthStorageKey = supabaseUrl
@@ -15,7 +23,7 @@ export const supabaseAuthStorageKey = supabaseUrl
 
 // Browser client that stores the auth session in COOKIES (not localStorage) so
 // the server (middleware + API routes) can read and verify the real session.
-export const supabase = createBrowserClient(supabaseUrl, supabaseAnonKey, {
+export const supabase = createBrowserClient(browserClientUrl, browserClientKey, {
   realtime: { params: { eventsPerSecond: 10 } }
 })
 
@@ -32,11 +40,29 @@ export function getServiceClient() {
 export async function getShopProfile() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
-  const { data } = await supabase
-    .from('shop_profiles')
-    .select('*')
+  const { data: membership } = await supabase
+    .from('shop_memberships')
+    .select('shop_id')
     .eq('user_id', user.id)
-    .single()
+    .eq('status', 'active')
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  const profileQuery = supabase.from('shop_profiles').select('*')
+  const { data } = membership?.shop_id
+    ? await profileQuery.eq('id', membership.shop_id).maybeSingle()
+    : await profileQuery.eq('user_id', user.id).maybeSingle()
+  if (!membership?.shop_id && data?.id) {
+    const { data: membershipRecord } = await supabase
+      .from('shop_memberships')
+      .select('status')
+      .eq('shop_id', data.id)
+      .eq('user_id', user.id)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (membershipRecord && membershipRecord.status !== 'active') return null
+  }
   return data as {
     id: string
     user_id: string
@@ -53,11 +79,31 @@ export async function getShopProfile() {
 export async function getShopId(): Promise<string | null> {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
+  const { data: membership } = await supabase
+    .from('shop_memberships')
+    .select('shop_id')
+    .eq('user_id', user.id)
+    .eq('status', 'active')
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  if (membership?.shop_id) return membership.shop_id
   const { data } = await supabase
     .from('shop_profiles')
     .select('id')
     .eq('user_id', user.id)
-    .single()
+    .maybeSingle()
+  if (data?.id) {
+    const { data: membershipRecord } = await supabase
+      .from('shop_memberships')
+      .select('status')
+      .eq('shop_id', data.id)
+      .eq('user_id', user.id)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (membershipRecord && membershipRecord.status !== 'active') return null
+  }
   return data?.id ?? null
 }
 

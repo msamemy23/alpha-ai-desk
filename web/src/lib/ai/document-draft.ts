@@ -2,7 +2,9 @@ import {
   getLaborFlatAmount,
   laborLineTotal,
   moneyFromUnknown,
+  nonNegativeDecimal,
   partLineTotal,
+  quantityFromUnknown,
   roundMoney,
   calculateDocumentTotals,
 } from '@/lib/document-money'
@@ -170,8 +172,8 @@ function normalizeParts(parts: unknown): DraftLine[] {
     return {
       ...line,
       name: lineName(line, 'Part'),
-      qty: Number(line.qty) || 1,
-      unitPrice: moneyFromUnknown(line.unitPrice) ?? 0,
+      qty: quantityFromUnknown(line.qty),
+      unitPrice: nonNegativeDecimal(line.unitPrice),
     }
   })
 }
@@ -193,8 +195,8 @@ function normalizeLabors(labors: unknown): DraftLine[] {
     return {
       ...line,
       operation: lineName(line, 'Labor'),
-      hours: Number(line.hours) || 0,
-      rate: moneyFromUnknown(line.rate) ?? 120,
+      hours: quantityFromUnknown(line.hours, 0),
+      rate: nonNegativeDecimal(line.rate, 120),
     }
   })
 }

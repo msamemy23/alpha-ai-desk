@@ -17,6 +17,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
+import { validateAutomationInvocation } from '@/lib/automation-fencing'
 
 const SERPER_KEY = process.env.SERPER_API_KEY || ''
 
@@ -231,6 +232,8 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}))
     const auth = await getRouteShop(req, body.shopId)
     if (!auth) return unauthorized()
+    const automationCheck = await validateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['lead_discovery'])
+    if (!automationCheck.ok) return NextResponse.json({ ok: false, error: automationCheck.error }, { status: automationCheck.status })
     const { city: rawCity = 'Houston TX', scan_type = 'both', categories } = body
     const city = typeof rawCity === 'string' ? rawCity.trim().slice(0, 120) || 'Houston TX' : 'Houston TX'
     if (!['competitors', 'alpha_ai', 'both'].includes(scan_type)) return NextResponse.json({ error: 'Invalid scan_type' }, { status: 400 })

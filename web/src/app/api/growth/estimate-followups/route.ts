@@ -4,6 +4,7 @@ import { sendEmail } from '@/lib/email'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { calcTotals } from '@/lib/supabase'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { validateAutomationInvocation } from '@/lib/automation-fencing'
 
 export const dynamic = 'force-dynamic'
 
@@ -24,6 +25,8 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   const auth = await getRouteShop(req, body?.shopId)
   if (!auth) return unauthorized()
+  const automationCheck = await validateAutomationInvocation(req, body as Record<string, unknown> | null, auth.shopId, ['estimate_followups'])
+  if (!automationCheck.ok) return NextResponse.json({ ok: false, error: automationCheck.error }, { status: automationCheck.status })
 
   const rawHours = Number(body?.followup_hours ?? 48)
   const followupHours = Number.isFinite(rawHours) && rawHours >= 1 && rawHours <= 720 ? rawHours : 48

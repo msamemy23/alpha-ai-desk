@@ -1,10 +1,12 @@
 ﻿'use client'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { getShopId, supabase, calcTotals, formatCurrency } from '@/lib/supabase'
-import { getLaborFlatAmount, laborLineTotal } from '@/lib/document-money'
+import { getLaborFlatAmount, laborLineTotal, partLineTotal, quantityFromUnknown, nonNegativeMoney } from '@/lib/document-money'
 
 interface Customer { id: string; name: string; phone: string; email: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin: string; vehicle_plate: string; vehicle_mileage: string }
 interface Doc { id: string; type: string; doc_number: string; status: string; shop_id?: string; doc_date: string; customer_name: string; customer_id: string; customer_phone?: string; customer_email?: string; signature_requested_at?: string; signature_signed_at?: string; signature_signer_name?: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin?: string; vehicle_plate?: string; vehicle_mileage?: string | number; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; warranty_months: number | null; warranty_mileage: number | null; warranty_start: string | null; warranty_exclusions: string | null; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
+
+const PAYMENT_OPERATION_STORAGE_KEY = 'alpha_ai_payment_operations_v1'
 
 // Every dollar received is recorded and applied by one authenticated database transaction.
 async function recordPayment(
@@ -16,12 +18,13 @@ async function recordPayment(
 ): Promise<{ amount_paid?: number; status?: string; balance_due?: number; total?: number } | null> {
   if (!(amount > 0)) return null
   if (!doc.shop_id) throw new Error('Payment is missing its shop')
+  if (!idempotencyKey?.trim()) throw new Error('Payment idempotency key is required')
   const { data, error } = await supabase.rpc('record_document_payment_safe', {
     p_document_id: doc.id,
     p_amount: Math.round(amount * 100) / 100,
     p_method: method,
     p_note: note,
-    p_idempotency_key: idempotencyKey,
+    p_idempotency_key: idempotencyKey.trim(),
   })
   if (error) throw new Error(`Payment could not be recorded: ${error.message}`)
   return (data || null) as { amount_paid?: number; status?: string; balance_due?: number; total?: number } | null
@@ -263,12 +266,31 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   const [shopSettings, setShopSettings] = useState<Record<string, string>>({})
   const paymentOperationKeys = useRef(new Map<string, string>())
 
+  const persistPaymentOperationKeys = () => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(PAYMENT_OPERATION_STORAGE_KEY, JSON.stringify(Object.fromEntries(paymentOperationKeys.current)))
+  }
+
+  const forgetPaymentOperation = (fingerprint: string) => {
+    paymentOperationKeys.current.delete(fingerprint)
+    persistPaymentOperationKeys()
+  }
+
   const getPaymentOperation = (docId: string, amount: number, method: string, operation: string) => {
     const fingerprint = `${docId}:${operation}:${Math.round(amount * 100) / 100}:${method || 'unspecified'}`
+    if (!paymentOperationKeys.current.has(fingerprint) && typeof window !== 'undefined') {
+      try {
+        const stored = JSON.parse(window.localStorage.getItem(PAYMENT_OPERATION_STORAGE_KEY) || '{}') as Record<string, unknown>
+        for (const [storedFingerprint, storedKey] of Object.entries(stored)) {
+          if (typeof storedKey === 'string') paymentOperationKeys.current.set(storedFingerprint, storedKey)
+        }
+      } catch { /* ignore malformed local retry state */ }
+    }
     let key = paymentOperationKeys.current.get(fingerprint)
     if (!key) {
       key = `document-payment-${docId}-${crypto.randomUUID()}`
       paymentOperationKeys.current.set(fingerprint, key)
+      persistPaymentOperationKeys()
     }
     return { fingerprint, key }
   }
@@ -536,12 +558,12 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               {editing !== 'new' && type !== 'Estimate' && form.status !== 'Paid' && <button type="button" className="btn btn-sm" style={{background:'#16a34a',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={async () => {
                 if (!form.id || !form.shop_id) return;
                 const t = calcTotals(form as unknown as Record<string,unknown>);
-                const owed = Math.max(0, t.total - (Number(form.amount_paid) || 0));
+                 const owed = Math.max(0, t.total - nonNegativeMoney(form.amount_paid));
                 if (!(owed > 0)) return;
                 try {
                   const operation = getPaymentOperation(form.id, owed, form.payment_method || 'unspecified', 'editor-mark-paid')
                   const result = await recordPayment(form as Doc, owed, form.payment_method || 'unspecified', `Marked paid from ${form.type} editor`, operation.key);
-                  paymentOperationKeys.current.delete(operation.fingerprint)
+                   forgetPaymentOperation(operation.fingerprint)
                   setForm(f => ({...f, status: result?.status || 'Paid', amount_paid: Number(result?.amount_paid ?? t.total)}));
                   await load();
                 } catch (error) {
@@ -551,7 +573,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               {editing !== 'new' && type === 'Invoice' && form.status !== 'Partial' && form.status !== 'Paid' && <button type="button" className="btn btn-sm" style={{background:'#f59e0b',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={async () => {
                 if (!form.id || !form.shop_id) return;
                 const t = calcTotals(form as unknown as Record<string,unknown>);
-                const owed = Math.max(0, t.total - (Number(form.amount_paid) || 0));
+                 const owed = Math.max(0, t.total - nonNegativeMoney(form.amount_paid));
                 if (!(owed > 0)) return;
                 const raw = window.prompt(`How much did they pay? (Remaining: $${owed.toFixed(2)})`);
                 if (!raw) return;
@@ -561,7 +583,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                 try {
                   const operation = getPaymentOperation(form.id, amount, form.payment_method || 'unspecified', 'editor-partial')
                   const result = await recordPayment(form as Doc, amount, form.payment_method || 'unspecified', 'Partial payment from invoice editor', operation.key);
-                  paymentOperationKeys.current.delete(operation.fingerprint)
+                   forgetPaymentOperation(operation.fingerprint)
                   setForm(f => ({...f, status: result?.status || 'Partial', amount_paid: Number(result?.amount_paid ?? ((Number(f.amount_paid) || 0) + amount))}));
                   await load();
                 } catch (error) {
@@ -631,7 +653,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                     <input className="form-input col-span-1" type="number" placeholder="Qty" value={p.qty as number||1} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],qty:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
                     <input className="form-input col-span-2" type="number" step="0.01" placeholder="Price" value={p.unitPrice as number||0} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],unitPrice:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
                     <div className="col-span-1 flex items-center gap-1"><input type="checkbox" checked={p.taxable !== false} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],taxable:e.target.checked}; setForm(f=>({...f,parts:p2})) }} /><span className="text-xs">Tax</span></div>
-                    <div className="col-span-1 text-right text-sm">{formatCurrency((Number(p.qty)||1)*(Number(p.unitPrice)||0))}</div>
+                    <div className="col-span-1 text-right text-sm">{formatCurrency(partLineTotal(p))}</div>
                     <button className="col-span-1 btn btn-danger btn-sm" onClick={() => setForm(f=>({...f,parts:((f.parts||[]) as Record<string,unknown>[]).filter((_,j)=>j!==i)}))}>✕</button>
                   </div>
                   <div className="flex items-center gap-2 pl-1 text-xs flex-wrap">
@@ -645,7 +667,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                     <input className="form-input !py-1 w-20" type="number" step="0.01" placeholder="0.00" value={p.cost as number||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],cost:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
                     <span className="text-text-muted ml-2" title="Refundable core deposit — added to the total, refunded when the old core is returned">Core $</span>
                     <input className="form-input !py-1 w-20" type="number" step="0.01" placeholder="0.00" value={p.core as number||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],core:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
-                    {Number(p.cost) > 0 && Number(p.unitPrice) > 0 ? <span className="text-green" title="Profit on this line">margin {formatCurrency((Number(p.unitPrice) - Number(p.cost)) * (Number(p.qty) || 1))}</span> : null}
+                    {nonNegativeMoney(p.cost) > 0 && nonNegativeMoney(p.unitPrice) > 0 ? <span className="text-green" title="Profit on this line">margin {formatCurrency((nonNegativeMoney(p.unitPrice) - nonNegativeMoney(p.cost)) * quantityFromUnknown(p.qty))}</span> : null}
                   </div>
                   </div>
                 ))}
@@ -905,9 +927,9 @@ tr, td, th, thead, table { break-inside: avoid; }
                       {((form.parts||[]) as Record<string,unknown>[]).map((p,i) => (
                         <tr key={i} style={{background:i%2===1?'#fafafa':'transparent'}}>
                           <td style={{padding:'6px 8px',color:'#111'}}>{(p.name as string) || '—'}{p.brand ? <span style={{color:'#999',fontSize:'10px',marginLeft:'4px'}}>({p.brand as string})</span> : ''}{p.warranty ? <span style={{color:'#2563eb',fontSize:'9px',display:'block',fontWeight:600}}>Warranty: {p.warranty as string}</span> : ''}</td>
-                          <td style={{padding:'6px 8px',textAlign:'center',color:'#666'}}>{(p.qty as number)||1}</td>
-                          <td style={{padding:'6px 8px',textAlign:'right',color:'#666'}}>{formatCurrency(Number(p.unitPrice)||0)}</td>
-                          <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600,color:'#111'}}>{formatCurrency((Number(p.qty)||1)*(Number(p.unitPrice)||0))}</td>
+                          <td style={{padding:'6px 8px',textAlign:'center',color:'#666'}}>{quantityFromUnknown(p.qty)}</td>
+                          <td style={{padding:'6px 8px',textAlign:'right',color:'#666'}}>{formatCurrency(nonNegativeMoney(p.unitPrice))}</td>
+                          <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600,color:'#111'}}>{formatCurrency(partLineTotal(p))}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1088,12 +1110,12 @@ tr, td, th, thead, table { break-inside: avoid; }
                           {type !== 'Estimate' && d.status !== 'Paid' && <button className="btn btn-sm" style={{background:'#16a34a',color:'white',fontSize:'11px',padding:'4px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}} onClick={async () => {
                             if (!d.shop_id) return;
                             const t = calcTotals(d as unknown as Record<string,unknown>);
-                            const owed = Math.max(0, t.total - (Number(d.amount_paid) || 0));
+                             const owed = Math.max(0, t.total - nonNegativeMoney(d.amount_paid));
                             if (!(owed > 0)) return;
                             try {
                               const operation = getPaymentOperation(d.id, owed, d.payment_method || 'unspecified', 'list-mark-paid')
                               await recordPayment(d, owed, d.payment_method || 'unspecified', 'Marked paid from list', operation.key);
-                              paymentOperationKeys.current.delete(operation.fingerprint)
+                               forgetPaymentOperation(operation.fingerprint)
                               await load();
                             } catch (error) {
                               alert('Payment failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
@@ -1102,7 +1124,7 @@ tr, td, th, thead, table { break-inside: avoid; }
                           {type === 'Invoice' && d.status !== 'Paid' && <button className="btn btn-sm" style={{background:'#f59e0b',color:'white',fontSize:'11px',padding:'4px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}} onClick={async () => {
                             if (!d.shop_id) return;
                             const t = calcTotals(d as unknown as Record<string,unknown>);
-                            const alreadyPaid = Math.max(0, Number(d.amount_paid) || 0);
+                             const alreadyPaid = nonNegativeMoney(d.amount_paid);
                             const owed = Math.max(0, t.total - alreadyPaid);
                             const raw = window.prompt(`How much did they pay? (Owed: $${owed.toFixed(2)})`);
                             const amt = parseFloat((raw || '').replace(/[^0-9.]/g, ''));
@@ -1114,7 +1136,7 @@ tr, td, th, thead, table { break-inside: avoid; }
                             try {
                               const operation = getPaymentOperation(d.id, amt, d.payment_method || 'unspecified', 'list-partial')
                               await recordPayment(d, amt, d.payment_method || 'unspecified', 'Partial payment', operation.key);
-                              paymentOperationKeys.current.delete(operation.fingerprint)
+                               forgetPaymentOperation(operation.fingerprint)
                               await load();
                             } catch (error) {
                               alert('Payment failed: ' + (error instanceof Error ? error.message : 'Unknown error'));

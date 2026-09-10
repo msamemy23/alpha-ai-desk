@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
+import { flushAuditLogOutbox } from '@/lib/audit-log'
 
 export const dynamic = 'force-dynamic'
 
@@ -62,6 +63,30 @@ export async function GET(req: NextRequest) {
   }
 
   const results: Record<string, unknown> = {}
+
+  // Repair audit records that were queued after a transient database failure,
+  // and make abandoned AI mutations explicitly uncertain before they can be
+  // retried. Both operations are service-only and tenant-scoped in storage.
+  results.audit_outbox = await flushAuditLogOutbox(100)
+  const db = getServiceClient()
+  const now = new Date().toISOString()
+  const { data: expiredAiOperations, error: aiLeaseError } = await db
+    .from('ai_action_operations')
+    .update({
+      status: 'unknown',
+      error: 'AI action lease expired; outcome requires reconciliation',
+      updated_at: now,
+      lease_expires_at: null,
+      heartbeat_at: now,
+    })
+    .eq('status', 'running')
+    .lt('lease_expires_at', now)
+    .select('id')
+  results.ai_action_reconciliation = {
+    ok: !aiLeaseError,
+    expired: expiredAiOperations?.length || 0,
+    ...(aiLeaseError ? { error: aiLeaseError.message } : {}),
+  }
 
   // Every tenant-aware worker receives one explicit shop id. No worker may
   // silently fall back to the first shop or to global credentials.

@@ -1,17 +1,24 @@
 export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
-import { sendSMS, formatPhone } from '@/lib/telnyx'
+import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { formatPhone } from '@/lib/telnyx'
 import { sendEmail } from '@/lib/email'
 import { getIdempotencyKey } from '@/lib/api-response'
 import { normalizePhoneDigits } from '@/lib/sms-normalize'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
+import { sendDurableSms } from '@/lib/durable-sms'
 
 export async function POST(req: NextRequest) {
   try {
     const auth = await getAuthedShop()
     if (!auth) return unauthorized()
+    if (auth.role === 'viewer') return forbidden()
+
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'local'
+    const limited = checkRateLimit(rateLimitKey('send-message', auth.userId, auth.shopId, ip), 20, 60_000)
+    if (!limited.ok) return NextResponse.json({ ok: false, error: 'Too many message requests', resetAt: limited.resetAt }, { status: 429 })
 
     const payload = await req.json().catch(() => null)
     const { to, body, channel, subject, customerId: rawCustomerId, jobId, documentId, customerName } = payload || {}
@@ -112,13 +119,32 @@ export async function POST(req: NextRequest) {
       if (smsOptedOut || await isSmsOptedOut(db, auth.shopId, formattedPhone)) {
         return NextResponse.json({ error: 'This destination has opted out of SMS' }, { status: 409 })
       }
-      const idempotencyKey = getIdempotencyKey(req, [auth.shopId, 'send-message', channel, resolvedCustomerId || formattedPhone, body.slice(0, 80)])
-      const telnyxMsg = await sendSMS(formattedPhone, body, settings?.telnyx_phone_number || '', {
-        apiKey: settings?.telnyx_api_key || '',
-        messagingProfileId: settings?.telnyx_messaging_profile_id || '',
-        idempotencyKey,
+      if (!settings?.telnyx_api_key || !settings?.telnyx_phone_number) {
+        return NextResponse.json({ ok: false, error: 'Telnyx SMS is not configured for this shop' }, { status: 503 })
+      }
+      const smsResult = await sendDurableSms({
+        request: req,
+        db,
+        shopId: auth.shopId,
+        userId: auth.userId,
+        to: formattedPhone,
+        text: body,
+        customerId: resolvedCustomerId,
+        jobId: jobId || null,
+        documentId: documentId || null,
+        settings,
       })
-      messageId = telnyxMsg?.id || null
+      if (!smsResult.ok) {
+        return NextResponse.json({ ok: false, error: smsResult.error, uncertain: smsResult.uncertain === true }, { status: smsResult.status })
+      }
+      return NextResponse.json({
+        ok: true,
+        message_id: smsResult.messageId,
+        idempotent: smsResult.idempotent,
+        message_record_saved: smsResult.messageRecordSaved,
+        audit_pending: smsResult.auditPending || false,
+        ...(smsResult.auditError ? { audit_error: smsResult.auditError } : {}),
+      })
     } else if (channel === 'email') {
       const emailTo = resolvedEmail || to
       if (!emailTo || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTo)) {

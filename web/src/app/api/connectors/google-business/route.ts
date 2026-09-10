@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getConnector, getValidGoogleToken, updateConnector } from '@/lib/connectors'
+import { finishSocialPublishingOperation, startSocialPublishingOperation } from '@/lib/social-operation'
 
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
 function fail(msg: string, status = 400) { return NextResponse.json({ ok: false, error: msg }, { status }) }
@@ -97,6 +98,7 @@ export async function POST(req: NextRequest) {
 
   const auth = await getAuthedShop()
   if (!auth) return unauthorized()
+  if (auth.role === 'viewer' && ['post', 'reply_review'].includes(String(action))) return forbidden()
 
   const connector = await getConnector('google_business')
   if (!connector?.enabled) return fail('Google Business not connected', 401)
@@ -155,6 +157,36 @@ export async function POST(req: NextRequest) {
     ? `${accountName}/${locationName}`
     : ''
 
+  let socialOperationId: string | null = null
+  const beginSocialOperation = async (operation: string) => {
+    const started = await startSocialPublishingOperation({
+      request: req,
+      body,
+      shopId: auth.shopId,
+      userId: auth.userId,
+      platform: 'google_business',
+      action: operation,
+    })
+    if (started.state === 'claimed') {
+      socialOperationId = started.id
+      return null
+    }
+    if (started.state === 'replay') return ok({ result: started.result, replayed: true })
+    return fail(started.error, started.status)
+  }
+  const finishSocialOperation = async (
+    status: 'succeeded' | 'failed' | 'unknown',
+    result?: unknown,
+    error?: string,
+    statusCode = 502,
+  ) => {
+    if (!socialOperationId) return fail('Publishing operation was not initialized', 500)
+    const saved = await finishSocialPublishingOperation(socialOperationId, status, result, error)
+    if (!saved.ok) return fail('The external action outcome is uncertain because its durable status could not be saved', 502)
+    if (status === 'succeeded') return ok(result)
+    return fail(error || 'Google Business did not confirm the requested action', statusCode)
+  }
+
   try {
     switch (action) {
 
@@ -169,6 +201,8 @@ export async function POST(req: NextRequest) {
           if (pendingApproval) return fail('Google Business API access is pending approval from Google (case 2-5894000040376). Expected within 5 business days.', 503)
           return fail('Google Business location not found — make sure your business is verified on Google', 400)
         }
+        const blocked = await beginSocialOperation('post')
+        if (blocked) return blocked
 
         const postBody: Record<string, unknown> = {
           languageCode: 'en-US',
@@ -185,8 +219,9 @@ export async function POST(req: NextRequest) {
           body: JSON.stringify(postBody),
         })
         const rData = await r.json()
-        if (!r.ok) return fail(rData?.error?.message || JSON.stringify(rData), r.status)
-        return ok(rData)
+        if (!r.ok) return finishSocialOperation('failed', rData, rData?.error?.message || JSON.stringify(rData), r.status)
+        if (!rData?.name) return finishSocialOperation('failed', rData, 'Google Business did not return a published post id')
+        return finishSocialOperation('succeeded', rData)
       }
 
       // ── Get reviews ──────────────────────────────────────────────
@@ -212,6 +247,8 @@ export async function POST(req: NextRequest) {
           if (pendingApproval) return fail('Google Business API access is pending approval from Google. Expected within 5 business days.', 503)
           return fail('Google Business location not found', 400)
         }
+        const blocked = await beginSocialOperation('reply_review')
+        if (blocked) return blocked
 
         const r = await fetch(`${MY_BUSINESS}/${fullLocationPath}/reviews/${review_id}/reply`, {
           method: 'PUT',
@@ -219,14 +256,20 @@ export async function POST(req: NextRequest) {
           body: JSON.stringify({ comment: reply }),
         })
         const rData = await r.json()
-        if (!r.ok) return fail(rData?.error?.message || JSON.stringify(rData), r.status)
-        return ok(rData)
+        if (!r.ok) return finishSocialOperation('failed', rData, rData?.error?.message || JSON.stringify(rData), r.status)
+        return finishSocialOperation('succeeded', rData)
       }
 
       default:
         return fail(`Unknown action: ${action}`)
     }
   } catch (err) {
+    if (socialOperationId) {
+      const message = err instanceof Error ? err.message : 'Google Business request failed before its outcome was confirmed'
+      const saved = await finishSocialPublishingOperation(socialOperationId, 'unknown', undefined, message)
+      if (!saved.ok) return fail('The external action outcome is uncertain because its durable status could not be saved', 502)
+      return fail('Google Business request outcome is uncertain; reconcile the provider result before retrying', 502)
+    }
     return fail(err instanceof Error ? err.message : 'Internal error', 500)
   }
 }

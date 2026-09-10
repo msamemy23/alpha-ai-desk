@@ -3,6 +3,7 @@ import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
 import { AI_BASE_URLS, normalizeAiModel } from '@/lib/ai-config'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
+import { chatGptModel, fetchOpenAIChatCompletion, getOpenAIOAuthTransport } from '@/lib/openai-oauth-server'
 
 export const dynamic = 'force-dynamic'
 
@@ -45,6 +46,16 @@ export async function POST(req: NextRequest) {
     }
     if (body.messages.length > 40) {
       return error('AI request has too many messages', 400)
+    }
+
+    const chatGptTransport = getOpenAIOAuthTransport(req)
+    if (chatGptTransport) {
+      const completion = await fetchOpenAIChatCompletion(chatGptTransport, {
+        model: chatGptModel(body.model),
+        messages: body.messages,
+        max_tokens: typeof body.max_tokens === 'number' ? body.max_tokens : undefined,
+      }, AbortSignal.timeout(120000))
+      return NextResponse.json(completion.data, { status: completion.status })
     }
 
     const sb = getServiceClient()

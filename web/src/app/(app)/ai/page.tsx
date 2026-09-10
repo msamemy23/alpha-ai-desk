@@ -1,6 +1,7 @@
 ﻿'use client'
 import { useEffect, useState, useRef, useCallback, type MouseEvent as ReactMouseEvent } from 'react'
 import { getShopId, supabase } from '@/lib/supabase'
+import { addOpenAIOAuthHeaders } from '@/lib/openai-oauth-client'
 import { AGENTS, SKILLS } from '@/lib/ai/capabilities'
 import { classifyRequest, type RouteDecision } from '@/lib/ai/router'
 import { normalizeDocumentDraft } from '@/lib/ai/document-draft'
@@ -111,7 +112,7 @@ async function getAuthJsonHeaders(): Promise<Record<string, string>> {
   } catch {
     // Cookie auth may still work; let the server return the real error if not.
   }
-  return headers
+  return addOpenAIOAuthHeaders(headers)
 }
 
 // Stream a manual diagram through our own origin so it renders inline in the chat
@@ -951,8 +952,8 @@ export default function AIPage() {
   const [speakEnabled, setSpeakEnabled] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [history, setHistory] = useState<HistoryEntry[]>([])
-const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:string;subject?:string;customerId?:string;customerName?:string}|null>(null)
-  const [pendingAction, setPendingAction] = useState<{ action: string; payload: Record<string, unknown>; kind?: 'connector' | 'automation' | 'browser'; endpoint?: string } | null>(null)
+const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:string;subject?:string;customerId?:string;customerName?:string;idempotencyKey:string}|null>(null)
+  const [pendingAction, setPendingAction] = useState<{ action: string; payload: Record<string, unknown>; kind?: 'connector' | 'automation' | 'browser'; endpoint?: string; idempotencyKey?: string } | null>(null)
   const [confirmingAction, setConfirmingAction] = useState(false)
   const chatSessionIdRef = useRef(`chat-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   const historyWriteRef = useRef<Promise<void>>(Promise.resolve())
@@ -2405,7 +2406,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           const payload = (parsed.payload && typeof parsed.payload === 'object' && !Array.isArray(parsed.payload))
             ? parsed.payload as Record<string, unknown>
             : {}
-          setPendingAction({ action: actionName, payload })
+          setPendingAction({ action: actionName, payload, idempotencyKey: crypto.randomUUID() })
           addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `action.${actionName}`, status: 'error', detail: 'Waiting for confirmation' })
           const assistantMsg: ChatMessage = {
             role: 'assistant',
@@ -2486,6 +2487,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           subject: parsed.subject as string | undefined,
           customerId: parsed.customerId as string | undefined,
           customerName: parsed.customerName as string | undefined,
+          idempotencyKey: crypto.randomUUID(),
         })
         const channel = (parsed.channel as string) || 'sms'
         const assistantMsg: ChatMessage = {
@@ -2520,7 +2522,11 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           'get_posts', 'get_comments', 'get_messages', 'get_reviews', 'list_events', 'debug',
         ])
         if (!readOnlyConnectorActions.has(connAction)) {
-          const pendingPayload: Record<string, unknown> = { action: connAction, ...connPayload }
+          const pendingPayload: Record<string, unknown> = {
+            action: connAction,
+            ...connPayload,
+            idempotency_key: crypto.randomUUID(),
+          }
           setPendingAction({ action: `${connectorName}.${connAction}`, kind: 'connector', endpoint, payload: pendingPayload })
           addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `connector.${connectorName}.${connAction}`, status: 'error', detail: 'Waiting for confirmation' })
           const assistantMsg: ChatMessage = {
@@ -2561,7 +2567,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           schedule: parsed.schedule,
           task_prompt: parsed.task_prompt,
         }
-        setPendingAction({ action: 'scheduleTask', kind: 'automation', endpoint: '/api/automations', payload: pendingPayload })
+        setPendingAction({ action: 'scheduleTask', kind: 'automation', endpoint: '/api/automations', payload: pendingPayload, idempotencyKey: crypto.randomUUID() })
         addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'scheduleTask', status: 'error', detail: 'Waiting for confirmation' })
         const assistantMsg: ChatMessage = {
           role: 'assistant',
@@ -2582,7 +2588,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             ...(parsed.id ? { id: parsed.id } : {}),
             ...(acAction === 'toggle' ? { enabled: parsed.enabled } : {}),
           }
-          setPendingAction({ action: `automationControl.${acAction}`, kind: 'automation', endpoint: '/api/automations', payload: pendingPayload })
+          setPendingAction({ action: `automationControl.${acAction}`, kind: 'automation', endpoint: '/api/automations', payload: pendingPayload, idempotencyKey: crypto.randomUUID() })
           addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `automationControl.${acAction}`, status: 'error', detail: 'Waiting for confirmation' })
           const assistantMsg: ChatMessage = {
             role: 'assistant',
@@ -3022,10 +3028,13 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
   const confirmSendSms = async () => {
     if (!pendingSms) return
     setSendingSms(true)
+    let closeDraft = false
     try {
+      const headers = await getAuthJsonHeaders()
+      if ((pendingSms.channel || 'sms') === 'sms') headers['Idempotency-Key'] = pendingSms.idempotencyKey
       const res = await fetch('/api/send-message', {
         method: 'POST',
-        headers: await getAuthJsonHeaders(),
+        headers,
         body: JSON.stringify({
           to: pendingSms.to,
           body: pendingSms.body,
@@ -3033,6 +3042,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           subject: pendingSms.subject || undefined,
           customerId: pendingSms.customerId || undefined,
           customerName: pendingSms.customerName || undefined,
+          ...(pendingSms.channel === 'sms' ? { idempotency_key: pendingSms.idempotencyKey } : {}),
         })
       })
       const channelLabel = pendingSms.channel === 'email' ? 'Email' : 'SMS'
@@ -3042,18 +3052,27 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         setMessages(prev => [...prev, { role: 'assistant', content: `Failed to send ${channelLabel}: ${errMsg}` }])
         showToast(`Failed to send ${channelLabel}: ${errMsg}`)
       } else {
-        setMessages(prev => [...prev, { role: 'assistant', content: `${channelLabel} sent to ${pendingSms.to}` }])
-        showToast(`${channelLabel} sent successfully!`)
+        const result = await res.clone().json().catch(() => ({})) as { message_record_saved?: boolean; audit_error?: string }
+        if (result.message_record_saved === false) {
+          setMessages(prev => [...prev, { role: 'assistant', content: `${channelLabel} was accepted, but its local record still needs repair. Keep this draft open and retry it; the provider will not be called again.` }])
+          showToast(`${channelLabel} sent; local record needs repair`)
+        } else {
+          setMessages(prev => [...prev, { role: 'assistant', content: `${channelLabel} sent to ${pendingSms.to}` }])
+          showToast(result.audit_error ? `${channelLabel} sent; audit will retry automatically` : `${channelLabel} sent successfully!`)
+          closeDraft = true
+        }
       }
     } catch (e) {
       showToast('Failed to send message: ' + (e instanceof Error ? e.message : 'Unknown error'))
     }
-    setPendingSms(null); setSendingSms(false)
+    if (closeDraft) setPendingSms(null)
+    setSendingSms(false)
   }
 
   const confirmAction = async () => {
     if (!pendingAction || confirmingAction) return
     setConfirmingAction(true)
+    let closeDraft = false
     try {
       const mode = pendingAction.kind || 'ai'
       let endpoint = '/api/ai-action'
@@ -3066,7 +3085,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         requestBody = pendingAction.payload
       } else if (mode === 'automation') {
         endpoint = '/api/automations'
-        requestBody = pendingAction.payload
+        requestBody = { ...pendingAction.payload, idempotency_key: pendingAction.idempotencyKey }
       } else if (mode === 'browser') {
         endpoint = '/api/web-automation'
         requestBody = { ...pendingAction.payload, approval: 'confirm' }
@@ -3075,6 +3094,15 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       const headers = await getAuthJsonHeaders()
       headers['X-AI-Approval'] = 'confirm'
       if (mode !== 'ai') headers['X-AI-Source'] = 'ai'
+      if (mode === 'connector' && typeof requestBody.idempotency_key === 'string') {
+        headers['Idempotency-Key'] = requestBody.idempotency_key
+      }
+      if (mode === 'ai' && pendingAction.idempotencyKey) {
+        headers['Idempotency-Key'] = pendingAction.idempotencyKey
+      }
+      if (mode === 'automation' && pendingAction.idempotencyKey) {
+        headers['Idempotency-Key'] = pendingAction.idempotencyKey
+      }
       const res = await fetch(endpoint, {
         method: 'POST',
         headers,
@@ -3092,11 +3120,12 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           : 'Confirmed action completed')
         addToolEvent({ agent: 'Alpha AI', tool: `action.${pendingAction.action}`, status: 'ok', detail })
         setMessages(prev => [...prev, { role: 'assistant', content: `${pendingAction.action}: ${detail}` }])
+        closeDraft = true
       }
     } catch (error) {
       setMessages(prev => [...prev, { role: 'assistant', content: `I did not complete ${pendingAction.action}: ${error instanceof Error ? error.message : 'Unknown error'}` }])
     } finally {
-      setPendingAction(null)
+      if (closeDraft) setPendingAction(null)
       setConfirmingAction(false)
     }
   }
