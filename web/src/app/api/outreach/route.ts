@@ -29,24 +29,27 @@ export async function POST(req: NextRequest) {
       // Customers with no job in X days
       const days = filter?.daysSinceLastVisit || 90
       const cutoff = new Date(Date.now() - days * 86400000).toISOString()
-      const { data: recentCustomerIds } = await db
+      const { data: recentCustomerIds, error: recentCustomerIdsError } = await db
         .from('jobs')
         .select('customer_id')
         .eq('shop_id', auth.shopId)
         .gte('created_at', cutoff)
+      if (recentCustomerIdsError) return NextResponse.json({ ok: false, error: 'Customer activity could not be loaded' }, { status: 500 })
       const activeIds = (recentCustomerIds || []).map((j: Record<string,unknown>) => j.customer_id).filter(Boolean)
 
       const query = db.from('customers').select('id,name,phone,email').eq('shop_id', auth.shopId).not('id', 'in', `(${activeIds.map((id: unknown) => `"${id}"`).join(',') || '"00000000-0000-0000-0000-000000000000"'})`)
       if (channel === 'sms') query.not('phone', 'is', null)
       if (channel === 'email') query.not('email', 'is', null)
-      const { data } = await query.limit(500)
+      const { data, error: customersError } = await query.limit(500)
+      if (customersError) return NextResponse.json({ ok: false, error: 'Customers could not be loaded' }, { status: 500 })
       customers = (data || []) as Record<string, unknown>[]
     } else if (type === 'custom' && filter?.status) {
-      const { data: jobs } = await db
+      const { data: jobs, error: jobsError } = await db
         .from('jobs')
         .select('customer_id, customer_name, customer:customers(id,name,phone,email)')
         .eq('shop_id', auth.shopId)
         .eq('status', filter.status)
+      if (jobsError) return NextResponse.json({ ok: false, error: 'Jobs could not be loaded' }, { status: 500 })
       customers = (jobs || []).map((j: Record<string,unknown>) => j.customer as Record<string,unknown>).filter(Boolean)
     }
 
@@ -62,7 +65,7 @@ export async function POST(req: NextRequest) {
 
         if (channel === 'sms' && c.phone) {
           await sendSMS(formatPhone(c.phone as string), msg, settings.telnyx_phone_number, { apiKey: settings.telnyx_api_key, messagingProfileId: settings.telnyx_messaging_profile_id || '' })
-          await db.from('messages').insert({
+          const { error: messageError } = await db.from('messages').insert({
             shop_id: auth.shopId,
             direction: 'outbound', channel: 'sms',
             from_address: settings?.telnyx_phone_number,
@@ -70,6 +73,7 @@ export async function POST(req: NextRequest) {
             body: msg, customer_id: c.id,
             status: 'sent', read: true, ai_handled: true,
           })
+          if (messageError) throw messageError
           sent++
         } else if (channel === 'email' && c.email) {
           await sendEmail({
@@ -79,7 +83,7 @@ export async function POST(req: NextRequest) {
             apiKey: settings?.resend_api_key,
             from: settings?.from_email,
           })
-          await db.from('messages').insert({
+          const { error: messageError } = await db.from('messages').insert({
             shop_id: auth.shopId,
             direction: 'outbound', channel: 'email',
             from_address: settings?.from_email,
@@ -87,6 +91,7 @@ export async function POST(req: NextRequest) {
             body: msg, customer_id: c.id,
             status: 'sent', read: true, ai_handled: true,
           })
+          if (messageError) throw messageError
           sent++
         }
         // Small delay to avoid rate limits
@@ -96,7 +101,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({ ok: true, sent, errors, total: customers.length })
+    const success = errors.length === 0
+    return NextResponse.json({ ok: success, success, sent, errors, total: customers.length }, { status: success ? 200 : 502 })
   } catch (e: unknown) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 })
   }
