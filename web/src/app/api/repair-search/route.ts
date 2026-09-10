@@ -54,7 +54,7 @@ async function attachShopProcedures(shopId: string, result: Awaited<ReturnType<t
       result.workflow.coverage.hasShopProcedure = false
       return
     }
-    result.shopProcedures = (data || []).map(item => ({
+    const shopProcedures = (data || []).map(item => ({
       id: item.id,
       title: item.title,
       operation: item.operation,
@@ -62,8 +62,9 @@ async function attachShopProcedures(shopId: string, result: Awaited<ReturnType<t
       confidence: item.confidence,
       updatedAt: item.updated_at,
     }))
-    result.coverageDashboard.shopProcedure = result.shopProcedures.length ? 'found' : 'not_found'
-    result.workflow.coverage.hasShopProcedure = result.shopProcedures.length > 0
+    result.shopProcedures = shopProcedures
+    result.coverageDashboard.shopProcedure = shopProcedures.length ? 'found' : 'not_found'
+    result.workflow.coverage.hasShopProcedure = shopProcedures.length > 0
   } catch {
     result.coverageDashboard.shopProcedure = 'needs_database'
   }

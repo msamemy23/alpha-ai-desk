@@ -22,31 +22,40 @@ export function formatPhone(phone: string): string {
   return phone
 }
 
-export async function sendSMS(to: string, body: string, from?: string) {
-  const provider = (process.env.SMS_PROVIDER || 'telnyx').toLowerCase()
+export async function sendSMS(to: string, body: string, from?: string, options?: { apiKey?: string; messagingProfileId?: string; idempotencyKey?: string }) {
+  // Tenant-bound calls always use the shop's Telnyx credentials. The legacy
+  // deployment-wide phone gateways remain available only to callers that do
+  // not supply shop credentials (for backwards-compatible internal jobs).
+  const provider = options ? 'telnyx' : (process.env.SMS_PROVIDER || 'telnyx').toLowerCase()
   const dest = formatPhone(to)
   switch (provider) {
     case 'textbee': return sendViaTextbee(dest, body)
     case 'httpsms': return sendViaHttpSms(dest, body, from)
     case 'custom':  return sendViaCustom(dest, body)
-    default:        return sendViaTelnyx(dest, body, from)
+    default:        return sendViaTelnyx(dest, body, from, options)
   }
 }
 
 // ── Telnyx (original behavior) ───────────────────────────────────────────────
-async function sendViaTelnyx(to: string, body: string, from?: string) {
-  const apiKey = process.env.TELNYX_API_KEY
-  const fromNumber = from || process.env.TELNYX_PHONE_NUMBER
+async function sendViaTelnyx(to: string, body: string, from?: string, options?: { apiKey?: string; messagingProfileId?: string; idempotencyKey?: string }) {
+  // When a shop-specific options object is supplied, do not fall back to a
+  // shared deployment credential for that shop.
+  const apiKey = options ? options.apiKey : process.env.TELNYX_API_KEY
+  const fromNumber = from || (options ? '' : process.env.TELNYX_PHONE_NUMBER)
   if (!apiKey || !fromNumber) throw new Error('Telnyx credentials not configured')
 
   const res = await fetch('https://api.telnyx.com/v2/messages', {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      ...(options?.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : {}),
+    },
     body: JSON.stringify({
       from: fromNumber,
       to,
       text: body,
-      messaging_profile_id: process.env.TELNYX_MESSAGING_PROFILE_ID,
+      messaging_profile_id: options ? options.messagingProfileId : process.env.TELNYX_MESSAGING_PROFILE_ID,
     }),
   })
   const data = await res.json()

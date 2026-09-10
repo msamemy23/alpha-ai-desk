@@ -203,9 +203,8 @@ export async function POST(req: NextRequest) {
           body: JSON.stringify({ message, access_token: page_access_token }),
         })
         const data = await r.json().catch(() => ({}))
-        if (!r.ok || data?.error || !data?.id) {
-          return finishSocialOperation('failed', data, data?.error?.message || data?.error || `Facebook returned ${r.status}`, r.ok ? 502 : r.status)
-        }
+        if (!r.ok || data?.error) return finishSocialOperation('failed', data, data?.error?.message || data?.error || `Facebook returned ${r.status}`, r.status)
+        if (!data?.id) return finishSocialOperation('unknown', data, 'Facebook accepted the comment reply without a confirmed reply id')
         return finishSocialOperation('succeeded', data)
       }
 
@@ -235,9 +234,8 @@ export async function POST(req: NextRequest) {
           }),
         })
         const data = await r.json().catch(() => ({}))
-        if (!r.ok || data?.error || !data?.message_id) {
-          return finishSocialOperation('failed', data, data?.error?.message || data?.error || `Facebook returned ${r.status}`, r.ok ? 502 : r.status)
-        }
+        if (!r.ok || data?.error) return finishSocialOperation('failed', data, data?.error?.message || data?.error || `Facebook returned ${r.status}`, r.status)
+        if (!data?.message_id) return finishSocialOperation('unknown', data, 'Facebook accepted the message without a confirmed message id')
         return finishSocialOperation('succeeded', data)
       }
 

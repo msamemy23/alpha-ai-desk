@@ -761,6 +761,10 @@ export async function POST(req: NextRequest) {
         return fail(`Unknown action: ${action}`)
     }
   } catch (err: unknown) {
+    // A thrown database/provider error after a mutating request begins can be
+    // a lost response after the side effect committed. Keep the operation in
+    // the uncertainty state so a fresh key cannot repeat the mutation.
+    if (isMutation) mutationCommitted = true
     const message = err instanceof Error ? err.message : 'Unknown error'
     return fail(message, 500)
   } finally {

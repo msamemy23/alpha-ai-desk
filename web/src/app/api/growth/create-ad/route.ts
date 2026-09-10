@@ -6,10 +6,42 @@ import { roundMoney } from '@/lib/document-money'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { getIdempotencyKey } from '@/lib/api-response'
-import { finishSocialPublishingOperation, startSocialPublishingOperation } from '@/lib/social-operation'
+import { finishSocialPublishingOperation, peekSocialPublishingOperation, startSocialPublishingOperation } from '@/lib/social-operation'
 
 // Create ad campaigns using AI-generated copy
 // Supports Facebook Ads (via Marketing API) and Google Ads (generates ready-to-use copy)
+function fallbackAdCopy(serviceType: string, area: string, shopName: string, shopPhone: string): Record<string, unknown> {
+  return {
+    headline: `${serviceType} - Trusted Local Service`,
+    primary_text: `Need ${serviceType}? ${shopName} is ready to help with honest, affordable service.${shopPhone ? ` Call ${shopPhone} today!` : ''}`,
+    description: shopPhone ? `Book your appointment today. ${shopPhone}` : 'Book your appointment today.',
+    keywords: [
+      `${serviceType.toLowerCase()} ${area.toLowerCase()}`,
+      `auto repair ${area.toLowerCase()}`,
+      `mechanic ${area.toLowerCase()}`,
+    ],
+    call_to_action: 'CALL_NOW',
+  }
+}
+
+function campaignPayloadMatches(
+  campaign: Record<string, unknown>,
+  payloadHash: string,
+  platform: string,
+  service: string,
+  dailyBudget: number,
+  durationDays: number,
+  area: string,
+) {
+  const storedHash = typeof campaign.idempotency_payload_hash === 'string' ? campaign.idempotency_payload_hash : ''
+  if (storedHash) return storedHash === payloadHash
+  return String(campaign.platform || '') === platform
+    && String(campaign.service || '') === service
+    && Number(campaign.budget_per_day ?? campaign.daily_budget) === dailyBudget
+    && Number(campaign.duration_days) === durationDays
+    && String(campaign.target_area || '') === area
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null)
@@ -67,13 +99,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: 'The campaign could not be safely recovered' }, { status: 500 })
     }
     if (existingCampaign) {
-      const storedHash = typeof existingCampaign.idempotency_payload_hash === 'string' ? existingCampaign.idempotency_payload_hash : ''
-      const legacyMatches = String(existingCampaign.platform || '') === normalizedPlatform
-        && String(existingCampaign.service || '') === serviceType
-        && Number(existingCampaign.budget_per_day ?? existingCampaign.daily_budget) === dailyBudget
-        && Number(existingCampaign.duration_days) === durationDays
-        && String(existingCampaign.target_area || '') === area
-      if ((storedHash && storedHash !== campaignPayloadHash) || (!storedHash && !legacyMatches)) {
+      if (!campaignPayloadMatches(existingCampaign, campaignPayloadHash, normalizedPlatform, serviceType, dailyBudget, durationDays, area)) {
         return NextResponse.json({ ok: false, error: 'Idempotency-Key was used for a different campaign payload' }, { status: 409 })
       }
       return NextResponse.json({
@@ -99,8 +125,31 @@ export async function POST(req: NextRequest) {
     const aiKey = (settings?.ai_api_key as string) || ''
     const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
     const aiModel = normalizeAiModel(settings?.ai_model, aiBase)
+    const fbToken = settings?.facebook_page_token as string
+    const fbPageId = settings?.facebook_page_id as string
+    const fbAdAccountId = String(settings?.fb_ad_account_id || '').replace(/^act_/, '')
+    let providerReplay: Record<string, unknown> | null = null
 
-    if (!aiKey) {
+    // Recover a completed Facebook provider operation before requiring AI or
+    // making another provider call. The local campaign row may be missing if
+    // the response was lost after Facebook accepted the ad.
+    if (normalizedPlatform === 'facebook') {
+      const providerState = await peekSocialPublishingOperation({
+        request: req,
+        body: (body && typeof body === 'object' ? body : {}) as Record<string, unknown>,
+        shopId: auth.shopId,
+        platform: 'facebook_ads',
+        action: 'create_ad',
+      })
+      if (providerState.state === 'blocked') return NextResponse.json({ ok: false, error: providerState.error }, { status: providerState.status })
+      if (providerState.state === 'replay') {
+        providerReplay = providerState.result && typeof providerState.result === 'object'
+          ? providerState.result as Record<string, unknown>
+          : null
+      }
+    }
+
+    if (!aiKey && !providerReplay) {
       return NextResponse.json({ error: 'AI API key not configured' }, { status: 400 })
     }
 
@@ -108,7 +157,8 @@ export async function POST(req: NextRequest) {
     const shopAddress = String(settings?.address || '').slice(0, 200)
     const shopPhone = String(settings?.phone || settings?.business_phone || '').slice(0, 40)
 
-    // Step 1: Use AI to generate ad copy
+    // Step 1: Use AI to generate ad copy. A provider replay uses a
+    // deterministic local fallback so recovery never calls AI again.
     const adPrompt = `Create a ${normalizedPlatform} ad campaign for ${shopName}${shopAddress ? ` (${shopAddress}` : ''}${shopPhone ? `, phone: ${shopPhone}` : ''}${shopAddress ? ')' : ''}.
 
 Service to advertise: ${serviceType}
@@ -127,55 +177,43 @@ Generate:
 
 Return ONLY valid JSON object. No markdown.`
 
-    const aiRes = await fetch(`${aiBase}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiKey}` },
-      body: JSON.stringify({
-        model: aiModel,
-        messages: [
-          { role: 'system', content: 'You are an expert digital advertising copywriter for auto repair shops. Return only valid JSON. No markdown.' },
-          { role: 'user', content: adPrompt }
-        ],
-        max_tokens: 1000,
+    let adCopy: Record<string, unknown> = fallbackAdCopy(serviceType, area, shopName, shopPhone)
+    if (!providerReplay) {
+      const aiRes = await fetch(`${aiBase}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiKey}` },
+        body: JSON.stringify({
+          model: aiModel,
+          messages: [
+            { role: 'system', content: 'You are an expert digital advertising copywriter for auto repair shops. Return only valid JSON. No markdown.' },
+            { role: 'user', content: adPrompt }
+          ],
+          max_tokens: 1000,
+        })
       })
-    })
 
-    if (!aiRes.ok) {
-      console.error('Create ad AI error:', aiRes.status, await aiRes.text().catch(() => ''))
-      return NextResponse.json({ error: 'The AI provider did not generate ad copy' }, { status: 502 })
-    }
-    const aiData = await aiRes.json().catch(() => ({}))
-    const content = typeof aiData.choices?.[0]?.message?.content === 'string'
-      ? aiData.choices[0].message.content
-      : '{}'
-    let adCopy: Record<string, unknown> = {}
-    try {
-      adCopy = JSON.parse(content.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
-    } catch {
-      adCopy = {
-        headline: `${serviceType} - Trusted Local Service`,
-        primary_text: `Need ${serviceType}? ${shopName} is ready to help with honest, affordable service.${shopPhone ? ` Call ${shopPhone} today!` : ''}`,
-        description: shopPhone ? `Book your appointment today. ${shopPhone}` : 'Book your appointment today.',
-        keywords: [
-          `${serviceType.toLowerCase()} ${area.toLowerCase()}`,
-          `auto repair ${area.toLowerCase()}`,
-          `mechanic ${area.toLowerCase()}`,
-        ],
-        call_to_action: 'CALL_NOW',
+      if (!aiRes.ok) {
+        console.error('Create ad AI error:', aiRes.status, await aiRes.text().catch(() => ''))
+        return NextResponse.json({ error: 'The AI provider did not generate ad copy' }, { status: 502 })
+      }
+      const aiData = await aiRes.json().catch(() => ({}))
+      const content = typeof aiData.choices?.[0]?.message?.content === 'string'
+        ? aiData.choices[0].message.content
+        : '{}'
+      try {
+        adCopy = JSON.parse(content.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
+      } catch {
+        adCopy = fallbackAdCopy(serviceType, area, shopName, shopPhone)
       }
     }
 
-    let fbResult: Record<string, unknown> | null = null
+    let fbResult: Record<string, unknown> | null = providerReplay
     let socialOperationId: string | null = null
 
     // Step 2: If Facebook, create the provider-side ad under a durable
     // publishing operation. A successful campaign record is never returned
     // unless Facebook confirms the final ad id.
-    if (normalizedPlatform === 'facebook') {
-      const fbToken = settings?.facebook_page_token as string
-      const fbPageId = settings?.facebook_page_id as string
-      const fbAdAccountId = String(settings?.fb_ad_account_id || '').replace(/^act_/, '')
-
+    if (normalizedPlatform === 'facebook' && !providerReplay) {
       if (fbToken && fbAdAccountId) {
         const started = await startSocialPublishingOperation({
           request: req,
@@ -347,7 +385,12 @@ Return ONLY valid JSON object. No markdown.`
         .eq('idempotency_key', requestKey)
         .limit(1)
         .maybeSingle()
-      if (recovered) return NextResponse.json({ ok: true, replayed: true, campaign: recovered, ad_copy: recovered.ad_copy || adCopy, facebook_result: recovered.fb_ids || fbResult })
+      if (recovered) {
+        if (!campaignPayloadMatches(recovered, campaignPayloadHash, normalizedPlatform, serviceType, dailyBudget, durationDays, area)) {
+          return NextResponse.json({ ok: false, error: 'Idempotency-Key was used for a different campaign payload' }, { status: 409 })
+        }
+        return NextResponse.json({ ok: true, replayed: true, campaign: recovered, ad_copy: recovered.ad_copy || adCopy, facebook_result: recovered.fb_ids || fbResult })
+      }
       return NextResponse.json({ error: 'Ad copy was generated but the campaign could not be saved' }, { status: 500 })
     }
 

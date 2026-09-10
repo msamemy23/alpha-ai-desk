@@ -16,20 +16,31 @@ function collectedAmount(value: unknown): number {
 
 async function fetchAllShopRows<T>(table: string, select: string, shopId: string, orderColumn: string, snapshotAt: string, pageSize = 1000): Promise<T[]> {
   const rows: T[] = []
-  for (let offset = 0; ; offset += pageSize) {
-    const { data, error } = await supabase
+  let cursor: { value: string; id: string } | null = null
+  for (;;) {
+    let query = supabase
       .from(table)
       .select(select)
       .eq('shop_id', shopId)
       .lte(orderColumn, snapshotAt)
       .order(orderColumn, { ascending: false })
-      // Timestamps are not unique. The stable id tie-breaker keeps adjacent
-      // 1,000-row pages deterministic instead of dropping/repeating rows.
       .order('id', { ascending: false })
-      .range(offset, offset + pageSize - 1)
+    // Keyset pagination keeps the boundary stable even if a historical row
+    // is inserted while a later page is loading. Offset pagination can return
+    // the previous page's last row again in that situation.
+    if (cursor) {
+      query = query.or(`${orderColumn}.lt.${cursor.value},and(${orderColumn}.eq.${cursor.value},id.lt.${cursor.id})`)
+    }
+    const { data, error } = await query.range(0, pageSize - 1)
     if (error) throw new Error(error.message)
-    rows.push(...((data || []) as T[]))
-    if (!data || data.length < pageSize) return rows
+    const page = (data || []) as T[]
+    rows.push(...page)
+    if (page.length < pageSize) return rows
+    const last = page[page.length - 1] as T & Record<string, unknown>
+    const lastValue = last?.[orderColumn]
+    const lastId = last?.id
+    if (lastValue == null || lastId == null) throw new Error('Report row is missing its pagination cursor')
+    cursor = { value: String(lastValue), id: String(lastId) }
   }
 }
 

@@ -1,0 +1,1 @@
+alter function public.record_document_payment(uuid, numeric, text, text) security invoker;

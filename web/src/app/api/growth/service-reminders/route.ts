@@ -99,6 +99,7 @@ export async function POST(req: NextRequest) {
         .select('id')
         .eq('shop_id', auth.shopId)
         .eq('vehicle_id', vehicle.id)
+        .eq('sent', true)
         .gte('created_at', new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString())
         .limit(1)
       if (recentReminderError) return NextResponse.json({ ok: false, error: 'Unable to load service reminder history' }, { status: 500 })
@@ -116,16 +117,31 @@ export async function POST(req: NextRequest) {
         const beforeSms = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['service_reminders'])
         if (!beforeSms.ok) return NextResponse.json({ ok: false, error: beforeSms.error }, { status: beforeSms.status })
         const result = await sendSMS(customer.phone, msg, telnyxKey, telnyxFrom, `service-reminder-${vehicle.id}`)
-        const beforeLog = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['service_reminders'])
-        if (!beforeLog.ok) return NextResponse.json({ ok: false, uncertain: true, reconciliation_required: true, error: 'Service reminder outcome is uncertain because its automation lease expired before recording' }, { status: 502 })
-        const { error: reminderError } = await sb.from('service_reminders_sent').insert({
-          shop_id: auth.shopId,
-          vehicle_id: vehicle.id,
-          customer_id: vehicle.customer_id,
-          message: msg,
-          sent: result.success,
-          created_at: new Date().toISOString(),
-        })
+        let reminderError: { message: string } | null = null
+        if (automationCheck.ok && automationCheck.runId && automationCheck.fencingToken !== undefined) {
+          const fenced = await sb.rpc('insert_service_reminder_fenced', {
+            p_shop_id: auth.shopId,
+            p_run_id: automationCheck.runId,
+            p_fencing_token: automationCheck.fencingToken,
+            p_vehicle_id: vehicle.id,
+            p_customer_id: vehicle.customer_id,
+            p_message: msg,
+            p_sent: result.success,
+          })
+          reminderError = fenced.error
+        } else {
+          const beforeLog = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['service_reminders'])
+          if (!beforeLog.ok) return NextResponse.json({ ok: false, uncertain: true, reconciliation_required: true, error: 'Service reminder outcome is uncertain because its automation lease expired before recording' }, { status: 502 })
+          const logged = await sb.from('service_reminders_sent').insert({
+            shop_id: auth.shopId,
+            vehicle_id: vehicle.id,
+            customer_id: vehicle.customer_id,
+            message: msg,
+            sent: result.success,
+            created_at: new Date().toISOString(),
+          })
+          reminderError = logged.error
+        }
         if (reminderError) return NextResponse.json({ ok: false, uncertain: true, reconciliation_required: true, error: 'Service reminder was sent but could not be logged' }, { status: 502 })
         results.push({ vehicle: `${vehicle.year} ${vehicle.make} ${vehicle.model}`, customer: customer.name, sent: result.success, error: result.error })
       } else {
@@ -182,9 +198,22 @@ export async function POST(req: NextRequest) {
         if (!beforeSms.ok) return NextResponse.json({ ok: false, error: beforeSms.error }, { status: beforeSms.status })
         const result = await sendSMS(phone, msg, telnyxKey, telnyxFrom, `appointment-reminder-${appt.id}`)
         if (result.success) {
-          const beforeRecord = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['appointment_reminders'])
-          if (!beforeRecord.ok) return NextResponse.json({ ok: false, uncertain: true, reconciliation_required: true, error: 'Appointment reminder outcome is uncertain because its automation lease expired before recording' }, { status: 502 })
-          const { error: appointmentError } = await sb.from('appointments').update({ reminder_sent_at: new Date().toISOString() }).eq('id', appt.id).eq('shop_id', auth.shopId)
+          let appointmentError: { message: string } | null = null
+          if (automationCheck.ok && automationCheck.runId && automationCheck.fencingToken !== undefined) {
+            const fenced = await sb.rpc('mark_appointment_reminder_fenced', {
+              p_shop_id: auth.shopId,
+              p_run_id: automationCheck.runId,
+              p_fencing_token: automationCheck.fencingToken,
+              p_appointment_id: appt.id,
+              p_reminder_sent_at: new Date().toISOString(),
+            })
+            appointmentError = fenced.error
+          } else {
+            const beforeRecord = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['appointment_reminders'])
+            if (!beforeRecord.ok) return NextResponse.json({ ok: false, uncertain: true, reconciliation_required: true, error: 'Appointment reminder outcome is uncertain because its automation lease expired before recording' }, { status: 502 })
+            const updated = await sb.from('appointments').update({ reminder_sent_at: new Date().toISOString() }).eq('id', appt.id).eq('shop_id', auth.shopId)
+            appointmentError = updated.error
+          }
           if (appointmentError) return NextResponse.json({ ok: false, uncertain: true, reconciliation_required: true, error: 'Appointment reminder was sent but could not be recorded' }, { status: 502 })
         }
         results.push({ appointment: appt.id, customer: appt.customer_name, time: appt.time, sent: result.success, error: result.error })

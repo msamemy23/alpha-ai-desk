@@ -36,7 +36,7 @@ export async function validateAutomationInvocation(
     .eq('status', 'running')
     .maybeSingle()
   if (error) return { ok: false, status: 503, error: 'Automation run identity could not be verified' }
-  if (!data || (data.lease_expires_at && new Date(data.lease_expires_at).getTime() <= Date.now())) {
+  if (!data || !data.lease_expires_at || new Date(data.lease_expires_at).getTime() <= Date.now()) {
     return { ok: false, status: 409, error: 'Automation run lease is stale or no longer active' }
   }
   if (expectedAutomationIds?.length && !expectedAutomationIds.includes(String(data.automation_id))) {

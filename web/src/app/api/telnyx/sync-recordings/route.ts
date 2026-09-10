@@ -1,18 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
+import { getRouteShop, unauthorized } from '@/lib/api-auth'
 
 export const maxDuration = 300
 
-const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
 
-async function fetchAllTelnyxRecordings(): Promise<any[]> {
+
+async function fetchAllTelnyxRecordings(apiKey: string): Promise<any[]> {
   const all: any[] = []
   let url: string | null = `${TELNYX_BASE}/recordings?page[size]=250`
   let pages = 0
   while (url && pages < 20) {
     const res: Response = await fetch(url, {
-      headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` },
+      headers: { 'Authorization': `Bearer ${apiKey}` },
     })
     if (!res.ok) break
     const data: { data?: unknown[]; meta?: { cursors?: { after?: string } } } = await res.json()
@@ -27,19 +28,25 @@ async function fetchAllTelnyxRecordings(): Promise<any[]> {
 
 export async function POST(req: NextRequest) {
   try {
-    if (!TELNYX_API_KEY) return NextResponse.json({ error: 'TELNYX_API_KEY not set' }, { status: 400 })
     const url = new URL(req.url)
-    const action = url.searchParams.get('action') || 'sync'
+    const body = await req.json().catch(() => null)
+    const auth = await getRouteShop(req, body?.shopId || url.searchParams.get('shop_id'))
+    if (!auth) return unauthorized()
     const db = getServiceClient()
+    const { data: settings, error: settingsError } = await db.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle()
+    if (settingsError) return NextResponse.json({ error: 'Unable to load shop settings' }, { status: 500 })
+    const apiKey = String(settings?.telnyx_api_key || '')
+    if (!apiKey) return NextResponse.json({ error: 'Telnyx is not configured for this shop' }, { status: 503 })
+    const action = url.searchParams.get('action') || 'sync'
 
     if (action === 'stats') {
-      const { count: total } = await db.from('call_history').select('id', { count: 'exact', head: true })
-      const { data: sample } = await db.from('call_history').select('call_id').limit(5)
+      const { count: total } = await db.from('call_history').select('id', { count: 'exact', head: true }).eq('shop_id', auth.shopId)
+      const { data: sample } = await db.from('call_history').select('call_id').eq('shop_id', auth.shopId).limit(5)
       return NextResponse.json({ total_calls: total, sample_call_ids: sample?.map(s => s.call_id) })
     }
 
     if (action === 'sync') {
-      const recordings = await fetchAllTelnyxRecordings()
+      const recordings = await fetchAllTelnyxRecordings(apiKey)
       if (!recordings.length) return NextResponse.json({ error: 'No recordings returned from Telnyx', synced: 0 })
 
       // Show sample for debugging
@@ -72,6 +79,7 @@ export async function POST(req: NextRequest) {
         if (callSessionId) {
           const { data } = await db.from('call_history')
             .select('id, raw_data')
+            .eq('shop_id', auth.shopId)
             .eq('call_id', `rec-${callSessionId}`)
             .maybeSingle()
           callRow = data
@@ -81,6 +89,7 @@ export async function POST(req: NextRequest) {
         if (!callRow && callLegId) {
           const { data } = await db.from('call_history')
             .select('id, raw_data')
+            .eq('shop_id', auth.shopId)
             .eq('call_id', `rec-${callLegId}`)
             .maybeSingle()
           callRow = data
@@ -91,6 +100,7 @@ export async function POST(req: NextRequest) {
           const { data } = await db.from('call_history')
             .select('id, raw_data')
             .eq('call_id', callLegId)
+            .eq('shop_id', auth.shopId)
             .maybeSingle()
           callRow = data
         }
@@ -100,6 +110,7 @@ export async function POST(req: NextRequest) {
           const { data } = await db.from('call_history')
             .select('id, raw_data')
             .eq('call_id', `activity-${callLegId}`)
+            .eq('shop_id', auth.shopId)
             .maybeSingle()
           callRow = data
         }
@@ -111,7 +122,7 @@ export async function POST(req: NextRequest) {
             recording_id: recId,
             download_urls: { mp3: downloadMp3 || null, wav: downloadWav || null },
           }
-          await db.from('call_history').update({ raw_data: updatedRd }).eq('id', callRow.id)
+          await db.from('call_history').update({ raw_data: updatedRd }).eq('id', callRow.id).eq('shop_id', auth.shopId)
           matched++
         } else {
           notFound++

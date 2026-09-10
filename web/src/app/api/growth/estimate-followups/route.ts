@@ -100,6 +100,8 @@ export async function POST(req: NextRequest) {
       }
       if (!sent && customer.email) {
         try {
+          const beforeEmail = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['estimate_followups'])
+          if (!beforeEmail.ok) return NextResponse.json({ ok: false, error: beforeEmail.error }, { status: beforeEmail.status })
           if (!settings?.resend_api_key || !settings?.from_email) throw new Error('Email is not configured for this shop')
           await sendEmail({
             to: customer.email,
@@ -116,16 +118,31 @@ export async function POST(req: NextRequest) {
 
       // Log it and surface a provider/logging mismatch instead of pretending
       // the workflow completed.
-      const beforeLog = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['estimate_followups'])
-      if (!beforeLog.ok) return NextResponse.json({ ok: false, uncertain: true, reconciliation_required: true, error: 'Estimate follow-up was sent but its automation lease expired before it could be logged' }, { status: 502 })
-      const { error: logError } = await sb.from('estimate_followups_sent').insert({
-        shop_id: auth.shopId,
-        estimate_id: est.id,
-        customer_id: est.customer_id,
-        method: sentBySms ? 'sms' : 'email',
-        sent,
-        created_at: new Date().toISOString(),
-      })
+      let logError: { message: string } | null = null
+      if (automationCheck.ok && automationCheck.runId && automationCheck.fencingToken !== undefined) {
+        const fenced = await sb.rpc('insert_estimate_followup_fenced', {
+          p_shop_id: auth.shopId,
+          p_run_id: automationCheck.runId,
+          p_fencing_token: automationCheck.fencingToken,
+          p_estimate_id: est.id,
+          p_customer_id: est.customer_id,
+          p_method: sentBySms ? 'sms' : 'email',
+          p_sent: sent,
+        })
+        logError = fenced.error
+      } else {
+        const beforeLog = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['estimate_followups'])
+        if (!beforeLog.ok) return NextResponse.json({ ok: false, uncertain: true, reconciliation_required: true, error: 'Estimate follow-up was sent but its automation lease expired before it could be logged' }, { status: 502 })
+        const logged = await sb.from('estimate_followups_sent').insert({
+          shop_id: auth.shopId,
+          estimate_id: est.id,
+          customer_id: est.customer_id,
+          method: sentBySms ? 'sms' : 'email',
+          sent,
+          created_at: new Date().toISOString(),
+        })
+        logError = logged.error
+      }
       if (logError) return NextResponse.json({ ok: false, uncertain: true, reconciliation_required: true, error: 'Estimate follow-up was sent but could not be logged' }, { status: 502 })
     }
 

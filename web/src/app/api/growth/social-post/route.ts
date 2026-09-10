@@ -39,20 +39,40 @@ export async function POST(req: NextRequest) {
     if (!platforms.length) return NextResponse.json({ error: 'Select at least one platform' }, { status: 400 })
     if (text.length > 5000) return NextResponse.json({ error: 'Post text is too long' }, { status: 413 })
 
-    const beforeWrite = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['social_posts'])
-    if (!beforeWrite.ok) return NextResponse.json({ ok: false, error: beforeWrite.error }, { status: beforeWrite.status })
-    const { data, error } = await db.from('social_posts').insert({
-      shop_id: auth.shopId,
-      text,
-      platforms,
-      media_urls: mediaUrls,
-      media_paths: mediaPaths,
-      status: 'draft',
-      created_at: new Date().toISOString(),
-    }).select('id,shop_id,text,platforms,media_urls,status,created_at').single()
+    let data: Record<string, unknown> | null = null
+    let error: { message: string } | null = null
+    if (automationCheck.ok && automationCheck.runId && automationCheck.fencingToken !== undefined) {
+      const fenced = await db.rpc('insert_social_post_fenced', {
+        p_shop_id: auth.shopId,
+        p_run_id: automationCheck.runId,
+        p_fencing_token: automationCheck.fencingToken,
+        p_text: text,
+        p_platforms: platforms,
+        p_media_urls: mediaUrls,
+        p_media_paths: mediaPaths,
+        p_status: 'draft',
+      })
+      data = fenced.data as Record<string, unknown> | null
+      error = fenced.error
+    } else {
+      const beforeWrite = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['social_posts'])
+      if (!beforeWrite.ok) return NextResponse.json({ ok: false, error: beforeWrite.error }, { status: beforeWrite.status })
+      const direct = await db.from('social_posts').insert({
+        shop_id: auth.shopId,
+        text,
+        platforms,
+        media_urls: mediaUrls,
+        media_paths: mediaPaths,
+        status: 'draft',
+        created_at: new Date().toISOString(),
+      }).select('id,shop_id,text,platforms,media_urls,status,created_at').single()
+      data = direct.data as Record<string, unknown> | null
+      error = direct.error
+    }
     if (error) {
       console.error('[social-post] save failed:', error.message)
-      return NextResponse.json({ error: 'Draft could not be saved' }, { status: 500 })
+      const status = /stale|no longer active/i.test(error.message) ? 409 : 500
+      return NextResponse.json({ error: status === 409 ? error.message : 'Draft could not be saved' }, { status })
     }
 
     return NextResponse.json({

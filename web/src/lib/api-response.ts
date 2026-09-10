@@ -8,6 +8,8 @@ export type ApiErrorCode =
   | 'RATE_LIMITED'
   | 'CONFLICT'
   | 'PROVIDER_ERROR'
+  | 'CONFIG_ERROR'
+  | 'NOT_CONFIGURED'
   | 'INTERNAL_ERROR'
 
 export function apiOk<T>(data: T, init?: ResponseInit) {

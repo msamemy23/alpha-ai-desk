@@ -30,6 +30,11 @@ export type SocialOperationStart =
   | { state: 'replay'; result: unknown }
   | { state: 'blocked'; status: number; error: string }
 
+export type SocialOperationPeek =
+  | { state: 'none' }
+  | { state: 'replay'; result: unknown }
+  | { state: 'blocked'; status: number; error: string }
+
 function hashPayload(payload: unknown) {
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex')
 }
@@ -38,6 +43,56 @@ function requestKey(request: Request, body: Record<string, unknown>) {
   const header = request.headers.get('idempotency-key') || request.headers.get('x-idempotency-key')
   const bodyKey = typeof body.idempotency_key === 'string' ? body.idempotency_key : ''
   return (header?.trim() || bodyKey.trim()).slice(0, 160)
+}
+
+/**
+ * Resolve an already-recorded provider operation without creating a claim or
+ * calling the provider. This lets recovery rebuild a missing local record
+ * before any AI generation or external side effect is attempted.
+ */
+export async function peekSocialPublishingOperation(input: {
+  request: Request
+  body: Record<string, unknown>
+  shopId: string
+  platform: string
+  action: string
+}): Promise<SocialOperationPeek> {
+  const idempotencyKey = requestKey(input.request, input.body)
+  if (!idempotencyKey) return { state: 'blocked', status: 400, error: 'Idempotency-Key is required for publishing actions' }
+  const db = getServiceClient()
+  const payloadHash = hashPayload(input.body)
+  const { data: existing, error: lookupError } = await db
+    .from('social_publishing_operations')
+    .select('id,payload_hash,status,result,error,lease_expires_at')
+    .eq('shop_id', input.shopId)
+    .eq('platform', input.platform)
+    .eq('action', input.action)
+    .eq('idempotency_key', idempotencyKey)
+    .maybeSingle()
+  if (lookupError) return { state: 'blocked', status: 503, error: 'Publishing operation could not be loaded safely' }
+  if (!existing) return { state: 'none' }
+
+  const operation = existing as SocialOperationRow
+  if (operation.payload_hash !== payloadHash) return { state: 'blocked', status: 409, error: 'Idempotency key was used for different publish content' }
+  if (operation.status === 'running' && (!operation.lease_expires_at || new Date(operation.lease_expires_at).getTime() <= Date.now())) {
+    const { data: expired, error: expireError } = await db.from('social_publishing_operations')
+      .update({
+        status: 'unknown',
+        error: 'Social provider operation lease expired; reconcile the provider before retrying',
+        finished_at: new Date().toISOString(),
+        lease_expires_at: null,
+        heartbeat_at: new Date().toISOString(),
+      })
+      .eq('id', operation.id)
+      .eq('status', 'running')
+      .select('id')
+      .maybeSingle()
+    if (expireError || !expired) return { state: 'blocked', status: 503, error: expireError?.message || 'Publishing operation lease could not be closed' }
+    operation.status = 'unknown'
+    operation.error = 'Social provider operation lease expired; reconcile the provider before retrying'
+  }
+  if (operation.status === 'succeeded') return { state: 'replay', result: operation.result }
+  return { state: 'blocked', status: 409, error: operation.error || 'The previous publishing outcome needs reconciliation' }
 }
 
 /**

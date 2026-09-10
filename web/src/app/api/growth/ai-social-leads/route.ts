@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
-import { AI_BASE_URLS, normalizeAiModel } from '@/lib/ai-config'
+import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 
 const SERPER_KEY = process.env.SERPER_API_KEY || ''
-const AI_KEY = process.env.OPENROUTER_API_KEY || ''
-const AI_URL = 'https://openrouter.ai/api/v1/chat/completions'
-const AI_MODEL = normalizeAiModel(process.env.AI_MODEL, AI_BASE_URLS.OPENROUTER)
 
 function fetchT(url: string, opts: RequestInit, ms = 15000) {
   const ctrl = new AbortController()
@@ -26,17 +24,17 @@ async function searchSerper(query: string) {
   } catch { return [] }
 }
 
-async function aiDeepAnalyze(posts: any[], city: string) {
-  if (!AI_KEY || !posts.length) return []
+async function aiDeepAnalyze(posts: any[], city: string, aiKey: string, aiUrl: string, aiModel: string, shopName: string) {
+  if (!aiKey || !posts.length) return []
   try {
-    const res = await fetchT(AI_URL, {
+    const res = await fetchT(aiUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AI_KEY}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${aiKey}` },
       body: JSON.stringify({
-        model: AI_MODEL,
+        model: aiModel,
         messages: [{
           role: 'system',
-          content: `You are a social media lead analyst for Alpha International Auto Center in Houston TX. Analyze social posts about car problems and extract leads with DEEP profiles. Return JSON array:\n[{\n  "name": "person's name or username",\n  "phone": "if mentioned",\n  "email": "if findable",\n  "platform": "facebook/reddit/nextdoor/yelp",\n  "post_snippet": "what they posted about",\n  "service_needed": "specific auto service needed",\n  "address": "location if mentioned",\n  "city": "Houston area",\n  "urgency": "high/medium/low",\n  "confidence": "high/medium/low",\n  "pain_points": "specific car problems",\n  "vehicle_info": "car make/model/year if mentioned",\n  "outreach_pitch": "personalized pitch",\n  "suggested_message": "ready SMS text",\n  "annual_value_estimate": "$X,XXX"\n}]`
+          content: `You are a social media lead analyst for ${shopName} in ${city}. Analyze social posts about car problems and extract leads with DEEP profiles. Return JSON array:\n[{\n  "name": "person's name or username",\n  "phone": "if mentioned",\n  "email": "if findable",\n  "platform": "facebook/reddit/nextdoor/yelp",\n  "post_snippet": "what they posted about",\n  "service_needed": "specific auto service needed",\n  "address": "location if mentioned",\n  "city": "Houston area",\n  "urgency": "high/medium/low",\n  "confidence": "high/medium/low",\n  "pain_points": "specific car problems",\n  "vehicle_info": "car make/model/year if mentioned",\n  "outreach_pitch": "personalized pitch",\n  "suggested_message": "ready SMS text",\n  "annual_value_estimate": "$X,XXX"\n}]`
         }, {
           role: 'user',
           content: `Extract leads from these ${city} social media posts about car problems:\n${JSON.stringify(posts.slice(0, 15))}`
@@ -45,6 +43,7 @@ async function aiDeepAnalyze(posts: any[], city: string) {
         max_tokens: 3000
       })
     }, 30000)
+    if (!res.ok) return []
     const data = await res.json()
     const content = data.choices?.[0]?.message?.content || '[]'
     return JSON.parse(content.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
@@ -53,8 +52,20 @@ async function aiDeepAnalyze(posts: any[], city: string) {
 
 export async function POST(req: NextRequest) {
   try {
-    const { city = 'Houston TX' } = await req.json()
+    const body = await req.json().catch(() => ({}))
+    const auth = await getRouteShop(req, body.shopId)
+    if (!auth) return unauthorized()
+    const { city: rawCity = 'Houston TX' } = body
+    const city = typeof rawCity === 'string' ? rawCity.trim().slice(0, 120) || 'Houston TX' : 'Houston TX'
     const db = getServiceClient()
+    const { data: settings, error: settingsError } = await db.from('settings').select('ai_api_key,ai_base_url,ai_model,shop_name').eq('shop_id', auth.shopId).maybeSingle()
+    if (settingsError) throw settingsError
+    const shopName = typeof settings?.shop_name === 'string' && settings.shop_name.trim() ? settings.shop_name.trim().slice(0, 160) : 'this shop'
+    const aiKey = typeof settings?.ai_api_key === 'string' ? settings.ai_api_key.trim() : ''
+    if (!aiKey) return NextResponse.json({ error: 'AI is not configured for this shop' }, { status: 503 })
+    const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
+    const aiUrl = aiBase + '/chat/completions'
+    const aiModel = normalizeAiModel(settings?.ai_model, aiBase)
     const queries = [
       `"need a mechanic" OR "car broke down" OR "check engine light" ${city} site:reddit.com OR site:facebook.com`,
       `"looking for auto repair" OR "need transmission" OR "brakes grinding" ${city}`,
@@ -63,7 +74,7 @@ export async function POST(req: NextRequest) {
     const shuffled = queries.sort(() => Math.random() - 0.5).slice(0, 2)
     const allResults = (await Promise.all(shuffled.map(q => searchSerper(q)))).flat()
 
-    const leads = await aiDeepAnalyze(allResults, city)
+    const leads = await aiDeepAnalyze(allResults, city, aiKey, aiUrl, aiModel, shopName)
 
     if (leads.length > 0) {
       const rows = leads.map((l: any) => ({
@@ -83,16 +94,20 @@ export async function POST(req: NextRequest) {
         research_completed_at: new Date().toISOString(),
         notes: JSON.stringify(l),
         follow_up_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        shop_id: auth.shopId,
       }))
-      await db.from('leads').insert(rows)
+      const { error } = await db.from('leads').insert(rows)
+      if (error) throw error
     }
 
-    await db.from('growth_activity').insert({
+    const { error: activityError } = await db.from('growth_activity').insert({
       action: 'ai_social_scan', target: city,
       details: `Deep research: ${leads.length} social leads from ${allResults.length} posts`,
-      status: 'complete', created_at: new Date().toISOString()
+      status: 'complete', created_at: new Date().toISOString(),
+      shop_id: auth.shopId
     })
+    if (activityError) throw activityError
 
     return NextResponse.json({ success: true, total_posts_scanned: allResults.length,
       total_leads: leads.length, leads })

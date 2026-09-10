@@ -1,62 +1,34 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireAdmin } from '@/lib/admin-guard'
+import { getServiceClient } from '@/lib/supabase'
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || ''
+const SERVICES = ['facebook', 'instagram', 'google_business', 'google_calendar'] as const
 
 export async function POST(req: NextRequest) {
   const denied = requireAdmin(req)
   if (denied) return denied
-  // Create connectors table via Supabase direct SQL
-  // We do this by inserting and catching errors — actual table creation
-  // happens through the Supabase management API or manually
-  // This endpoint seeds initial connector rows if the table exists
-  const services = ['facebook', 'instagram', 'google_business', 'google_calendar']
 
-  const results = []
-  for (const service of services) {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/connectors`, {
-      method: 'POST',
-      headers: {
-        'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'resolution=ignore-duplicates,return=representation',
-      },
-      body: JSON.stringify({ service, enabled: false }),
-    })
-    const d = await r.json()
-    results.push({ service, status: r.status, data: d })
+  const body = await req.json().catch(() => ({}))
+  const shopId = typeof body?.shopId === 'string' ? body.shopId : ''
+  if (!shopId) return NextResponse.json({ error: 'shopId is required' }, { status: 400 })
+
+  const db = getServiceClient()
+  const { data: shop, error: shopError } = await db.from('shop_profiles').select('id').eq('id', shopId).maybeSingle()
+  if (shopError || !shop) return NextResponse.json({ error: 'Shop not found' }, { status: 404 })
+
+  const rows = SERVICES.map(service => ({ shop_id: shopId, service, enabled: false }))
+  const { data, error } = await db.from('connectors')
+    .upsert(rows, { onConflict: 'shop_id,service', ignoreDuplicates: false })
+    .select('id,shop_id,service,enabled')
+  if (error) {
+    console.error('[seed-connectors] seed failed:', error.message)
+    return NextResponse.json({ error: 'Connectors could not be initialized' }, { status: 500 })
   }
-
-  return NextResponse.json({ ok: true, results })
+  return NextResponse.json({ ok: true, results: data || [] })
 }
 
-export async function GET() {
-  // Return SQL to run in Supabase dashboard
-  const sql = `
-CREATE TABLE IF NOT EXISTS connectors (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  service TEXT NOT NULL UNIQUE,
-  enabled BOOLEAN DEFAULT false,
-  access_token TEXT,
-  refresh_token TEXT,
-  token_expires_at TIMESTAMPTZ,
-  page_id TEXT,
-  page_access_token TEXT,
-  metadata JSONB DEFAULT '{}',
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
-ALTER TABLE connectors DISABLE ROW LEVEL SECURITY;
-
-INSERT INTO connectors (service, enabled) VALUES
-  ('facebook', false),
-  ('instagram', false),
-  ('google_business', false),
-  ('google_calendar', false)
-ON CONFLICT (service) DO NOTHING;
-`
-  return NextResponse.json({ sql })
+export async function GET(req: NextRequest) {
+  const denied = requireAdmin(req)
+  if (denied) return denied
+  return NextResponse.json({ ok: false, error: 'Use POST with an explicit shopId to initialize connectors' }, { status: 405 })
 }

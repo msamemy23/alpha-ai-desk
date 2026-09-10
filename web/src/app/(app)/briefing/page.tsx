@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
-import { supabase, calcTotals, formatCurrency } from '@/lib/supabase'
+import { getShopId, supabase, formatCurrency, calcTotals } from '@/lib/supabase'
 
 export default function BriefingPage() {
   const [loading, setLoading] = useState(true)
@@ -18,10 +18,14 @@ export default function BriefingPage() {
   const [noteText, setNoteText] = useState('')
 
   const load = useCallback(async () => {
-    const [{ data: jobs }, { data: docs }, { count: unread }] = await Promise.all([
-      supabase.from('jobs').select('*').order('created_at', { ascending: false }),
-      supabase.from('documents').select('*').order('created_at', { ascending: false }),
-      supabase.from('messages').select('*', { count: 'exact', head: true }).eq('read', false).eq('direction', 'inbound'),
+    const shopId = await getShopId()
+    if (!shopId) { setData(null); setLoading(false); return }
+    const todayDate = new Date().toISOString().slice(0, 10)
+    const [{ data: jobs }, { data: docs }, { count: unread }, { data: appts }] = await Promise.all([
+      supabase.from('jobs').select('*').eq('shop_id', shopId).order('created_at', { ascending: false }),
+      supabase.from('documents').select('*').eq('shop_id', shopId).order('created_at', { ascending: false }),
+      supabase.from('messages').select('*', { count: 'exact', head: true }).eq('shop_id', shopId).eq('read', false).eq('direction', 'inbound'),
+      supabase.from('appointments').select('id,customer_name,date,time,status').eq('shop_id', shopId).eq('date', todayDate).order('time').limit(5),
     ])
 
     const now = new Date()
@@ -43,33 +47,52 @@ export default function BriefingPage() {
     const overdueInvoices = (docs || []).filter((d: Record<string,unknown>) =>
       d.type === 'Invoice' && ['Unpaid','Partial'].includes(d.status as string)
     )
-    const weekReceipts = (docs || []).filter((d: Record<string,unknown>) => d.type === 'Receipt' && d.status === 'Paid' && (d.created_at as string) >= weekAgo)
-    const monthReceipts = (docs || []).filter((d: Record<string,unknown>) => d.type === 'Receipt' && d.status === 'Paid' && (d.created_at as string) >= monthStart)
+    const weekReceipts = (docs || []).filter((d: Record<string,unknown>) => ['Invoice','Receipt'].includes(d.type as string) && (d.created_at as string) >= weekAgo)
+    const monthReceipts = (docs || []).filter((d: Record<string,unknown>) => ['Invoice','Receipt'].includes(d.type as string) && (d.created_at as string) >= monthStart)
+    const collected = (d: Record<string,unknown>) => { const value = Number(d.amount_paid); return Number.isFinite(value) && value > 0 ? value : 0 }
 
     setData({
       openJobs, staleJobs, overdueInvoices,
-      todayAppointments: openJobs.slice(0, 5),
+      todayAppointments: (appts || []).filter((a: Record<string,unknown>) => a.status !== 'Cancelled'),
       unreadMessages: unread || 0,
-      weekRevenue: weekReceipts.reduce((s: number, d: Record<string,unknown>) => s + calcTotals(d).total, 0),
-      monthRevenue: monthReceipts.reduce((s: number, d: Record<string,unknown>) => s + calcTotals(d).total, 0),
+      weekRevenue: weekReceipts.reduce((s: number, d: Record<string,unknown>) => s + collected(d), 0),
+      monthRevenue: monthReceipts.reduce((s: number, d: Record<string,unknown>) => s + collected(d), 0),
       partsWaiting,
     })
     setLoading(false)
     fetch('/api/daily-notes').then(r=>r.json()).then(d=>setNotes(d.notes||[])).catch(()=>{})
   }, [])
-
   useEffect(() => { load() }, [load])
+
+  const refreshNotes = async () => {
+    const response = await fetch('/api/daily-notes')
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok || payload.error) throw new Error(payload.error || 'Notes could not be loaded')
+    setNotes(payload.notes || [])
+  }
 
   const addNote = async () => {
     if (!noteText.trim()) return
-    await fetch('/api/daily-notes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: noteText }) })
-    setNoteText('')
-    fetch('/api/daily-notes').then(r=>r.json()).then(d=>setNotes(d.notes||[]))
+    try {
+      const response = await fetch('/api/daily-notes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: noteText }) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || payload.error) throw new Error(payload.error || 'Note could not be saved')
+      setNoteText('')
+      await refreshNotes()
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Note could not be saved')
+    }
   }
 
   const deleteNote = async (id: string) => {
-    await fetch('/api/daily-notes', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) })
-    fetch('/api/daily-notes').then(r=>r.json()).then(d=>setNotes(d.notes||[]))
+    try {
+      const response = await fetch('/api/daily-notes', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || payload.error) throw new Error(payload.error || 'Note could not be deleted')
+      await refreshNotes()
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Note could not be deleted')
+    }
   }
 
   if (loading) return <div className="p-4 sm:p-6 lg:p-8 text-text-muted">Loading briefing…</div>
