@@ -1,6 +1,53 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
 import { supabase, updateSettings, getSettings, getShopProfile, getShopId } from '@/lib/supabase'
+import { addOpenAIOAuthHeaders } from '@/lib/openai-oauth-client'
+import { useSignInWithChatGPT } from '@openai-oauth/react'
+
+async function getAuthJsonHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  try {
+    const { data } = await supabase.auth.getSession()
+    if (data.session?.access_token) headers.Authorization = 'Bearer ' + data.session.access_token
+  } catch {}
+  return addOpenAIOAuthHeaders(headers)
+}
+
+function ChatGPTConnection() {
+  const auth = useSignInWithChatGPT()
+
+  if (auth.status === 'checking' || auth.status === 'starting' || auth.status === 'redirecting') {
+    return <div className="text-sm text-text-muted">Checking ChatGPT connection…</div>
+  }
+
+  if (auth.status === 'signed-in') {
+    return (
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-sm text-green-300">✓ ChatGPT connected in this browser</span>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={() => void auth.logout()}>Disconnect</button>
+      </div>
+    )
+  }
+
+  if (auth.status === 'needs-extension') {
+    return (
+      <div className="space-y-3">
+        <p className="text-sm text-amber-200">Hosted browser sign-in needs the Sign in with ChatGPT extension.</p>
+        <div className="flex flex-wrap gap-2">
+          <a className="btn btn-secondary btn-sm" href={auth.installUrl} target="_blank" rel="noreferrer">Install extension</a>
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => void auth.login()}>Try again</button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      <button type="button" className="btn btn-primary btn-sm" onClick={() => void auth.login()}>Continue with ChatGPT</button>
+      {auth.status === 'error' && <p className="text-sm text-red-300" role="alert">{auth.error.message}</p>}
+    </div>
+  )
+}
 import {
   AI_BASE_URLS,
   DEEPSEEK_PRO_OPENROUTER_MODEL,
@@ -13,6 +60,7 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<Record<string,unknown>>({})
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState('')
   const [tab, setTab] = useState<'shop'|'ai'|'comms'|'outreach'|'reviews'>('shop')
   const [outreachFilter, setOutreachFilter] = useState({ days: 90, channel: 'sms' })
   const [outreachTemplate, setOutreachTemplate] = useState('')
@@ -52,15 +100,27 @@ export default function SettingsPage() {
 
   const save = async () => {
     setSaving(true)
-    await updateSettings(settings)
-    // Also update shop_profiles with shop info fields
+    setSaveError('')
+    const settingsResult = await updateSettings(settings)
+    if (settingsResult?.error) {
+      setSaving(false)
+      setSaveError(settingsResult.error.message || 'Settings could not be saved')
+      return
+    }
+
+    // Keep the tenant profile's display information in sync as well.
     const shopId = await getShopId()
     if (shopId) {
-      await supabase.from('shop_profiles').update({
+      const { error: profileError } = await supabase.from('shop_profiles').update({
         shop_name: settings.shop_name || '',
         phone: settings.shop_phone || '',
         address: settings.shop_address || '',
       }).eq('id', shopId)
+      if (profileError) {
+        setSaving(false)
+        setSaveError(profileError.message || 'Shop profile could not be saved')
+        return
+      }
     }
     setSaving(false); setSaved(true)
     setTimeout(() => setSaved(false), 2500)
@@ -73,7 +133,7 @@ export default function SettingsPage() {
     setLaunching(true); setLaunchResult(null)
     try {
       const res = await fetch('/api/outreach', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: await getAuthJsonHeaders(),
         body: JSON.stringify({
           type: 'follow_up_cold',
           filter: { daysSinceLastVisit: outreachFilter.days },
@@ -82,6 +142,7 @@ export default function SettingsPage() {
         })
       })
       const data = await res.json()
+      if (!res.ok || data.error) throw new Error(data.error || 'Outreach could not be launched')
       setLaunchResult({ sent: data.sent, total: data.total })
     } finally { setLaunching(false) }
   }
@@ -90,27 +151,21 @@ export default function SettingsPage() {
     if (!reviewText.trim()) return
     setReviewLoading(true); setReviewDraft('')
     try {
-      const apiKey = (settings.ai_api_key as string) || ''
-      const baseUrl = normalizeAiBaseUrl(settings.ai_base_url || AI_BASE_URLS.OPENROUTER)
-      const model = normalizeAiModel(settings.ai_model || DEFAULT_OPENROUTER_MODEL, baseUrl)
-      if (!apiKey) { setReviewDraft('Please configure your AI API key in the AI Config tab first.'); return }
       const shopName = (settings.shop_name as string) || 'our shop'
       const tone = reviewStars >= 4 ? 'grateful and warm' : reviewStars >= 3 ? 'appreciative and constructive' : 'empathetic, apologetic, and professional'
-      const res = await fetch(`${baseUrl}/chat/completions`, {
+      const prompt = 'You are responding to a ' + reviewStars + '-star Google review for "' + shopName + '". The review says: "' + reviewText.trim() + '"\n\nWrite a ' + tone + ' response from the business owner. Keep it 2-4 sentences, professional but personable. Do not use generic filler. Address specific points. Return ONLY the response text.'
+      const res = await fetch('/api/ai-chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model,
-          messages: [{ role: 'user', content: `You are responding to a ${reviewStars}-star Google review for "${shopName}". The review says: "${reviewText}"\n\nWrite a ${tone} response from the business owner. Keep it 2-4 sentences, professional but personable. Don't use generic filler. Address specific points they mentioned. Return ONLY the response text.` }],
-          max_tokens: 300,
-        })
+        headers: await getAuthJsonHeaders(),
+        body: JSON.stringify({ message: prompt, history: [], sessionId: 'review-draft' }),
       })
-      const data = await res.json()
-      setReviewDraft(data.choices?.[0]?.message?.content || 'Could not generate a response.')
-    } catch { setReviewDraft('Error contacting AI. Check your API settings.') }
-    finally { setReviewLoading(false) }
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data.error) throw new Error(data.error || 'AI request failed')
+      setReviewDraft(data.reply || 'Could not generate a response.')
+    } catch (error) {
+      setReviewDraft(error instanceof Error ? error.message : 'Error contacting AI. Check your API settings.')
+    } finally { setReviewLoading(false) }
   }
-
   const TABS = [
     { id: 'shop', label: '🏪 Shop Info' },
     { id: 'ai', label: '🤖 AI Config' },
@@ -123,9 +178,12 @@ export default function SettingsPage() {
     <div className="page-container">
       <div className="flex items-center justify-between mb-6">
         <h1 className="page-title">Settings</h1>
-        <button className="btn btn-primary" onClick={save} disabled={saving}>
-          {saving ? 'Saving…' : saved ? '✓ Saved!' : 'Save Changes'}
-        </button>
+        <div className="flex items-center gap-3">
+          {saveError && <span className="text-sm text-red-400" role="alert">{saveError}</span>}
+          <button className="btn btn-primary" onClick={save} disabled={saving}>
+            {saving ? 'Saving…' : saved ? '✓ Saved!' : 'Save Changes'}
+          </button>
+        </div>
       </div>
 
       {/* Tab bar */}
@@ -166,11 +224,11 @@ export default function SettingsPage() {
             </select>
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <div><label className="form-label">Labor Rate ($/hr)</label><input className="form-input" type="number" value={settings.labor_rate as number||120} onChange={sf('labor_rate')} /></div>
-            <div><label className="form-label">Tax Rate (%)</label><input className="form-input" type="number" step="0.01" value={settings.tax_rate as number||8.25} onChange={sf('tax_rate')} /></div>
+            <div><label className="form-label">Labor Rate ($/hr)</label><input className="form-input" type="number" value={(settings.labor_rate as number) ?? 120} onChange={sf('labor_rate')} /></div>
+            <div><label className="form-label">Tax Rate (%)</label><input className="form-input" type="number" step="0.01" value={(settings.tax_rate as number) ?? 8.25} onChange={sf('tax_rate')} /></div>
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <div><label className="form-label">Warranty (months)</label><input className="form-input" type="number" value={settings.warranty_months as number||12} onChange={sf('warranty_months')} /></div>
+            <div><label className="form-label">Warranty (months)</label><input className="form-input" type="number" value={(settings.warranty_months as number) ?? 12} onChange={sf('warranty_months')} /></div>
             <div><label className="form-label">Payment Methods</label><input className="form-input" value={settings.payment_methods as string||''} onChange={sf('payment_methods')} /></div>
           </div>
           <div><label className="form-label">Disclaimer</label><textarea className="form-textarea" rows={2} value={settings.disclaimer as string||''} onChange={sf('disclaimer')} /></div>
@@ -187,6 +245,11 @@ export default function SettingsPage() {
             <div className="text-sm font-bold">Agents, MCP, and Kapture</div>
             <p className="mt-1 text-xs text-text-muted">Check Windows-MCP, Kapture connected tabs, available tools, approval gates, and restart controls.</p>
             <a href="/tools" className="btn btn-secondary btn-sm mt-3 inline-flex">Open Agents & Tools</a>
+          </div>
+          <div className="rounded-lg border border-emerald-400/30 bg-emerald-400/10 p-4 space-y-3">
+            <div className="text-sm font-bold">Use your ChatGPT plan for Alpha AI</div>
+            <p className="text-xs text-text-muted">Connect your own ChatGPT account for AI requests. The connection stays in this browser and is separate from your Alpha AI Desk sign-in. Hosted sign-in may require Chrome or Firefox.</p>
+            <ChatGPTConnection />
           </div>
           <div><label className="form-label">AI API Key</label><input className="form-input font-mono" type="password" value={settings.ai_api_key as string||''} onChange={sf('ai_api_key')} placeholder="sk-or-v1-... or sk-..." /></div>
           <div><label className="form-label">Model</label>
@@ -213,6 +276,8 @@ export default function SettingsPage() {
             </div>
             <div><label className="form-label">Telnyx API Key</label><input className="form-input font-mono" type="password" value={settings.telnyx_api_key as string||''} onChange={sf('telnyx_api_key')} placeholder="KEY01..." /></div>
             <div><label className="form-label">Your Telnyx Phone Number</label><input className="form-input" value={settings.telnyx_phone_number as string||''} onChange={sf('telnyx_phone_number')} placeholder="+17135550000" /></div>
+            <div><label className="form-label">Telnyx Connection ID</label><input className="form-input font-mono" value={settings.telnyx_connection_id as string||''} onChange={sf('telnyx_connection_id')} placeholder="Your Telnyx connection/application ID" /></div>
+             <div><label className="form-label">Outbound Voice Profile ID (optional)</label><input className="form-input font-mono" value={settings.telnyx_outbound_voice_profile_id as string||''} onChange={sf('telnyx_outbound_voice_profile_id')} placeholder="Use your Telnyx account's profile ID" /><p className="text-xs text-text-muted mt-1">Leave blank when your Telnyx account has one default outbound profile; it will be detected automatically.</p></div>
             <div><label className="form-label">Messaging Profile ID (optional)</label><input className="form-input font-mono" value={settings.telnyx_messaging_profile_id as string||''} onChange={sf('telnyx_messaging_profile_id')} /></div>
           </div>
           <div className="card space-y-4">

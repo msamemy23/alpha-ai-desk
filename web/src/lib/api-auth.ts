@@ -43,17 +43,53 @@ export async function getSessionUser() {
  * no valid session or the user has no shop profile. Call this at the top of
  * every data API route and scope all queries by the returned shopId.
  */
-export async function getAuthedShop(): Promise<{ userId: string; shopId: string } | null> {
+export type ShopRole = 'owner' | 'admin' | 'manager' | 'member' | 'viewer' | 'service'
+
+export type AuthenticatedShop = {
+  userId: string
+  shopId: string
+  role: ShopRole
+}
+
+export async function getAuthedShop(): Promise<AuthenticatedShop | null> {
   const user = await getSessionUser()
   if (!user) return null
   const svc = getServiceClient()
+
+  // Membership is the authorization source of truth. Profile ownership is
+  // retained only as a legacy fallback for rows created before memberships
+  // were bootstrapped.
+  const { data: membership } = await svc
+    .from('shop_memberships')
+    .select('shop_id,role')
+    .eq('user_id', user.id)
+    .eq('status', 'active')
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  if (membership?.shop_id) {
+    const role = String(membership.role || 'member') as ShopRole
+    return { userId: user.id, shopId: String(membership.shop_id), role }
+  }
+
   const { data } = await svc
     .from('shop_profiles')
     .select('id')
     .eq('user_id', user.id)
     .single()
   if (!data) return null
-  return { userId: user.id, shopId: data.id as string }
+  const { data: membershipRecord } = await svc
+    .from('shop_memberships')
+    .select('status')
+    .eq('shop_id', data.id)
+    .eq('user_id', user.id)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  // A revoked/suspended membership must not regain access through the
+  // legacy profile-ownership fallback.
+  if (membershipRecord && membershipRecord.status !== 'active') return null
+  return { userId: user.id, shopId: data.id as string, role: 'owner' }
 }
 
 export function unauthorized() {
@@ -68,4 +104,33 @@ export function forbidden() {
     status: 403,
     headers: { 'content-type': 'application/json' },
   })
+}
+
+
+/**
+ * Allows only trusted server-to-server jobs to act across shops.
+ * Never accept a shop id from an untrusted caller; callers must present the
+ * exact deployment secret and routes still validate the requested shop.
+ */
+export function hasInternalApiSecret(req: Request): boolean {
+  const secret = process.env.CRON_SECRET || process.env.INTERNAL_API_SECRET || ''
+  return Boolean(secret) && req.headers.get('authorization') === `Bearer ${secret}`
+}
+
+
+/**
+ * Resolves a route's tenant. A browser session wins; a server job must provide
+ * the deployment secret and an existing shop id in its JSON body.
+ */
+export async function getRouteShop(req: Request, requestedShopId?: unknown): Promise<AuthenticatedShop | null> {
+  const sessionAuth = await getAuthedShop()
+  if (sessionAuth) return sessionAuth
+  if (!hasInternalApiSecret(req) || typeof requestedShopId !== 'string' || !requestedShopId) return null
+  const { data } = await getServiceClient()
+    .from('shop_profiles')
+    .select('id,user_id')
+    .eq('id', requestedShopId)
+    .maybeSingle()
+  if (!data) return null
+  return { userId: String(data.user_id), shopId: String(data.id), role: 'service' }
 }

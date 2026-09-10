@@ -35,6 +35,53 @@ const draftTools = loadTsModule('../src/lib/ai/document-draft.ts', {
 
 const aiPage = readFileSync(new URL('../src/app/(app)/ai/page.tsx', import.meta.url), 'utf8')
 
+test('invoice totals include core, sublet, supplies, and the configured tax rate consistently', () => {
+  const totals = money.calculateDocumentTotals({
+    parts: [{ name: 'Part', qty: 1, unitPrice: 100, core: 25, taxable: false }],
+    labors: [],
+    shop_supplies: 10,
+    sublet: 50,
+    tax_rate: 10,
+    apply_tax: true,
+    amount_paid: 0,
+  })
+
+  assert.equal(totals.coreTotal, 25)
+  assert.equal(totals.taxAmount, 6)
+  assert.equal(totals.total, 191)
+  assert.equal(totals.balanceDue, 191)
+})
+
+test('invoice line rounding matches the database final-line convention', () => {
+  assert.equal(money.laborLineTotal({ hours: 1.005, rate: 100 }), 100.5)
+  assert.equal(money.partLineTotal({ qty: 2, unitPrice: 0.335 }), 0.67)
+  assert.equal(money.partLineTotal({ qty: 1, unitPrice: 10.075 }), 10.08)
+  assert.equal(money.calculateDocumentTotals({
+    parts: [{ name: 'Small part', qty: 2, unitPrice: 0.335 }],
+    labors: [{ operation: 'Precision labor', hours: 1.005, rate: 100 }],
+    apply_tax: false,
+  }).total, 101.17)
+})
+
+test('item prices and labor rates are not mistaken for a hard invoice total', () => {
+  const normalized = draftTools.normalizeDocumentDraft(
+    {
+      tool: 'proposeDocument',
+      type: 'Estimate',
+      customer: 'Maya',
+      parts: [{ name: 'Thermostat', qty: 1, unitPrice: 280 }],
+      labors: [{ operation: 'Install thermostat', hours: 1, rate: 120 }],
+      apply_tax: true,
+      tax_rate: 10,
+    },
+    { userText: 'Prepare an estimate for Maya: thermostat $280 plus 1 hour labor at $120, 10% tax.' }
+  )
+  assert.equal(draftTools.extractHardTotal('Prepare an estimate for Maya: thermostat $280 plus 1 hour labor at $120, 10% tax.'), null)
+  assert.equal(normalized.parts.length, 1)
+  assert.equal(normalized.labors.length, 1)
+  assert.equal(money.calculateDocumentTotals(normalized).total, 428)
+})
+
 test('hard final invoice total wins over mistaken model line totals while preserving itemized work', () => {
   const userText = 'ok he has another car a 2018 jeep wrangler for 380.00 its for 4 four brakes and coolant tank and turning signal light bulbs for $430. i need a invoice'
   const parsed = {
