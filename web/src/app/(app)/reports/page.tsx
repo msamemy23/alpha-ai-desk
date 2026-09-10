@@ -14,13 +14,14 @@ function collectedAmount(value: unknown): number {
   return Number.isFinite(amount) && amount > 0 ? amount : 0
 }
 
-async function fetchAllShopRows<T>(table: string, select: string, shopId: string, orderColumn: string, pageSize = 1000): Promise<T[]> {
+async function fetchAllShopRows<T>(table: string, select: string, shopId: string, orderColumn: string, snapshotAt: string, pageSize = 1000): Promise<T[]> {
   const rows: T[] = []
   for (let offset = 0; ; offset += pageSize) {
     const { data, error } = await supabase
       .from(table)
       .select(select)
       .eq('shop_id', shopId)
+      .lte(orderColumn, snapshotAt)
       .order(orderColumn, { ascending: false })
       // Timestamps are not unique. The stable id tie-breaker keeps adjacent
       // 1,000-row pages deterministic instead of dropping/repeating rows.
@@ -59,13 +60,17 @@ export default function ReportsPage() {
       try {
         const shopId = await getShopId()
         if (!shopId) { setInvoices([]); setJobs([]); setCalls([]); setPayments([]); return }
+        // Offset pages are stable only when the dataset is frozen. One shared
+        // cutoff prevents rows inserted while page two is loading from
+        // shifting the result set and being returned twice.
+        const snapshotAt = new Date().toISOString()
         // Invoices live in the documents table (this page used to query a
         // nonexistent `invoices` table, so every report showed zero).
         const [inv, paymentRows, j, c] = await Promise.all([
-          fetchAllShopRows<Record<string, unknown>>('documents', '*', shopId, 'created_at'),
-          fetchAllShopRows<Payment>('payments', 'id,document_id,amount,method,paid_at,created_at', shopId, 'paid_at'),
-          fetchAllShopRows<Job>('jobs', 'id,status,tech,concern,created_at', shopId, 'created_at'),
-          fetchAllShopRows<CallRecord>('call_history', 'id,direction,duration_secs,start_time,status', shopId, 'start_time'),
+          fetchAllShopRows<Record<string, unknown>>('documents', '*', shopId, 'created_at', snapshotAt),
+          fetchAllShopRows<Payment>('payments', 'id,document_id,amount,method,paid_at,created_at', shopId, 'paid_at', snapshotAt),
+          fetchAllShopRows<Job>('jobs', 'id,status,tech,concern,created_at', shopId, 'created_at', snapshotAt),
+          fetchAllShopRows<CallRecord>('call_history', 'id,direction,duration_secs,start_time,status', shopId, 'start_time', snapshotAt),
         ])
         const invoiceRows = inv.filter(row => row.type === 'Invoice' || row.type === 'Receipt')
         const mapped = invoiceRows.map((d: Record<string, unknown>) => ({

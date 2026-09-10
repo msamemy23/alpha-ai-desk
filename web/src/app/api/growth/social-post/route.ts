@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
-import { validateAutomationInvocation } from '@/lib/automation-fencing'
+import { revalidateAutomationInvocation, validateAutomationInvocation } from '@/lib/automation-fencing'
 
 export async function POST(req: NextRequest) {
   try {
@@ -39,6 +39,8 @@ export async function POST(req: NextRequest) {
     if (!platforms.length) return NextResponse.json({ error: 'Select at least one platform' }, { status: 400 })
     if (text.length > 5000) return NextResponse.json({ error: 'Post text is too long' }, { status: 413 })
 
+    const beforeWrite = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['social_posts'])
+    if (!beforeWrite.ok) return NextResponse.json({ ok: false, error: beforeWrite.error }, { status: beforeWrite.status })
     const { data, error } = await db.from('social_posts').insert({
       shop_id: auth.shopId,
       text,

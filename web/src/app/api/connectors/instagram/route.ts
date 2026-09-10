@@ -77,7 +77,7 @@ export async function POST(req: NextRequest) {
         if (!createRes.ok) {
           return finishSocialOperation('failed', createData, createData?.error?.message || createData?.error || `Instagram returned ${createRes.status}`, createRes.status)
         }
-        if (!createData.id) return finishSocialOperation('failed', createData, `Media creation failed: ${JSON.stringify(createData)}`)
+        if (!createData.id) return finishSocialOperation('unknown', createData, 'Instagram accepted media creation without a confirmed container id')
 
         // Step 2: Publish the media
         const publishRes = await fetch(`${FB}/${igId}/media_publish`, {
@@ -86,9 +86,10 @@ export async function POST(req: NextRequest) {
           body: JSON.stringify({ creation_id: createData.id, access_token: token }),
         })
         const publishData = await publishRes.json()
-        if (!publishRes.ok || !publishData?.id) {
-          return finishSocialOperation('failed', publishData, publishData?.error?.message || publishData?.error || 'Instagram did not return a published media id', publishRes.ok ? 502 : publishRes.status)
+        if (!publishRes.ok) {
+          return finishSocialOperation('failed', publishData, publishData?.error?.message || publishData?.error || `Instagram returned ${publishRes.status}`, publishRes.status)
         }
+        if (!publishData?.id) return finishSocialOperation('unknown', publishData, 'Instagram accepted publication without a confirmed media id')
         return finishSocialOperation('succeeded', publishData)
       }
 
@@ -126,9 +127,10 @@ export async function POST(req: NextRequest) {
           body: JSON.stringify({ message, access_token: token }),
         })
         const data = await r.json().catch(() => ({}))
-        if (!r.ok || data?.error || !data?.id) {
-          return finishSocialOperation('failed', data, data?.error?.message || data?.error || `Instagram returned ${r.status}`, r.ok ? 502 : r.status)
+        if (!r.ok || data?.error) {
+          return finishSocialOperation('failed', data, data?.error?.message || data?.error || `Instagram returned ${r.status}`, r.status)
         }
+        if (!data?.id) return finishSocialOperation('unknown', data, 'Instagram accepted the reply without a confirmed reply id')
         return finishSocialOperation('succeeded', data)
       }
 

@@ -44,3 +44,13 @@ export async function validateAutomationInvocation(
   }
   return { ok: true, runId, fencingToken }
 }
+
+/** Re-read the lease immediately before a child performs an external or data write. */
+export async function revalidateAutomationInvocation(
+  request: Request,
+  body: Record<string, unknown> | null | undefined,
+  shopId: string,
+  expectedAutomationIds?: readonly string[],
+): Promise<AutomationInvocationCheck> {
+  return validateAutomationInvocation(request, body, shopId, expectedAutomationIds)
+}

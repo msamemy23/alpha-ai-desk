@@ -67,7 +67,7 @@ async function saveSmsRecords(
   if (!existingMessage.error && existingMessage.data?.id) {
     messageRecordSaved = true
   } else if (!existingMessage.error) {
-    const { error } = await input.db.from('messages').insert({
+    const messageRow = {
       shop_id: input.shopId,
       direction: 'outbound',
       channel: 'sms',
@@ -81,8 +81,21 @@ async function saveSmsRecords(
       telnyx_message_id: providerMessageId,
       ai_handled: false,
       read: true,
-    })
-    messageRecordSaved = !error
+    }
+    const inserted = await input.db.from('messages').insert(messageRow).select('id').maybeSingle()
+    if (inserted.data?.id) {
+      messageRecordSaved = true
+    } else if (inserted.error?.code === '23505') {
+      // Another replay may have repaired the same provider message between
+      // our read and insert. The unique provider identity is authoritative.
+      const concurrent = await input.db.from('messages')
+        .select('id')
+        .eq('shop_id', input.shopId)
+        .eq('telnyx_message_id', providerMessageId)
+        .limit(1)
+        .maybeSingle()
+      messageRecordSaved = Boolean(concurrent.data?.id)
+    }
   }
 
   const audit = await writeAuditLog({

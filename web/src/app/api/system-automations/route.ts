@@ -140,6 +140,14 @@ function fencingTokenOf(claim: unknown): number | null {
   return Number.isSafeInteger(token) && token >= 0 ? token : null
 }
 
+function childOutcomeIsUncertain(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false
+  const record = value as Record<string, unknown>
+  if (record.uncertain === true || record.reconciliation_required === true) return true
+  const error = typeof record.error === 'string' ? record.error : ''
+  return /uncertain|manual reconciliation|sent but .* (logged|recorded|saved)|accepted .* (logged|recorded|saved)/i.test(error)
+}
+
 async function renewAutomationLease(
   sb: ReturnType<typeof getServiceClient>,
   shopId: string,
@@ -443,14 +451,15 @@ export async function POST(req: NextRequest) {
           })
           const data = await res.json().catch(() => ({}))
           const success = res.ok && data?.success !== false && data?.ok !== false && !data?.error
+          const uncertain = !success && childOutcomeIsUncertain(data)
           state.last_result = JSON.stringify(data).slice(0, 500)
           state.last_status = success ? 'ok' : 'error'
           const { data: completedRun, error: runUpdateError } = await sb.from('automation_runs').update({
-            status: success ? 'succeeded' : 'failed',
+            status: success ? 'succeeded' : uncertain ? 'unknown' : 'failed',
             finished_at: new Date().toISOString(),
-            next_attempt_at: success ? null : new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+            next_attempt_at: success || uncertain ? null : new Date(Date.now() + 5 * 60 * 1000).toISOString(),
             result: data,
-            error: success ? null : (data?.error || `Child job returned HTTP ${res.status}`),
+            error: success ? null : (uncertain ? 'Child job outcome is uncertain; manual reconciliation required' : (data?.error || `Child job returned HTTP ${res.status}`)),
           }).eq('shop_id', shopId).eq('automation_id', auto.id).eq('window_key', windowKey).eq('fencing_token', fencingToken).eq('status', 'running').select('id').maybeSingle()
           if (runUpdateError || !completedRun) {
             await sb.from('automation_runs').update({
@@ -466,7 +475,7 @@ export async function POST(req: NextRequest) {
             state.run_count = (state.run_count || 0) + 1
           }
           if (!success) allOk = false
-          results[`${shopId}:${auto.id}`] = { ok: success, result: data }
+          results[`${shopId}:${auto.id}`] = { ok: success, result: data, ...(uncertain ? { uncertain: true } : {}) }
         } catch (error) {
           allOk = false
           state.last_status = 'error'
@@ -596,17 +605,18 @@ export async function POST(req: NextRequest) {
 
       config[id].last_result = resultStr
       const success = res.ok && data?.success !== false && data?.ok !== false && !data?.error
+      const uncertain = !success && childOutcomeIsUncertain(data)
       config[id].last_status = success ? 'ok' : 'error'
       if (success) {
         config[id].last_run = new Date().toISOString()
         config[id].run_count = (config[id].run_count || 0) + 1
       }
       const { data: completedRun, error: runUpdateError } = await sb.from('automation_runs').update({
-        status: success ? 'succeeded' : 'failed',
+        status: success ? 'succeeded' : uncertain ? 'unknown' : 'failed',
         finished_at: new Date().toISOString(),
-        next_attempt_at: success ? null : new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+        next_attempt_at: success || uncertain ? null : new Date(Date.now() + 5 * 60 * 1000).toISOString(),
         result: data,
-        error: success ? null : (data?.error || `Child job returned HTTP ${res.status}`),
+        error: success ? null : (uncertain ? 'Child job outcome is uncertain; manual reconciliation required' : (data?.error || `Child job returned HTTP ${res.status}`)),
       }).eq('shop_id', auth!.shopId).eq('automation_id', id).eq('window_key', manualWindowKey).eq('fencing_token', fencingToken).eq('status', 'running').select('id').maybeSingle()
       if (runUpdateError || !completedRun) {
         await sb.from('automation_runs').update({

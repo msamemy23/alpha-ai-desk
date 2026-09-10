@@ -4,7 +4,7 @@ import { sendEmail } from '@/lib/email'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { calcTotals } from '@/lib/supabase'
 import { isSmsOptedOut } from '@/lib/sms-consent'
-import { validateAutomationInvocation } from '@/lib/automation-fencing'
+import { revalidateAutomationInvocation, validateAutomationInvocation } from '@/lib/automation-fencing'
 
 export const dynamic = 'force-dynamic'
 
@@ -92,6 +92,8 @@ export async function POST(req: NextRequest) {
       // Try SMS first, then email
       let sentBySms = false
       if (customer.phone && !customer.sms_opted_out && !(await isSmsOptedOut(sb, auth.shopId, customer.phone))) {
+        const beforeSms = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['estimate_followups'])
+        if (!beforeSms.ok) return NextResponse.json({ ok: false, error: beforeSms.error }, { status: beforeSms.status })
         const smsResult = await sendSMS(customer.phone, msg, telnyxKey, telnyxFrom, `estimate-followup-${est.id}`)
         sent = smsResult.success
         sentBySms = smsResult.success
@@ -114,6 +116,8 @@ export async function POST(req: NextRequest) {
 
       // Log it and surface a provider/logging mismatch instead of pretending
       // the workflow completed.
+      const beforeLog = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['estimate_followups'])
+      if (!beforeLog.ok) return NextResponse.json({ ok: false, uncertain: true, reconciliation_required: true, error: 'Estimate follow-up was sent but its automation lease expired before it could be logged' }, { status: 502 })
       const { error: logError } = await sb.from('estimate_followups_sent').insert({
         shop_id: auth.shopId,
         estimate_id: est.id,
@@ -122,7 +126,7 @@ export async function POST(req: NextRequest) {
         sent,
         created_at: new Date().toISOString(),
       })
-      if (logError) return NextResponse.json({ ok: false, error: 'Estimate follow-up was sent but could not be logged' }, { status: 502 })
+      if (logError) return NextResponse.json({ ok: false, uncertain: true, reconciliation_required: true, error: 'Estimate follow-up was sent but could not be logged' }, { status: 502 })
     }
 
     results.push({

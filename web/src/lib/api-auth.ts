@@ -59,7 +59,7 @@ export async function getAuthedShop(): Promise<AuthenticatedShop | null> {
   // Membership is the authorization source of truth. Profile ownership is
   // retained only as a legacy fallback for rows created before memberships
   // were bootstrapped.
-  const { data: membership } = await svc
+  const { data: membership, error: membershipError } = await svc
     .from('shop_memberships')
     .select('shop_id,role')
     .eq('user_id', user.id)
@@ -67,18 +67,26 @@ export async function getAuthedShop(): Promise<AuthenticatedShop | null> {
     .order('created_at', { ascending: true })
     .limit(1)
     .maybeSingle()
+  if (membershipError) {
+    console.error('[auth] membership lookup failed:', membershipError.message)
+    return null
+  }
   if (membership?.shop_id) {
     const role = String(membership.role || 'member') as ShopRole
     return { userId: user.id, shopId: String(membership.shop_id), role }
   }
 
-  const { data } = await svc
+  const { data, error: profileError } = await svc
     .from('shop_profiles')
     .select('id')
     .eq('user_id', user.id)
     .single()
+  if (profileError) {
+    console.error('[auth] shop profile lookup failed:', profileError.message)
+    return null
+  }
   if (!data) return null
-  const { data: membershipRecord } = await svc
+  const { data: membershipRecord, error: membershipRecordError } = await svc
     .from('shop_memberships')
     .select('status')
     .eq('shop_id', data.id)
@@ -86,6 +94,10 @@ export async function getAuthedShop(): Promise<AuthenticatedShop | null> {
     .order('updated_at', { ascending: false })
     .limit(1)
     .maybeSingle()
+  if (membershipRecordError) {
+    console.error('[auth] membership status lookup failed:', membershipRecordError.message)
+    return null
+  }
   // A revoked/suspended membership must not regain access through the
   // legacy profile-ownership fallback.
   if (membershipRecord && membershipRecord.status !== 'active') return null

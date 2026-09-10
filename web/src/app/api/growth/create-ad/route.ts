@@ -1,6 +1,8 @@
 export const dynamic = "force-dynamic"
+import { createHash } from 'node:crypto'
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { roundMoney } from '@/lib/document-money'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { getIdempotencyKey } from '@/lib/api-response'
@@ -28,6 +30,62 @@ export async function POST(req: NextRequest) {
     }
 
     const db = getServiceClient()
+    const serviceType = typeof service === 'string' && service.trim()
+      ? service.trim().slice(0, 120)
+      : 'general auto repair'
+    const area = typeof target_area === 'string' && target_area.trim()
+      ? target_area.trim().slice(0, 160)
+      : 'your local service area'
+    const parsedBudget = Number(budget)
+    const dailyBudget = Number.isFinite(parsedBudget) && parsedBudget > 0 && parsedBudget <= 100000
+      ? roundMoney(parsedBudget)
+      : 10
+    const parsedDuration = Number(duration_days)
+    const durationDays = Number.isInteger(parsedDuration) && parsedDuration > 0 && parsedDuration <= 365
+      ? parsedDuration
+      : 7
+    const campaignPayloadHash = createHash('sha256').update(JSON.stringify({
+      platform: normalizedPlatform,
+      service: serviceType,
+      dailyBudget,
+      durationDays,
+      targetArea: area,
+    })).digest('hex')
+
+    // Replay must be resolved before any provider or AI call. A retried key
+    // is bound to the original campaign payload, so changed input cannot
+    // silently receive the old campaign.
+    const { data: existingCampaign, error: existingCampaignError } = await db
+      .from('growth_campaigns')
+      .select('*')
+      .eq('shop_id', auth.shopId)
+      .eq('idempotency_key', requestKey)
+      .limit(1)
+      .maybeSingle()
+    if (existingCampaignError) {
+      console.error('Create ad idempotency lookup error:', existingCampaignError.message)
+      return NextResponse.json({ ok: false, error: 'The campaign could not be safely recovered' }, { status: 500 })
+    }
+    if (existingCampaign) {
+      const storedHash = typeof existingCampaign.idempotency_payload_hash === 'string' ? existingCampaign.idempotency_payload_hash : ''
+      const legacyMatches = String(existingCampaign.platform || '') === normalizedPlatform
+        && String(existingCampaign.service || '') === serviceType
+        && Number(existingCampaign.budget_per_day ?? existingCampaign.daily_budget) === dailyBudget
+        && Number(existingCampaign.duration_days) === durationDays
+        && String(existingCampaign.target_area || '') === area
+      if ((storedHash && storedHash !== campaignPayloadHash) || (!storedHash && !legacyMatches)) {
+        return NextResponse.json({ ok: false, error: 'Idempotency-Key was used for a different campaign payload' }, { status: 409 })
+      }
+      return NextResponse.json({
+        ok: true,
+        replayed: true,
+        campaign: existingCampaign,
+        ad_copy: existingCampaign.ad_copy || null,
+        facebook_result: existingCampaign.fb_ids || null,
+        google_ready: null,
+      })
+    }
+
     const { data: settings, error: settingsError } = await db
       .from('settings')
       .select('*')
@@ -46,20 +104,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'AI API key not configured' }, { status: 400 })
     }
 
-    const serviceType = typeof service === 'string' && service.trim()
-      ? service.trim().slice(0, 120)
-      : 'general auto repair'
-    const area = typeof target_area === 'string' && target_area.trim()
-      ? target_area.trim().slice(0, 160)
-      : 'your local service area'
-    const parsedBudget = Number(budget)
-    const dailyBudget = Number.isFinite(parsedBudget) && parsedBudget > 0 && parsedBudget <= 100000
-      ? Math.round(parsedBudget * 100) / 100
-      : 10
-    const parsedDuration = Number(duration_days)
-    const durationDays = Number.isInteger(parsedDuration) && parsedDuration > 0 && parsedDuration <= 365
-      ? parsedDuration
-      : 7
     const shopName = String(settings?.shop_name || settings?.company_name || settings?.business_name || 'your auto repair shop').slice(0, 120)
     const shopAddress = String(settings?.address || '').slice(0, 200)
     const shopPhone = String(settings?.phone || settings?.business_phone || '').slice(0, 40)
@@ -273,6 +317,7 @@ Return ONLY valid JSON object. No markdown.`
     const campaign = {
       shop_id: auth.shopId,
       idempotency_key: requestKey,
+      idempotency_payload_hash: campaignPayloadHash,
       name: `${(adCopy.headline as string) || serviceType}`,
       platform: normalizedPlatform,
       service: serviceType,
@@ -287,28 +332,6 @@ Return ONLY valid JSON object. No markdown.`
       clicks: 0,
       impressions: 0,
       created_at: new Date().toISOString(),
-    }
-
-    const { data: existingCampaign, error: existingCampaignError } = await db
-      .from('growth_campaigns')
-      .select('*')
-      .eq('shop_id', auth.shopId)
-      .eq('idempotency_key', requestKey)
-      .limit(1)
-      .maybeSingle()
-    if (existingCampaignError) {
-      console.error('Create ad idempotency lookup error:', existingCampaignError.message)
-      return NextResponse.json({ ok: false, error: 'The campaign could not be safely recovered' }, { status: 500 })
-    }
-    if (existingCampaign) {
-      return NextResponse.json({
-        ok: true,
-        replayed: true,
-        campaign: existingCampaign,
-        ad_copy: existingCampaign.ad_copy || adCopy,
-        facebook_result: existingCampaign.fb_ids || fbResult,
-        google_ready: null,
-      })
     }
 
     const { data: saved, error: saveError } = await db

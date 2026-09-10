@@ -125,14 +125,29 @@ async function callDbAction(
   }
 }
 
-async function saveChatHistory(shopId: string, userId: string, sessionId: string | undefined, message: string, reply: string) {
-  if (!sessionId) return
+type PersistedChatMessage = { role: 'user' | 'assistant'; content: string }
+
+async function saveChatHistory(
+  shopId: string,
+  userId: string,
+  sessionId: string | undefined,
+  history: PersistedChatMessage[],
+  message: string,
+  reply: string,
+): Promise<boolean> {
+  if (!sessionId) return true
   const db = getServiceClient()
-  const { error } = await db.from('ai_chat_history').insert([
-    { shop_id: shopId, user_id: userId, session_id: sessionId, role: 'user', content: message, created_at: new Date().toISOString() },
-    { shop_id: shopId, user_id: userId, session_id: sessionId, role: 'assistant', content: reply, created_at: new Date().toISOString() },
-  ])
-  if (error) console.error('[ai-chat] history save failed:', error.message)
+  const { error } = await db.rpc('replace_ai_chat_history', {
+    p_shop_id: shopId,
+    p_user_id: userId,
+    p_session_id: sessionId,
+    p_messages: [...history, { role: 'user', content: message }, { role: 'assistant', content: reply }].slice(-60),
+  })
+  if (error) {
+    console.error('[ai-chat] history save failed:', error.message)
+    return false
+  }
+  return true
 }
 
 export async function POST(req: NextRequest) {
@@ -177,6 +192,16 @@ export async function POST(req: NextRequest) {
           .map((item) => ({ role: item.role as 'user' | 'assistant', content: item.content.slice(0, 4000) }))
       : []
 
+    const respond = async (reply: string, extra: Record<string, unknown> = {}, responseStatus = 200) => {
+      const historySaved = await saveChatHistory(caller!.shopId, caller!.userId, sessionId, history, message, reply)
+      return NextResponse.json({
+        reply,
+        ...extra,
+        sessionId,
+        ...(sessionId && !historySaved ? { history_saved: false } : {}),
+      }, { status: sessionId && !historySaved ? 502 : responseStatus })
+    }
+
     const settings = await getSettings(caller.shopId)
     const chatGptTransport = getOpenAIOAuthTransport(req)
     const apiKey = typeof settings.ai_api_key === 'string' ? settings.ai_api_key.trim() : ''
@@ -185,8 +210,7 @@ export async function POST(req: NextRequest) {
 
     if (!apiKey && !chatGptTransport) {
       const reply = 'AI is not configured yet. Please add this shop AI API key in Settings on the web dashboard.'
-      await saveChatHistory(caller.shopId, caller.userId, sessionId, message, reply)
-      return NextResponse.json({ reply, sessionId })
+      return respond(reply)
     }
 
     const agentMessages: Array<{ role: string; content: string }> = [
@@ -228,15 +252,13 @@ export async function POST(req: NextRequest) {
       if (!completion.ok || data.error) {
         const detail = data.error?.message || `provider returned HTTP ${completion.status}`
         const reply = `AI error: ${detail}`
-        await saveChatHistory(caller.shopId, caller.userId, sessionId, message, reply)
-        return NextResponse.json({ reply, sessionId }, { status: 502 })
+        return respond(reply, {}, 502)
       }
 
       const raw = data.choices?.[0]?.message?.content?.trim() || ''
       if (!raw) {
         const reply = 'The AI provider returned an empty response. Please try again.'
-        await saveChatHistory(caller.shopId, caller.userId, sessionId, message, reply)
-        return NextResponse.json({ reply, sessionId }, { status: 502 })
+        return respond(reply, {}, 502)
       }
       agentMessages.push({ role: 'assistant', content: raw })
 
@@ -251,15 +273,13 @@ export async function POST(req: NextRequest) {
       } catch { parsed = null }
 
       if (!parsed) {
-        await saveChatHistory(caller.shopId, caller.userId, sessionId, message, raw)
-        return NextResponse.json({ reply: raw, sessionId })
+        return respond(raw)
       }
 
       const toolName = parsed.tool as string
       if (toolName !== 'dbAction') {
         const reply = 'The AI requested an unsupported tool, so I stopped safely.'
-        await saveChatHistory(caller.shopId, caller.userId, sessionId, message, reply)
-        return NextResponse.json({ reply, sessionId }, { status: 502 })
+        return respond(reply, {}, 502)
       }
 
       const action = typeof parsed.action === 'string' ? parsed.action : ''
@@ -268,16 +288,14 @@ export async function POST(req: NextRequest) {
         : {}
       if (!action) {
         const reply = 'The AI returned an incomplete action, so I stopped safely.'
-        await saveChatHistory(caller.shopId, caller.userId, sessionId, message, reply)
-        return NextResponse.json({ reply, sessionId }, { status: 502 })
+        return respond(reply, {}, 502)
       }
 
       // The model may propose a write, but it is never allowed to claim or
       // perform the write. A separate explicit confirmation is required.
       if (!READ_ONLY_ACTIONS.has(action)) {
         const reply = `I can prepare “${action}”, but I need your confirmation before changing shop data or sending anything. Nothing was changed.`
-        await saveChatHistory(caller.shopId, caller.userId, sessionId, message, reply)
-        return NextResponse.json({ reply, pendingAction: { action, payload }, sessionId })
+        return respond(reply, { pendingAction: { action, payload } })
       }
 
       const result = await callDbAction(action, payload, caller.shopId, {
@@ -292,8 +310,7 @@ export async function POST(req: NextRequest) {
 
     const lastAssistant = agentMessages.filter(m => m.role === 'assistant').pop()?.content
     const reply = lastAssistant || 'I reached the safe tool limit before finishing. Please try again.'
-    await saveChatHistory(caller.shopId, caller.userId, sessionId, message, reply)
-    return NextResponse.json({ reply, sessionId })
+    return respond(reply)
   } catch (err) {
     console.error('[ai-chat] error:', err)
     return NextResponse.json({ reply: 'Something went wrong. Please try again.' }, { status: 500 })
