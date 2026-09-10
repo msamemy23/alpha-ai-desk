@@ -361,7 +361,11 @@ export default function CustomersPage() {
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-text-muted">{jobCounts[c.id]||0} jobs · Added {fmtDate(c.created_at)}</span>
                   <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
-                    {c.phone && <button className="btn btn-sm btn-secondary" aria-label={`Call ${c.name}`} title={`Call ${c.name}`} onClick={async e => { e.stopPropagation(); if (!confirm(`Call ${c.name} at ${c.phone}?`)) return; try { await fetch('/api/make-call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:c.phone,name:c.name})}) } catch {} }}>📞</button>}
+                    {c.phone && <button className="btn btn-sm btn-secondary" aria-label={`Call ${c.name}`} title={`Call ${c.name}`} onClick={async e => { e.stopPropagation(); if (!confirm(`Call ${c.name} at ${c.phone}?`)) return; try {
+                        const response = await fetch('/api/make-call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:c.phone,name:c.name})})
+                        const payload = await response.json().catch(() => ({}))
+                        if (!response.ok || payload.ok === false || payload.error) throw new Error(payload.error || 'Call could not be started')
+                      } catch (error) { alert(error instanceof Error ? error.message : 'Call could not be started') } }}>📞</button>}
                     {c.phone && <button className="btn btn-sm btn-secondary" onClick={e => { e.stopPropagation(); setSendModal({customer:c,channel:'sms'}); setSendBody('') }}>💬</button>}
                     {c.email && <button className="btn btn-sm btn-secondary" onClick={e => { e.stopPropagation(); setSendModal({customer:c,channel:'email'}); setSendBody('') }}>📧</button>}
                   </div>

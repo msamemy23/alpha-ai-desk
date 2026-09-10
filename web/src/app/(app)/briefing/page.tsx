@@ -64,16 +64,35 @@ export default function BriefingPage() {
   }, [])
   useEffect(() => { load() }, [load])
 
+  const refreshNotes = async () => {
+    const response = await fetch('/api/daily-notes')
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok || payload.error) throw new Error(payload.error || 'Notes could not be loaded')
+    setNotes(payload.notes || [])
+  }
+
   const addNote = async () => {
     if (!noteText.trim()) return
-    await fetch('/api/daily-notes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: noteText }) })
-    setNoteText('')
-    fetch('/api/daily-notes').then(r=>r.json()).then(d=>setNotes(d.notes||[]))
+    try {
+      const response = await fetch('/api/daily-notes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: noteText }) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || payload.error) throw new Error(payload.error || 'Note could not be saved')
+      setNoteText('')
+      await refreshNotes()
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Note could not be saved')
+    }
   }
 
   const deleteNote = async (id: string) => {
-    await fetch('/api/daily-notes', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) })
-    fetch('/api/daily-notes').then(r=>r.json()).then(d=>setNotes(d.notes||[]))
+    try {
+      const response = await fetch('/api/daily-notes', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || payload.error) throw new Error(payload.error || 'Note could not be deleted')
+      await refreshNotes()
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Note could not be deleted')
+    }
   }
 
   if (loading) return <div className="p-4 sm:p-6 lg:p-8 text-text-muted">Loading briefing…</div>

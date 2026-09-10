@@ -190,7 +190,8 @@ export default function DashboardPage() {
         })
       })
       const data = await res.json()
-      setSlowDayResult({ sent: data.sent || 0, total: data.total || 0 })
+       if (!res.ok || data.ok === false || data.error) throw new Error(data.error || 'Outreach could not be sent')
+       setSlowDayResult({ sent: data.sent || 0, total: data.total || 0 })
     } catch { setSlowDayResult({ sent: 0, total: 0 }) }
     finally { setSlowDaySending(false) }
   }

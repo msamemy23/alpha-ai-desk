@@ -196,9 +196,9 @@ export default function GrowthPage() {
   })
   const logActivity = async (action: string, target: string, details: string, status: string) => { const shopId = await getShopId(); if (!shopId) throw new Error('No shop is associated with the signed-in user'); const { error } = await supabase.from('growth_activity').insert({ shop_id: shopId, action, target, details, status, created_at: new Date().toISOString() }); if (error) throw new Error(error.message) }
   const sendSms = async (to: string, message: string) => { const res = await fetch('/api/send-sms', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify({ to, message }) }); if (!res.ok) throw new Error('SMS failed'); return res.json() }
-  const doOutreach = async (leadId: string, method: string) => { setSending(leadId); try { const res = await fetch('/api/growth/outreach', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify({ lead_id: leadId, method, ai_mode: aiMode }) }); const d = await res.json(); if (d.success) { notify(`${method.toUpperCase()} sent!`, 'success'); await load() } else notify(d.error || 'Failed', 'error') } catch { notify('Outreach failed', 'error') } setSending(null) }
-  const sendFollowUp = async (c: Rec) => {
-    if (!c.phone) return notify('No phone', 'error')
+  const doOutreach = async (leadId: string, method: string) => { setSending(leadId); try { const res = await fetch('/api/growth/outreach', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify({ lead_id: leadId, method, ai_mode: aiMode }) }); const d = await res.json(); if (res.ok && d.success === true) { notify(`${method.toUpperCase()} sent!`, 'success'); await load() } else notify(d.error || 'Failed', 'error') } catch { notify('Outreach failed', 'error') } setSending(null) }
+  const sendFollowUp = async (c: Rec): Promise<boolean> => {
+    if (!c.phone) { notify('No phone', 'error'); return false }
     setSending(c.id)
     try {
       const shopId = await getShopId()
@@ -217,7 +217,7 @@ export default function GrowthPage() {
       notify(error instanceof Error ? error.message : 'Failed', 'error')
     } finally { setSending(null) }
   }
-  const bulkFollowUp = async () => { const eligible = staleCustomers.filter(c => c.phone); if (!eligible.length) return notify('No customers with phone', 'error'); if (!confirm(`Send follow-up to ${eligible.length} customers?`)) return; let sent = 0; for (const c of eligible) { try { await sendFollowUp(c); sent++ } catch {} } notify(`Sent ${sent} of ${eligible.length}`, 'success') }
+  const bulkFollowUp = async () => { const eligible = staleCustomers.filter(c => c.phone); if (!eligible.length) return notify('No customers with phone', 'error'); if (!confirm(`Send follow-up to ${eligible.length} customers?`)) return; let sent = 0; for (const c of eligible) { if (await sendFollowUp(c)) sent++ } } notify(`Sent ${sent} of ${eligible.length}`, 'success') }
   const requestReview = async (c: Rec) => {
     if (!c.phone) return notify('No phone', 'error')
     setSending(c.id)

@@ -90,12 +90,16 @@ export default function StaffPage() {
   const clockAction = async (staffName: string, action: string) => {
     setClockingId(staffName)
     try {
-      await fetch('/api/timeclock', {
+      const response = await fetch('/api/timeclock', {
         method: 'POST',
         headers: await getAuthJsonHeaders(),
         body: JSON.stringify({ action, staff_name: staffName })
       })
-      setTimeout(load, 500)
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || payload.ok === false || payload.error) throw new Error(payload.error || 'Timeclock action failed')
+      await load()
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Timeclock action failed')
     } finally { setClockingId(null) }
   }
 
