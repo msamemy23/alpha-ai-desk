@@ -72,7 +72,7 @@ function RemoteAudio() {
   return <audio ref={audioRef} autoPlay playsInline style={{ display: 'none' }} />
 }
 
-function PhoneWidgetInner({ number, name, onClose }: { number: string; name?: string; onClose: () => void }) {
+function PhoneWidgetInner({ number, name, callerNumber, callerName, onClose }: { number: string; name?: string; callerNumber: string; callerName?: string; onClose: () => void }) {
   const client       = useContext(TelnyxRTCContext) as any
   const notification = useNotification()
   const activeCall   = (notification?.call) as any
@@ -89,8 +89,8 @@ function PhoneWidgetInner({ number, name, onClose }: { number: string; name?: st
       try {
         client?.newCall({
           destinationNumber: number,
-          callerNumber:      '+17136636979',
-          callerName:        'Alpha Auto Center',
+          callerNumber,
+          callerName: callerName || 'AI Call',
         })
         setStatus('calling')
       } catch (err) {
@@ -209,6 +209,8 @@ export default function PhoneWidget() {
   const [callDetails, setCallDetails] = useState<PhoneCallDetail | null>(null)
   const [visible,     setVisible]     = useState(false)
   const [tokenError,  setTokenError]  = useState(false)
+  const [callerNumber, setCallerNumber] = useState('')
+  const [callerName, setCallerName] = useState('')
 
   useEffect(() => {
     const handler = async (e: Event) => {
@@ -222,13 +224,17 @@ export default function PhoneWidget() {
         // Show the widget IMMEDIATELY — don't wait for token
         setVisible(true)
         setCallDetails({ number: normalized, name })
+        setCallerNumber('')
+        setCallerName('')
         setToken(null)
         setTokenError(false)
 
         const res = await fetch('/api/webrtc-token')
         if (!res.ok) throw new Error(`Token fetch failed: ${res.status}`)
         const data = await res.json()
-        if (!data.token) throw new Error('No token in response')
+        if (!data.token || !data.fromPhone) throw new Error('WebRTC setup is incomplete')
+        setCallerNumber(data.fromPhone)
+        setCallerName(data.shopName || 'AI Call')
         setToken(data.token)
       } catch (err) {
         console.error('[PhoneWidget] startup error:', err)
@@ -242,6 +248,8 @@ export default function PhoneWidget() {
   const handleClose = () => {
     setVisible(false)
     setToken(null)
+    setCallerNumber('')
+    setCallerName('')
     setCallDetails(null)
     setTokenError(false)
   }
@@ -279,7 +287,7 @@ export default function PhoneWidget() {
   // Token ready — mount Telnyx provider and make the call
   return (
     <TelnyxRTCProvider credential={{ login_token: token }}>
-      <PhoneWidgetInner number={callDetails.number} name={callDetails.name} onClose={handleClose} />
+      <PhoneWidgetInner number={callDetails.number} name={callDetails.name} callerNumber={callerNumber} callerName={callerName} onClose={handleClose} />
       <RemoteAudio />
     </TelnyxRTCProvider>
   )

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getServiceClient } from '@/lib/supabase'
+import { getServiceClient } from '@/lib/supabase-service'
 
 export const dynamic = 'force-dynamic'
 
@@ -9,35 +9,50 @@ function getBaseUrl(): string {
   return 'https://alpha-ai-desk.vercel.app'
 }
 
-async function callApi(path: string, body?: Record<string, unknown>) {
+async function callApi(path: string, body: Record<string, unknown> = {}) {
   const baseUrl = getBaseUrl()
-  // Internal steps require the cron secret to pass the auth middleware —
-  // without it every step silently 401s and the nightly automations never run.
   const secret = process.env.CRON_SECRET || process.env.INTERNAL_API_SECRET || ''
+  if (!secret) return { ok: false, error: 'Internal cron secret is not configured' }
   try {
     const res = await fetch(`${baseUrl}${path}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(secret ? { Authorization: `Bearer ${secret}` } : {}),
+        Authorization: `Bearer ${secret}`,
       },
-      body: body ? JSON.stringify(body) : '{}',
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(30000),
     })
     const text = await res.text()
+    let data: Record<string, unknown>
     try {
-      return JSON.parse(text)
+      data = JSON.parse(text) as Record<string, unknown>
     } catch {
-      return { status: res.status, error: `Non-JSON response from ${path}`, preview: text.slice(0, 200) }
+      return { ok: false, status: res.status, error: `Non-JSON response from ${path}`, preview: text.slice(0, 200) }
     }
+    return { ...data, ok: res.ok && data.ok !== false && data.success !== false, status: res.status }
   } catch (e) {
     console.error(`Cron call to ${path} failed:`, e)
-    return { error: (e as Error).message }
+    return { ok: false, error: (e as Error).message }
+  }
+}
+
+async function callForEachShop(path: string, body: Record<string, unknown> = {}) {
+  const db = getServiceClient()
+  const { data: shops, error } = await db.from('shop_profiles').select('id').order('created_at', { ascending: true })
+  if (error) return { ok: false, error: `Could not load shops: ${error.message}`, results: [] }
+
+  const results = await Promise.all((shops || []).map(async (shop: { id: string }) => ({
+    shopId: shop.id,
+    ...(await callApi(path, { ...body, shopId: shop.id })),
+  })))
+  return {
+    ok: results.every(result => result.ok !== false),
+    results,
   }
 }
 
 export async function GET(req: NextRequest) {
-  // Always require CRON_SECRET — if not set, route is disabled for safety
   const cronSecret = process.env.CRON_SECRET
   if (!cronSecret) {
     return NextResponse.json({ error: 'CRON_SECRET env var is not configured' }, { status: 401 })
@@ -46,39 +61,24 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const supabase = getServiceClient()
   const results: Record<string, unknown> = {}
 
-  // Step 1: Sync calls from Telnyx recordings + activities + AI calls into call_history
-  results.sync_calls = await callApi('/api/telnyx/sync-calls?action=sync-all', {})
-
-  // Step 2: Scan competitors for growth leads
-  results.scan_competitors = await callApi('/api/growth/scan-competitors', {
-    query: 'auto repair shop Houston TX',
-    radius: 15000
+  // Every tenant-aware worker receives one explicit shop id. No worker may
+  // silently fall back to the first shop or to global credentials.
+  results.sync_calls = await callForEachShop('/api/telnyx/sync-calls?action=sync-all')
+  results.scan_competitors = await callForEachShop('/api/growth/scan-competitors', {
+    query: 'auto repair shop',
+    radius: 15000,
   })
+  results.follow_ups = await callForEachShop('/api/growth/capture', { action: 'follow_up_pending' })
 
-  // Step 3: Process follow-ups
-  results.follow_ups = await callApi('/api/growth/capture', { action: 'follow_up_pending' })
-
-  // Step 4: Run custom prompt automations (user-created ones)
+  // These workers fan out internally because they own their per-shop schedule.
   results.custom_automations = await callApi('/api/automations', { action: 'check_due' })
-
-  // Step 5: Run ALL enabled system automations (review requests, follow-ups, reminders, etc.)
   results.system_automations = await callApi('/api/system-automations', { action: 'run_all_due' })
 
-  // Step 6: Batch transcribe calls and score leads (processes 10 at a time)
-  results.transcribe_calls = await callApi('/api/telnyx/transcribe-calls?action=batch&limit=10', {})
+  results.transcribe_calls = await callForEachShop('/api/telnyx/transcribe-calls?action=batch', { limit: 10 })
+  results.score_leads = await callForEachShop('/api/telnyx/transcribe-calls?action=score', { limit: 20 })
 
-  // Step 7: Score any transcribed calls that don't have lead scores yet
-  results.score_leads = await callApi('/api/telnyx/transcribe-calls?action=score&limit=20', {})
-
-  await supabase.from('growth_scans').upsert({
-    id: 'last_cron_run',
-    type: 'cron',
-    data: results,
-    scanned_at: new Date().toISOString()
-  })
-
-  return NextResponse.json({ success: true, ran_at: new Date().toISOString(), results })
+  const ok = Object.values(results).every((result) => (result as { ok?: boolean })?.ok !== false)
+  return NextResponse.json({ success: ok, ran_at: new Date().toISOString(), results }, { status: ok ? 200 : 502 })
 }

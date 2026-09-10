@@ -7,18 +7,18 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { getServiceClient } from '@/lib/supabase'
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
-const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
+const MAX_RECORDING_BYTES = 50 * 1024 * 1024
 
-async function getFreshDownloadUrl(recordingId: string, callSessionId?: string): Promise<string | null> {
+async function getFreshDownloadUrl(recordingId: string, callSessionId: string | undefined, apiKey: string): Promise<string | null> {
   try {
     if (callSessionId) {
       const params = new URLSearchParams({ 'filter[call_session_id]': callSessionId, 'page[size]': '5' })
       const r = await fetch(`${TELNYX_BASE}/recordings?${params}`, {
-        headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` }, cache: 'no-store',
+        headers: { 'Authorization': `Bearer ${apiKey}` }, cache: 'no-store',
       })
       if (r.ok) {
         const d = await r.json()
@@ -28,7 +28,7 @@ async function getFreshDownloadUrl(recordingId: string, callSessionId?: string):
       }
     }
     const r2 = await fetch(`${TELNYX_BASE}/recordings/${recordingId}`, {
-      headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` }, cache: 'no-store',
+      headers: { 'Authorization': `Bearer ${apiKey}` }, cache: 'no-store',
     })
     if (r2.ok) {
       const d2 = await r2.json()
@@ -38,29 +38,51 @@ async function getFreshDownloadUrl(recordingId: string, callSessionId?: string):
   } catch { return null }
 }
 
+function isTelnyxApiUrl(value: string): boolean {
+  try { return new URL(value).hostname.toLowerCase() === 'api.telnyx.com' } catch { return false }
+}
+
+function isSafeRecordingUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    const hostname = url.hostname.toLowerCase()
+    const privateHost = hostname === 'localhost' || hostname === '::1' || hostname.endsWith('.local') || /^(10|127)\./.test(hostname) || /^192\.168\./.test(hostname) || /^169\.254\./.test(hostname) || /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname)
+    return url.protocol === 'https:' && !url.username && !url.password && !privateHost
+  } catch { return false }
+}
+
 export async function GET(req: NextRequest) {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
   const { searchParams } = new URL(req.url)
   const callId = searchParams.get('callId')
   const recordingId = searchParams.get('id')
   const callSessionId = searchParams.get('sessionId')
   const directUrl = searchParams.get('url')
+  const { data: settings, error: settingsError } = await getServiceClient().from('settings')
+    .select('telnyx_api_key').eq('shop_id', auth.shopId).maybeSingle()
+  if (settingsError) return NextResponse.json({ error: 'Shop settings could not be loaded' }, { status: 500 })
+  const telnyxKey = String(settings?.telnyx_api_key || '')
 
   let recordingUrl = directUrl || ''
 
-  // Option 1: recording_id - get fresh URL from Telnyx API
-  if (recordingId && !recordingUrl && TELNYX_API_KEY) {
-    recordingUrl = await getFreshDownloadUrl(recordingId, callSessionId || undefined) || ''
+  // A caller-supplied/stored download URL is fetched without provider
+  // credentials. Telnyx auth is only ever sent to Telnyx's exact API host.
+  if (recordingId && !recordingUrl) {
+    if (!telnyxKey) return NextResponse.json({ error: 'Telnyx is not configured for this shop' }, { status: 503 })
+    recordingUrl = await getFreshDownloadUrl(recordingId, callSessionId || undefined, telnyxKey) || ''
   }
 
   // Option 2: callId - look up from ai_calls table
   if (callId && !recordingUrl) {
     try {
-      const r = await fetch(
-        `${SUPABASE_URL}/rest/v1/ai_calls?id=eq.${encodeURIComponent(callId)}&select=recording_url&limit=1`,
-        { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
-      )
-      const rows = await r.json()
-      recordingUrl = rows?.[0]?.recording_url || ''
+      const { data, error } = await getServiceClient().from('ai_calls')
+        .select('recording_url')
+        .eq('id', callId)
+        .eq('shop_id', auth.shopId)
+        .maybeSingle()
+      if (error) throw error
+      recordingUrl = data?.recording_url || ''
     } catch {
       return NextResponse.json({ error: 'Failed to fetch recording URL' }, { status: 500 })
     }
@@ -69,23 +91,26 @@ export async function GET(req: NextRequest) {
   if (!recordingUrl) {
     return NextResponse.json({ error: 'No recording URL' }, { status: 404 })
   }
+  if (!isSafeRecordingUrl(recordingUrl)) {
+    return NextResponse.json({ error: 'Recording URL is not allowed' }, { status: 400 })
+  }
 
   // Proxy the audio
   try {
     let audioRes = await fetch(recordingUrl, { cache: 'no-store' })
-    if (!audioRes.ok && TELNYX_API_KEY) {
+    if (!audioRes.ok && telnyxKey && isTelnyxApiUrl(recordingUrl)) {
       audioRes = await fetch(recordingUrl, {
-        headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` }, cache: 'no-store',
+        headers: { 'Authorization': `Bearer ${telnyxKey}` }, cache: 'no-store',
       })
     }
     // If URL expired and we have recording_id, try getting fresh URL
-    if (!audioRes.ok && recordingId && TELNYX_API_KEY) {
-      const freshUrl = await getFreshDownloadUrl(recordingId, callSessionId || undefined)
+    if (!audioRes.ok && recordingId && telnyxKey) {
+      const freshUrl = await getFreshDownloadUrl(recordingId, callSessionId || undefined, telnyxKey)
       if (freshUrl && freshUrl !== recordingUrl) {
         audioRes = await fetch(freshUrl, { cache: 'no-store' })
-        if (!audioRes.ok) {
+        if (!audioRes.ok && isTelnyxApiUrl(freshUrl)) {
           audioRes = await fetch(freshUrl, {
-            headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` }, cache: 'no-store',
+            headers: { 'Authorization': `Bearer ${telnyxKey}` }, cache: 'no-store',
           })
         }
       }
@@ -93,14 +118,21 @@ export async function GET(req: NextRequest) {
     if (!audioRes.ok) {
       return NextResponse.json({ error: 'Recording expired or unavailable' }, { status: 404 })
     }
+    const declaredLength = Number(audioRes.headers.get('content-length') || 0)
+    if (declaredLength > MAX_RECORDING_BYTES) {
+      return NextResponse.json({ error: 'Recording is too large' }, { status: 413 })
+    }
     const audioBuffer = await audioRes.arrayBuffer()
+    if (audioBuffer.byteLength > MAX_RECORDING_BYTES) {
+      return NextResponse.json({ error: 'Recording is too large' }, { status: 413 })
+    }
     const contentType = audioRes.headers.get('content-type') || 'audio/mpeg'
     return new NextResponse(audioBuffer, {
       headers: {
         'Content-Type': contentType,
         'Content-Length': String(audioBuffer.byteLength),
         'Accept-Ranges': 'bytes',
-        'Cache-Control': 'public, max-age=3600',
+        'Cache-Control': 'private, no-store',
       },
     })
   } catch {

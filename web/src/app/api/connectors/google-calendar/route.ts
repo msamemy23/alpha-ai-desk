@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getConnector, getValidGoogleToken } from '@/lib/connectors'
 
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
@@ -9,6 +10,14 @@ const GCAL = 'https://www.googleapis.com/calendar/v3'
 export async function POST(req: NextRequest) {
   const body = await req.json() as Record<string, unknown>
   const { action } = body
+  const aiSource = req.headers.get('x-ai-source') === 'ai'
+  const approval = req.headers.get('x-ai-approval') === 'confirm'
+  if (aiSource && ['create_event', 'delete_event'].includes(String(action)) && !approval) {
+    return fail('This connector action requires explicit approval', 409)
+  }
+
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
 
   const connector = await getConnector('google_calendar')
   if (!connector?.enabled) return fail('Google Calendar not connected', 401)
@@ -36,7 +45,9 @@ export async function POST(req: NextRequest) {
           `&orderBy=startTime&singleEvents=true`,
           { headers: { 'Authorization': `Bearer ${token}` } }
         )
-        return ok(await r.json())
+        const data = await r.json()
+        if (!r.ok) return fail(data?.error?.message || data?.error || `Google Calendar returned ${r.status}`, r.status)
+        return ok(data)
       }
 
       // ── Create an event ───────────────────────────────────────────
@@ -61,7 +72,9 @@ export async function POST(req: NextRequest) {
           headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify(event),
         })
-        return ok(await r.json())
+        const data = await r.json()
+        if (!r.ok) return fail(data?.error?.message || data?.error || `Google Calendar returned ${r.status}`, r.status)
+        return ok(data)
       }
 
       // ── Delete an event ───────────────────────────────────────────

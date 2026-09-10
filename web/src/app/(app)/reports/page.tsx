@@ -1,12 +1,17 @@
 ﻿'use client'
 import { useEffect, useState } from 'react'
-import { supabase, calcTotals } from '@/lib/supabase'
+import { getShopId, supabase, calcTotals } from '@/lib/supabase'
 
 interface Invoice { id: string; customer_name: string; total: number; amount_paid: number; status: string; created_at: string; payment_method: string }
 interface Job { id: string; status: string; tech: string; concern: string; created_at: string }
 interface CallRecord { id: string; direction: string; duration_secs: number; start_time: string; status: string }
 
 function fmtCur(n: number) { return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) }
+
+function collectedAmount(value: unknown): number {
+  const amount = Number(value)
+  return Number.isFinite(amount) && amount > 0 ? amount : 0
+}
 
 type Period = '7d' | '30d' | '90d' | 'ytd'
 
@@ -31,18 +36,20 @@ export default function ReportsPage() {
     const load = async () => {
       setLoading(true)
       try {
+        const shopId = await getShopId()
+        if (!shopId) { setInvoices([]); setJobs([]); setCalls([]); return }
         // Invoices live in the documents table (this page used to query a
         // nonexistent `invoices` table, so every report showed zero).
         const [{ data: inv }, { data: j }, { data: c }] = await Promise.all([
-          supabase.from('documents').select('*').in('type', ['Invoice', 'Receipt']).order('created_at', { ascending: false }).limit(1000),
-          supabase.from('jobs').select('id,status,tech,concern,created_at').order('created_at', { ascending: false }).limit(2000),
-          supabase.from('call_history').select('id,direction,duration_secs,start_time,status').order('start_time', { ascending: false }).limit(2000),
+          supabase.from('documents').select('*').eq('shop_id', shopId).in('type', ['Invoice', 'Receipt']).order('created_at', { ascending: false }).limit(1000),
+          supabase.from('jobs').select('id,status,tech,concern,created_at').eq('shop_id', shopId).order('created_at', { ascending: false }).limit(2000),
+          supabase.from('call_history').select('id,direction,duration_secs,start_time,status').eq('shop_id', shopId).order('start_time', { ascending: false }).limit(2000),
         ])
         const mapped = (inv || []).map((d: Record<string, unknown>) => ({
           id: d.id as string,
           customer_name: (d.customer_name as string) || '',
           total: calcTotals(d).total,
-          amount_paid: Number(d.amount_paid) || 0,
+          amount_paid: collectedAmount(d.amount_paid),
           status: (d.status as string) || '',
           created_at: (d.created_at as string) || '',
           payment_method: (d.payment_method as string) || '',
@@ -69,7 +76,7 @@ export default function ReportsPage() {
   const filteredJobs = jobs.filter(j => new Date(j.created_at) >= start)
   const filteredCalls = calls.filter(c => new Date(c.start_time) >= start)
 
-  const totalRevenue = filteredInvoices.reduce((s, i) => s + (i.amount_paid || i.total || 0), 0)
+  const totalRevenue = filteredInvoices.reduce((s, i) => s + i.amount_paid, 0)
   const avgTicket = filteredInvoices.length ? totalRevenue / filteredInvoices.length : 0
   const completedJobs = filteredJobs.filter(j => ['Completed','Paid','Closed'].includes(j.status)).length
   const inboundCalls = filteredCalls.filter(c => c.direction === 'inbound').length
@@ -85,7 +92,7 @@ export default function ReportsPage() {
   for (const inv of invoices) {
     const key = inv.created_at?.slice(0, 7)
     if (key && Object.prototype.hasOwnProperty.call(monthlyRevenue, key)) {
-      monthlyRevenue[key] += (inv.amount_paid || inv.total || 0)
+      monthlyRevenue[key] += inv.amount_paid
     }
   }
   const monthlyData = Object.entries(monthlyRevenue).map(([k, v]) => ({
@@ -97,7 +104,7 @@ export default function ReportsPage() {
   const payMethods: Record<string, number> = {}
   for (const inv of filteredInvoices) {
     const pm = inv.payment_method || 'Other'
-    payMethods[pm] = (payMethods[pm] || 0) + (inv.amount_paid || inv.total || 0)
+    payMethods[pm] = (payMethods[pm] || 0) + inv.amount_paid
   }
 
   const techStats: Record<string, { jobs: number; name: string }> = {}
@@ -123,7 +130,7 @@ export default function ReportsPage() {
     const q = Math.ceil((d.getMonth() + 1) / 3)
     const key = `${d.getFullYear()} Q${q}`
     if (!quarterlyTax[key]) quarterlyTax[key] = { revenue: 0, count: 0, invoices: [] }
-    quarterlyTax[key].revenue += (inv.amount_paid || inv.total || 0)
+    quarterlyTax[key].revenue += inv.amount_paid
     quarterlyTax[key].count++
     quarterlyTax[key].invoices.push(inv)
   }

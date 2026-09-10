@@ -2,13 +2,18 @@ export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
+import { getRouteShop, unauthorized } from '@/lib/api-auth'
 
 export async function POST(req: NextRequest) {
   try {
-    const { query } = await req.json()
+    const body = await req.json().catch(() => null)
+    const auth = await getRouteShop(req, body?.shopId)
+    if (!auth) return unauthorized()
+    const query = typeof body?.query === 'string' ? body.query.trim().slice(0, 500) : ''
     if (!query) return NextResponse.json({ error: 'Query required' }, { status: 400 })
     const db = getServiceClient()
-    const { data: settings } = await db.from('settings').select('*').limit(1).single()
+    const { data: settings, error: settingsError } = await db.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle()
+    if (settingsError) throw settingsError
     const aiKey = (settings?.ai_api_key as string) || ''
     const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
     const aiModel = normalizeAiModel(settings?.ai_model, aiBase)
@@ -20,19 +25,29 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model: aiModel,
         messages: [
-          { role: 'system', content: 'You are an investigative research AI for an auto repair shop. Given a name or business, search for publicly available contact information. Return ONLY valid JSON. No markdown.' },
-          { role: 'user', content: `Investigate this person/business in Houston TX: "${query}". Find any publicly available info: phone numbers, email, social media profiles (Facebook, Instagram, LinkedIn), business address, Google reviews they left, Yelp activity. Return JSON: {"results":[{"source":"Facebook","name":"...","phone":"...","email":"...","social":"facebook.com/...","url":"...","confidence":"high|medium|low","notes":"..."}],"summary":"Brief summary of what was found","found_info":["phone","social"]}` }
+          { role: 'system', content: 'You are an investigative research AI for an auto repair shop. Given a name or business, identify information that may be publicly available. Do not claim that you performed a live web search or that any result is verified. Return ONLY valid JSON. No markdown.' },
+          { role: 'user', content: `Suggest publicly verifiable sources for this person/business in the shop's service area: "${query}". Find any publicly available info: phone numbers, email, social media profiles (Facebook, Instagram, LinkedIn), business address, Google reviews they left, Yelp activity. Return JSON: {"results":[{"source":"Facebook","name":"...","phone":"...","email":"...","social":"facebook.com/...","url":"...","confidence":"high|medium|low","notes":"..."}],"summary":"Brief summary of what was found","found_info":["phone","social"]}` }
         ],
         max_tokens: 2000,
       })
     })
+    if (!aiRes.ok) throw new Error(`AI provider returned ${aiRes.status}`)
     const aiData = await aiRes.json()
     const content = aiData.choices?.[0]?.message?.content || '{}'
     let parsed: any = { results: [], summary: 'No results found', found_info: [] }
     try {
       parsed = JSON.parse(content.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
     } catch {}
-    return NextResponse.json(parsed)
+    const safeResults = Array.isArray(parsed?.results)
+      ? parsed.results.slice(0, 20).map((result: Record<string, unknown>) => ({ ...result, verified: false }))
+      : []
+    return NextResponse.json({
+      results: safeResults,
+      summary: typeof parsed?.summary === 'string' ? parsed.summary : 'No verified results found',
+      found_info: Array.isArray(parsed?.found_info) ? parsed.found_info.slice(0, 20) : [],
+      verified: false,
+      notice: 'AI suggestions are not live-search evidence. Verify each contact before outreach.'
+    })
   } catch (e) {
     console.error('Smart search error:', e)
     return NextResponse.json({ error: 'Search failed' }, { status: 500 })

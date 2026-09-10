@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getConnector } from '@/lib/connectors'
 
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
@@ -7,6 +8,14 @@ function fail(msg: string, status = 400) { return NextResponse.json({ ok: false,
 export async function POST(req: NextRequest) {
   const body = await req.json() as Record<string, unknown>
   const { action } = body
+  const aiSource = req.headers.get('x-ai-source') === 'ai'
+  const approval = req.headers.get('x-ai-approval') === 'confirm'
+  if (aiSource && ['post', 'reply_comment'].includes(String(action)) && !approval) {
+    return fail('This connector action requires explicit approval', 409)
+  }
+
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
 
   const connector = await getConnector('instagram')
   if (!connector?.enabled) return fail('Instagram not connected', 401)
@@ -32,6 +41,7 @@ export async function POST(req: NextRequest) {
           body: JSON.stringify({ image_url, caption: caption || '', access_token: token }),
         })
         const createData = await createRes.json()
+        if (!createRes.ok) return fail(createData?.error?.message || createData?.error || `Instagram returned ${createRes.status}`, createRes.status)
         if (!createData.id) return fail(`Media creation failed: ${JSON.stringify(createData)}`)
 
         // Step 2: Publish the media
@@ -40,7 +50,9 @@ export async function POST(req: NextRequest) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ creation_id: createData.id, access_token: token }),
         })
-        return ok(await publishRes.json())
+        const publishData = await publishRes.json()
+        if (!publishRes.ok) return fail(publishData?.error?.message || publishData?.error || `Instagram returned ${publishRes.status}`, publishRes.status)
+        return ok(publishData)
       }
 
       // ── Get recent posts ─────────────────────────────────────────

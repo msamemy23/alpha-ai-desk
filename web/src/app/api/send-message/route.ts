@@ -10,12 +10,24 @@ export async function POST(req: NextRequest) {
     const auth = await getAuthedShop()
     if (!auth) return unauthorized()
 
-    const { to, body, channel, subject, customerId: rawCustomerId, jobId, documentId, customerName } = await req.json()
-
-    if (!to || !body) return NextResponse.json({ error: 'Missing to or body' }, { status: 400 })
+    const payload = await req.json().catch(() => null)
+    const { to, body, channel, subject, customerId: rawCustomerId, jobId, documentId, customerName } = payload || {}
+    if (typeof to !== 'string' || !to.trim() || typeof body !== 'string' || !body.trim()) return NextResponse.json({ error: 'Missing to or body' }, { status: 400 })
+    if (!['sms', 'email'].includes(channel)) return NextResponse.json({ error: 'Channel must be sms or email' }, { status: 400 })
+    if (body.length > 10000) return NextResponse.json({ error: 'Message is too long' }, { status: 400 })
+    const escapeHtml = (value: string) => value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char))
 
     const db = getServiceClient()
-    const { data: settings } = await db.from('settings').select('*').eq('shop_id', auth.shopId).limit(1).single()
+    const { data: settings, error: settingsError } = await db.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle()
+    if (settingsError) return NextResponse.json({ error: 'Shop settings could not be loaded' }, { status: 500 })
+    if (jobId) {
+      const { data: job } = await db.from('jobs').select('id').eq('id', jobId).eq('shop_id', auth.shopId).maybeSingle()
+      if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
+    }
+    if (documentId) {
+      const { data: document } = await db.from('documents').select('id').eq('id', documentId).eq('shop_id', auth.shopId).maybeSingle()
+      if (!document) return NextResponse.json({ error: 'Document not found' }, { status: 404 })
+    }
 
     // Resolve customerId - if not provided but customerName is, search by name
     let resolvedCustomerId: string | null = rawCustomerId || null
@@ -63,7 +75,10 @@ export async function POST(req: NextRequest) {
 
     if (channel === 'sms') {
       const formatted = formatPhone(to)
-      const telnyxMsg = await sendSMS(formatted, body)
+      const telnyxMsg = await sendSMS(formatted, body, settings?.telnyx_phone_number || '', {
+        apiKey: settings?.telnyx_api_key || '',
+        messagingProfileId: settings?.telnyx_messaging_profile_id || '',
+      })
       messageId = telnyxMsg?.id || null
     } else if (channel === 'email') {
       const emailTo = resolvedEmail || to
@@ -72,19 +87,19 @@ export async function POST(req: NextRequest) {
       }
       await sendEmail({
         to: emailTo,
-        subject: subject || `Message from ${settings?.shop_name || 'Alpha Auto'}`,
-        html: `<div style="font-family:Arial,sans-serif;padding:20px;max-width:600px"><p>${body.replace(/\n/g,'<br>')}</p><hr><p style="color:#888;font-size:12px">${settings?.shop_name} | ${settings?.shop_phone}</p></div>`,
+        subject: subject || `Message from ${settings?.shop_name || 'Your Auto Shop'}`,
+        html: `<div style="font-family:Arial,sans-serif;padding:20px;max-width:600px"><p>${escapeHtml(body).replace(/\n/g,'<br>')}</p><hr><p style="color:#888;font-size:12px">${escapeHtml(String(settings?.shop_name || ''))} | ${escapeHtml(String(settings?.shop_phone || ''))}</p></div>`,
         apiKey: settings?.resend_api_key,
         from: settings?.from_email,
       })
     }
 
     // Log to DB
-    const { data: msg } = await db.from('messages').insert({
+    const { data: msg, error: messageError } = await db.from('messages').insert({
       shop_id: auth.shopId,
       direction: 'outbound',
       channel: channel || 'sms',
-      from_address: channel === 'sms' ? (settings?.telnyx_phone_number || process.env.TELNYX_PHONE_NUMBER) : (settings?.from_email || process.env.FROM_EMAIL),
+      from_address: channel === 'sms' ? String(settings?.telnyx_phone_number || '') : String(settings?.from_email || ''),
       to_address: resolvedEmail || to,
       subject: subject || null,
       body,
@@ -95,6 +110,7 @@ export async function POST(req: NextRequest) {
       telnyx_message_id: messageId,
       read: true,
     }).select().single()
+    if (messageError) throw messageError
 
     return NextResponse.json({ ok: true, message: msg })
   } catch (e: unknown) {

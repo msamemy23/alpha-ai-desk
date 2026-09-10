@@ -1,8 +1,11 @@
 ﻿import { NextRequest, NextResponse } from 'next/server'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 
 export const maxDuration = 30
 
 export async function GET(req: NextRequest) {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
   const url = req.nextUrl.searchParams.get('url')
   if (!url) return new NextResponse('Missing url', { status: 400 })
 

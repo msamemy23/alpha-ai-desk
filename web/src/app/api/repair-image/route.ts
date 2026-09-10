@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -22,6 +23,8 @@ const MAX_BYTES = 12 * 1024 * 1024
  * Auth-gated by middleware; same-origin <img> requests carry the session cookie.
  */
 export async function GET(req: NextRequest) {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
   const raw = req.nextUrl.searchParams.get('url') || ''
   let target: URL
   try { target = new URL(raw) } catch { return new NextResponse('Bad URL', { status: 400 }) }

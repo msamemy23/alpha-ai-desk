@@ -17,7 +17,7 @@ export async function sendEmail({
   body,
   from,
   replyTo,
-  apiKey: _apiKey,
+  apiKey,
 }: {
   to: string
   subject: string
@@ -27,12 +27,23 @@ export async function sendEmail({
   replyTo?: string
   apiKey?: string
 }): Promise<void> {
-  const fromAddress = process.env.GMAIL_USER || process.env.FROM_EMAIL || 'onboarding@resend.dev'
+  const content = html || body || ''
+  const fromAddress = from || process.env.GMAIL_USER || process.env.FROM_EMAIL || 'onboarding@resend.dev'
+  if (apiKey) {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: fromAddress, to: [to], subject, html: content, reply_to: replyTo || undefined }),
+    })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(data?.message || data?.error || `Email provider returned ${response.status}`)
+    return
+  }
   await transporter.sendMail({
-    from: from || `"Alpha International Auto Center" <${fromAddress}>`,
+    from: fromAddress,
     to,
     subject,
-    html: html || body || '',
+    html: content,
     replyTo: replyTo || fromAddress,
   })
 }
@@ -41,16 +52,18 @@ export function estimateEmailHtml(
   doc: Record<string, unknown>,
   settings: Record<string, unknown>
 ): string {
-  const shopName = (settings?.shop_name as string) || 'Alpha International Auto Center'
+  const shopName = (settings?.shop_name as string) || 'Your Auto Shop'
   const shopPhone = (settings?.shop_phone as string) || ''
   const shopAddress = (settings?.shop_address as string) || ''
 
   const parts = (doc.parts as Record<string, unknown>[]) || []
   const labors = (doc.labors as Record<string, unknown>[]) || []
-  const taxRate = Number(doc.tax_rate) || 8.25
+  const rawTaxRate = Number(doc.tax_rate)
+  const taxRate = Number.isFinite(rawTaxRate) && rawTaxRate >= 0 ? rawTaxRate : 8.25
   const applyTax = doc.apply_tax !== false
   const shopSupplies = Number(doc.shop_supplies) || 0
-  const deposit = Number(doc.deposit) || 0
+  const rawAmountPaid = Number(doc.amount_paid)
+  const amountPaid = Number.isFinite(rawAmountPaid) && rawAmountPaid >= 0 ? rawAmountPaid : 0
   const partsTotal = parts.reduce(
     (s, p) => s + (Number(p.qty) || 1) * (Number(p.unitPrice) || 0),
     0
@@ -58,7 +71,7 @@ export function estimateEmailHtml(
   const laborTotal = labors.reduce((s, l) => s + laborLineTotal(l), 0)
   const tax = applyTax ? partsTotal * (taxRate / 100) : 0
   const total = partsTotal + laborTotal + shopSupplies + tax
-  const balanceDue = Math.max(total - deposit, 0)
+  const balanceDue = Math.max(total - amountPaid, 0)
   const vehicle = [doc.vehicle_year, doc.vehicle_make, doc.vehicle_model]
     .filter(Boolean)
     .join(' ')
@@ -110,7 +123,7 @@ export function estimateEmailHtml(
         <td style="padding:8px">Total</td>
         <td style="padding:8px;text-align:right">$${total.toFixed(2)}</td>
       </tr>
-      ${deposit > 0 ? `<tr><td style="padding:3px 8px;color:#16a34a">Deposit Paid</td><td style="padding:3px 8px;text-align:right;color:#16a34a">-$${deposit.toFixed(2)}</td></tr>
+      ${amountPaid > 0 ? `<tr><td style="padding:3px 8px;color:#16a34a">Amount Paid</td><td style="padding:3px 8px;text-align:right;color:#16a34a">-${amountPaid.toFixed(2)}</td></tr>
       <tr style="font-size:16px;font-weight:bold;border-top:2px solid #111">
         <td style="padding:8px">Balance Due</td>
         <td style="padding:8px;text-align:right">$${balanceDue.toFixed(2)}</td>

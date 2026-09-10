@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { getShopId, supabase } from '@/lib/supabase'
 
 interface Appointment {
   id: string
@@ -62,7 +62,9 @@ export default function AppointmentsPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const { data } = await supabase.from('appointments').select('*').order('date').order('time')
+      const shopId = await getShopId()
+      if (!shopId) { setAppts([]); return }
+      const { data } = await supabase.from('appointments').select('*').eq('shop_id', shopId).order('date').order('time')
       setAppts((data || []) as Appointment[])
     } finally { setLoading(false) }
   }, [])
@@ -72,7 +74,10 @@ export default function AppointmentsPage() {
     fetch('/api/staff?role=technician').then(r => r.json()).then(d => {
       if (d.ok && d.staff) setTechs(['Unassigned', ...d.staff.map((s: {name: string}) => s.name)])
     }).catch(() => {})
-    supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model').order('name').then(({ data }) => setCustomers((data||[]) as Customer[]))
+    getShopId().then(shopId => {
+      if (!shopId) { setCustomers([]); return }
+      return supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).order('name').then(({ data }) => setCustomers((data||[]) as Customer[]))
+    }))
     const ch = supabase.channel('appts').on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, load).subscribe()
     return () => { supabase.removeChannel(ch) }
   }, [load])
@@ -81,21 +86,37 @@ export default function AppointmentsPage() {
     if (!form.customer_name || !form.date || !form.time) return alert('Name, date and time are required')
     setSaving(true)
     try {
-      const data = { ...form, updated_at: new Date().toISOString() }
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const data = { ...form, shop_id: shopId, updated_at: new Date().toISOString() }
       if (editing === 'new') {
-        await supabase.from('appointments').insert({ ...data, status: data.status || 'Scheduled', created_at: new Date().toISOString() })
+        const result = await supabase.from('appointments').insert({
+          ...data,
+          status: data.status || 'Scheduled',
+          created_at: new Date().toISOString(),
+        })
+        if (result.error) throw new Error(result.error.message)
       } else if (editing) {
-        await supabase.from('appointments').update(data).eq('id', editing)
+        const result = await supabase.from('appointments').update(data).eq('id', editing).eq('shop_id', shopId)
+        if (result.error) throw new Error(result.error.message)
       }
-      setEditing(null); setForm({}); load()
+      setEditing(null); setForm({}); await load()
+    } catch (error) {
+      alert('Appointment could not be saved: ' + (error instanceof Error ? error.message : 'Unknown error'))
     } finally { setSaving(false) }
   }
 
   const del = async () => {
     if (!editing || editing === 'new') return
     if (!confirm('Delete this appointment?')) return
-    await supabase.from('appointments').delete().eq('id', editing)
-    setEditing(null); setForm({}); load()
+    const shopId = await getShopId()
+    if (!shopId) return
+    const { error } = await supabase.from('appointments').delete().eq('id', editing).eq('shop_id', shopId)
+    if (error) {
+      alert('Appointment could not be deleted: ' + error.message)
+      return
+    }
+    setEditing(null); setForm({}); await load()
   }
 
   const openNew = (date?: string, time?: string) => {

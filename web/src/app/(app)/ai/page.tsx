@@ -1,6 +1,6 @@
 ﻿'use client'
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { getShopId, supabase } from '@/lib/supabase'
 import { AGENTS, SKILLS } from '@/lib/ai/capabilities'
 import { classifyRequest, type RouteDecision } from '@/lib/ai/router'
 import { normalizeDocumentDraft } from '@/lib/ai/document-draft'
@@ -127,13 +127,13 @@ function renderProcedureHtml(text: string) {
   return esc.replace(/\*\*([^*]+)\*\*/g, '<strong class="text-text-primary">$1</strong>')
 }
 
-const SYSTEM_PROMPT = `You are Alpha AI, the intelligent assistant for Alpha International Auto Center, an auto repair shop in Houston, TX.
+const SYSTEM_PROMPT = `You are Alpha AI, the intelligent assistant for the configured shop, an auto repair shop in the configured service area.
 
 SHOP INFO:
-- Name: Alpha International Auto Center | 10710 S Main St, Houston TX 77025
-- Phone: (713) 663-6979 | Labor Rate: $120/hr | Tax Rate: 8.25%
-- Payment: Cash, Card, Zelle, Cash App
-- Technicians: Paul (senior), Devin, Luis, Louie
+- Name: the configured shop | the configured shop address
+- Phone: the configured shop phone | Labor Rate: the configured labor rate | Tax Rate: the configured tax rate
+- Payment: the configured payment methods
+- Technicians: the configured technicians
 
 PERSONALITY: Confident, direct, knowledgeable. Short sentences. You know cars inside and out. Be conversational and natural - you're talking to a mechanic who's busy, be efficient.
 
@@ -187,7 +187,7 @@ You know standard labor times:
 - AC compressor: 2-3 hrs
 - Lower control arm: 1.5 hrs per side
 - Struts/shocks: 1.5 hrs per axle
-Labor rate is ALWAYS $120/hr. Use these automatically when building estimates.
+Labor rate is ALWAYS the configured labor rate. Use these automatically when building estimates.
 
 5. PRICE CONSISTENCY:
 - NEVER re-search prices if you already searched. Use the EXACT numbers from your last search.
@@ -203,8 +203,8 @@ Labor rate is ALWAYS $120/hr. Use these automatically when building estimates.
 7. NEVER ASK OBVIOUS QUESTIONS:
 - Don't ask "what vehicle?" if you already know it
 - Don't ask for confirmation on searches - just search
-- Don't ask for the labor rate - it's always $120/hr
-- Don't ask for tax rate - it's always 8.25% on parts
+- Don't ask for the labor rate - it's always the configured labor rate
+- Don't ask for tax rate - it's always the configured tax rate on parts
 - If user says "flat" or "no tax" - set tax to 0
 - ONE response per turn. No loops. No repeating.
 
@@ -333,7 +333,7 @@ PLACE PHONE CALL - connects the user directly to someone (you are NOT on the cal
 Use when user says: "call 2819008141", "call John", "dial this number", "ring them" - just a number or name with no task attached.
 
 AI VOICE CALL - AI calls someone and has a FULL CONVERSATION to complete a task (you ARE the caller):
-{"tool":"aiVoiceCall","to":"+15551234567","task":"Tell them their car is ready for pickup","callerName":"Alpha International Auto Center"}
+{"tool":"aiVoiceCall","to":"+15551234567","task":"Tell them their car is ready for pickup","callerName":"the configured shop"}
 Use when there is a MESSAGE or TASK to deliver/handle. If it's just "call X" with no task, use call instead.
 
 NAVIGATE:
@@ -420,7 +420,7 @@ GOOGLE CALENDAR CREATE EVENT:
  
  
  
-    SCHEDULE TASK - Schedule automated tasks to run at specific times. Use when user says "post at 5am", "remind me at", "schedule", "every morning", "do this at 7pm": {"tool":"scheduleTask","name":"Morning Post","schedule":"5:00am","task_prompt":"Post to Facebook: Good morning Houston!"} Schedule formats: "5:00am" (daily), "mon 9:00am" (weekly), "every 2h" (repeating) The task_prompt should be exactly what you'd type in the AI chat to execute the task.  FACEBOOK POST TARGET: When posting to Facebook, ALWAYS include "target" in payload. Ask the user: "Want me to post to the business page, your personal profile, or both?" Target options: "page" (Alpha International), "profile" (Aaron Sammy), "both" (default)  NAVIGATE: {"tool":"navigate","view":"jobs"} - For app views OR URLs. Pass full URL for web pages.  GOOGLE CALENDAR DELETE EVENT:
+    SCHEDULE TASK - Schedule automated tasks to run at specific times. Use when user says "post at 5am", "remind me at", "schedule", "every morning", "do this at 7pm": {"tool":"scheduleTask","name":"Morning Post","schedule":"5:00am","task_prompt":"Post to Facebook: Good morning the configured service area!"} Schedule formats: "5:00am" (daily), "mon 9:00am" (weekly), "every 2h" (repeating) The task_prompt should be exactly what you'd type in the AI chat to execute the task.  FACEBOOK POST TARGET: When posting to Facebook, ALWAYS include "target" in payload. Ask the user: "Want me to post to the business page, your personal profile, or both?" Target options: "page" (connected business page), "profile" (connected personal profile), "both" (default)  NAVIGATE: {"tool":"navigate","view":"jobs"} - For app views OR URLs. Pass full URL for web pages.  GOOGLE CALENDAR DELETE EVENT:
 {"tool":"connector","connector":"google_calendar","action":"delete_event","payload":{"event_id":"..."}}
 STAFF MANAGEMENT - Add, remove, or list shop employees. Use when user says "add employee", "hire someone", "remove staff", "fire", "who works here", "list the team":
 Add employee:    {"tool":"action","action":"addStaff","payload":{"name":"Carlos","role":"technician"}}
@@ -915,6 +915,10 @@ export default function AIPage() {
   const [showHistory, setShowHistory] = useState(false)
   const [history, setHistory] = useState<HistoryEntry[]>([])
 const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:string;subject?:string;customerId?:string;customerName?:string}|null>(null)
+  const [pendingAction, setPendingAction] = useState<{ action: string; payload: Record<string, unknown>; kind?: 'connector' | 'automation' | 'browser'; endpoint?: string } | null>(null)
+  const [confirmingAction, setConfirmingAction] = useState(false)
+  const chatSessionIdRef = useRef(`chat-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+  const historyWriteRef = useRef<Promise<void>>(Promise.resolve())
   const [voiceCall, setVoiceCall] = useState<VoiceCallState | null>(null)
   const [voiceActive, setVoiceActive] = useState(false)
   const [voiceSpeaking, setVoiceSpeaking] = useState(false)
@@ -1088,26 +1092,41 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages])
 
-  // Feature 5: Load history from localStorage
+  // Conversation history is stored per user/shop in Supabase so it follows
+  // the operator between browsers and devices. Keep the local state only as a
+  // fast display cache; it is never the source of truth.
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem('ai_history')
-      if (stored) setHistory(JSON.parse(stored))
-    } catch { /* ignore */ }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/ai-chat-history?limit=30', { headers: await getAuthJsonHeaders() })
+        const data = await res.json().catch(() => ({}))
+        if (!cancelled && res.ok && data.ok && Array.isArray(data.history)) setHistory(data.history)
+      } catch { /* history is optional; the chat still works */ }
+    })()
+    return () => { cancelled = true }
   }, [])
 
   const saveToHistory = useCallback((msgs: ChatMessage[]) => {
     if (msgs.length < 2) return
     const entry: HistoryEntry = {
-      id: Date.now().toString(),
+      id: chatSessionIdRef.current,
       date: new Date().toISOString(),
       preview: msgs.find(m => m.role === 'user')?.content?.slice(0, 60) || 'Conversation',
       messages: msgs,
     }
-    setHistory(prev => {
-      const updated = [entry, ...prev].slice(0, 30)
-      localStorage.setItem('ai_history', JSON.stringify(updated))
-      return updated
+    setHistory(prev => [entry, ...prev.filter(item => item.id !== entry.id)].slice(0, 30))
+    historyWriteRef.current = historyWriteRef.current.then(async () => {
+      try {
+        const res = await fetch('/api/ai-chat-history', {
+          method: 'POST',
+          headers: await getAuthJsonHeaders(),
+          body: JSON.stringify({ sessionId: entry.id, messages: entry.messages, preview: entry.preview }),
+        })
+        if (!res.ok) console.error('[ai] history save failed:', await res.text().catch(() => ''))
+      } catch (error) {
+        console.error('[ai] history save failed:', error)
+      }
     })
   }, [])
 
@@ -1124,28 +1143,29 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
 
   useEffect(() => {
     const loadContext = async () => {
+      const shopId = await getShopId()
+      if (!shopId) { setShopContext(''); return }
       const [{ data: jobs }, { data: customers }, { data: msgs }, { data: settings }] = await Promise.all([
-        supabase.from('jobs').select('customer_name,concern,status').not('status','in','("Paid","Closed")').limit(10),
-        supabase.from('customers').select('id,name').order('created_at',{ascending:false}).limit(5),
-        supabase.from('messages').select('from_address,body,direction').order('created_at',{ascending:false}).limit(5),
-        supabase.from('settings').select('shop_name,shop_address,shop_phone,labor_rate,tax_rate,payment_methods').limit(1).single(),
+        supabase.from('jobs').select('customer_name,concern,status').eq('shop_id', shopId).not('status','in','("Paid","Closed")').limit(10),
+        supabase.from('customers').select('id,name').eq('shop_id', shopId).order('created_at',{ascending:false}).limit(5),
+        supabase.from('messages').select('from_address,body,direction').eq('shop_id', shopId).order('created_at',{ascending:false}).limit(5),
+        supabase.from('settings').select('shop_name,shop_address,shop_phone,labor_rate,tax_rate,payment_methods').eq('shop_id', shopId).limit(1).single(),
       ])
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const s = settings as any
       const shopInfoOverride = s ? [
-        `SHOP INFO (use these exact values, overriding any defaults):`,
-        `- Name: ${s.shop_name || 'Alpha International Auto Center'}`,
-        `- Address: ${s.shop_address || '10710 S Main St, Houston TX 77025'}`,
-        `- Phone: ${s.shop_phone || '(713) 663-6979'}`,
-        `- Labor Rate: $${s.labor_rate || 120}/hr`,
-        `- Tax Rate: ${s.tax_rate || 8.25}%`,
-        s.payment_methods?.length ? `- Payment: ${Array.isArray(s.payment_methods) ? s.payment_methods.join(', ') : s.payment_methods}` : '',
+        'SHOP INFO (use these exact values, overriding any defaults):',
+        '- Name: ' + (s.shop_name || 'your shop'),
+        '- Address: ' + (s.shop_address || 'shop address not configured'),
+        '- Phone: ' + (s.shop_phone || 'shop phone not configured'),
+        '- Labor Rate: ' + (Number.isFinite(Number(s.labor_rate)) ? Number(s.labor_rate) : 'not configured') + '/hr',
+        '- Tax Rate: ' + (Number.isFinite(Number(s.tax_rate)) ? Number(s.tax_rate) : 'not configured') + '%',
+        s.payment_methods?.length ? '- Payment: ' + (Array.isArray(s.payment_methods) ? s.payment_methods.join(', ') : s.payment_methods) : '',
       ].filter(Boolean).join('\n') : ''
       const ctx = [
         shopInfoOverride,
-        jobs?.length ? `Open jobs: ${jobs.map((j:Record<string,string>)=>`${j.customer_name}: ${j.status}`).join(', ')}` : '',
-        customers?.length ? `Recent customers: ${customers.map((c:Record<string,string>)=>c.name).join(', ')}` : '',
-        msgs?.length ? `Recent messages: ${msgs.filter((m:Record<string,string>)=>m.direction==='inbound').slice(0,3).map((m:Record<string,string>)=>`"${(m.body||'').slice(0,60)}"`).join('; ')}` : '',
+        jobs?.length ? 'Open jobs: ' + jobs.map((j:Record<string,string>) => j.customer_name + ': ' + j.status).join(', ') : '',
+        customers?.length ? 'Recent customers: ' + customers.map((c:Record<string,string>) => c.name).join(', ') : '',
+        msgs?.length ? 'Recent messages: ' + msgs.filter((m:Record<string,string>) => m.direction === 'inbound').slice(0,3).map((m:Record<string,string>) => '"' + (m.body || '').slice(0,60) + '"').join('; ') : '',
       ].filter(Boolean).join('\n')
       setShopContext(ctx)
     }
@@ -1204,22 +1224,34 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   const loadConnectors = useCallback(async () => {
     setConnectorsLoading(true)
     try {
-      const { data } = await supabase.from('connectors').select('*')
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const { data, error } = await supabase.from('connectors').select('*').eq('shop_id', shopId)
+      if (error) throw error
       const map: Record<string, ConnectorRecord> = {}
       for (const c of (data || [])) map[c.service] = c
       setConnectors(map)
-    } catch { /* ignore */ }
+    } catch (error) {
+      setConnectorToast(error instanceof Error ? error.message : 'Could not load connections')
+      setTimeout(() => setConnectorToast(''), 3000)
+    }
     setConnectorsLoading(false)
   }, [])
 
   const handleConnectorDisconnect = useCallback(async (service: string) => {
     setDisconnecting(service)
     try {
-      await supabase.from('connectors').update({ enabled: false, access_token: null, refresh_token: null, token_expires_at: null, page_id: null, page_access_token: null, metadata: {}, updated_at: new Date().toISOString() }).eq('service', service)
-      setConnectorToast(`${CONNECTOR_SERVICE_INFO[service]?.name || service} disconnected`)
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const { error } = await supabase.from('connectors').update({ enabled: false, access_token: null, refresh_token: null, token_expires_at: null, page_id: null, page_access_token: null, metadata: {}, updated_at: new Date().toISOString() }).eq('service', service).eq('shop_id', shopId)
+      if (error) throw error
+      setConnectorToast((CONNECTOR_SERVICE_INFO[service]?.name || service) + ' disconnected')
       setTimeout(() => setConnectorToast(''), 3000)
       await loadConnectors()
-    } catch { setConnectorToast('Disconnect failed'); setTimeout(() => setConnectorToast(''), 3000) }
+    } catch (error) {
+      setConnectorToast(error instanceof Error ? error.message : 'Disconnect failed')
+      setTimeout(() => setConnectorToast(''), 3000)
+    }
     setDisconnecting(null)
   }, [loadConnectors])
 
@@ -1893,7 +1925,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
           body: JSON.stringify({
             model: 'meta-llama/llama-3.2-11b-vision-instruct:free',
             messages: [
-              { role: 'system', content: 'You are Alpha AI for Alpha International Auto Center. The user uploaded a photo. Analyze it in context of the auto shop. If it shows vehicle damage, describe it and suggest repair steps and estimated cost. If it shows an engine or mechanical issue, diagnose it. If it shows something else, describe what you see.' },
+              { role: 'system', content: 'You are the configured shop's AI assistant. The user uploaded a photo. Analyze it in context of the auto shop. If it shows vehicle damage, describe it and suggest repair steps and estimated cost. If it shows an engine or mechanical issue, diagnose it. If it shows something else, describe what you see.' },
               { role: 'user', content: [
                 { type: 'image_url', image_url: { url: base64 } },
                 { type: 'text', text: 'Analyze this image for our auto shop.' }
@@ -1939,7 +1971,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         (shopContext ? `\n\nLive shop context:\n${shopContext}` : '') +
         (accumulated.length ? `\n\nCompleted steps so far:\n${accumulated.join('\n')}` : '') +
           `\n\nCRITICAL INSTRUCTIONS:\n1. NEW INVOICE vs REPRINT: When user says "new invoice" or "I need a invoice for [item]", CREATE a NEW document using proposeDocument. Do NOT reprint or lookup old invoices. A "new invoice" means build a fresh one from scratch.\n2. UNDERSTAND SIMPLE REQUESTS: If the user gives you a customer name and says they need something, DO IT. Don't ask them to repeat. Example: "I need a new invoice for thermostat, $280 flat for Asheanna" = immediately create a invoice with those details, no tax, flat total.\n3. CUSTOMER SEARCH: When the user mentions a customer name, phone, or asks about a customer, ALWAYS use searchCustomers first (NOT createCustomer). Show matching results with name, phone, email, jobs. If no match, say so and ask before creating.\n4. NEVER LOOP: Give ONE clear response per turn. If you're unsure, ask ONE clarifying question. Never repeat yourself.\n5. FLAT RATE: When user says "flat" or "no tax", set tax to 0 and use the exact total they gave.\n6. customer search results: when searchcustomers returns results, always show all matching customers with their full details (name, phone, email, vehicles). the search now includes vehicle info from jobs. never show just one customer if multiple matches exist. present each customer clearly so the user can identify the right one.
-7. INVOICE TYPE: When user asks for an invoice, always use proposeDocument with type Invoice. Invoice = proof of payment received. Invoice = bill for work done. Estimate = quote before work. The type field in proposeDocument MUST match exactly what the user asked for.
+7. DOCUMENT TYPE: An Invoice bills for work performed. A Receipt proves payment received. An Estimate is a quote before work. Use proposeDocument with the exact type the user requested; never call an invoice a receipt or claim payment was received without a recorded payment.
 8. HARD TOTALS: If user gives a total/flat/final price, that amount is the final document total. Keep the work itemized, but use flat labor amounts and no tax so the total equals exactly what the user said. Do not add old context prices into a new invoice unless the user clearly asks for separate charges.` +
                     `\n\nNATURAL LANGUAGE INTELLIGENCE - YOU ARE SMART, ACT LIKE IT:
 - The user is a busy mechanic. They speak casually with typos, slang, abbreviations. FIGURE IT OUT.
@@ -2022,7 +2054,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       // Parse JSON tool call ? strip code blocks, extract JSON
       let parsed: Record<string, unknown> | null = null
       try {
-        const cleaned = raw.replace(/\\\json\s*/gi, '').replace(/\\\\s*/g, '').trim()
+        const cleaned = raw.replace(/```(?:json)?/gi, '').trim()
         try { parsed = JSON.parse(cleaned) } catch {
           const match = cleaned.match(/\{[\s\S]*(?:"tool"|"tools")[\s\S]*\}/)
           if (match) { try { parsed = JSON.parse(match[0]) } catch { parsed = null } }
@@ -2178,9 +2210,10 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       }
         let searchResult = 'No results'
         try {
-          const r = await fetch(`/api/ai-search?q=${encodeURIComponent(parsed.query as string)}`)
+          const r = await fetch(`/api/ai-search?q=${encodeURIComponent(parsed.query as string)}`, { headers: await getAuthJsonHeaders(), signal: AbortSignal.timeout(20000) })
           const d = await r.json()
-                      searchResult = d.results?.slice(0, 8).map((r: Record<string,string>, i: number) => `Result ${i + 1}:\nTitle: ${r.title}\nURL: ${r.url}\nSource: ${r.source || ''}\nSnippet: ${r.snippet}`).join('\n\n') || 'No results'
+          if (d.search_succeeded === false) searchResult = d.notice || 'No verified search results were returned.'
+          if (d.search_succeeded !== false) searchResult = d.results?.slice(0, 8).map((r: Record<string,string>, i: number) => `Result ${i + 1}:\nTitle: ${r.title}\nURL: ${r.url}\nSource: ${r.source || ''}\nSnippet: ${r.snippet}`).join('\n\n') || 'No results'
             if (d.results?.length) {
               searchResult += '\n\nIMPORTANT: Use ONLY the exact URLs listed above when linking to products. Do NOT fabricate or guess URLs.'
             }
@@ -2208,7 +2241,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             if (d.related_searches?.length) {
               searchResult += '\n\nRelated searches: ' + (d.related_searches as string[]).join(' | ')
             }
-            addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'webSearch', status: 'ok', detail: `${d.results?.length || 0} result${d.results?.length === 1 ? '' : 's'}` })
+            addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'webSearch', status: d.search_succeeded === false ? 'error' : 'ok', detail: d.search_succeeded === false ? (d.notice || 'No verified search results') : `${d.results?.length || 0} result${d.results?.length === 1 ? '' : 's'}` })
             } catch (e) {
               searchResult = 'Search failed'
               addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'webSearch', status: 'error', detail: e instanceof Error ? e.message : 'Search failed' })
@@ -2223,60 +2256,49 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       if (parsed.tool === 'browse' || parsed.tool === 'webAutomation') {
         const browseUrl = (parsed.url || '') as string
         const browseTask = (parsed.task || parsed.query || '') as string
+        const automationType = String(parsed.type || 'scrape')
+        if (['browser', 'fill_form', 'click'].includes(automationType)) {
+          const pendingPayload: Record<string, unknown> = {
+            type: automationType,
+            url: browseUrl,
+            task: browseTask,
+            ...(typeof parsed.query === 'string' ? { query: parsed.query } : {}),
+            ...(Array.isArray(parsed.actions) ? { actions: parsed.actions.slice(0, 20) } : {}),
+          }
+          setPendingAction({ action: `webAutomation.${automationType}`, kind: 'browser', endpoint: '/api/web-automation', payload: pendingPayload })
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `webAutomation.${automationType}`, status: 'error', detail: 'Waiting for confirmation' })
+          const assistantMsg: ChatMessage = {
+            role: 'assistant',
+            content: 'This browser action is ready for review. Nothing was opened, clicked, or submitted. Confirm it below if you want me to run it.',
+          }
+          setMessages(prev => [...prev, assistantMsg])
+          saveToHistory([...history, assistantMsg])
+          setStatus('')
+          return
+        }
 
-        // Detect search-on-engine pattern: e.g. url=google.com + task="search for pikachu"
         const isSearchEngine = browseUrl && /^https?:\/\/(www\.)?(google|bing|duckduckgo|yahoo)\.(com|co\.\w+)(\/)?(\?.*)?$/i.test(browseUrl)
         const searchMatch = browseTask && browseTask.match(/search\s+(?:for\s+|on\s+google\s+for\s+)?(.+)/i)
         const extractedQuery = searchMatch ? searchMatch[1].replace(/\s+picture[s]?\s*$/i, ' pictures').trim() : ''
+        const requestType = isSearchEngine && extractedQuery ? 'search' : (browseUrl ? 'scrape' : 'search')
+        const requestUrl = requestType === 'search' ? undefined : (browseUrl || undefined)
+        const requestQuery = extractedQuery || browseTask
+        setStatus(requestType === 'search' ? `Searching for "${requestQuery}"...` : (browseUrl ? `Browsing ${browseUrl}...` : 'Browsing...'))
 
-        // If browsing a search engine with a search task, simulate full search flow
-        if (isSearchEngine && extractedQuery) {
-          const engineUrl = browseUrl.replace(/\?.*/,'').replace(/\/?$/,'')
-          const resultsUrl = `https://duckduckgo.com/?q=${encodeURIComponent(extractedQuery)}`
-          const engineScreenshot = `/api/screenshot?url=${encodeURIComponent(engineUrl)}`
-          const resultsScreenshot = `/api/screenshot?url=${encodeURIComponent(resultsUrl)}`
-          setStatus(`Searching Google for "${extractedQuery}"...`)
-          // Generate multi-step browser panel immediately
-          const searchSteps: BrowserPanelStep[] = [
-            { action: `Navigating to ${engineUrl}...`, screenshotUrl: engineScreenshot, url: engineUrl, title: 'Google' },
-            { action: `Typing: "${extractedQuery}"`, screenshotUrl: engineScreenshot, url: engineUrl, title: 'Google' },
-            { action: `Searching for "${extractedQuery}"...`, screenshotUrl: resultsScreenshot, url: resultsUrl, title: `${extractedQuery} - Search Results` },
-          ]
-          setMessages(prev => [...prev, { role: 'browser' as const, content: '', browserSteps: searchSteps }])
-          // Also scrape results for AI answer
-          let browseResult = ''
-          try {
-            const br = await fetch('/api/web-automation', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ type: 'scrape', url: resultsUrl, task: browseTask }),
-              signal: AbortSignal.timeout(28000),
-            })
-            const bd = await br.json()
-            browseResult = bd.analysis || bd.text?.slice(0, 1000) || `Searched Google for "${extractedQuery}"`
-          } catch { browseResult = `Searched Google for "${extractedQuery}"` }
-          accumulated.push(`[Browse: "Search Google for ${extractedQuery}"]\n${browseResult}`)
-          agentMessages.push({ role: 'assistant', content: raw })
-          agentMessages.push({ role: 'user', content: `Browse result for search "${extractedQuery}":\n${browseResult}\n\nPresent this to the user clearly.` })
-          setStatus('')
-          continue
-        }
-
-        setStatus(browseUrl ? `Browsing ${browseUrl}...` : 'Browsing...')
         let browseResult = ''
         let browseSteps: BrowserPanelStep[] = []
         try {
           const br = await fetch('/api/web-automation', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: browseUrl ? 'scrape' : 'search', url: browseUrl || undefined, query: browseTask || undefined, task: browseTask || undefined }),
+            headers: await getAuthJsonHeaders(),
+            body: JSON.stringify({ type: requestType, url: requestUrl, query: requestQuery || undefined, task: browseTask || undefined }),
             signal: AbortSignal.timeout(28000),
           })
           const bd = await br.json()
-          if (bd.ok) {
+          if (bd.ok && bd.search_succeeded !== false) {
             browseResult = bd.analysis || bd.text?.slice(0, 1000) || JSON.stringify(bd).slice(0, 400)
             browseSteps = (bd.steps || []) as BrowserPanelStep[]
-            if (browseSteps.length === 0 && browseUrl) {
+            if (browseSteps.length === 0 && browseUrl && requestType !== 'search') {
               const sUrl = `/api/screenshot?url=${encodeURIComponent(browseUrl)}`
               browseSteps = [
                 { action: `Navigating to ${browseUrl}...`, screenshotUrl: sUrl, url: browseUrl, title: bd.title || browseUrl },
@@ -2284,6 +2306,8 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
                 ...(browseResult ? [{ action: `Done: ${browseResult.slice(0, 120)}`, screenshotUrl: sUrl, url: browseUrl, title: bd.title || browseUrl }] : [])
               ] as BrowserPanelStep[]
             }
+          } else if (bd.ok && bd.search_succeeded === false) {
+            browseResult = bd.notice || 'No verified search results were returned.'
           } else {
             browseResult = bd.error || 'Browse failed'
           }
@@ -2298,15 +2322,24 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         continue
       }
 
-      // DB Action - execute silently, feed result back to AI
+      // DB writes and external side effects always stop at a confirmation card.
       if (parsed.tool === 'action') {
         const actionName = parsed.action as string
-        const confirmationActions = new Set(['sendEstimateEmail', 'deleteRecord', 'voidDocument', 'convertEstimateToInvoice'])
+        const confirmationActions = new Set([
+          'createCustomer', 'createJob', 'createInvoice', 'updateJobStatus', 'updateCustomer',
+          'voidDocument', 'deleteRecord', 'scheduleFollowUp', 'sendEstimateEmail',
+          'convertEstimateToInvoice', 'addStaff', 'removeStaff', 'updateDocument',
+          'createAppointment', 'deleteAppointment', 'updateAppointment', 'updateInventory',
+        ])
         if (confirmationActions.has(actionName)) {
-          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `action.${actionName}`, status: 'error', detail: 'Blocked until user confirmation' })
+          const payload = (parsed.payload && typeof parsed.payload === 'object' && !Array.isArray(parsed.payload))
+            ? parsed.payload as Record<string, unknown>
+            : {}
+          setPendingAction({ action: actionName, payload })
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `action.${actionName}`, status: 'error', detail: 'Waiting for confirmation' })
           const assistantMsg: ChatMessage = {
             role: 'assistant',
-            content: `${actionName} is ready, but I need confirmation before running it. I will not send, delete, void, convert, post, call, or charge anything without you confirming first.`,
+            content: `${actionName} is prepared for review. Nothing was changed. Confirm it below if you want me to run it.`,
           }
           setMessages(prev => [...prev, assistantMsg])
           saveToHistory([...history, assistantMsg])
@@ -2396,31 +2429,50 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       // Connector tools - Facebook, Instagram, Google Business, Google Calendar
       if (parsed.tool === 'connector') {
         const connectorName = parsed.connector as string
-        const connAction    = parsed.action as string
-        const connPayload   = (parsed.payload || {}) as Record<string, unknown>
-        setStatus(`Running ${connectorName}...`)
+        const connAction = parsed.action as string
+        const connPayload = (parsed.payload || {}) as Record<string, unknown>
+        const endpointMap: Record<string, string> = {
+          facebook: '/api/connectors/facebook',
+          instagram: '/api/connectors/instagram',
+          google_business: '/api/connectors/google-business',
+          google_calendar: '/api/connectors/google-calendar',
+        }
+        const endpoint = endpointMap[connectorName]
+        if (!endpoint) {
+          const connResult = `Unknown connector: ${connectorName}`
+          accumulated.push(`[${connectorName}.${connAction}]: ${connResult}`)
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: `${connectorName} ${connAction} result: ${connResult}\n\nContinue to the next step silently.` })
+          continue
+        }
+        const readOnlyConnectorActions = new Set([
+          'get_posts', 'get_comments', 'get_messages', 'get_reviews', 'list_events', 'debug',
+        ])
+        if (!readOnlyConnectorActions.has(connAction)) {
+          const pendingPayload: Record<string, unknown> = { action: connAction, ...connPayload }
+          setPendingAction({ action: `${connectorName}.${connAction}`, kind: 'connector', endpoint, payload: pendingPayload })
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `connector.${connectorName}.${connAction}`, status: 'error', detail: 'Waiting for confirmation' })
+          const assistantMsg: ChatMessage = {
+            role: 'assistant',
+            content: `${connectorName} ${connAction} is prepared for review. Nothing was sent or published. Confirm it below if you want me to run it.`,
+          }
+          setMessages(prev => [...prev, assistantMsg])
+          saveToHistory([...history, assistantMsg])
+          setStatus('')
+          return
+        }
+        setStatus(`Reading ${connectorName}...`)
         let connResult = ''
         try {
-          const endpointMap: Record<string, string> = {
-            facebook:        '/api/connectors/facebook',
-            instagram:       '/api/connectors/instagram',
-            google_business: '/api/connectors/google-business',
-            google_calendar: '/api/connectors/google-calendar',
-          }
-          const endpoint = endpointMap[connectorName]
-          if (!endpoint) {
-            connResult = `Unknown connector: ${connectorName}`
-          } else {
-            const r = await fetch(endpoint, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: connAction, ...connPayload }),
-            })
-            const d = await r.json()
-            connResult = d.ok
-              ? `Success: ${JSON.stringify(d.data).slice(0, 500)}`
-              : `Failed: ${d.error}`
-          }
+          const r = await fetch(endpoint, {
+            method: 'POST',
+            headers: await getAuthJsonHeaders(),
+            body: JSON.stringify({ action: connAction, ...connPayload }),
+          })
+          const d = await r.json().catch(() => ({}))
+          connResult = r.ok && d.ok !== false && !d.error
+            ? `Success: ${JSON.stringify(d.data).slice(0, 500)}`
+            : `Failed: ${d.error || `Connector returned ${r.status}`}`
         } catch (err) {
           connResult = `Error: ${err instanceof Error ? err.message : 'Unknown'}`
         }
@@ -2430,43 +2482,60 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         continue
       }
 
-if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; try { const r = await fetch('/api/automations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create', name: parsed.name || 'Scheduled Task', description: parsed.description || '', schedule: parsed.schedule, task_prompt: parsed.task_prompt }) }); const d = await r.json(); sr = d.ok ? `Scheduled "${d.data?.name}" at ${d.data?.schedule}` : `Failed: ${d.error}` } catch (e) { sr = `Error: ${e instanceof Error ? e.message : 'Unknown'}` } accumulated.push(`[scheduleTask]: ${sr}`); agentMessages.push({ role: 'assistant', content: raw }); agentMessages.push({ role: 'user', content: `Schedule result: ${sr}\nContinue silently.` }); continue }
+      if (parsed.tool === 'scheduleTask') {
+        const pendingPayload: Record<string, unknown> = {
+          action: 'create',
+          name: parsed.name || 'Scheduled Task',
+          description: parsed.description || '',
+          schedule: parsed.schedule,
+          task_prompt: parsed.task_prompt,
+        }
+        setPendingAction({ action: 'scheduleTask', kind: 'automation', endpoint: '/api/automations', payload: pendingPayload })
+        addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'scheduleTask', status: 'error', detail: 'Waiting for confirmation' })
+        const assistantMsg: ChatMessage = {
+          role: 'assistant',
+          content: 'This scheduled task is ready for review. Nothing was scheduled. Confirm it below if you want me to create it.',
+        }
+        setMessages(prev => [...prev, assistantMsg])
+        saveToHistory([...history, assistantMsg])
+        setStatus('')
+        return
+      }
 
       // -- Automation Control -----------------------------------------------
       if (parsed.tool === 'automationControl') {
+        const acAction = parsed.action as string
+        if (acAction !== 'status') {
+          const pendingPayload: Record<string, unknown> = {
+            action: acAction,
+            ...(parsed.id ? { id: parsed.id } : {}),
+            ...(acAction === 'toggle' ? { enabled: parsed.enabled } : {}),
+          }
+          setPendingAction({ action: `automationControl.${acAction}`, kind: 'automation', endpoint: '/api/automations', payload: pendingPayload })
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `automationControl.${acAction}`, status: 'error', detail: 'Waiting for confirmation' })
+          const assistantMsg: ChatMessage = {
+            role: 'assistant',
+            content: `Automation ${acAction} is ready for review. Nothing was changed or run. Confirm it below if you want me to continue.`,
+          }
+          setMessages(prev => [...prev, assistantMsg])
+          saveToHistory([...history, assistantMsg])
+          setStatus('')
+          return
+        }
         setStatus('Checking automations...')
         let acResult = ''
         try {
-          const acAction = parsed.action as string
-          if (acAction === 'status') {
-            const r = await fetch('/api/automations')
-            const d = await r.json()
-            acResult = d.ok ? `Automations: ${JSON.stringify((d.data || []).map((a: Record<string,unknown>) => ({ name: a.name, enabled: a.enabled, last_run: a.last_run }))).slice(0, 600)}` : `Failed: ${d.error}`
-          } else if (acAction === 'toggle') {
-            const r = await fetch('/api/automations', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'toggle', id: parsed.id, enabled: parsed.enabled }),
-            })
-            const d = await r.json()
-            acResult = d.ok ? `Automation ${parsed.enabled ? 'enabled' : 'disabled'}: ${d.data?.name || parsed.id}` : `Failed: ${d.error}`
-          } else if (acAction === 'run_now') {
-            const r = await fetch('/api/automations', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'run_now', id: parsed.id }),
-            })
-            const d = await r.json()
-            acResult = d.ok ? `Automation triggered: ${d.data?.name || parsed.id}` : `Failed: ${d.error}`
-          } else {
-            acResult = `Unknown automationControl action: ${acAction}`
-          }
+          const r = await fetch('/api/automations', { headers: await getAuthJsonHeaders() })
+          const d = await r.json().catch(() => ({}))
+          acResult = r.ok && d.ok !== false
+            ? `Automations: ${JSON.stringify((d.data || []).map((a: Record<string,unknown>) => ({ name: a.name, enabled: a.enabled, last_run: a.last_run }))).slice(0, 600)}`
+            : `Failed: ${d.error || `Automations returned ${r.status}`}`
         } catch (err) {
           acResult = `Error: ${err instanceof Error ? err.message : 'Unknown'}`
         }
-        accumulated.push(`[automationControl.${parsed.action}]: ${acResult}`)
+        accumulated.push(`[automationControl.status]: ${acResult}`)
         agentMessages.push({ role: 'assistant', content: raw })
-        agentMessages.push({ role: 'user', content: `Automation result: ${acResult}\n\nContinue silently.` })
+        agentMessages.push({ role: 'user', content: `Automation status result: ${acResult}\\n\\nContinue silently.` })
         setStatus('')
         continue
       }
@@ -2908,6 +2977,56 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
       showToast('Failed to send message: ' + (e instanceof Error ? e.message : 'Unknown error'))
     }
     setPendingSms(null); setSendingSms(false)
+  }
+
+  const confirmAction = async () => {
+    if (!pendingAction || confirmingAction) return
+    setConfirmingAction(true)
+    try {
+      const mode = pendingAction.kind || 'ai'
+      let endpoint = '/api/ai-action'
+      let requestBody: Record<string, unknown> = {
+        action: pendingAction.action,
+        payload: pendingAction.payload,
+      }
+      if (mode === 'connector') {
+        endpoint = pendingAction.endpoint || ''
+        requestBody = pendingAction.payload
+      } else if (mode === 'automation') {
+        endpoint = '/api/automations'
+        requestBody = pendingAction.payload
+      } else if (mode === 'browser') {
+        endpoint = '/api/web-automation'
+        requestBody = { ...pendingAction.payload, approval: 'confirm' }
+      }
+      if (!endpoint) throw new Error('No action endpoint was provided')
+      const headers = await getAuthJsonHeaders()
+      headers['X-AI-Approval'] = 'confirm'
+      if (mode !== 'ai') headers['X-AI-Source'] = 'ai'
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(requestBody),
+      })
+      const data = await res.json().catch(() => ({}))
+      const succeeded = res.ok && data.ok !== false && data.success !== false && !data.error
+      if (!succeeded) {
+        const message = data.error || 'Action failed'
+        addToolEvent({ agent: 'Alpha AI', tool: `action.${pendingAction.action}`, status: 'error', detail: message })
+        setMessages(prev => [...prev, { role: 'assistant', content: `I did not complete ${pendingAction.action}: ${message}` }])
+      } else {
+        const detail = data.message || data.data?.message || (data.executed === false
+          ? 'A proposal was created; no external action was executed.'
+          : 'Confirmed action completed')
+        addToolEvent({ agent: 'Alpha AI', tool: `action.${pendingAction.action}`, status: 'ok', detail })
+        setMessages(prev => [...prev, { role: 'assistant', content: `${pendingAction.action}: ${detail}` }])
+      }
+    } catch (error) {
+      setMessages(prev => [...prev, { role: 'assistant', content: `I did not complete ${pendingAction.action}: ${error instanceof Error ? error.message : 'Unknown error'}` }])
+    } finally {
+      setPendingAction(null)
+      setConfirmingAction(false)
+    }
   }
 
   // Feature 4: Save document from proposal card (uses create-estimate which handles all types)
@@ -3515,6 +3634,21 @@ if (parsed.tool === 'scheduleTask') { setStatus('Scheduling...'); let sr = ''; t
                   )}
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Shop action confirmation card */}
+        {pendingAction && (
+          <div className="flex justify-start">
+            <div className="max-w-[90%] bg-bg-card border border-amber-400/40 rounded-xl px-4 py-3">
+              <p className="text-xs font-bold uppercase tracking-wider text-amber-300 mb-2">Confirm shop action</p>
+              <p className="text-sm text-text-secondary mb-2">{pendingAction.action} is ready. No change has happened yet.</p>
+              <pre className="max-h-36 overflow-auto bg-bg-hover rounded-lg p-3 text-xs mb-3 whitespace-pre-wrap">{JSON.stringify(pendingAction.payload, null, 2)}</pre>
+              <div className="flex gap-2">
+                <button onClick={confirmAction} disabled={confirmingAction} className="btn btn-primary btn-sm">{confirmingAction ? 'Running...' : 'Confirm and run'}</button>
+                <button onClick={() => setPendingAction(null)} disabled={confirmingAction} className="btn btn-secondary btn-sm">Cancel</button>
+              </div>
             </div>
           </div>
         )}

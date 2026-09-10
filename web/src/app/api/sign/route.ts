@@ -4,6 +4,7 @@ import { getServiceClient } from '@/lib/supabase'
 import { sendEmail } from '@/lib/email'
 import { getLaborFlatAmount, laborLineTotal } from '@/lib/document-money'
 import crypto from 'crypto'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // normalizeDocForSigning
@@ -25,11 +26,13 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
   if (!doc) return doc as never
   const parts = (doc.parts as Record<string, unknown>[]) || []
   const labors = (doc.labors as Record<string, unknown>[]) || []
-  const taxRate = Number(doc.tax_rate) || 8.25
+  const rawTaxRate = Number(doc.tax_rate)
+  const taxRate = Number.isFinite(rawTaxRate) && rawTaxRate >= 0 ? rawTaxRate : 8.25
   const applyTax = doc.apply_tax !== false
   const shopSupplies = Number(doc.shop_supplies) || 0
   const sublet = Number(doc.sublet) || 0
-  const deposit = Number(doc.deposit) || 0
+  const rawAmountPaid = Number(doc.amount_paid)
+  const amountPaid = Number.isFinite(rawAmountPaid) && rawAmountPaid >= 0 ? rawAmountPaid : 0
 
   const partsTotal = parts.reduce(
     (s, p) => s + (Number(p.qty) || 1) * (Number(p.unitPrice) || 0),
@@ -48,7 +51,7 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
   // Prefer an explicitly persisted total if present and non-zero, otherwise compute.
   const persistedTotal = Number(doc.total) || 0
   const total = persistedTotal > 0 ? persistedTotal : subtotal + taxAmount
-  const balanceDue = Math.max(total - deposit, 0)
+  const balanceDue = Math.max(total - amountPaid, 0)
 
   // Build line_items from parts + labors so the sign page renders rows.
   // Keep any existing line_items if already populated.
@@ -99,16 +102,42 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
   }
 }
 
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 // One-click approval from the estimate email. Uses the same token as signing —
 // the customer taps Approve and the estimate is marked approved, no pen needed.
+async function loadSignatureDocument(db: ReturnType<typeof getServiceClient>, token: string) {
+  const { data: signature, error: signatureError } = await db
+    .from('signatures')
+    .select('*')
+    .eq('token', token)
+    .maybeSingle()
+  if (signatureError || !signature) return { signature: null, document: null, error: signatureError }
+  if (!signature.shop_id || !signature.document_id) return { signature, document: null, error: new Error('Signing link is missing tenant metadata') }
+  const { data: document, error: documentError } = await db
+    .from('documents')
+    .select('*')
+    .eq('id', signature.document_id)
+    .eq('shop_id', signature.shop_id)
+    .maybeSingle()
+  return { signature, document, error: documentError }
+}
+
 function approvalPage(title: string, message: string) {
   return new NextResponse(
-    `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title></head>
+    `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head>
 <body style="font-family:Arial,sans-serif;background:#f4f4f4;margin:0;padding:40px 16px;text-align:center">
 <div style="max-width:440px;margin:0 auto;background:#fff;border-radius:12px;padding:32px 24px">
 <div style="font-size:44px">✅</div>
-<h2 style="margin:12px 0 8px">${title}</h2>
-<p style="color:#555;margin:0">${message}</p>
+<h2 style="margin:12px 0 8px">${escapeHtml(title)}</h2>
+<p style="color:#555;margin:0">${escapeHtml(message)}</p>
 </div></body></html>`,
     { headers: { 'content-type': 'text/html; charset=utf-8' } },
   )
@@ -118,20 +147,21 @@ export async function GET(req: NextRequest) {
   const approveToken = req.nextUrl.searchParams.get('approve')
   if (approveToken) {
     const db = getServiceClient()
-    const { data: sig } = await db.from('signatures').select('*, documents(*)').eq('token', approveToken).single()
-    if (!sig?.documents) return approvalPage('Link not found', 'This approval link is invalid. Call the shop and we will sort it out.')
+    const { signature: sig, document: doc, error: loadError } = await loadSignatureDocument(db, approveToken)
+    if (loadError || !sig || !doc) return approvalPage('Link not found', 'This approval link is invalid. Call the shop and we will sort it out.')
     if (sig.expires_at && new Date(sig.expires_at) < new Date()) {
       return approvalPage('Link expired', 'This approval link has expired. Call the shop for a fresh one.')
     }
-    const doc = sig.documents as Record<string, unknown>
     if (!doc.approved_at) {
-      try {
-        await db.from('documents').update({
-          approved_at: new Date().toISOString(),
-          approved_by: sig.customer_email || 'customer',
-          ...(doc.type === 'Estimate' ? { status: 'Approved' } : {}),
-        }).eq('id', doc.id as string)
-      } catch { /* approved_at column missing — page still confirms receipt */ }
+      const { error: approvalError } = await db.from('documents').update({
+        approved_at: new Date().toISOString(),
+        approved_by: sig.customer_email || 'customer',
+        ...(doc.type === 'Estimate' ? { status: 'Approved' } : {}),
+      }).eq('id', doc.id as string).eq('shop_id', sig.shop_id)
+      if (approvalError) {
+        console.error('[sign] approval update failed:', approvalError.message)
+        return approvalPage('Approval not recorded', 'We could not save your approval. Please try again or call the shop.')
+      }
     }
     return approvalPage('You\'re approved!', `Thanks — ${String(doc.type || 'document')} #${String(doc.doc_number || '')} is approved and we\'ll get started. We\'ll text you when it\'s ready.`)
   }
@@ -139,39 +169,39 @@ export async function GET(req: NextRequest) {
   const token = req.nextUrl.searchParams.get('token')
   if (!token) return NextResponse.json({ error: 'Token required' }, { status: 400 })
   const db = getServiceClient()
-  const { data: sig, error } = await db
-    .from('signatures')
-    .select('*, documents(*)')
-    .eq('token', token)
-    .single()
-  if (error || !sig) return NextResponse.json({ error: 'This signing link is invalid.' }, { status: 404 })
+  const { signature: sig, document: doc, error } = await loadSignatureDocument(db, token)
+  if (error || !sig || !doc) return NextResponse.json({ error: 'This signing link is invalid.' }, { status: 404 })
   if (sig.signed_at)
     return NextResponse.json({ already_signed: true, signed_at: sig.signed_at, signer_name: sig.signer_name })
   if (sig.expires_at && new Date(sig.expires_at) < new Date()) {
     return NextResponse.json({ error: 'This signing link has expired' }, { status: 410 })
   }
   // Normalize so the sign page sees line_items + total, not $0.00.
-  const normalized = sig.documents ? normalizeDocForSigning(sig.documents) : sig.documents
+  const normalized = normalizeDocForSigning(doc)
   return NextResponse.json({ doc: normalized, signature_id: sig.id })
 }
 
 export async function POST(req: NextRequest) {
-  const body = await req.json()
+  const body = await req.json().catch(() => null)
+  if (!body || typeof body !== 'object') return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
   const db = getServiceClient()
 
   // ── SEND signature request ────────────────────────────────────────────────
   if (body.action === 'send') {
+    const auth = await getAuthedShop()
+    if (!auth) return unauthorized()
     const { documentId } = body as { documentId: string }
+    if (typeof documentId !== 'string' || !documentId) return NextResponse.json({ error: 'documentId required' }, { status: 400 })
     const [{ data: docRaw }, { data: settings }] = await Promise.all([
-      db.from('documents').select('*').eq('id', documentId).single(),
-      db.from('settings').select('*').limit(1).single(),
+      db.from('documents').select('*').eq('id', documentId).eq('shop_id', auth.shopId).maybeSingle(),
+      db.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle(),
     ])
     if (!docRaw) return NextResponse.json({ error: 'Document not found' }, { status: 404 })
     const doc = normalizeDocForSigning(docRaw)
 
     let email = (doc.customer_email as string) || ''
     if (!email && doc.customer_id) {
-      const { data: cust } = await db.from('customers').select('email').eq('id', doc.customer_id).single()
+      const { data: cust } = await db.from('customers').select('email').eq('id', doc.customer_id).eq('shop_id', auth.shopId).maybeSingle()
       email = cust?.email || ''
     }
     if (!email) return NextResponse.json({ error: 'No email address on file for this customer' }, { status: 400 })
@@ -184,6 +214,7 @@ export async function POST(req: NextRequest) {
     const token = crypto.randomUUID()
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
     const { error: insertErr } = await db.from('signatures').insert({
+      shop_id: auth.shopId,
       token,
       document_id: documentId,
       customer_email: email,
@@ -191,8 +222,8 @@ export async function POST(req: NextRequest) {
     })
     if (insertErr) return NextResponse.json({ error: insertErr.message }, { status: 500 })
 
-    const shopName = settings?.shop_name || 'Alpha International Auto Center'
-    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://alpha-ai-desk.vercel.app'
+    const shopName = settings?.shop_name || 'your shop'
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || req.nextUrl.origin
     const signUrl = `${siteUrl}/sign/${token}`
     const total = Number(doc.total || 0).toFixed(2)
     const vehicle = [doc.vehicle_year, doc.vehicle_make, doc.vehicle_model].filter(Boolean).join(' ') || ''
@@ -269,38 +300,51 @@ export async function POST(req: NextRequest) {
       console.error('Sign email error:', emailError)
     }
 
-    await db.from('documents').update({ signature_requested_at: new Date().toISOString() }).eq('id', documentId)
-    const siteUrl2 = process.env.NEXT_PUBLIC_SITE_URL || 'https://alpha-ai-desk.vercel.app'
-    return NextResponse.json({ success: true, email, token, signUrl: `${siteUrl2}/sign/${token}`, emailError })
+    const { error: requestUpdateError } = await db.from('documents').update({ signature_requested_at: new Date().toISOString() }).eq('id', documentId).eq('shop_id', auth.shopId)
+    if (requestUpdateError) return NextResponse.json({ error: 'Signature request created, but the document could not be updated' }, { status: 500 })
+    const siteUrl2 = process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || req.nextUrl.origin
+    return NextResponse.json({ success: !emailError, emailSent: !emailError, email, token, signUrl: `${siteUrl2}/sign/${token}`, emailError })
   }
 
   // ── COMPLETE signature ─────────────────────────────────────────────────────
   if (body.action === 'complete') {
     const { token, signatureData, signerName } = body as { token: string; signatureData: string; signerName: string }
-    const { data: sig, error } = await db.from('signatures').select('*, documents(*)').eq('token', token).single()
+    if (typeof token !== 'string' || !token || typeof signerName !== 'string' || signerName.trim().length > 160) {
+      return NextResponse.json({ error: 'Valid token and signer name required' }, { status: 400 })
+    }
+    if (typeof signatureData !== 'string' || signatureData.length > 500000 || !/^data:image\/(png|jpeg|jpg);base64,[A-Za-z0-9+/=]+$/.test(signatureData)) {
+      return NextResponse.json({ error: 'Invalid signature image' }, { status: 400 })
+    }
+    const { signature: sig, document: docRecord, error } = await loadSignatureDocument(db, token)
     if (error || !sig) return NextResponse.json({ error: 'Invalid signing link' }, { status: 404 })
     if (sig.signed_at) return NextResponse.json({ error: 'This document has already been signed' }, { status: 409 })
     if (sig.expires_at && new Date(sig.expires_at) < new Date()) {
       return NextResponse.json({ error: 'This signing link has expired' }, { status: 410 })
     }
+    if (!docRecord || typeof docRecord !== 'object') {
+      return NextResponse.json({ error: 'The document for this signing link is unavailable' }, { status: 404 })
+    }
 
     const now = new Date().toISOString()
     const ip = req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || ''
-    await db.from('signatures').update({
+    const { data: signedSignature, error: signatureUpdateError } = await db.from('signatures').update({
       signed_at: now,
-      signer_name: signerName,
+      signer_name: signerName.trim(),
       signature_data: signatureData,
       ip_address: ip,
-    }).eq('token', token)
+    }).eq('token', token).eq('shop_id', sig.shop_id).is('signed_at', null).select('id').maybeSingle()
+    if (signatureUpdateError) return NextResponse.json({ error: 'Could not save signature' }, { status: 500 })
+    if (!signedSignature) return NextResponse.json({ error: 'This document has already been signed' }, { status: 409 })
 
-    const doc = normalizeDocForSigning(sig.documents)
-    await db.from('documents').update({
+    const doc = normalizeDocForSigning(docRecord)
+    const { error: documentUpdateError } = await db.from('documents').update({
       signature_signed_at: now,
-      signature_signer_name: signerName,
-    }).eq('id', sig.document_id)
+      signature_signer_name: signerName.trim(),
+    }).eq('id', sig.document_id).eq('shop_id', sig.shop_id)
+    if (documentUpdateError) return NextResponse.json({ error: 'Signature saved, but document status could not be updated' }, { status: 500 })
 
-    const { data: settings } = await db.from('settings').select('*').limit(1).single()
-    const shopName = settings?.shop_name || 'Alpha International Auto Center'
+    const { data: settings } = await db.from('settings').select('*').eq('shop_id', sig.shop_id).maybeSingle()
+    const shopName = settings?.shop_name || 'your shop'
     const vehicle = [doc.vehicle_year, doc.vehicle_make, doc.vehicle_model].filter(Boolean).join(' ') || ''
     const total = Number(doc.total || 0).toFixed(2)
 

@@ -160,9 +160,11 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const loadNotifications = async () => {
     setNotifLoading(true)
     try {
+      const shopId = (await getShopProfile())?.id
+      if (!shopId) { setNotifications([]); return }
       const [{ data: msgs }, { data: calls }] = await Promise.all([
-        supabase.from('messages').select('id,body,from_address,created_at').eq('direction','inbound').eq('read',false).order('created_at',{ascending:false}).limit(5),
-        supabase.from('calls').select('id,from_number,start_time').eq('direction','inbound').lt('duration_secs',15).order('start_time',{ascending:false}).limit(5)
+        supabase.from('messages').select('id,body,from_address,created_at').eq('shop_id', shopId).eq('direction','inbound').eq('read',false).order('created_at',{ascending:false}).limit(5),
+        supabase.from('calls').select('id,from_number,start_time').eq('shop_id', shopId).eq('direction','inbound').lt('duration_secs',15).order('start_time',{ascending:false}).limit(5)
       ])
       const items: Notification[] = []
       for (const m of (msgs||[])) {

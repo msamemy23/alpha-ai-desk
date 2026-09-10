@@ -15,12 +15,10 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
-import { AI_BASE_URLS, normalizeAiModel } from '@/lib/ai-config'
+import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 
 const SERPER_KEY = process.env.SERPER_API_KEY || ''
-const AI_KEY = process.env.OPENROUTER_API_KEY || ''
-const AI_URL = 'https://openrouter.ai/api/v1/chat/completions'
-const AI_MODEL = normalizeAiModel(process.env.AI_MODEL, AI_BASE_URLS.OPENROUTER)
 
 // ─── Business categories for Alpha AI prospect discovery ────────────────────
 // These are business types with high call volume, vehicle fleets, or field teams
@@ -140,8 +138,8 @@ async function deepResearchBusiness(biz: any, industry: string) {
   }
 }
 
-async function aiAnalyzeLeads(businesses: any[], city: string, isAlphaAiProspects: boolean) {
-  if (!AI_KEY || !businesses.length) return []
+async function aiAnalyzeLeads(businesses: any[], city: string, isAlphaAiProspects: boolean, aiKey: string, aiUrl: string, aiModel: string, shopName: string) {
+  if (!aiKey || !businesses.length) return []
   const systemPrompt = isAlphaAiProspects
     ? `You are a sales intelligence analyst for Alpha AI — an AI phone answering service that helps businesses never miss a call. 
 Analyze these local businesses and score them as potential Alpha AI customers.
@@ -169,7 +167,7 @@ Return a JSON array where each object has ALL these fields:
   "outreach_channel": "phone/email/both"
 }
 Focus on businesses with high inbound call volume, seasonal surges, or after-hours issues.`
-    : `You are a competitive intelligence analyst for Alpha International Auto Center in Houston TX.
+    : `You are a competitive intelligence analyst for ${shopName} in ${city}.
 Analyze these competitor auto shops and create DEEP profiles.
 Return a JSON array where each object has ALL these fields:
 {
@@ -195,11 +193,11 @@ Return a JSON array where each object has ALL these fields:
 }`
 
   try {
-    const res = await fetchT(AI_URL, {
+    const res = await fetchT(aiUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AI_KEY}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${aiKey}` },
       body: JSON.stringify({
-        model: AI_MODEL,
+        model: aiModel,
         messages: [{
           role: 'system', content: systemPrompt
         }, {
@@ -209,6 +207,7 @@ Return a JSON array where each object has ALL these fields:
         temperature: 0.3, max_tokens: 4000
       })
     }, 45000)
+    if (!res.ok) return []
     const data = await res.json()
     const content = data.choices?.[0]?.message?.content || '[]'
     return JSON.parse(content.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
@@ -229,8 +228,21 @@ function deduplicateByName(items: any[], existingNames: Set<string>) {
 
 export async function POST(req: NextRequest) {
   try {
-    const { city = 'Houston TX', scan_type = 'both', categories } = await req.json()
+    const body = await req.json().catch(() => ({}))
+    const auth = await getRouteShop(req, body.shopId)
+    if (!auth) return unauthorized()
+    const { city: rawCity = 'Houston TX', scan_type = 'both', categories } = body
+    const city = typeof rawCity === 'string' ? rawCity.trim().slice(0, 120) || 'Houston TX' : 'Houston TX'
+    if (!['competitors', 'alpha_ai', 'both'].includes(scan_type)) return NextResponse.json({ error: 'Invalid scan_type' }, { status: 400 })
     const db = getServiceClient()
+    const { data: settings, error: settingsError } = await db.from('settings').select('ai_api_key,ai_base_url,ai_model,shop_name').eq('shop_id', auth.shopId).maybeSingle()
+    if (settingsError) throw settingsError
+    const shopName = typeof settings?.shop_name === 'string' && settings.shop_name.trim() ? settings.shop_name.trim().slice(0, 160) : 'this shop'
+    const aiKey = typeof settings?.ai_api_key === 'string' ? settings.ai_api_key.trim() : ''
+    if (!aiKey) return NextResponse.json({ error: 'AI is not configured for this shop' }, { status: 503 })
+    const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
+    const aiUrl = aiBase + '/chat/completions'
+    const aiModel = normalizeAiModel(settings?.ai_model, aiBase)
 
     const allLeads: any[] = []
 
@@ -248,7 +260,7 @@ export async function POST(req: NextRequest) {
 
       if (comps.length > 0) {
         const researched = await Promise.all(comps.slice(0, 6).map(c => deepResearchBusiness(c, 'auto repair')))
-        const analyzed = await aiAnalyzeLeads(researched, city, false)
+        const analyzed = await aiAnalyzeLeads(researched, city, false, aiKey, aiUrl, aiModel, shopName)
         const sorted = (analyzed || []).sort((a: any, b: any) => (b.fleet_score || 0) - (a.fleet_score || 0)).slice(0, 12)
 
         for (const l of sorted) {
@@ -282,6 +294,7 @@ export async function POST(req: NextRequest) {
             notes: JSON.stringify(l),
             follow_up_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
             created_at: new Date().toISOString(),
+            shop_id: auth.shopId,
           })
         }
       }
@@ -290,7 +303,7 @@ export async function POST(req: NextRequest) {
     // ── SCAN 2: Alpha AI prospects (all high-call-volume business types) ──────
     if (scan_type === 'alpha_ai' || scan_type === 'both') {
       // Pick a random mix of categories — weighted toward highest value
-      const selectedCategories = categories
+      const selectedCategories = Array.isArray(categories)
         ? ALPHA_AI_CATEGORIES.filter(c => categories.includes(c.industry))
         : ALPHA_AI_CATEGORIES.sort(() => Math.random() - 0.5).slice(0, 6)
 
@@ -312,7 +325,7 @@ export async function POST(req: NextRequest) {
       if (allProspects.length > 0) {
         // Deep research top prospects
         const researched = await Promise.all(allProspects.slice(0, 8).map(c => deepResearchBusiness(c, c.industry)))
-        const analyzed = await aiAnalyzeLeads(researched, city, true)
+        const analyzed = await aiAnalyzeLeads(researched, city, true, aiKey, aiUrl, aiModel, shopName)
         const sorted = (analyzed || []).sort((a: any, b: any) => (b.alpha_ai_fit_score || 0) - (a.alpha_ai_fit_score || 0)).slice(0, 20)
 
         for (const l of sorted) {
@@ -347,6 +360,7 @@ export async function POST(req: NextRequest) {
             notes: JSON.stringify(l),
             follow_up_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
             created_at: new Date().toISOString(),
+            shop_id: auth.shopId,
           })
         }
       }
@@ -354,19 +368,21 @@ export async function POST(req: NextRequest) {
 
     // ── Save all leads to DB ──────────────────────────────────────────────────
     if (allLeads.length > 0) {
-      await db.from('leads').insert(allLeads)
+      const { error } = await db.from('leads').insert(allLeads)
+      if (error) throw error
     }
 
-    await db.from('growth_activity').insert({
+    const { error: activityError } = await db.from('growth_activity').insert({
       action: 'ai_lead_scan',
       target: `${city} — ${scan_type}`,
       details: `Discovered ${allLeads.length} leads (scan_type: ${scan_type})`,
       status: 'complete',
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      shop_id: auth.shopId,
     })
+    if (activityError) throw activityError
 
-    return NextResponse.json({
-      success: true,
+    return NextResponse.json({ success: true,
       scan_type,
       total_leads: allLeads.length,
       competitor_leads: allLeads.filter(l => l.source === 'ai-competitor-scan').length,

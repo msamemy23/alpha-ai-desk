@@ -1,7 +1,14 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
-import { AI_BASE_URLS, DEFAULT_OPENROUTER_MODEL, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
+import { getShopId, supabase } from '@/lib/supabase'
+async function getAuthJsonHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  try {
+    const { data } = await supabase.auth.getSession()
+    if (data.session?.access_token) headers.Authorization = 'Bearer ' + data.session.access_token
+  } catch {}
+  return headers
+}
 
 const STATUSES = ['New', 'Estimate Sent', 'Approved', 'In Repair', 'Supplement', 'Waiting on Customer', 'Ready for Pickup', 'Paid', 'Closed']
 const STATUS_COLORS: Record<string, string> = {
@@ -46,7 +53,9 @@ export default function InsurancePage() {
   const [noteType, setNoteType] = useState('Call')
 
   const load = useCallback(async () => {
-    const { data } = await supabase.from('jobs').select('*').eq('is_insurance', true).order('created_at', { ascending: false })
+    const shopId = await getShopId()
+    if (!shopId) { setJobs([]); return }
+    const { data } = await supabase.from('jobs').select('*').eq('shop_id', shopId).eq('is_insurance', true).order('created_at', { ascending: false })
     setJobs((data || []) as Job[])
   }, [])
 
@@ -79,10 +88,16 @@ export default function InsurancePage() {
     if (!editing) return
     setSaving(true)
     try {
-      await supabase.from('jobs').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', editing.id)
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const { error } = await supabase.from('jobs').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', editing.id).eq('shop_id', shopId)
+      if (error) throw error
       await load()
-      const { data } = await supabase.from('jobs').select('*').eq('id', editing.id).single()
+      const { data, error: reloadError } = await supabase.from('jobs').select('*').eq('id', editing.id).eq('shop_id', shopId).single()
+      if (reloadError) throw reloadError
       if (data) setEditing(data as Job)
+    } catch (error) {
+      alert('Claim could not be saved: ' + (error instanceof Error ? error.message : 'Unknown error'))
     } finally { setSaving(false) }
   }
 
@@ -114,29 +129,32 @@ export default function InsurancePage() {
     setClaimChat(updated)
     setClaimLoading(true)
     try {
-      const { data: settings } = await supabase.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1).single()
-      const apiKey = (settings?.ai_api_key as string) || process.env.NEXT_PUBLIC_OPENROUTER_API_KEY || ''
-      const baseUrl = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
-      const model = normalizeAiModel(settings?.ai_model || DEFAULT_OPENROUTER_MODEL, baseUrl)
-      if (!apiKey) { setClaimChat([...updated, { role: 'assistant', content: 'Please configure your AI API key in Settings first.' }]); return }
-      const jobContext = `Insurance job context: Customer: ${claimJob.customer_name}, Vehicle: ${[claimJob.vehicle_year, claimJob.vehicle_make, claimJob.vehicle_model].filter(Boolean).join(' ')}, Insurance: ${claimJob.insurance_company || 'unknown'}, Claim #: ${claimJob.claim_number || 'N/A'}, Adjuster: ${claimJob.adjuster || 'N/A'}, Adjuster Phone: ${claimJob.adjuster_phone || 'N/A'}, Adjuster Email: ${claimJob.adjuster_email || 'N/A'}, Approved: ${fmt(claimJob.approved_amount)}, Deductible: ${fmt(claimJob.deductible)}, Supplement status: ${claimJob.supplement_status || 'None'}, Supplement requested: ${fmt(claimJob.supplement_amount_requested)}, Status: ${claimJob.status}, Loss date: ${claimJob.loss_date || 'N/A'}, Notes: ${claimJob.inspection_notes || 'none'}`
-      const res = await fetch(`${baseUrl}/chat/completions`, {
+      const jobContext = 'Insurance job context: Customer: ' + claimJob.customer_name +
+        ', Vehicle: ' + [claimJob.vehicle_year, claimJob.vehicle_make, claimJob.vehicle_model].filter(Boolean).join(' ') +
+        ', Insurance: ' + (claimJob.insurance_company || 'unknown') +
+        ', Claim #: ' + (claimJob.claim_number || 'N/A') +
+        ', Adjuster: ' + (claimJob.adjuster_name || 'N/A') +
+        ', Adjuster Phone: ' + (claimJob.adjuster_phone || 'N/A') +
+        ', Approved: ' + fmt(claimJob.approved_amount) +
+        ', Deductible: ' + fmt(claimJob.deductible) +
+        ', Supplement status: ' + (claimJob.supplement_status || 'None') +
+        ', Status: ' + (claimJob.status || 'N/A') +
+        ', Notes: ' + (claimJob.inspection_notes || 'none')
+      const res = await fetch('/api/ai-chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        headers: await getAuthJsonHeaders(),
         body: JSON.stringify({
-          model,
-          messages: [
-            { role: 'system', content: `You are an insurance claims assistant for Alpha International Auto Center, an auto body/repair shop in Houston TX. Help with claim documentation, supplement requests, adjuster communications, and coverage questions. Be professional and knowledgeable. ${jobContext}` },
-            ...updated.map(m => ({ role: m.role, content: m.content }))
-          ],
-          max_tokens: 800,
-        })
+          message: jobContext + '\n\nUser request: ' + userMsg,
+          history: claimChat.slice(-10),
+          sessionId: 'insurance-' + claimJob.id,
+        }),
       })
-      const data = await res.json()
-      const reply = data.choices?.[0]?.message?.content || 'Sorry, I could not generate a response.'
-      setClaimChat([...updated, { role: 'assistant', content: reply }])
-    } catch { setClaimChat([...updated, { role: 'assistant', content: 'Error contacting AI. Check settings.' }]) }
-    finally { setClaimLoading(false) }
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data.error) throw new Error(data.error || 'AI request failed')
+      setClaimChat([...updated, { role: 'assistant', content: data.reply || 'Sorry, I could not generate a response.' }])
+    } catch (error) {
+      setClaimChat([...updated, { role: 'assistant', content: error instanceof Error ? error.message : 'Error contacting AI. Check settings.' }])
+    } finally { setClaimLoading(false) }
   }
 
   // === RENDER ===

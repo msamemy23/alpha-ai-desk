@@ -19,6 +19,8 @@ function rememberSmsKey(key: string, messageId?: unknown) {
 }
 
 export async function GET() {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
   return NextResponse.json({ ok: true, route: 'send-sms' })
 }
 
@@ -43,8 +45,10 @@ export async function POST(req: NextRequest) {
     }
 
     const db = getServiceClient()
-    const { data: settings } = await db.from('settings').select('telnyx_phone_number').eq('shop_id', auth.shopId).limit(1).single()
-    const fromNum = settings?.telnyx_phone_number || process.env.TELNYX_PHONE_NUMBER || '+17136636979'
+    const { data: settings, error: settingsError } = await db.from('settings').select('telnyx_api_key,telnyx_phone_number,telnyx_messaging_profile_id').eq('shop_id', auth.shopId).limit(1).maybeSingle()
+    if (settingsError) return apiFail('Shop messaging settings could not be loaded', 500, 'CONFIG_ERROR')
+    const fromNum = settings?.telnyx_phone_number || ''
+    if (!settings?.telnyx_api_key || !fromNum) return apiFail('Telnyx SMS is not configured for this shop', 503, 'NOT_CONFIGURED')
 
     if (customerId) {
       const { data: customer } = await db.from('customers').select('id').eq('id', customerId).eq('shop_id', auth.shopId).maybeSingle()
@@ -58,7 +62,7 @@ export async function POST(req: NextRequest) {
       return apiOk({ message_id: existing.messageId, idempotent: true })
     }
 
-    const result = await sendSMS(formatted, text) as Record<string,unknown>
+    const result = await sendSMS(formatted, text, fromNum, { apiKey: settings.telnyx_api_key, messagingProfileId: settings.telnyx_messaging_profile_id || '' }) as Record<string,unknown>
     rememberSmsKey(idempotencyKey, result?.id)
 
     try {

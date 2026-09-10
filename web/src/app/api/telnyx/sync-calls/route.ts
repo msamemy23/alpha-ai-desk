@@ -1,21 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
+import { getRouteShop, unauthorized } from '@/lib/api-auth'
 
 export const maxDuration = 300
 
-const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
-const SHOP_NUMBER = '+17136636979'
-const INBOUND_CONNECTION = '2786787533428623349'
 
-async function syncFromActivities(db: any) {
-    const { data: activities, error } = await db.from('activities').select('*').eq('type', 'call').order('created_at', { ascending: false })
+
+async function syncFromActivities(db: any, shopId: string, shopNumber: string) {
+    const { data: activities, error } = await db.from('activities').select('*').eq('shop_id', shopId).eq('type', 'call').order('created_at', { ascending: false })
     if (error || !activities?.length) return { synced: 0, error: error?.message }
     const rows = activities.map((a: any) => ({
         call_id: `activity-${a.id}`,
         direction: a.direction || 'unknown',
-        from_number: a.direction === 'outbound' ? SHOP_NUMBER : (a.phone || a.customer_name || ''),
-        to_number: a.direction === 'inbound' ? SHOP_NUMBER : (a.phone || a.customer_name || ''),
+        shop_id: shopId,
+        from_number: a.direction === 'outbound' ? shopNumber : (a.phone || a.customer_name || ''),
+        to_number: a.direction === 'inbound' ? shopNumber : (a.phone || a.customer_name || ''),
         duration_secs: a.duration || 0,
         status: 'completed',
         start_time: a.created_at,
@@ -26,15 +26,15 @@ async function syncFromActivities(db: any) {
     let inserted = 0
     for (let i = 0; i < rows.length; i += 100) {
         const batch = rows.slice(i, i + 100)
-        const { error: uErr } = await db.from('call_history').upsert(batch, { onConflict: 'call_id' })
+        const { error: uErr } = await db.from('call_history').upsert(batch, { onConflict: 'shop_id,call_id' })
         if (!uErr) inserted += batch.length
         else console.error('Activities upsert error:', uErr)
     }
     return { synced: inserted, total: activities.length }
 }
 
-async function syncFromRecordings(db: any) {
-    if (!TELNYX_API_KEY) return { synced: 0, error: 'No API key' }
+async function syncFromRecordings(db: any, shopId: string, apiKey: string, shopNumber: string, inboundConnection: string) {
+    if (!apiKey || !shopNumber || !inboundConnection) return { synced: 0, error: 'No API key' }
     let allRecordings: any[] = []
     let pageNum = 1
 
@@ -45,7 +45,7 @@ async function syncFromRecordings(db: any) {
             'page[number]': String(pageNum)
         })
         const res = await fetch(`${TELNYX_BASE}/recordings?${params}`, {
-            headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` },
+            headers: { 'Authorization': `Bearer ${apiKey}` },
             cache: 'no-store',
         })
         if (!res.ok) return { synced: 0, error: `Telnyx API error: ${res.status}`, pages_fetched: pageNum - 1, raw_total: allRecordings.length }
@@ -70,16 +70,16 @@ async function syncFromRecordings(db: any) {
     const recordings = Object.values(sessionMap).filter((r: any) => (r.duration_millis || 0) > 2000)
 
     // Get customer phone map
-    const { data: customers } = await db.from('customers').select('id, name, phone')
+    const { data: customers } = await db.from('customers').select('id, name, phone').eq('shop_id', shopId)
     const phoneMap = new Map()
     for (const c of (customers || [])) {
         if (c.phone) phoneMap.set(c.phone.replace(/\D/g, '').slice(-10), { id: c.id, name: c.name })
     }
 
     const rows = recordings.map((r: any) => {
-        const isInbound = r.connection_id === INBOUND_CONNECTION
-        const from = isInbound ? (r.from || '') : SHOP_NUMBER
-        const to = isInbound ? SHOP_NUMBER : (r.to || '')
+        const isInbound = r.connection_id === inboundConnection
+        const from = isInbound ? (r.from || '') : shopNumber
+        const to = isInbound ? shopNumber : (r.to || '')
         const callerPhone = isInbound ? from : to
         const clean = callerPhone.replace(/\D/g, '').slice(-10)
         const match = phoneMap.get(clean)
@@ -87,6 +87,7 @@ async function syncFromRecordings(db: any) {
         return {
             call_id: `rec-${r.call_session_id || r.id}`,
             direction: isInbound ? 'inbound' : 'outbound',
+            shop_id: shopId,
             from_number: from,
             to_number: to,
             duration_secs: durSec,
@@ -110,22 +111,23 @@ async function syncFromRecordings(db: any) {
     let inserted = 0
     for (let i = 0; i < rows.length; i += 100) {
         const batch = rows.slice(i, i + 100)
-        const { error } = await db.from('call_history').upsert(batch, { onConflict: 'call_id' })
+        const { error } = await db.from('call_history').upsert(batch, { onConflict: 'shop_id,call_id' })
         if (!error) inserted += batch.length
         else console.error('Recording upsert error:', error)
     }
     return { synced: inserted, total: recordings.length, raw_total: allRecordings.length, pages_fetched: pageNum, unique_sessions: Object.keys(sessionMap).length }
 }
 
-async function syncFromAiCalls(db: any) {
-    const { data: aiCalls, error } = await db.from('ai_calls').select('*').order('started_at', { ascending: false })
+async function syncFromAiCalls(db: any, shopId: string, shopNumber: string) {
+    const { data: aiCalls, error } = await db.from('ai_calls').select('*').eq('shop_id', shopId).order('started_at', { ascending: false })
     if (error || !aiCalls?.length) return { synced: 0, error: error?.message }
     const rows = aiCalls.filter((a: any) => a.started_at).map((a: any) => {
         const ts = new Date(typeof a.started_at === 'number' ? a.started_at : parseInt(a.started_at))
         return {
             call_id: `ai-${a.id}`,
             direction: 'outbound',
-            from_number: SHOP_NUMBER,
+            shop_id: shopId,
+            from_number: shopNumber,
             to_number: '',
             duration_secs: 0,
             status: a.status || 'unknown',
@@ -138,7 +140,7 @@ async function syncFromAiCalls(db: any) {
     let inserted = 0
     for (let i = 0; i < rows.length; i += 100) {
         const batch = rows.slice(i, i + 100)
-        const { error: uErr } = await db.from('call_history').upsert(batch, { onConflict: 'call_id' })
+        const { error: uErr } = await db.from('call_history').upsert(batch, { onConflict: 'shop_id,call_id' })
         if (!uErr) inserted += batch.length
         else console.error('AI calls upsert error:', uErr)
     }
@@ -148,29 +150,42 @@ async function syncFromAiCalls(db: any) {
 export async function POST(req: NextRequest) {
     try {
         const url = new URL(req.url)
-        const action = url.searchParams.get('action') || 'sync-all'
+        const body = await req.json().catch(() => null)
+        const auth = await getRouteShop(req, body?.shopId || url.searchParams.get('shop_id'))
+        if (!auth) return unauthorized()
         const db = getServiceClient()
+        const { data: settings, error: settingsError } = await db.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle()
+        if (settingsError) return NextResponse.json({ error: 'Unable to load shop settings' }, { status: 500 })
+        const apiKey = String(settings?.telnyx_api_key || '')
+        const shopNumber = String(settings?.telnyx_phone_number || '')
+        const inboundConnection = String(settings?.telnyx_connection_id || '')
+        if (!apiKey || !shopNumber || !inboundConnection) return NextResponse.json({ error: 'Telnyx sync is not configured for this shop' }, { status: 503 })
+        const action = url.searchParams.get('action') || 'sync-all'
 
         if (action === 'sync') {
-            return NextResponse.json({ success: true, activities: await syncFromActivities(db) })
+            const result = await syncFromActivities(db, auth.shopId, shopNumber)
+            return NextResponse.json({ success: !result.error, activities: result }, { status: result.error ? 502 : 200 })
         }
         if (action === 'sync-recordings') {
-            return NextResponse.json({ success: true, recordings: await syncFromRecordings(db) })
+            const result = await syncFromRecordings(db, auth.shopId, apiKey, shopNumber, inboundConnection)
+            return NextResponse.json({ success: !result.error, recordings: result }, { status: result.error ? 502 : 200 })
         }
         if (action === 'sync-ai') {
-            return NextResponse.json({ success: true, aiCalls: await syncFromAiCalls(db) })
+            const result = await syncFromAiCalls(db, auth.shopId, shopNumber)
+            return NextResponse.json({ success: !result.error, aiCalls: result }, { status: result.error ? 502 : 200 })
         }
         if (action === 'sync-all') {
             const [activities, recordings, aiCalls] = await Promise.all([
-                syncFromActivities(db),
-                syncFromRecordings(db),
-                syncFromAiCalls(db),
+                syncFromActivities(db, auth.shopId, shopNumber),
+                syncFromRecordings(db, auth.shopId, apiKey, shopNumber, inboundConnection),
+                syncFromAiCalls(db, auth.shopId, shopNumber),
             ])
-            return NextResponse.json({ success: true, activities, recordings, aiCalls })
+            const success = !activities.error && !recordings.error && !aiCalls.error
+            return NextResponse.json({ success, activities, recordings, aiCalls }, { status: success ? 200 : 502 })
         }
         if (action === 'match') {
-            const { data: calls } = await db.from('call_history').select('id, from_number, to_number').is('customer_id', null)
-            const { data: customers } = await db.from('customers').select('id, name, phone')
+            const { data: calls } = await db.from('call_history').select('id, from_number, to_number').eq('shop_id', auth.shopId).is('customer_id', null)
+            const { data: customers } = await db.from('customers').select('id, name, phone').eq('shop_id', auth.shopId)
             if (!calls?.length || !customers?.length) return NextResponse.json({ matched: 0 })
             const phoneMap = new Map()
             for (const c of customers) {
@@ -182,7 +197,7 @@ export async function POST(req: NextRequest) {
                 const tc = (call.to_number || '').replace(/\D/g, '').slice(-10)
                 const m = phoneMap.get(fc) || phoneMap.get(tc)
                 if (m) {
-                    await db.from('call_history').update({ customer_id: m.id, matched_customer_name: m.name }).eq('id', call.id)
+                    await db.from('call_history').update({ customer_id: m.id, matched_customer_name: m.name }).eq('id', call.id).eq('shop_id', auth.shopId)
                     matched++
                 }
             }

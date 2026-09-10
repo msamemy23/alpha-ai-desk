@@ -1,10 +1,18 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
+import { getServiceClient } from '@/lib/supabase'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 
-const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
-const INBOUND_CONNECTION = '2786787533428623349'
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    const auth = await getAuthedShop()
+    if (!auth) return unauthorized()
+    const db = getServiceClient()
+    const { data: settings, error: settingsError } = await db.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle()
+    if (settingsError) return NextResponse.json({ error: 'Unable to load shop settings', recordings: [] }, { status: 500 })
+    const apiKey = String(settings?.telnyx_api_key || '')
+    const inboundConnection = String(settings?.telnyx_connection_id || '')
+    if (!apiKey || !inboundConnection) return NextResponse.json({ error: 'Telnyx recordings are not configured for this shop', recordings: [] }, { status: 503 })
     let allRecordings: any[] = []
     let cursor: string | null = null
     let pages = 0
@@ -15,7 +23,7 @@ export async function GET() {
       if (cursor) params.set('page[after]', cursor)
 
       const res = await fetch(`https://api.telnyx.com/v2/recordings?${params}`, {
-        headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}` },
+        headers: { 'Authorization': `Bearer ${apiKey}` },
         cache: 'no-store',
       })
       if (!res.ok) throw new Error(`Telnyx API error: ${res.status}`)
@@ -28,7 +36,7 @@ export async function GET() {
     } while (cursor && pages < maxPages)
 
     // Filter to only inbound recordings (AI assistant handled calls)
-    const inbound = allRecordings.filter((rec: any) => rec.connection_id === INBOUND_CONNECTION)
+    const inbound = allRecordings.filter((rec: any) => rec.connection_id === inboundConnection)
 
     // Deduplicate by call_session_id — pick the one with longest duration
     const sessionMap: Record<string, any> = {}

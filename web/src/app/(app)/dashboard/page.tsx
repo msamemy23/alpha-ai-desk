@@ -54,7 +54,7 @@ export default function DashboardPage() {
 
 
   useEffect(() => {
-    fetch('/api/seed-settings', { method: 'POST' }).catch(() => {})
+    // Settings are initialized by onboarding/settings; this page never calls the admin-only seed endpoint.
     const today = new Date().toISOString().split('T')[0]
     const dismissed = localStorage.getItem('briefing_dismissed')
     if (dismissed === today) setBriefingDismissed(true)
@@ -82,17 +82,18 @@ export default function DashboardPage() {
     const unpaidDocs = (docs || []).filter((d: Record<string,unknown>) => ['Unpaid','Partial','Draft'].includes(d.status as string))
     const unpaidTotal = unpaidDocs.reduce((s: number, d: Record<string,unknown>) => s + calcTotals(d).balanceDue, 0)
     const now = new Date(); const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
-    const monthDocs = (docs || []).filter((d: Record<string,unknown>) => (d.type === 'Receipt' || d.type === 'Invoice') && d.status === 'Paid' && (d.created_at as string) >= monthStart)
-    const monthRevenue = monthDocs.reduce((s: number, d: Record<string,unknown>) => s + calcTotals(d).total, 0)
+    const monthDocs = (docs || []).filter((d: Record<string,unknown>) => (d.type === 'Receipt' || d.type === 'Invoice') && (d.created_at as string) >= monthStart)
+    const collected = (d: Record<string,unknown>) => { const value = Number(d.amount_paid); return Number.isFinite(value) && value > 0 ? value : 0 }
+    const monthRevenue = monthDocs.reduce((s: number, d: Record<string,unknown>) => s + collected(d), 0)
 
     const chartDays: { label: string; revenue: number }[] = []
     for (let i = 6; i >= 0; i--) {
       const day = new Date(); day.setDate(day.getDate() - i); day.setHours(0,0,0,0)
       const next = new Date(day); next.setDate(next.getDate() + 1)
       const dayRevenue = (docs || []).filter((d: Record<string,unknown>) =>
-        (d.type === 'Receipt' || d.type === 'Invoice') && d.status === 'Paid' &&
+        (d.type === 'Receipt' || d.type === 'Invoice') && collected(d) > 0 &&
         (d.created_at as string) >= day.toISOString() && (d.created_at as string) < next.toISOString()
-      ).reduce((s: number, d: Record<string,unknown>) => s + calcTotals(d).total, 0)
+      ).reduce((s: number, d: Record<string,unknown>) => s + collected(d), 0)
       chartDays.push({ label: day.toLocaleDateString('en-US',{weekday:'short'}), revenue: dayRevenue })
     }
 

@@ -1,6 +1,15 @@
 ﻿'use client'
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { supabase, markMessageRead } from '@/lib/supabase'
+import { getShopId, supabase, markMessageRead } from '@/lib/supabase'
+
+async function getAuthJsonHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  try {
+    const { data } = await supabase.auth.getSession()
+    if (data.session?.access_token) headers.Authorization = 'Bearer ' + data.session.access_token
+  } catch {}
+  return headers
+}
 
 interface CallRecord {
   id: string
@@ -82,7 +91,7 @@ function DirectionBadge({ dir }: { dir: string }) {
 
 export default function MessagesPage() {
   const [tab, setTab] = useState<'calls'|'sms'>('calls')
-  const [shopPhone, setShopPhone] = useState('+17136636979') // default until settings load
+  const [shopPhone, setShopPhone] = useState('') // default until settings load
   const [calls, setCalls] = useState<CallRecord[]>([])
   const [messages, setMessages] = useState<Message[]>([])
   const [customers, setCustomers] = useState<Customer[]>([])
@@ -103,24 +112,30 @@ export default function MessagesPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const loadCalls = useCallback(async () => {
+    const shopId = await getShopId()
+    if (!shopId) { setCalls([]); return }
     const { data: historyData } = await supabase
       .from('call_history')
       .select('id, call_id, direction, from_number, to_number, duration_secs, status, start_time, end_time, matched_customer_name, transcript, lead_score, lead_reasoning, service_needed, caller_sentiment, key_quotes, call_count_from_number, raw_data')
+      .eq('shop_id', shopId)
       .order('start_time', { ascending: false })
       .limit(1500)
 
-    // ALSO load directly from ai_calls â€” catches new inbound calls before cron syncs them
     const { data: aiData } = await supabase
       .from('ai_calls')
       .select('id, task, status, started_at, transcript, summary, recording_url')
+      .eq('shop_id', shopId)
       .order('started_at', { ascending: false })
       .limit(200)
 
     const aiAsRecords: CallRecord[] = (aiData || []).map((a: any) => {
       const isInbound = (a.task || '').includes('Inbound call from')
       const fromMatch = (a.task || '').match(/Inbound call from ([+\d]+)/)
-      const tsNum = typeof a.started_at === 'number' ? a.started_at : parseInt(a.started_at || '0')
-      const ts = new Date(tsNum > 1e12 ? tsNum : tsNum * 1000)
+      const rawStartedAt = a.started_at
+      const tsNum = typeof rawStartedAt === 'number'
+        ? (rawStartedAt < 1e12 ? rawStartedAt * 1000 : rawStartedAt)
+        : Date.parse(String(rawStartedAt || ''))
+      const ts = new Date(tsNum)
       const txText = Array.isArray(a.transcript)
         ? a.transcript.map((t: any) => `${t.speaker === 'ai' ? 'AI' : 'Caller'}: ${t.text}`).join('\n')
         : (typeof a.transcript === 'string' ? a.transcript : null)
@@ -132,9 +147,9 @@ export default function MessagesPage() {
         duration_secs: 0, status: a.status,
         start_time: isNaN(ts.getTime()) ? new Date().toISOString() : ts.toISOString(),
         end_time: '', matched_customer_name: null, transcript: txText,
-        lead_score: null, lead_reasoning: null, service_needed: null,
+        lead_score: null, lead_reasoning: a.summary || null, service_needed: null,
         caller_sentiment: null, key_quotes: null, call_count_from_number: null,
-        raw_data: { source: 'ai_calls', recording_url: a.recording_url, summary: a.summary },
+        raw_data: { ai_call: a },
       } as CallRecord
     })
 
@@ -144,33 +159,45 @@ export default function MessagesPage() {
       .sort((a, b) => new Date(b.start_time).getTime() - new Date(a.start_time).getTime())
     setCalls(merged as CallRecord[])
   }, [])
-
   const loadMessages = useCallback(async () => {
+    const shopId = await getShopId()
+    if (!shopId) { setMessages([]); return }
     const { data } = await supabase
       .from('messages')
       .select('*, customer:customers(name, phone, email)')
+      .eq('shop_id', shopId)
       .order('created_at', { ascending: false })
       .limit(500)
     if (data) setMessages(data as any)
   }, [])
 
   const loadCustomers = useCallback(async () => {
-    const { data } = await supabase.from('customers').select('id, name, phone, email').limit(100)
+    const shopId = await getShopId()
+    if (!shopId) { setCustomers([]); return }
+    const { data } = await supabase.from('customers').select('id, name, phone, email').eq('shop_id', shopId).limit(100)
     if (data) setCustomers(data)
   }, [])
-
   useEffect(() => {
+    let disposed = false
     setLoading(true)
     // Fetch shop phone from settings
-    supabase.from('settings').select('shop_phone').limit(1).single().then(({ data }) => {
-      if (data?.shop_phone) setShopPhone(data.shop_phone.startsWith('+') ? data.shop_phone : '+1' + data.shop_phone.replace(/\D/g, ''))
-    })
-    Promise.all([loadCalls(), loadMessages(), loadCustomers()]).finally(() => setLoading(false))
+    const loadShopPhone = async () => {
+      const shopId = await getShopId()
+      if (!shopId) return
+      const { data } = await supabase.from('settings').select('shop_phone').eq('shop_id', shopId).limit(1).maybeSingle()
+      if (!disposed && data?.shop_phone) setShopPhone(data.shop_phone.startsWith('+') ? data.shop_phone : '+1' + data.shop_phone.replace(/\D/g, ''))
+    }
+    loadShopPhone().catch(() => {})
+    Promise.all([loadCalls(), loadMessages(), loadCustomers()]).finally(() => { if (!disposed) setLoading(false) })
 
     // Background sync: pull latest Telnyx recordings into call_history (fire and forget)
-    fetch('/api/telnyx/sync-calls?action=sync-recordings', { method: 'POST' })
-      .then(() => setTimeout(loadCalls, 5000))
-      .catch(() => {})
+    const syncRecordings = async () => {
+      try {
+        const response = await fetch('/api/telnyx/sync-calls?action=sync-recordings', { method: 'POST', headers: await getAuthJsonHeaders() })
+        if (response.ok) setTimeout(loadCalls, 5000)
+      } catch {}
+    }
+    syncRecordings()
 
     // Poll every 10 seconds
     pollRef.current = setInterval(() => { loadCalls(); loadMessages() }, 10000)
@@ -200,6 +227,7 @@ export default function MessagesPage() {
       .subscribe()
 
     return () => {
+      disposed = true
       if (pollRef.current) clearInterval(pollRef.current)
       supabase.removeChannel(aiCallChannel)
       supabase.removeChannel(histChannel)
@@ -258,26 +286,32 @@ export default function MessagesPage() {
     if (!sendTo || !sendBody || sending) return
     setSending(true)
     try {
-      await fetch('/api/send-message', {
+      const res = await fetch('/api/send-message', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await getAuthJsonHeaders(),
         body: JSON.stringify({ to: sendTo, body: sendBody, channel: sendChannel }),
       })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data.error) throw new Error(data.error || 'Message could not be sent')
       setSendBody('')
       setCompose(false)
-      loadMessages()
+      await loadMessages()
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Message could not be sent')
     } finally { setSending(false) }
   }
-
   const makeCall = async (num: string) => {
     if (!num) return
-    await fetch('/api/make-call', {
+    const res = await fetch('/api/make-call', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: await getAuthJsonHeaders(),
       body: JSON.stringify({ to: num }),
     })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      alert(data.error || 'Call could not be started')
+    }
   }
-
   // â”€â”€â”€ RENDER â”€â”€â”€
   return (
     <div className="p-6 max-w-[1400px] mx-auto">

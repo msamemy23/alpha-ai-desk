@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState, useCallback, Suspense } from 'react'
-import { supabase } from '@/lib/supabase'
+import { getShopId, supabase } from '@/lib/supabase'
 import { useSearchParams } from 'next/navigation'
 
 interface Connector {
@@ -71,24 +71,23 @@ function ConnectorsContent() {
   const loadConnectors = useCallback(async () => {
     setLoading(true)
     try {
-      const { data, error } = await supabase.from('connectors').select('*')
+      const shopId = await getShopId()
+      if (!shopId) { setConnectors({}); setLoading(false); return }
+      const { data, error } = await supabase.from('connectors').select('*').eq('shop_id', shopId)
       if (error) {
-        // Table might not exist yet — show instructions
         console.error('connectors table error:', error)
+        setConnectors({})
         setLoading(false)
         return
       }
       const map: Record<string, Connector> = {}
-      for (const c of (data || [])) {
-        map[c.service] = c
-      }
+      for (const c of (data || [])) map[c.service] = c
       setConnectors(map)
     } catch (e) {
       console.error(e)
     }
     setLoading(false)
   }, [])
-
   useEffect(() => {
     loadConnectors()
     // Check for OAuth callback params
@@ -112,6 +111,8 @@ function ConnectorsContent() {
   const handleDisconnect = async (service: string) => {
     setDisconnecting(service)
     try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
       const { error } = await supabase
         .from('connectors')
         .update({
@@ -125,6 +126,7 @@ function ConnectorsContent() {
           updated_at: new Date().toISOString(),
         })
         .eq('service', service)
+        .eq('shop_id', shopId)
 
       if (error) throw error
       showToast(`${SERVICE_INFO[service]?.name || service} disconnected`)

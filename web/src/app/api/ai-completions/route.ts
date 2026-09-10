@@ -25,19 +25,9 @@ function error(message: string, status = 400) {
 }
 
 function pickProvider(settings: { ai_api_key?: unknown; ai_base_url?: unknown; ai_model?: unknown } | null | undefined) {
-  const settingsKey = typeof settings?.ai_api_key === 'string' ? settings.ai_api_key.trim() : ''
-  const openRouterKey = process.env.OPENROUTER_API_KEY || ''
-  const deepSeekKey = process.env.DEEPSEEK_API_KEY || ''
-  const openAiKey = process.env.OPENAI_API_KEY || ''
-  const apiKey = settingsKey || openRouterKey || deepSeekKey || openAiKey
-
-  const baseUrl = normalizeBaseUrl(
-    settings?.ai_base_url ||
-    (settingsKey || openRouterKey ? DEFAULT_BASE_URL : deepSeekKey ? DEEPSEEK_BASE_URL : OPENAI_BASE_URL)
-  )
-
+  const apiKey = typeof settings?.ai_api_key === 'string' ? settings.ai_api_key.trim() : ''
+  const baseUrl = normalizeBaseUrl(settings?.ai_base_url || DEFAULT_BASE_URL)
   const defaultModel = normalizeAiModel(settings?.ai_model, baseUrl)
-
   return { apiKey, baseUrl, defaultModel }
 }
 
@@ -67,7 +57,7 @@ export async function POST(req: NextRequest) {
 
     const { apiKey, baseUrl, defaultModel } = pickProvider(settings)
     if (!apiKey) {
-      return error('AI API key is not configured. Add OPENROUTER_API_KEY, DEEPSEEK_API_KEY, OPENAI_API_KEY, or a shop AI key in Settings.')
+      return error('AI API key is not configured for this shop. Add the shop key in Settings.')
     }
 
     const requestedModel = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : defaultModel

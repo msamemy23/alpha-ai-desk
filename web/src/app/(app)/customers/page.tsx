@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { getShopId, supabase } from '@/lib/supabase'
 
 interface Customer { id: string; name: string; phone: string; email: string; address: string; preferred_contact: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin: string; vehicle_plate: string; vehicle_mileage: string; notes: string; created_at: string; sentiment?: string }
 interface TimelineEntry { id: string; type: 'sms'|'call'|'job'|'invoice'; direction?: string; body?: string; duration_secs?: number; status?: string; concern?: string; created_at: string; amount?: number }
@@ -32,15 +32,16 @@ export default function CustomersPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const { data } = await supabase.from('customers').select('*').order('name')
+      const shopId = await getShopId()
+      if (!shopId) { setCustomers([]); setJobCounts({}); return }
+      const { data } = await supabase.from('customers').select('*').eq('shop_id', shopId).order('name')
       setCustomers((data || []) as Customer[])
-      const { data: jobs } = await supabase.from('jobs').select('customer_id')
+      const { data: jobs } = await supabase.from('jobs').select('customer_id').eq('shop_id', shopId)
       const counts: Record<string,number> = {}
       ;(jobs || []).forEach((j: Record<string,string>) => { counts[j.customer_id] = (counts[j.customer_id]||0) + 1 })
       setJobCounts(counts)
     } finally { setLoading(false) }
   }, [])
-
   useEffect(() => {
     load()
     const ch = supabase.channel('customers_page').on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, load).subscribe()
@@ -50,19 +51,21 @@ export default function CustomersPage() {
   const loadTimeline = useCallback(async (customer: Customer) => {
     setTimelineLoading(true)
     try {
+      const shopId = await getShopId()
+      if (!shopId) { setTimeline([]); return }
       const phone = customer.phone?.replace(/\D/g,'')
       const name = customer.name?.toLowerCase()
       const results: TimelineEntry[] = []
 
       const [{ data: msgs }, { data: calls }, { data: jobs }, { data: invoices }] = await Promise.all([
         customer.phone
-          ? supabase.from('messages').select('id,body,direction,created_at').or(`from_address.ilike.%${phone}%,to_address.ilike.%${phone}%`).order('created_at',{ascending:false}).limit(50)
+          ? supabase.from('messages').select('id,body,direction,created_at').eq('shop_id', shopId).or('from_address.ilike.%' + phone + '%,to_address.ilike.%' + phone + '%').order('created_at',{ascending:false}).limit(50)
           : Promise.resolve({ data: [] }),
         customer.phone
-          ? supabase.from('call_history').select('id,direction,duration_secs,start_time,status').or(`from_number.ilike.%${phone}%,to_number.ilike.%${phone}%`).order('start_time',{ascending:false}).limit(30)
+          ? supabase.from('call_history').select('id,direction,duration_secs,start_time,status').eq('shop_id', shopId).or('from_number.ilike.%' + phone + '%,to_number.ilike.%' + phone + '%').order('start_time',{ascending:false}).limit(30)
           : Promise.resolve({ data: [] }),
-        supabase.from('jobs').select('id,concern,status,created_at').or(`customer_id.eq.${customer.id},customer_name.ilike.%${name}%`).order('created_at',{ascending:false}).limit(20),
-        supabase.from('invoices').select('id,total,amount_paid,status,created_at').eq('customer_id',customer.id).order('created_at',{ascending:false}).limit(20)
+        supabase.from('jobs').select('id,concern,status,created_at').eq('shop_id', shopId).or('customer_id.eq.' + customer.id + ',customer_name.ilike.%' + name + '%').order('created_at',{ascending:false}).limit(20),
+        supabase.from('invoices').select('id,total,amount_paid,status,created_at').eq('shop_id', shopId).eq('customer_id',customer.id).order('created_at',{ascending:false}).limit(20)
       ])
 
       for (const m of (msgs||[])) results.push({ id: m.id, type: 'sms', direction: m.direction, body: m.body, created_at: m.created_at })
@@ -74,11 +77,12 @@ export default function CustomersPage() {
       setTimeline(results)
     } finally { setTimelineLoading(false) }
   }, [])
-
   const save = async () => {
     if (!form.name) return alert('Name required')
+    const shopId = await getShopId()
+    if (!shopId) return alert('No shop is associated with the signed-in user')
     const safeFields = ['name','phone','email','address','notes','preferred_contact','vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage']
-    const data: Record<string,unknown> = { updated_at: new Date().toISOString() }
+    const data: Record<string,unknown> = { shop_id: shopId, updated_at: new Date().toISOString() }
     for (const k of safeFields) { if ((form as Record<string,string>)[k] !== undefined) data[k] = (form as Record<string,string>)[k] }
     const extended = ['sentiment','vehicle_color','vehicle_engine','last_contact','review_requested']
     for (const k of extended) { if ((form as Record<string,string>)[k] !== undefined) data[k] = (form as Record<string,string>)[k] }
@@ -86,19 +90,21 @@ export default function CustomersPage() {
       const { error } = await supabase.from('customers').insert({ ...data, created_at: new Date().toISOString() })
       if (error) { alert('Save failed: ' + error.message); return }
     } else if (editing) {
-      const { error } = await supabase.from('customers').update(data).eq('id', editing)
+      const { error } = await supabase.from('customers').update(data).eq('id', editing).eq('shop_id', shopId)
       if (error) { alert('Save failed: ' + error.message); return }
     }
-    setEditing(null); setForm({}); setActiveTab('info'); load()
+    setEditing(null); setForm({}); setActiveTab('info'); await load()
   }
 
   const del = async () => {
     if (!editing || editing === 'new') return
     if (!confirm('Delete this customer?')) return
-    await supabase.from('customers').delete().eq('id', editing)
-    setEditing(null); setForm({}); setActiveTab('info'); load()
+    const shopId = await getShopId()
+    if (!shopId) return alert('No shop is associated with the signed-in user')
+    const { error } = await supabase.from('customers').delete().eq('id', editing).eq('shop_id', shopId)
+    if (error) { alert('Delete failed: ' + error.message); return }
+    setEditing(null); setForm({}); setActiveTab('info'); await load()
   }
-
   const openEdit = (c: Customer) => {
     setForm(c)
     setEditing(c.id)

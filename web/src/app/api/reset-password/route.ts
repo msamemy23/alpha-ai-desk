@@ -20,8 +20,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
-    // Only ever send users back to our own app.
-    const safeRedirect = typeof redirectTo === 'string' && redirectTo.startsWith(APP_URL) ? redirectTo : undefined
+    // Only ever send users back to our own app. Compare parsed origins so a
+    // lookalike host such as https://our-app.example.evil.com cannot pass.
+    let safeRedirect: string | undefined
+    if (typeof redirectTo === 'string') {
+      try {
+        const appOrigin = new URL(APP_URL).origin
+        const candidate = new URL(redirectTo)
+        if (candidate.origin === appOrigin) safeRedirect = candidate.toString()
+      } catch {
+        safeRedirect = undefined
+      }
+    }
 
     const sb = getServiceClient()
     const { error: resetError } = await sb.auth.resetPasswordForEmail(String(email).trim(), {

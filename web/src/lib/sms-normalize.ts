@@ -18,7 +18,7 @@ export function pick(obj: Record<string, unknown>, ...paths: string[]): string {
  * Normalizes an inbound webhook body from any phone SMS gateway
  * (TextBee / httpSMS / custom) into a common shape.
  */
-export function normalizeInbound(body: Record<string, unknown>): { from: string; text: string; messageId: string } {
+export function normalizeInbound(body: Record<string, unknown>): { from: string; text: string; messageId: string; toNumber: string } {
   const from = pick(body,
     'from', 'sender', 'phone', 'phoneNumber', 'sender_number',
     'data.from', 'data.sender', 'data.contact', 'data.phoneNumber',
@@ -29,8 +29,12 @@ export function normalizeInbound(body: Record<string, unknown>): { from: string;
     'payload.text', 'payload.message', 'payload.body')
   const messageId = pick(body,
     'id', 'messageId', 'message_id', 'data.id', 'data.messageId', 'payload.id')
-  return { from, text, messageId }
-}
+  const toNumber = pick(body,
+    'to', 'recipient', 'destination', 'toNumber', 'recipientNumber',
+    'data.to', 'data.recipient', 'data.destination',
+    'payload.to', 'payload.recipient')
+  return { from, text, messageId, toNumber }
+
 
 const OPT_OUT_KEYWORDS = new Set(['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT', 'REVOKE', 'OPTOUT'])
 

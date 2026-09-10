@@ -17,8 +17,11 @@ export async function POST(req: NextRequest) {
     // channel: 'sms' | 'email'
 
     const db = getServiceClient()
-    const { data: settings } = await db.from('settings').select('*').eq('shop_id', auth.shopId).limit(1).single()
-    const shopName = settings?.shop_name || 'Alpha International Auto Center'
+    const { data: settings, error: settingsError } = await db.from('settings').select('*').eq('shop_id', auth.shopId).limit(1).maybeSingle()
+    if (settingsError) return NextResponse.json({ error: 'Shop settings could not be loaded' }, { status: 500 })
+    const shopName = settings?.shop_name || 'Your Auto Shop'
+    if (channel === 'sms' && (!settings?.telnyx_api_key || !settings?.telnyx_phone_number)) return NextResponse.json({ error: 'SMS is not configured for this shop' }, { status: 503 })
+    if (channel === 'email' && (!settings?.resend_api_key || !settings?.from_email)) return NextResponse.json({ error: 'Email is not configured for this shop' }, { status: 503 })
 
     let customers: Record<string, unknown>[] = []
 
@@ -58,7 +61,7 @@ export async function POST(req: NextRequest) {
           .replace('{phone}', settings?.shop_phone || '')
 
         if (channel === 'sms' && c.phone) {
-          await sendSMS(formatPhone(c.phone as string), msg)
+          await sendSMS(formatPhone(c.phone as string), msg, settings.telnyx_phone_number, { apiKey: settings.telnyx_api_key, messagingProfileId: settings.telnyx_messaging_profile_id || '' })
           await db.from('messages').insert({
             shop_id: auth.shopId,
             direction: 'outbound', channel: 'sms',

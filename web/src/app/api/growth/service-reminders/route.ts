@@ -1,41 +1,51 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { getRouteShop, unauthorized } from '@/lib/api-auth'
 
 export const dynamic = 'force-dynamic'
 
-const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
-const TELNYX_FROM = process.env.TELNYX_PHONE_NUMBER || ''
 
-async function sendSMS(to: string, message: string) {
-  if (!TELNYX_API_KEY || !TELNYX_FROM) return { success: false, error: 'Telnyx not configured' }
+async function sendSMS(to: string, message: string, apiKey: string, from: string) {
+  if (!apiKey || !from) return { success: false, error: 'Telnyx not configured' }
   const r = await fetch('https://api.telnyx.com/v2/messages', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: TELNYX_FROM, to, text: message }),
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from, to, text: message }),
   })
+  if (!r.ok) return { success: false, error: `Telnyx returned ${r.status}` }
   const d = await r.json()
   return d.data?.id ? { success: true } : { success: false, error: d.errors?.[0]?.detail }
 }
 
 export async function POST(req: NextRequest) {
-  const body = await req.json()
-  const { action = 'run', dry_run = false } = body
+  const body = await req.json().catch(() => null)
+  const auth = await getRouteShop(req, body?.shopId)
+  if (!auth) return unauthorized()
+  const action = body?.action || 'run'
+  const dryRun = body?.dry_run === true
   const sb = getServiceClient()
+  const { data: settings, error: settingsError } = await sb.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle()
+  if (settingsError) return NextResponse.json({ ok: false, error: 'Unable to load shop settings' }, { status: 500 })
+  const shopName = String(settings?.shop_name || 'our shop').slice(0, 120)
+  const shopPhone = String(settings?.shop_phone || '').slice(0, 40)
+  const telnyxKey = String(settings?.telnyx_api_key || '')
+  const telnyxFrom = String(settings?.telnyx_phone_number || '')
 
   if (action === 'run') {
     // Check vehicles for upcoming service needs
     const { data: vehicles } = await sb
       .from('vehicles')
       .select('*, customers(name, phone)')
+      .eq('shop_id', auth.shopId)
       .order('updated_at', { ascending: true })
 
     const { data: invoices } = await sb
       .from('invoices')
       .select('customer_id, vehicle_id, created_at, items')
+      .eq('shop_id', auth.shopId)
       .order('created_at', { ascending: false })
 
     const results: Array<Record<string, unknown>> = []
-    const sevenDaysAgo = Date.now() - 7 * 24 * 3600 * 1000
 
     // Build last oil change per vehicle
     const lastOilChange: Record<string, string> = {}
@@ -65,24 +75,27 @@ export async function POST(req: NextRequest) {
       const { data: recentReminder } = await sb
         .from('service_reminders_sent')
         .select('id')
+        .eq('shop_id', auth.shopId)
         .eq('vehicle_id', vehicle.id)
         .gte('created_at', new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString())
         .limit(1)
 
       if (recentReminder && recentReminder.length > 0) continue
 
-      const msg = `Hi ${customer.name}! Your ${vehicle.year || ''} ${vehicle.make || ''} ${vehicle.model || ''} is due for an oil change. Alpha International Auto Center is ready for you — call (713) 663-6979 or just reply to this text!`
+      const msg = `Hi ${customer.name}! Your ${vehicle.year || ''} ${vehicle.make || ''} ${vehicle.model || ''} is due for an oil change. ${shopName} is ready for you${shopPhone ? ` — call ${shopPhone}` : ''} or just reply to this text!`
 
-      if (!dry_run) {
-        const result = await sendSMS(customer.phone, msg)
+      if (!dryRun) {
+        const result = await sendSMS(customer.phone, msg, telnyxKey, telnyxFrom)
         try {
-          await sb.from('service_reminders_sent').insert({
+          const { error: reminderError } = await sb.from('service_reminders_sent').insert({
+            shop_id: auth.shopId,
             vehicle_id: vehicle.id,
             customer_id: vehicle.customer_id,
             message: msg,
             sent: result.success,
             created_at: new Date().toISOString(),
           })
+          if (reminderError) throw reminderError
         } catch { /* table may not exist yet */ }
         results.push({ vehicle: `${vehicle.year} ${vehicle.make} ${vehicle.model}`, customer: customer.name, sent: result.success })
       } else {
@@ -104,6 +117,7 @@ export async function POST(req: NextRequest) {
     const { data: appts } = await sb
       .from('appointments')
       .select('*')
+      .eq('shop_id', auth.shopId)
       .eq('date', tomorrowStr)
       .in('status', ['Scheduled', 'Confirmed'])
 
@@ -117,13 +131,14 @@ export async function POST(req: NextRequest) {
 
       const timeText = appt.time ? ` at ${appt.time}` : ''
       const serviceText = appt.service ? ` for ${appt.service}` : ''
-      const msg = `Hi ${appt.customer_name || 'there'}! Reminder: you have an appointment${serviceText} at Alpha International Auto Center tomorrow${timeText}. Call (713) 663-6979 if you need to reschedule. See you then!`
+      const msg = `Hi ${appt.customer_name || 'there'}! Reminder: you have an appointment${serviceText} at ${shopName} tomorrow${timeText}.${shopPhone ? ` Call ${shopPhone}` : ''} if you need to reschedule. See you then!`
 
-      if (!dry_run) {
-        const result = await sendSMS(phone, msg)
+      if (!dryRun) {
+        const result = await sendSMS(phone, msg, telnyxKey, telnyxFrom)
         if (result.success) {
           try {
-            await sb.from('appointments').update({ reminder_sent_at: new Date().toISOString() }).eq('id', appt.id)
+            const { error: appointmentError } = await sb.from('appointments').update({ reminder_sent_at: new Date().toISOString() }).eq('id', appt.id).eq('shop_id', auth.shopId)
+            if (appointmentError) throw appointmentError
           } catch { /* column may not exist yet — reminder still went out */ }
         }
         results.push({ appointment: appt.id, customer: appt.customer_name, time: appt.time, sent: result.success, error: result.error })

@@ -75,18 +75,45 @@ export async function getSettings() {
 
 export async function updateSettings(updates: Record<string, unknown>) {
   const shopId = await getShopId()
-  if (!shopId) return
-  const { data: existing } = await supabase
+  if (!shopId) return { error: new Error('No shop is associated with the signed-in user') }
+
+  // Keep the browser helper from sending UI-only or legacy fields to PostgREST.
+  // The server/database remains the authority for tenant ownership.
+  const allowed = new Set([
+    'shop_name', 'shop_address', 'shop_phone', 'shop_email',
+    'labor_rate', 'tax_rate', 'warranty_months', 'payment_terms',
+    'payment_methods', 'disclaimer', 'techs',
+    'ai_api_key', 'ai_model', 'ai_base_url',
+    'telnyx_api_key', 'telnyx_phone_number', 'telnyx_messaging_profile_id',
+    'telnyx_connection_id',
+    'resend_api_key', 'from_email',
+    'browserless_token',
+    'google_review_url', 'timezone', 'automation_config',
+    'facebook_page_id', 'facebook_page_token', 'fb_ad_account_id', 'searxng_url',
+  ])
+  const payload = Object.fromEntries(
+    Object.entries(updates).filter(([key, value]) => allowed.has(key) && value !== undefined)
+  )
+
+  const existingResult = await supabase
     .from('settings')
     .select('id')
     .eq('shop_id', shopId)
     .limit(1)
-    .single()
-  if (existing) {
-    await supabase.from('settings').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', existing.id)
-  } else {
-    await supabase.from('settings').insert({ ...updates, shop_id: shopId })
+    .maybeSingle()
+  if (existingResult.error) return { error: existingResult.error }
+
+  if (existingResult.data) {
+    const result = await supabase
+      .from('settings')
+      .update({ ...payload, updated_at: new Date().toISOString() })
+      .eq('id', existingResult.data.id)
+      .eq('shop_id', shopId)
+    return { error: result.error || null }
   }
+
+  const result = await supabase.from('settings').insert({ ...payload, shop_id: shopId })
+  return { error: result.error || null }
 }
 
 export async function getCustomers() {
@@ -151,7 +178,10 @@ export async function getUnreadCount() {
 }
 
 export async function markMessageRead(id: string) {
-  await supabase.from('messages').update({ read: true }).eq('id', id)
+  const shopId = await getShopId()
+  if (!shopId) return { error: new Error('No shop is associated with the signed-in user') }
+  const { error } = await supabase.from('messages').update({ read: true }).eq('id', id).eq('shop_id', shopId)
+  return { error: error || null }
 }
 
 export function formatCurrency(n: number | string) {
@@ -161,10 +191,15 @@ export function formatCurrency(n: number | string) {
 export function calcTotals(doc: Record<string, unknown>) {
   const parts = (doc.parts as Record<string,unknown>[]) || []
   const labors = (doc.labors as Record<string,unknown>[]) || []
-  const taxRate = Number(doc.tax_rate) || 8.25
+  const rawTaxRate = Number(doc.tax_rate)
+  const taxRate = Number.isFinite(rawTaxRate) && rawTaxRate >= 0 ? rawTaxRate : 8.25
   const shopSupplies = Number(doc.shop_supplies) || 0
   const sublet = Number(doc.sublet) || 0
   const deposit = Number(doc.deposit) || 0
+  const rawAmountPaid = Number(doc.amount_paid)
+  // amount_paid is the authoritative cash ledger. A deposit is a core charge,
+  // not a payment, so it must never silently make an invoice appear paid.
+  const amountPaid = Number.isFinite(rawAmountPaid) && rawAmountPaid >= 0 ? rawAmountPaid : 0
   const applyTax = doc.apply_tax !== false
 
   const laborTotal = labors.reduce((s, l) => s + laborLineTotal(l), 0)
@@ -176,6 +211,6 @@ export function calcTotals(doc: Record<string, unknown>) {
   const taxAmount = taxableBase * (taxRate / 100)
   const subtotal = laborTotal + partsTotal + shopSupplies + sublet + coreTotal
   const total = subtotal + taxAmount
-  const balanceDue = Math.max(total - deposit, 0)
-  return { laborTotal, partsTotal, coreTotal, taxAmount, subtotal, total, balanceDue, deposit }
+  const balanceDue = Math.max(total - amountPaid, 0)
+  return { laborTotal, partsTotal, coreTotal, taxAmount, subtotal, total, balanceDue, deposit, amountPaid }
 }

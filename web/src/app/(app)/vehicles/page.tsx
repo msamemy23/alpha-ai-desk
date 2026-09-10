@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
+import { getShopId, supabase } from '@/lib/supabase'
 
 export default function VehiclesPage() {
   const [customers, setCustomers] = useState<any[]>([])
@@ -8,8 +8,16 @@ export default function VehiclesPage() {
   const [search, setSearch] = useState('')
 
   useEffect(() => {
-    supabase.from('customers').select('*').then(({ data }) => setCustomers(data || []))
-    supabase.from('jobs').select('*').then(({ data }) => setJobs(data || []))
+    getShopId().then(shopId => {
+      if (!shopId) return
+      Promise.all([
+        supabase.from('customers').select('*').eq('shop_id', shopId),
+        supabase.from('jobs').select('*').eq('shop_id', shopId),
+      ]).then(([customersResult, jobsResult]) => {
+        setCustomers(customersResult.data || [])
+        setJobs(jobsResult.data || [])
+      })
+    })
   }, [])
 
   const vehicleMap: Record<string, any> = {}

@@ -1,47 +1,34 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getAuthedShop } from '@/lib/api-auth'
+import { updateConnector } from '@/lib/connectors'
+import { verifyOAuthState } from '@/lib/oauth-state'
+import { getServiceClient } from '@/lib/supabase'
 export const dynamic = 'force-dynamic'
 
-const APP_ID     = process.env.FACEBOOK_APP_ID     || '1379263117302106'
+const APP_ID = process.env.FACEBOOK_APP_ID || ''
 const APP_SECRET = process.env.FACEBOOK_APP_SECRET || ''
-const CALLBACK   = 'https://alpha-ai-desk.vercel.app/api/auth/facebook/callback'
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const SUPABASE_KEY = (
-  process.env.SUPABASE_SERVICE_KEY ||
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  ''
-)
-const BASE = 'https://alpha-ai-desk.vercel.app'
-
-async function updateConnector(service: string, data: Record<string, unknown>) {
-  const url = `${SUPABASE_URL}/rest/v1/connectors?service=eq.${service}`
-  const r = await fetch(url, {
-    method: 'PATCH',
-    headers: {
-      'apikey': SUPABASE_KEY,
-      'Authorization': `Bearer ${SUPABASE_KEY}`,
-      'Content-Type': 'application/json',
-      'Prefer': 'return=representation',
-    },
-    body: JSON.stringify(data),
-  })
-  if (!r.ok) {
-    const text = await r.text()
-    console.error(`[updateConnector ${service}] ${r.status}: ${text}`)
-    throw new Error(`Supabase update failed: ${r.status} ${text}`)
-  }
-  return r
-}
 
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl
-  const code        = searchParams.get('code')
-  const error       = searchParams.get('error')
+  const base = (process.env.NEXT_PUBLIC_APP_URL || req.nextUrl.origin).replace(/\/$/, '')
+  const callback = `${base}/api/auth/facebook/callback`
+  const code = searchParams.get('code')
+  const error = searchParams.get('error')
+  const state = searchParams.get('state')
   const errorReason = searchParams.get('error_reason') || ''
-  const errorDesc   = searchParams.get('error_description') || ''
+  const errorDesc = searchParams.get('error_description') || ''
+  const auth = await getAuthedShop()
 
   if (error || !code) {
     const msg = errorDesc || errorReason || error || 'no_code'
-    return NextResponse.redirect(`${BASE}/connectors?error=facebook_denied&detail=${encodeURIComponent(msg)}`)
+    return NextResponse.redirect(`${base}/connectors?error=facebook_denied&detail=${encodeURIComponent(msg)}`)
+  }
+  if (!auth) return NextResponse.redirect(`${base}/login?error=facebook_auth_required`)
+  if (!APP_ID || !APP_SECRET) {
+    return NextResponse.redirect(`${base}/connectors?error=facebook_not_configured&detail=${encodeURIComponent('Missing FACEBOOK_APP_ID or FACEBOOK_APP_SECRET in Vercel env')}`)
+  }
+  if (!verifyOAuthState(state, 'facebook', auth.shopId)) {
+    return NextResponse.redirect(`${base}/connectors?error=facebook_invalid_state`)
   }
 
   try {
@@ -50,13 +37,13 @@ export async function GET(req: NextRequest) {
       `https://graph.facebook.com/v21.0/oauth/access_token` +
       `?client_id=${APP_ID}` +
       `&client_secret=${APP_SECRET}` +
-      `&redirect_uri=${encodeURIComponent(CALLBACK)}` +
+      `&redirect_uri=${encodeURIComponent(callback)}` +
       `&code=${encodeURIComponent(code)}`
     )
     const tokenData = await tokenRes.json()
     if (!tokenData.access_token) {
       const detail = tokenData.error?.message || JSON.stringify(tokenData)
-      return NextResponse.redirect(`${BASE}/connectors?error=facebook_token_failed&detail=${encodeURIComponent(detail)}`)
+      return NextResponse.redirect(`${base}/connectors?error=facebook_token_failed&detail=${encodeURIComponent(detail)}`)
     }
     const shortLivedToken = tokenData.access_token as string
 
@@ -89,20 +76,36 @@ export async function GET(req: NextRequest) {
     const pagesData = await pagesRes.json()
     const pages: Array<{ id: string; name: string; access_token: string }> = pagesData.data || []
 
-    // Find our target page
-    const page = pages.find(
-      p => p.name.toLowerCase().includes('alpha') || p.name.toLowerCase().includes('international')
-    ) || pages[0]
+    // Prefer the page configured for this shop. Never select another tenant's
+    // branded page just because it contains a hardcoded legacy name.
+    const { data: shopSettings } = await getServiceClient()
+      .from('settings')
+      .select('shop_name')
+      .eq('shop_id', auth.shopId)
+      .maybeSingle()
+    const configuredName = String(shopSettings?.shop_name || '').trim().toLowerCase()
+    const matchingPages = configuredName
+      ? pages.filter(p => p.name.toLowerCase() === configuredName || p.name.toLowerCase().includes(configuredName))
+      : []
+    const page = matchingPages.length === 1
+      ? matchingPages[0]
+      : pages.length === 1
+        ? pages[0]
+        : null
 
     if (!page) {
       await updateConnector('facebook', {
-        enabled: true,
+        enabled: false,
         access_token: userToken,
         token_expires_at: tokenExpiresAt,
-        metadata: { note: 'no_pages_found' },
+        metadata: {
+          note: pages.length > 1 ? 'multiple_pages_found_choose_one' : 'no_pages_found',
+          available_pages: pages.map(({ id, name }) => ({ id, name })),
+        },
         updated_at: new Date().toISOString(),
-      })
-      return NextResponse.redirect(`${BASE}/connectors?success=facebook&note=no_pages`)
+      }, auth.shopId)
+      const errorCode = pages.length > 1 ? 'facebook_multiple_pages' : 'facebook_no_pages'
+      return NextResponse.redirect(`${base}/connectors?error=${errorCode}`)
     }
 
     // 4. Get Instagram business account
@@ -122,7 +125,7 @@ export async function GET(req: NextRequest) {
       page_access_token: page.access_token,
       metadata: { page_name: page.name, instagram_account_id: igAccountId },
       updated_at: new Date().toISOString(),
-    })
+      }, auth.shopId)
 
     // 6. Save Instagram connector
     if (igAccountId) {
@@ -132,13 +135,13 @@ export async function GET(req: NextRequest) {
         page_id: igAccountId,
         metadata: { page_name: page.name, facebook_page_id: page.id },
         updated_at: new Date().toISOString(),
-      })
+      }, auth.shopId)
     }
 
-    return NextResponse.redirect(`${BASE}/connectors?success=facebook`)
+    return NextResponse.redirect(`${base}/connectors?success=facebook`)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[facebook-callback]', msg)
-    return NextResponse.redirect(`${BASE}/connectors?error=facebook_internal&detail=${encodeURIComponent(msg)}`)
+    return NextResponse.redirect(`${base}/connectors?error=facebook_internal&detail=${encodeURIComponent(msg)}`)
   }
 }

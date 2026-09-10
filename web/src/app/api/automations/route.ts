@@ -99,6 +99,11 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const body = await req.json() as Record<string, unknown>
   const { action } = body
+  const aiSource = req.headers.get('x-ai-source') === 'ai'
+  const approval = req.headers.get('x-ai-approval') === 'confirm'
+  if (aiSource && ['create', 'update', 'delete', 'toggle', 'run_now'].includes(String(action)) && !approval) {
+    return fail('This automation action requires explicit approval', 409)
+  }
   const sb = getServiceClient()
   const internal = hasInternalSecret(req)
   const auth = internal && action === 'check_due' ? null : await getAuthedShop()
@@ -114,17 +119,17 @@ export async function POST(req: NextRequest) {
       schedule: string
       task_prompt: string
     }
-    if (!name || !schedule || !task_prompt) {
+    if (typeof name !== 'string' || !name.trim() || typeof schedule !== 'string' || !schedule.trim() || typeof task_prompt !== 'string' || !task_prompt.trim()) {
       return fail('name, schedule, and task_prompt are required')
     }
     const tz = await getTimezone(shopId)
     const next_run = parseNextRun(schedule, tz)
     const { data, error } = await sb.from('automations').insert({
       shop_id: shopId,
-      name,
-      description: description || '',
-      schedule,
-      task_prompt,
+      name: name.trim().slice(0, 160),
+      description: typeof description === 'string' ? description.slice(0, 1000) : '',
+      schedule: schedule.trim().slice(0, 100),
+      task_prompt: task_prompt.trim().slice(0, 4000),
       enabled: true,
       next_run,
       run_count: 0,
@@ -136,14 +141,26 @@ export async function POST(req: NextRequest) {
   }
 
   if (action === 'update') {
-    const { id, ...updates } = body as Record<string, unknown>
-    if (!id) return fail('id required')
-    if (updates.schedule) {
-      const tz = await getTimezone(shopId)
-      updates.next_run = parseNextRun(updates.schedule as string, tz)
+    const { id } = body as Record<string, unknown>
+    if (typeof id !== 'string' || !id) return fail('id required')
+    const allowedUpdates: Record<string, unknown> = {}
+    for (const key of ['name', 'description', 'schedule', 'task_prompt']) {
+      if (Object.prototype.hasOwnProperty.call(body, key)) allowedUpdates[key] = body[key]
     }
+    if (Object.prototype.hasOwnProperty.call(body, 'name') && (typeof body.name !== 'string' || !body.name.trim())) return fail('name must be a non-empty string')
+    if (Object.prototype.hasOwnProperty.call(body, 'schedule') && (typeof body.schedule !== 'string' || !body.schedule.trim())) return fail('schedule must be a non-empty string')
+    if (Object.prototype.hasOwnProperty.call(body, 'task_prompt') && (typeof body.task_prompt !== 'string' || !body.task_prompt.trim())) return fail('task_prompt must be a non-empty string')
+    if (typeof allowedUpdates.name === 'string') allowedUpdates.name = allowedUpdates.name.trim().slice(0, 160)
+    if (typeof allowedUpdates.description === 'string') allowedUpdates.description = allowedUpdates.description.slice(0, 1000)
+    if (typeof allowedUpdates.schedule === 'string') allowedUpdates.schedule = allowedUpdates.schedule.trim().slice(0, 100)
+    if (typeof allowedUpdates.task_prompt === 'string') allowedUpdates.task_prompt = allowedUpdates.task_prompt.trim().slice(0, 4000)
+    if (typeof allowedUpdates.schedule === 'string') {
+      const tz = await getTimezone(shopId)
+      allowedUpdates.next_run = parseNextRun(allowedUpdates.schedule, tz)
+    }
+    if (!Object.keys(allowedUpdates).length) return fail('No editable fields supplied')
     const { data, error } = await sb.from('automations').update({
-      ...updates,
+      ...allowedUpdates,
       updated_at: new Date().toISOString()
     }).eq('id', id).eq('shop_id', shopId).select().single()
     if (error) return fail(error.message)
@@ -179,16 +196,18 @@ export async function POST(req: NextRequest) {
     // Trigger an automation immediately
     const { id } = body as { id: string }
     if (!id) return fail('id required')
-    const { data: automation } = await sb.from('automations').select('*').eq('id', id).eq('shop_id', shopId).single()
+    const { data: automation, error: automationError } = await sb.from('automations').select('*').eq('id', id).eq('shop_id', shopId).maybeSingle()
+    if (automationError) return fail(automationError.message)
     if (!automation) return fail('Automation not found')
 
     // Execute via the AI
     try {
-      const { data: settings } = await sb.from('settings').select('ai_api_key,ai_model,ai_base_url').eq('shop_id', shopId).limit(1).single()
+      const { data: settings } = await sb.from('settings').select('ai_api_key,ai_model,ai_base_url,shop_name').eq('shop_id', shopId).limit(1).single()
       const apiKey = settings?.ai_api_key
       if (!apiKey) return fail('No AI API key configured')
       const aiBaseUrl = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
       const aiModel = normalizeAiModel(settings?.ai_model, aiBaseUrl)
+      const shopName = String(settings?.shop_name || 'this auto repair shop').slice(0, 120)
 
       const res = await fetch(`${aiBaseUrl}/chat/completions`, {
         method: 'POST',
@@ -196,7 +215,7 @@ export async function POST(req: NextRequest) {
         body: JSON.stringify({
           model: aiModel,
           messages: [
-            { role: 'system', content: 'You are Alpha AI for Alpha International Auto Center. Execute the requested automation task. Be concise in your response.' },
+            { role: 'system', content: `You are the AI assistant for ${shopName}. Generate a proposal for the requested automation task. Do not claim that an external action was executed; be concise.` },
             { role: 'user', content: automation.task_prompt }
           ],
           max_tokens: 1000,
@@ -204,18 +223,19 @@ export async function POST(req: NextRequest) {
         })
       })
       const aiData = await res.json()
-      const result = aiData.choices?.[0]?.message?.content || 'Automation executed'
+      if (!res.ok) return fail(`AI provider returned ${res.status}`, 502)
+      const result = aiData.choices?.[0]?.message?.content || ''
+      if (!result) return fail('AI did not return a proposal', 502)
 
       const tz = await getTimezone(shopId)
-      await sb.from('automations').update({
-        last_run: new Date().toISOString(),
-        run_count: (automation.run_count || 0) + 1,
+      const { error: proposalError } = await sb.from('automations').update({
         last_result: result.slice(0, 500),
         next_run: parseNextRun(automation.schedule, tz),
-        status: 'completed',
+        status: 'awaiting_approval',
       }).eq('id', id).eq('shop_id', shopId)
+      if (proposalError) return fail(proposalError.message, 500)
 
-      return ok({ executed: true, result })
+      return ok({ executed: false, proposal: result, approvalRequired: true, message: 'The AI generated a proposal; no external action was executed.' })
     } catch (err) {
       await sb.from('automations').update({ status: 'error', last_result: String(err) }).eq('id', id).eq('shop_id', shopId)
       return fail(err instanceof Error ? err.message : 'Execution failed')
@@ -240,13 +260,14 @@ export async function POST(req: NextRequest) {
     for (const automation of dueItems) {
       try {
         const targetShopId = automation.shop_id || shopId
-        let settingsQuery = sb.from('settings').select('ai_api_key,ai_model,ai_base_url').limit(1)
-        if (targetShopId) settingsQuery = settingsQuery.eq('shop_id', targetShopId)
+        if (!targetShopId) throw new Error('Automation has no tenant')
+        let settingsQuery = sb.from('settings').select('ai_api_key,ai_model,ai_base_url,shop_name').eq('shop_id', targetShopId).limit(1)
         const { data: settings } = await settingsQuery.single()
         const apiKey = settings?.ai_api_key
         if (!apiKey) throw new Error('No AI API key')
         const aiBaseUrl = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
         const aiModel = normalizeAiModel(settings?.ai_model, aiBaseUrl)
+        const shopName = String(settings?.shop_name || 'this auto repair shop').slice(0, 120)
 
         const res = await fetch(`${aiBaseUrl}/chat/completions`, {
           method: 'POST',
@@ -254,22 +275,22 @@ export async function POST(req: NextRequest) {
           body: JSON.stringify({
             model: aiModel,
             messages: [
-              { role: 'system', content: 'You are Alpha AI for Alpha International Auto Center. Execute the scheduled automation task concisely.' },
+              { role: 'system', content: `You are the AI assistant for ${shopName}. Generate a concise proposal for the scheduled automation task. Do not claim that an external action was executed.` },
               { role: 'user', content: automation.task_prompt }
             ],
             max_tokens: 1000,
             temperature: 0.3,
           })
         })
+        if (!res.ok) throw new Error(`AI provider returned ${res.status}`)
         const aiData = await res.json()
-        const result = aiData.choices?.[0]?.message?.content || 'Done'
+        const result = aiData.choices?.[0]?.message?.content || ''
+        if (!result) throw new Error('AI did not return a proposal')
         const tz = await getTimezone(targetShopId)
         let updateQuery = sb.from('automations').update({
-          last_run: new Date().toISOString(),
-          run_count: (automation.run_count || 0) + 1,
           last_result: result.slice(0, 500),
           next_run: parseNextRun(automation.schedule, tz),
-          status: 'completed',
+          status: 'awaiting_approval',
         }).eq('id', automation.id)
         if (targetShopId) updateQuery = updateQuery.eq('shop_id', targetShopId)
         await updateQuery
@@ -282,7 +303,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return ok({ ran, total: dueItems.length })
+    return ok({ ran, total: dueItems.length, executed: false, approvalRequired: true, message: 'Due automations now produce proposals for approval; no external actions were executed.' })
   }
 
   return fail(`Unknown action: ${action}`)

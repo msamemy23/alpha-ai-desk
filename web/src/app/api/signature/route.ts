@@ -25,6 +25,7 @@ export async function GET(req: NextRequest) {
   const { data: sig } = await db
     .from('signatures')
     .select('signature_data, signer_name, signed_at')
+    .eq('shop_id', auth.shopId)
     .eq('document_id', documentId)
     .not('signed_at', 'is', null)
     .order('signed_at', { ascending: false })

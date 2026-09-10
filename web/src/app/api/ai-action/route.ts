@@ -1,7 +1,7 @@
 ﻿export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { getAuthedShop, hasInternalApiSecret, unauthorized } from '@/lib/api-auth'
 import { sendEmail, estimateEmailHtml } from '@/lib/email'
 import { getIdempotencyKey } from '@/lib/api-response'
 import { writeAuditLog } from '@/lib/audit-log'
@@ -18,6 +18,14 @@ const mutatingActions = new Set([
 ])
 const aiActionIdempotency = new Map<string, { createdAt: number; data: unknown }>()
 
+function safeSearchTerm(value: unknown, maxLength = 120): string {
+  return String(value ?? '').replace(/[%,().*]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maxLength)
+}
+
+function pickFields(payload: Record<string, unknown>, allowed: readonly string[]): Record<string, unknown> {
+  return Object.fromEntries(allowed.filter((key) => Object.prototype.hasOwnProperty.call(payload, key)).map((key) => [key, payload[key]]))
+}
+
 function rememberAiAction(key: string, data: unknown) {
   const now = Date.now()
   for (const [existingKey, value] of aiActionIdempotency) {
@@ -27,22 +35,44 @@ function rememberAiAction(key: string, data: unknown) {
 }
 
 export async function POST(req: NextRequest) {
-  // Require a real session and act only on the authenticated caller's shop.
-  const auth = await getAuthedShop()
-  if (!auth) return unauthorized()
-  const shopId = auth.shopId
+  const sb = getServiceClient()
+  const body = await req.json().catch(() => null) as { action?: unknown; payload?: unknown; shopId?: unknown } | null
+  const sessionAuth = await getAuthedShop()
+  const internal = hasInternalApiSecret(req)
+  let caller = sessionAuth
+
+  // Background/mobile callers may use the deployment secret, but they must
+  // name a real shop profile. A caller can never select a shop by id alone.
+  if (!caller && internal) {
+    const requestedShopId = typeof body?.shopId === 'string' ? body.shopId : ''
+    if (!requestedShopId) return fail('shopId is required for internal calls', 400)
+    const { data: profile } = await sb.from('shop_profiles').select('id,user_id').eq('id', requestedShopId).maybeSingle()
+    if (!profile) return fail('Shop not found', 404)
+    caller = { userId: String(profile.user_id), shopId: String(profile.id) }
+  }
+  if (!caller) return unauthorized()
+
+  const shopId = caller.shopId
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'local'
-  const limited = checkRateLimit(rateLimitKey('ai-action', auth.userId, auth.shopId, ip), 120, 60_000)
+  const limited = checkRateLimit(rateLimitKey('ai-action', caller.userId, caller.shopId, ip), 120, 60_000)
   if (!limited.ok) return fail('Too many AI action requests', 429)
 
-  const sb = getServiceClient()
-  const body = await req.json() as { action?: unknown; payload?: unknown }
-  const action = typeof body.action === 'string' ? body.action : ''
-  if (!action || typeof action !== 'string') return fail('Action is required')
-  const payload = body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload) ? body.payload as Record<string, unknown> : {}
+  const action = typeof body?.action === 'string' ? body.action : ''
+  if (!action) return fail('Action is required')
+  const payload = body?.payload && typeof body.payload === 'object' && !Array.isArray(body.payload) ? body.payload as Record<string, unknown> : {}
   const safePayload = payload
+  if (JSON.stringify(safePayload).length > 20000) return fail('Action payload is too large', 413)
   const idempotencyKey = getIdempotencyKey(req, [shopId, action, JSON.stringify(safePayload).slice(0, 500)])
   const isMutation = mutatingActions.has(action)
+  if (isMutation && req.headers.get('x-ai-approval') !== 'confirm') {
+    return NextResponse.json({
+      ok: false,
+      error: 'Explicit confirmation is required before changing shop data or sending anything',
+      approvalRequired: true,
+      action,
+      payload: safePayload,
+    }, { status: 409 })
+  }
   const existing = isMutation ? aiActionIdempotency.get(idempotencyKey) : undefined
   if (existing) return ok(existing.data)
 
@@ -51,7 +81,7 @@ export async function POST(req: NextRequest) {
       rememberAiAction(idempotencyKey, data)
       await writeAuditLog({
         shopId,
-        userId: auth.userId,
+        userId: caller.userId,
         action: `ai.${action}`,
         targetType,
         targetId,
@@ -84,12 +114,17 @@ export async function POST(req: NextRequest) {
       // ── Create Job ───────────────────────────────────────────
       case 'createJob': {
         const { customer_id, customer_name, vehicle_year, vehicle_make, vehicle_model, vin, status, notes } = payload
+        if (customer_id) {
+          const { data: customer, error: customerError } = await sb.from('customers').select('id').eq('id', customer_id).eq('shop_id', shopId).maybeSingle()
+          if (customerError) return fail(customerError.message, 500)
+          if (!customer) return fail('Customer not found in this shop', 404)
+        }
         const { data, error } = await sb.from('jobs').insert({
           customer_id: customer_id || null,
           customer_name: customer_name || 'Walk-in',
           vehicle_year: vehicle_year || '', vehicle_make: vehicle_make || '',
-          vehicle_model: vehicle_model || '', vin: vin || '',
-          status: status || 'Pending', notes: notes || '',
+          vehicle_model: vehicle_model || '', vehicle_vin: vin || '',
+           status: status || 'Pending', customer_notes: notes || '',
           shop_id: shopId,
           created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
         }).select().single()
@@ -100,9 +135,16 @@ export async function POST(req: NextRequest) {
       // ── Create Invoice / Estimate ────────────────────────────
       case 'createInvoice': {
         const docType = (payload.type as string) || 'Invoice'
+        if (!['Invoice', 'Estimate', 'Receipt'].includes(docType)) return fail('Document type must be Invoice, Estimate, or Receipt')
+        if (payload.customer_id) {
+          const { data: customer, error: customerError } = await sb.from('customers').select('id').eq('id', payload.customer_id).eq('shop_id', shopId).maybeSingle()
+          if (customerError) return fail(customerError.message, 500)
+          if (!customer) return fail('Customer not found in this shop', 404)
+        }
         const prefix = docType === 'Estimate' ? 'EST' : docType === 'Receipt' ? 'REC' : 'INV'
         const year = new Date().getFullYear()
-        const { data: existing } = await sb.from('documents').select('doc_number').eq('shop_id', shopId).eq('type', docType).like('doc_number', `${prefix}-${year}-%`)
+        const { data: existing, error: existingError } = await sb.from('documents').select('doc_number').eq('shop_id', shopId).eq('type', docType).like('doc_number', `${prefix}-${year}-%`)
+        if (existingError) return fail('Document numbering lookup failed', 500)
         const nums = (existing || []).map((d: Record<string, string>) => parseInt(d.doc_number.split('-').pop() || '0'))
         const next = Math.max(0, ...nums) + 1
         const doc_number = `${prefix}-${year}-${String(next).padStart(4, '0')}`
@@ -139,10 +181,11 @@ export async function POST(req: NextRequest) {
 
       // ── Update Customer ──────────────────────────────────────
       case 'updateCustomer': {
-        const { id, ...updates } = payload
-        if (!id) return fail('Customer id is required')
-        const { data, error } = await sb.from('customers').update({
-          ...updates, updated_at: new Date().toISOString(),
+         const { id } = payload
+         if (!id) return fail('Customer id is required')
+         const updates = pickFields(payload, ['name','phone','email','address','preferred_contact','vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage','notes','tags','sentiment','last_contact','review_requested','vehicle_color','vehicle_engine','sms_opted_out'])
+         const { data, error } = await sb.from('customers').update({
+           ...updates, updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
         return auditedOk(data, 'customer', String(id))
@@ -166,14 +209,20 @@ export async function POST(req: NextRequest) {
         if (!allowed.includes(table)) return fail(`Cannot delete from table: ${table}`)
         if (!id) return fail('Record id is required')
         // Scope the delete to the caller's shop so one shop can't delete another's row.
-        const { error } = await sb.from(table).delete().eq('id', id).eq('shop_id', shopId)
-        if (error) return fail(error.message, 500)
-        return auditedOk({ deleted: true, table, id }, table, id)
+         const { data: deleted, error } = await sb.from(table).delete().eq('id', id).eq('shop_id', shopId).select('id').maybeSingle()
+         if (error) return fail(error.message, 500)
+         if (!deleted) return fail('Record not found in this shop', 404)
+         return auditedOk({ deleted: true, table, id }, table, id)
       }
 
       // ── Schedule Follow-Up ───────────────────────────────────
       case 'scheduleFollowUp': {
         const { customer_id, customer_name, channel, scheduled_for, message_body, subject } = payload
+        if (customer_id) {
+          const { data: customer, error: customerError } = await sb.from('customers').select('id').eq('id', customer_id).eq('shop_id', shopId).maybeSingle()
+          if (customerError) return fail(customerError.message, 500)
+          if (!customer) return fail('Customer not found in this shop', 404)
+        }
         const { data, error } = await sb.from('scheduled_messages').insert({
           customer_id: customer_id || null,
           customer_name: customer_name || 'Customer',
@@ -202,15 +251,18 @@ export async function POST(req: NextRequest) {
             sb.from('documents').select('*').eq('shop_id', shopId).eq('customer_id', customer_id).order('created_at', { ascending: false }).limit(20),
             sb.from('messages').select('*').eq('shop_id', shopId).eq('customer_id', customer_id).order('created_at', { ascending: false }).limit(20),
           ])
+          if (jRes.error || dRes.error || mRes.error) return fail('Customer history could not be loaded', 500)
           jobs = jRes.data || []
           docs = dRes.data || []
           msgs = mRes.data || []
         } else if (customer_name) {
-          const name = customer_name as string
+          const name = safeSearchTerm(customer_name)
+          if (!name) return fail('Customer name is required')
           const [jRes, dRes] = await Promise.all([
             sb.from('jobs').select('*').eq('shop_id', shopId).ilike('customer_name', `%${name}%`).order('created_at', { ascending: false }).limit(20),
             sb.from('documents').select('*').eq('shop_id', shopId).ilike('customer_name', `%${name}%`).order('created_at', { ascending: false }).limit(20),
           ])
+          if (jRes.error || dRes.error) return fail('Customer history could not be loaded', 500)
           jobs = jRes.data || []
           docs = dRes.data || []
         }
@@ -224,15 +276,18 @@ export async function POST(req: NextRequest) {
       case 'searchCustomers': {
         const { query } = payload
         if (!query) return fail('Search query is required')
-        const q = (query as string).trim()
+        const q = safeSearchTerm(query)
+        if (!q) return fail('Search query is required')
 
         // Search customers + jobs in parallel
         const [custRes, jobsRes, docsRes, msgsRes] = await Promise.all([
           sb.from('customers').select('*').eq('shop_id', shopId).or(`name.ilike.%${q}%,phone.ilike.%${q}%,email.ilike.%${q}%,address.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
-          sb.from('jobs').select('*').eq('shop_id', shopId).or(`customer_name.ilike.%${q}%,notes.ilike.%${q}%,vin.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
+          sb.from('jobs').select('*').eq('shop_id', shopId).or(`customer_name.ilike.%${q}%,customer_notes.ilike.%${q}%,vehicle_vin.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
           sb.from('documents').select('*').eq('shop_id', shopId).or(`customer_name.ilike.%${q}%,doc_number.ilike.%${q}%,notes.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
           sb.from('messages').select('*').eq('shop_id', shopId).or(`body.ilike.%${q}%,from_address.ilike.%${q}%,to_address.ilike.%${q}%`).order('created_at', { ascending: false }).limit(20),
         ])
+
+        if (custRes.error || jobsRes.error || docsRes.error || msgsRes.error) return fail('Customer search failed', 500)
 
         // Enrich customers with their jobs/vehicle info
         const customers = custRes.data || []
@@ -245,7 +300,7 @@ export async function POST(req: NextRequest) {
             return j.customer_id === c.id || jName.includes(cName) || cName.includes(jName)
           })
           const vehicles = custJobs.map((j: Record<string, unknown>) => ({
-            year: j.vehicle_year, make: j.vehicle_make, model: j.vehicle_model, vin: j.vin
+            year: j.vehicle_year, make: j.vehicle_make, model: j.vehicle_model, vin: j.vehicle_vin
           })).filter((v: Record<string, unknown>) => v.year || v.make || v.model)
           const uniqueVehicles = vehicles.filter((v: Record<string, unknown>, i: number, arr: Record<string, unknown>[]) =>
             arr.findIndex((u: Record<string, unknown>) => u.year === v.year && u.make === v.make && u.model === v.model) === i
@@ -278,7 +333,7 @@ export async function POST(req: NextRequest) {
           .reduce((acc: Record<string, Record<string, unknown>>, j: Record<string, unknown>) => {
             const name = j.customer_name as string || ''
             if (!acc[name]) acc[name] = { name, source: 'jobs', vehicles: [], recent_jobs: [] }
-            const v = { year: j.vehicle_year, make: j.vehicle_make, model: j.vehicle_model, vin: j.vin };
+            const v = { year: j.vehicle_year, make: j.vehicle_make, model: j.vehicle_model, vin: j.vehicle_vin };
             if (v.year || v.make || v.model) (acc[name].vehicles as unknown[]).push(v);
             (acc[name].recent_jobs as unknown[]).push(j)
             return acc
@@ -305,6 +360,7 @@ export async function POST(req: NextRequest) {
           sb.from('customers').select('*', { count: 'exact', head: true }).eq('shop_id', shopId),
         ])
 
+        if (jobsRes.error || docsRes.error || msgsRes.error || custRes.error) return fail('Shop statistics could not be loaded', 500)
         const jobs = jobsRes.data || []
         const docs = docsRes.data || []
 
@@ -331,53 +387,76 @@ export async function POST(req: NextRequest) {
       case 'searchWeb': {
         const query = payload.query as string
         if (!query) return fail('Search query is required')
-        const baseUrl = req.nextUrl.origin
-        const res = await fetch(`${baseUrl}/api/ai-search?q=${encodeURIComponent(query)}`)
-        const data = await res.json()
+        const searchUrl = new URL('/api/ai-search', req.nextUrl.origin)
+        searchUrl.searchParams.set('q', query)
+        searchUrl.searchParams.set('shop_id', shopId)
+        const searchHeaders: Record<string, string> = { Accept: 'application/json' }
+        const authorization = req.headers.get('authorization')
+        const cookie = req.headers.get('cookie')
+        if (authorization) searchHeaders.Authorization = authorization
+        if (cookie) searchHeaders.Cookie = cookie
+        const res = await fetch(searchUrl, { headers: searchHeaders, signal: AbortSignal.timeout(20000) })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok || data.ok === false) return fail(data.error || `Search returned ${res.status}`, 502)
         return ok(data)
       }
 
       // ── Send Estimate/Invoice via Email ────────────────────
       case 'sendEstimateEmail': {
         const { doc_number, customer_name, customer_id, email: overrideEmail } = payload
-        // Find the document
         let docQuery = sb.from('documents').select('*').eq('shop_id', shopId)
         if (doc_number) docQuery = docQuery.eq('doc_number', doc_number)
-        else if (customer_name) docQuery = docQuery.ilike('customer_name', `%${customer_name}%`).order('created_at', { ascending: false }).limit(1)
+        else if (customer_name) docQuery = docQuery.ilike('customer_name', `%${safeSearchTerm(customer_name)}%`).order('created_at', { ascending: false }).limit(1)
         else if (customer_id) docQuery = docQuery.eq('customer_id', customer_id).order('created_at', { ascending: false }).limit(1)
         else return fail('Provide doc_number, customer_name, or customer_id')
 
-        const { data: docs } = await docQuery
+        const { data: docs, error: docError } = await docQuery
+        if (docError) return fail('Document lookup failed', 500)
         const doc = docs?.[0]
         if (!doc) return fail('Document not found')
 
-        // Find customer email — check customers table first, then the document itself
-        let toEmail = overrideEmail as string | undefined
-        if (!toEmail && doc.customer_email) toEmail = doc.customer_email
+        let toEmail = typeof overrideEmail === 'string' ? overrideEmail.trim() : ''
+        if (!toEmail && doc.customer_email) toEmail = String(doc.customer_email)
         if (!toEmail && doc.customer_id) {
-          const { data: cust } = await sb.from('customers').select('email').eq('id', doc.customer_id).eq('shop_id', shopId).single()
-          toEmail = cust?.email
+          const { data: cust, error: customerError } = await sb.from('customers')
+            .select('email')
+            .eq('id', doc.customer_id)
+            .eq('shop_id', shopId)
+            .maybeSingle()
+          if (customerError) return fail('Customer lookup failed', 500)
+          toEmail = cust?.email || ''
         }
         if (!toEmail) return fail('No email on file for this customer. Ask the user to add an email first.')
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(toEmail)) return fail('The customer email address is invalid')
 
-        // Get settings for email template
-        const { data: settings } = await sb.from('settings').select('*').eq('shop_id', shopId).limit(1).single()
+        const { data: settings, error: settingsError } = await sb.from('settings')
+          .select('*')
+          .eq('shop_id', shopId)
+          .order('updated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        if (settingsError) return fail('Shop email settings could not be loaded', 500)
         const html = estimateEmailHtml(doc, settings || {})
-        const fromEmail = settings?.from_email || 'Alpha Auto <onboarding@resend.dev>'
-        const shopName = settings?.shop_name || 'Alpha International Auto Center'
+        const fromEmail = settings?.from_email || settings?.shop_email || ''
+        const shopName = settings?.shop_name || 'your shop'
+        if (!fromEmail) return fail('Shop email sender is not configured')
 
-        await sendEmail({
-          to: toEmail,
-          subject: `${doc.type} #${doc.doc_number} from ${shopName}`,
-          html,
-          replyTo: settings?.shop_email,
-          apiKey: settings?.resend_api_key,
-          from: fromEmail,
-        })
+        try {
+          await sendEmail({
+            to: toEmail,
+            subject: `${doc.type} #${doc.doc_number} from ${shopName}`,
+            html,
+            replyTo: settings?.shop_email,
+            apiKey: settings?.resend_api_key,
+            from: fromEmail,
+          })
+        } catch (error) {
+          return fail(error instanceof Error ? error.message : 'Email could not be sent', 502)
+        }
 
-        // Log the message
-        await sb.from('messages').insert({
-          direction: 'outbound', channel: 'email',
+        const { error: messageError } = await sb.from('messages').insert({
+          direction: 'outbound',
+          channel: 'email',
           from_address: fromEmail,
           to_address: toEmail,
           subject: `${doc.type} #${doc.doc_number}`,
@@ -385,17 +464,20 @@ export async function POST(req: NextRequest) {
           document_id: doc.id,
           customer_id: doc.customer_id,
           shop_id: shopId,
-          status: 'sent', read: true,
+          status: 'sent',
+          read: true,
         })
+        if (messageError) return fail('Email sent, but its message record could not be saved', 500)
 
-        // Mark doc as sent
-        await sb.from('documents').update({ sent_at: new Date().toISOString() }).eq('id', doc.id).eq('shop_id', shopId)
+        const { error: documentError } = await sb.from('documents')
+          .update({ sent_at: new Date().toISOString() })
+          .eq('id', doc.id)
+          .eq('shop_id', shopId)
+        if (documentError) return fail('Email sent, but the document could not be marked as sent', 500)
 
         return auditedOk({ sent: true, to: toEmail, doc_number: doc.doc_number, type: doc.type }, 'document', doc.id)
       }
 
-
-            // ── Convert Estimate to Invoice ────────────────────────
         case 'convertEstimateToInvoice': {
           const { id: estId } = payload
           if (!estId) return fail('Estimate id is required')
@@ -403,7 +485,8 @@ export async function POST(req: NextRequest) {
           if (estErr || !est) return fail('Estimate not found')
           const invPrefix = 'INV'
           const invYear = new Date().getFullYear()
-          const { data: invExisting } = await sb.from('documents').select('doc_number').eq('shop_id', shopId).eq('type', 'Invoice').like('doc_number', `${invPrefix}-${invYear}-%`)
+          const { data: invExisting, error: invExistingError } = await sb.from('documents').select('doc_number').eq('shop_id', shopId).eq('type', 'Invoice').like('doc_number', `${invPrefix}-${invYear}-%`)
+          if (invExistingError) return fail('Invoice numbering lookup failed', 500)
           const invNums = (invExisting || []).map((d: Record<string, string>) => parseInt(d.doc_number.split('-').pop() || '0'))
           const invNext = Math.max(0, ...invNums) + 1
           const invDocNumber = `${invPrefix}-${invYear}-${String(invNext).padStart(4, '0')}`
@@ -449,16 +532,19 @@ export async function POST(req: NextRequest) {
 
       // ── List Staff ───────────────────────────────────────────
       case 'listStaff': {
-        const { data } = await sb.from('staff').select('*').eq('shop_id', shopId).eq('active', true).order('name')
+        const { data, error } = await sb.from('staff').select('*').eq('shop_id', shopId).eq('active', true).order('name')
+        if (error) return fail(error.message, 500)
         return ok({ staff: data || [] })
       }
 
       // ── Update Document ──────────────────────────────────────
       case 'updateDocument': {
-        const { id, ...updates } = payload
-        if (!id) return fail('Document id is required')
-        const { data, error } = await sb.from('documents').update({
-          ...updates, updated_at: new Date().toISOString(),
+         const { id } = payload
+         if (!id) return fail('Document id is required')
+         const updates = pickFields(payload, ['type','status','doc_date','due_date','expires_date','customer_id','customer_name','customer_phone','customer_email','job_id','vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage','parts','labors','shop_supplies','sublet','tax_rate','apply_tax','deposit','payment_method','cashier','payment_terms','payment_methods','warranty_type','warranty_months','warranty_mileage','warranty_start','warranty_exclusions','warranty_claim','notes','locked','sent_at','signature_signed_at','signature_signer_name','signature_requested_at','line_items','payment_plan','internal_notes'])
+         if (updates.status && ['Paid', 'Partial'].includes(String(updates.status))) return fail('Use the payment action to change an invoice to Paid or Partial; the payment ledger is protected.')
+         const { data, error } = await sb.from('documents').update({
+           ...updates, updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
         return auditedOk(data, 'document', String(id))
@@ -466,21 +552,31 @@ export async function POST(req: NextRequest) {
 
       // ── Create Appointment ───────────────────────────────────
       case 'createAppointment': {
-        const { customer_name, customer_id, vehicle, service, scheduled_date, scheduled_time, notes, phone, email } = payload
-        if (!customer_name || !scheduled_date) return fail('customer_name and scheduled_date are required')
-        const { data, error } = await sb.from('appointments').insert({
-          customer_name,
-          customer_id: customer_id || null,
-          vehicle: vehicle || '',
-          service: service || '',
-          scheduled_date,
-          scheduled_time: scheduled_time || '09:00',
-          status: 'Scheduled',
-          notes: notes || '',
-          phone: phone || null,
-          email: email || null,
-          shop_id: shopId,
-          created_at: new Date().toISOString(),
+         const { customer_name, customer_id, vehicle, service, scheduled_date, scheduled_time, date, time, notes, phone, email } = payload
+         const appointmentDate = String(scheduled_date || date || '')
+         const appointmentTime = String(scheduled_time || time || '09:00')
+         if (!customer_name || !appointmentDate) return fail('customer_name and date are required')
+         if (customer_id) {
+           const { data: customer, error: customerError } = await sb.from('customers').select('id').eq('id', customer_id).eq('shop_id', shopId).maybeSingle()
+           if (customerError) return fail(customerError.message, 500)
+           if (!customer) return fail('Customer not found in this shop', 404)
+         }
+         const { data, error } = await sb.from('appointments').insert({
+           customer_name: String(customer_name),
+           customer_id: customer_id || null,
+           vehicle: vehicle || '',
+           service: service || '',
+           date: appointmentDate,
+           time: appointmentTime,
+           scheduled_date: appointmentDate,
+           scheduled_time: appointmentTime,
+           status: 'Scheduled',
+           notes: notes || '',
+           phone: phone || null,
+           email: email || null,
+           shop_id: shopId,
+           created_at: new Date().toISOString(),
+           updated_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
         return auditedOk(data, 'appointment', data?.id)
@@ -497,7 +593,8 @@ export async function POST(req: NextRequest) {
           .lte('clock_in', end + 'T23:59:59')
           .order('clock_in', { ascending: true })
         if (staff_name) query = query.ilike('staff_name', `%${String(staff_name)}%`)
-        const { data } = await query
+        const { data, error } = await query
+        if (error) return fail(error.message, 500)
         const entries = (data || []) as Record<string, unknown>[]
         const grouped: Record<string, { name: string; entries: Record<string, unknown>[]; totalHours: number }> = {}
         for (const e of entries) {
@@ -513,16 +610,28 @@ export async function POST(req: NextRequest) {
       case 'deleteAppointment': {
         const { id } = payload
         if (!id) return fail('Appointment id is required')
-        const { error } = await sb.from('appointments').delete().eq('id', id).eq('shop_id', shopId)
-        if (error) return fail(error.message, 500)
-        return auditedOk({ deleted: true, id }, 'appointment', String(id))
+         const { data: deleted, error } = await sb.from('appointments').delete().eq('id', id).eq('shop_id', shopId).select('id').maybeSingle()
+         if (error) return fail(error.message, 500)
+         if (!deleted) return fail('Appointment not found in this shop', 404)
+         return auditedOk({ deleted: true, id }, 'appointment', String(id))
       }
 
       // ── Update Appointment ───────────────────────────────────
       case 'updateAppointment': {
-        const { id, ...updates } = payload
-        if (!id) return fail('Appointment id is required')
-        const { data, error } = await sb.from('appointments').update(updates).eq('id', id).eq('shop_id', shopId).select().single()
+         const { id } = payload
+         if (!id) return fail('Appointment id is required')
+         const updates = pickFields(payload, ['customer_name','customer_id','phone','email','vehicle','service','tech','date','time','scheduled_date','scheduled_time','duration','status','notes','reminder_sent_at'])
+         if (updates.scheduled_date && !updates.date) updates.date = updates.scheduled_date
+         if (updates.scheduled_time && !updates.time) updates.time = updates.scheduled_time
+         if (updates.date && !updates.scheduled_date) updates.scheduled_date = updates.date
+         if (updates.time && !updates.scheduled_time) updates.scheduled_time = updates.time
+         if (updates.customer_id) {
+           const { data: customer, error: customerError } = await sb.from('customers').select('id').eq('id', updates.customer_id).eq('shop_id', shopId).maybeSingle()
+           if (customerError) return fail(customerError.message, 500)
+           if (!customer) return fail('Customer not found in this shop', 404)
+         }
+         updates.updated_at = new Date().toISOString()
+         const { data, error } = await sb.from('appointments').update(updates).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
         return auditedOk(data, 'appointment', String(id))
       }
@@ -532,16 +641,18 @@ export async function POST(req: NextRequest) {
         const { query: q } = payload
         let dbQuery = sb.from('inventory').select('*').eq('shop_id', shopId).order('name')
         if (q) dbQuery = dbQuery.ilike('name', `%${String(q)}%`)
-        const { data } = await dbQuery.limit(50)
+        const { data, error } = await dbQuery.limit(50)
+        if (error) return fail(error.message, 500)
         return ok({ inventory: data || [] })
       }
 
       // ── Update Inventory ─────────────────────────────────────
       case 'updateInventory': {
-        const { id, ...updates } = payload
-        if (!id) return fail('Inventory item id is required')
-        const { data, error } = await sb.from('inventory').update({
-          ...updates, updated_at: new Date().toISOString(),
+         const { id } = payload
+         if (!id) return fail('Inventory item id is required')
+         const updates = pickFields(payload, ['part_number','name','category','brand','description','cost','retail_price','qty_on_hand','qty_reorder','qty_on_order','location','supplier','supplier_part_number','notes','last_ordered'])
+         const { data, error } = await sb.from('inventory').update({
+           ...updates, updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
         return auditedOk(data, 'inventory', String(id))

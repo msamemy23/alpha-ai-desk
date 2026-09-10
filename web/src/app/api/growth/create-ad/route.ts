@@ -2,15 +2,32 @@ export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
+import { getRouteShop, unauthorized } from '@/lib/api-auth'
 
 // Create ad campaigns using AI-generated copy
 // Supports Facebook Ads (via Marketing API) and Google Ads (generates ready-to-use copy)
 export async function POST(req: NextRequest) {
   try {
-    const { platform, service, budget, duration_days, target_area } = await req.json()
+    const body = await req.json().catch(() => null)
+    const auth = await getRouteShop(req, body?.shopId)
+    if (!auth) return unauthorized()
+
+    const { platform, service, budget, duration_days, target_area } = body || {}
+    const normalizedPlatform = typeof platform === 'string' ? platform.trim().toLowerCase() : 'facebook'
+    if (!['facebook', 'google'].includes(normalizedPlatform)) {
+      return NextResponse.json({ error: 'Platform must be facebook or google' }, { status: 400 })
+    }
 
     const db = getServiceClient()
-    const { data: settings } = await db.from('settings').select('*').limit(1).single()
+    const { data: settings, error: settingsError } = await db
+      .from('settings')
+      .select('*')
+      .eq('shop_id', auth.shopId)
+      .maybeSingle()
+    if (settingsError) {
+      console.error('Create ad settings error:', settingsError)
+      return NextResponse.json({ error: 'Unable to load shop advertising settings' }, { status: 500 })
+    }
 
     const aiKey = (settings?.ai_api_key as string) || ''
     const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
@@ -20,12 +37,26 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'AI API key not configured' }, { status: 400 })
     }
 
-    const serviceType = service || 'general auto repair'
-    const area = target_area || 'Houston TX 77025'
-    const dailyBudget = budget || 10
+    const serviceType = typeof service === 'string' && service.trim()
+      ? service.trim().slice(0, 120)
+      : 'general auto repair'
+    const area = typeof target_area === 'string' && target_area.trim()
+      ? target_area.trim().slice(0, 160)
+      : 'your local service area'
+    const parsedBudget = Number(budget)
+    const dailyBudget = Number.isFinite(parsedBudget) && parsedBudget > 0 && parsedBudget <= 100000
+      ? Math.round(parsedBudget * 100) / 100
+      : 10
+    const parsedDuration = Number(duration_days)
+    const durationDays = Number.isInteger(parsedDuration) && parsedDuration > 0 && parsedDuration <= 365
+      ? parsedDuration
+      : 7
+    const shopName = String(settings?.shop_name || settings?.company_name || settings?.business_name || 'your auto repair shop').slice(0, 120)
+    const shopAddress = String(settings?.address || '').slice(0, 200)
+    const shopPhone = String(settings?.phone || settings?.business_phone || '').slice(0, 40)
 
     // Step 1: Use AI to generate ad copy
-    const adPrompt = `Create a ${platform || 'Facebook'} ad campaign for Alpha International Auto Center (10710 S Main St, Houston TX 77025, phone: (713) 663-6979).
+    const adPrompt = `Create a ${normalizedPlatform} ad campaign for ${shopName}${shopAddress ? ` (${shopAddress}` : ''}${shopPhone ? `, phone: ${shopPhone}` : ''}${shopAddress ? ')' : ''}.
 
 Service to advertise: ${serviceType}
 Target area: ${area}
@@ -56,17 +87,27 @@ Return ONLY valid JSON object. No markdown.`
       })
     })
 
-    const aiData = await aiRes.json()
-    const content = aiData.choices?.[0]?.message?.content || '{}'
+    if (!aiRes.ok) {
+      console.error('Create ad AI error:', aiRes.status, await aiRes.text().catch(() => ''))
+      return NextResponse.json({ error: 'The AI provider did not generate ad copy' }, { status: 502 })
+    }
+    const aiData = await aiRes.json().catch(() => ({}))
+    const content = typeof aiData.choices?.[0]?.message?.content === 'string'
+      ? aiData.choices[0].message.content
+      : '{}'
     let adCopy: Record<string, unknown> = {}
     try {
       adCopy = JSON.parse(content.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
     } catch {
       adCopy = {
-        headline: `${serviceType} - Houston's Trusted Shop`,
-        primary_text: `Need ${serviceType}? Alpha International Auto Center has been serving Houston drivers with honest, affordable service. Call today!`,
-        description: 'Book your appointment today. (713) 663-6979',
-        keywords: ['auto repair houston', 'mechanic houston tx', serviceType.toLowerCase() + ' houston'],
+        headline: `${serviceType} - Trusted Local Service`,
+        primary_text: `Need ${serviceType}? ${shopName} is ready to help with honest, affordable service.${shopPhone ? ` Call ${shopPhone} today!` : ''}`,
+        description: shopPhone ? `Book your appointment today. ${shopPhone}` : 'Book your appointment today.',
+        keywords: [
+          `${serviceType.toLowerCase()} ${area.toLowerCase()}`,
+          `auto repair ${area.toLowerCase()}`,
+          `mechanic ${area.toLowerCase()}`,
+        ],
         call_to_action: 'CALL_NOW',
       }
     }
@@ -74,10 +115,10 @@ Return ONLY valid JSON object. No markdown.`
     let fbResult = null
 
     // Step 2: If Facebook, try to create real ad via Marketing API
-    if ((platform || '').toLowerCase() === 'facebook') {
+    if (normalizedPlatform === 'facebook') {
       const fbToken = settings?.facebook_page_token as string
       const fbPageId = settings?.facebook_page_id as string
-      const fbAdAccountId = process.env.FB_AD_ACCOUNT_ID || (settings?.fb_ad_account_id as string)
+      const fbAdAccountId = String(settings?.fb_ad_account_id || '').replace(/^act_/, '')
 
       if (fbToken && fbAdAccountId) {
         try {
@@ -87,7 +128,7 @@ Return ONLY valid JSON object. No markdown.`
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              name: `Alpha - ${serviceType} - ${new Date().toLocaleDateString()}`,
+              name: `${shopName} - ${serviceType} - ${new Date().toLocaleDateString()}`,
               objective: 'OUTCOME_TRAFFIC',
               status: 'PAUSED', // Start paused so user can review
               special_ad_categories: ['NONE'],
@@ -110,7 +151,9 @@ Return ONLY valid JSON object. No markdown.`
                 bid_strategy: 'LOWEST_COST_WITHOUT_CAP',
                 targeting: {
                   geo_locations: {
-                    cities: [{ key: '2418956', name: 'Houston', region: 'Texas' }],
+                    ...( /houston/i.test(area)
+                      ? { cities: [{ key: '2418956', name: 'Houston', region: 'Texas' }] }
+                      : { countries: ['US'] }),
                     location_types: ['home', 'recent'],
                   },
                   age_min: (adCopy.age_min as number) || 25,
@@ -118,7 +161,7 @@ Return ONLY valid JSON object. No markdown.`
                   interests: ((adCopy.target_interests as string[]) || []).slice(0, 5).map(i => ({ name: i })),
                 },
                 start_time: new Date().toISOString(),
-                end_time: new Date(Date.now() + (duration_days || 7) * 86400000).toISOString(),
+                end_time: new Date(Date.now() + durationDays * 86400000).toISOString(),
                 status: 'PAUSED',
                 access_token: fbToken,
               })
@@ -135,7 +178,7 @@ Return ONLY valid JSON object. No markdown.`
                   object_story_spec: {
                     page_id: fbPageId,
                     link_data: {
-                      link: 'https://alphainternationalauto.com',
+                      link: process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || 'https://alpha-ai-desk.vercel.app',
                       message: adCopy.primary_text,
                       name: adCopy.headline,
                       description: adCopy.description,
@@ -181,12 +224,14 @@ Return ONLY valid JSON object. No markdown.`
 
     // Step 3: Save campaign to Supabase
     const campaign = {
+      shop_id: auth.shopId,
       name: `${(adCopy.headline as string) || serviceType}`,
-      platform: platform || 'facebook',
+      platform: normalizedPlatform,
       service: serviceType,
+      budget_per_day: dailyBudget,
       status: fbResult && !('error' in fbResult) ? 'created_paused' : 'draft',
       daily_budget: dailyBudget,
-      duration_days: duration_days || 7,
+      duration_days: durationDays,
       target_area: area,
       ad_copy: adCopy,
       fb_ids: fbResult,
@@ -196,17 +241,25 @@ Return ONLY valid JSON object. No markdown.`
       created_at: new Date().toISOString(),
     }
 
-    const { data: saved } = await db.from('growth_campaigns').insert(campaign).select().single()
+    const { data: saved, error: saveError } = await db
+      .from('growth_campaigns')
+      .insert(campaign)
+      .select()
+      .single()
+    if (saveError) {
+      console.error('Create ad save error:', saveError)
+      return NextResponse.json({ error: 'Ad copy was generated but the campaign could not be saved' }, { status: 500 })
+    }
 
     return NextResponse.json({
       campaign: saved || campaign,
       ad_copy: adCopy,
       facebook_result: fbResult,
-      google_ready: (platform || '').toLowerCase() === 'google' ? {
-        instructions: 'Copy the ad copy below into Google Ads (ads.google.com). Create a Search campaign targeting Houston TX.',
+      google_ready: normalizedPlatform === 'google' ? {
+        instructions: 'Copy the ad copy below into Google Ads and review targeting before publishing.',
         headline_1: ((adCopy.headline as string) || '').slice(0, 30),
-        headline_2: `Call (713) 663-6979`,
-        headline_3: 'Houston Auto Repair',
+        headline_2: shopPhone ? `Call ${shopPhone}` : 'Call today',
+        headline_3: `${area.slice(0, 30)} Auto Repair`,
         description_1: (adCopy.primary_text as string) || '',
         description_2: (adCopy.description as string) || '',
         keywords: adCopy.keywords || [],

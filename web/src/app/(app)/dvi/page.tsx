@@ -1,6 +1,15 @@
 'use client'
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { supabase } from '@/lib/supabase'
+import { getShopId, supabase } from '@/lib/supabase'
+
+async function getAuthJsonHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  try {
+    const { data } = await supabase.auth.getSession()
+    if (data.session?.access_token) headers.Authorization = 'Bearer ' + data.session.access_token
+  } catch {}
+  return headers
+}
 
 interface DVIItem {
   name: string
@@ -14,6 +23,7 @@ interface DVISection {
 }
 interface DVI {
   id: string
+  shop_id?: string
   job_id: string | null
   customer_name: string
   vehicle: string
@@ -111,18 +121,21 @@ export default function DVIPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const { data } = await supabase.from('dvi').select('*').order('created_at', { ascending: false })
+      const shopId = await getShopId()
+      if (!shopId) { setInspections([]); return }
+      const { data } = await supabase.from('dvi').select('*').eq('shop_id', shopId).order('created_at', { ascending: false })
       setInspections((data || []) as DVI[])
     } finally { setLoading(false) }
   }, [])
-
   useEffect(() => {
     load()
     fetch('/api/staff?role=technician').then(r=>r.json()).then(d=>{ if(d.ok&&d.staff) setTechs(['Unassigned',...d.staff.map((s:{name:string})=>s.name)]) }).catch(()=>{})
-    supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model').order('name').then(({data})=>setCustomers((data||[]) as typeof customers))
-    supabase.from('jobs').select('id,customer_name,vehicle_year,vehicle_make,vehicle_model,ro_number').order('created_at',{ascending:false}).limit(200).then(({data})=>setJobs((data||[]) as typeof jobs))
+    getShopId().then(shopId => {
+      if (!shopId) return
+      supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).order('name').then(({data})=>setCustomers((data||[]) as typeof customers))
+      supabase.from('jobs').select('id,customer_name,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).order('created_at',{ascending:false}).limit(200).then(({data})=>setJobs((data||[]) as typeof jobs))
+    })
   }, [load])
-
   const openNew = () => {
     setForm({ overall_status: 'pending', sent_to_customer: false, customer_approved: false })
     setSections(JSON.parse(JSON.stringify(DEFAULT_SECTIONS)))
@@ -173,6 +186,8 @@ export default function DVIPage() {
     if (!form.customer_name) return alert('Customer name required')
     setSaving(true)
     try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
       let hasRed = false, hasYellow = false
       for (const sec of sections) {
         for (const item of sec.items) {
@@ -181,42 +196,78 @@ export default function DVIPage() {
         }
       }
       const overall_status = hasRed ? 'red' : hasYellow ? 'yellow' : 'green'
-      const data = { ...form, sections, overall_status, updated_at: new Date().toISOString() }
+      const data = { ...form, sections, shop_id: shopId, overall_status, updated_at: new Date().toISOString() }
       if (editing === 'new') {
-        await supabase.from('dvi').insert({ ...data, sent_to_customer: false, customer_approved: false, created_at: new Date().toISOString() })
+        const result = await supabase.from('dvi').insert({
+          ...data,
+          sent_to_customer: false,
+          customer_approved: false,
+          created_at: new Date().toISOString(),
+        })
+        if (result.error) throw new Error(result.error.message)
       } else if (editing) {
-        await supabase.from('dvi').update(data).eq('id', editing)
+        const result = await supabase.from('dvi').update(data).eq('id', editing).eq('shop_id', shopId)
+        if (result.error) throw new Error(result.error.message)
       }
-      setEditing(null); setForm({}); setSections([]); load()
+      setEditing(null); setForm({}); setSections([]); await load()
+    } catch (error) {
+      alert('Inspection could not be saved: ' + (error instanceof Error ? error.message : 'Unknown error'))
     } finally { setSaving(false) }
   }
 
   const sendToCustomer = async (dvi: DVI) => {
     setSending(true)
     try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      if (dvi.shop_id && dvi.shop_id !== shopId) throw new Error('Inspection does not belong to the active shop')
+      const { data: settings, error: settingsError } = await supabase.from('settings').select('shop_name,shop_phone').eq('shop_id', shopId).maybeSingle()
+      if (settingsError) throw settingsError
+      const shopName = settings?.shop_name || 'Your auto shop'
+      const shopPhone = settings?.shop_phone || ''
       const cust = customers.find(c => c.name?.toLowerCase() === dvi.customer_name?.toLowerCase())
       const phone = cust?.phone
-      if (!phone) { alert('No phone number found for this customer. Please link to a customer first.'); return }
+      if (!phone) throw new Error('No phone number found for this customer. Please link to a customer first.')
 
       const reds = dvi.sections?.flatMap(s => s.items.filter(i => i.status === 'red').map(i => i.name)) || []
       const yellows = dvi.sections?.flatMap(s => s.items.filter(i => i.status === 'yellow').map(i => i.name)) || []
-      const smsBody = `Hi ${dvi.customer_name}, your vehicle inspection is complete!\n\n` +
-        (reds.length ? `🔴 Needs Attention:\n${reds.map(r=>`• ${r}`).join('\n')}\n\n` : '') +
-        (yellows.length ? `⚠️ Monitor:\n${yellows.map(y=>`• ${y}`).join('\n')}\n\n` : '') +
-        (!reds.length && !yellows.length ? `✅ Everything looks great!\n\n` : '') +
-        `Please call us at (713) 663-6979 to discuss.\n\n— Alpha International Auto Center`
+      const smsBody = 'Hi ' + dvi.customer_name + ', your vehicle inspection is complete!
 
-      await fetch('/api/send-message', {
+' +
+        (reds.length ? '🔴 Needs Attention:
+' + reds.map(r => '• ' + r).join('
+') + '
+
+' : '') +
+        (yellows.length ? '⚠️ Monitor:
+' + yellows.map(y => '• ' + y).join('
+') + '
+
+' : '') +
+        (!reds.length && !yellows.length ? '✅ Everything looks great!
+
+' : '') +
+        'Please call us' + (shopPhone ? ' at ' + shopPhone : '') + ' to discuss.
+
+— ' + shopName
+
+      const response = await fetch('/api/send-message', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await getAuthJsonHeaders(),
         body: JSON.stringify({ to: phone, body: smsBody, channel: 'sms' })
       })
+      const responseData = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(responseData.error || 'Message was not sent')
 
-      await supabase.from('dvi').update({ sent_to_customer: true, sent_at: new Date().toISOString() }).eq('id', dvi.id)
-      load()
+      const { error } = await supabase.from('dvi').update({
+        sent_to_customer: true,
+        sent_at: new Date().toISOString(),
+      }).eq('id', dvi.id).eq('shop_id', shopId)
+      if (error) throw new Error('Inspection was sent but status could not be updated: ' + error.message)
+      await load()
       alert('Inspection sent to customer via SMS!')
-    } catch (err) {
-      alert('Failed to send: ' + (err as Error).message)
+    } catch (error) {
+      alert('Failed to send: ' + (error instanceof Error ? error.message : 'Unknown error'))
     } finally { setSending(false) }
   }
 

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { getAuthedShop, hasInternalApiSecret, unauthorized } from '@/lib/api-auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -97,19 +98,19 @@ const SYSTEM_AUTOMATIONS = [
     endpoint: '/api/growth/outreach',
     endpointBody: { action: 'sms_blast' },
     configFields: [
-      { key: 'message_template', label: 'Message template', type: 'textarea', default: 'Hey {name}! Alpha International has a special this week: $5 off any oil change. Call (713) 663-6979 to schedule!' },
+      { key: 'message_template', label: 'Message template', type: 'textarea', default: 'Hey {name}! We have a special this week at your local auto repair shop. Reply to this text or call us to schedule.' },
     ],
   },
   {
     id: 'social_posts',
-    name: 'Daily Social Posts',
-    description: 'Auto-generate and schedule daily posts for Facebook & Instagram',
+    name: 'Daily Social Drafts',
+    description: 'Generate a daily draft for Facebook & Instagram; publishing still requires a connected account and explicit approval',
     category: 'marketing',
     schedule: 'Daily at 8am',
     icon: '📸',
     endpoint: '/api/growth/social-post',
     endpointBody: { action: 'auto_post' },
-    requires: ['facebook_token'],
+    requires: [],
     configFields: [
       { key: 'post_time', label: 'Post time (CST)', type: 'text', default: '8:00am' },
       { key: 'include_specials', label: 'Include specials', type: 'boolean', default: true },
@@ -141,11 +142,15 @@ const SYSTEM_AUTOMATIONS = [
   },
 ]
 
-async function getConfig(sb: ReturnType<typeof getServiceClient>) {
-  try {
-    const { data } = await sb.from('settings').select('automation_config').limit(1).single()
-    return (data?.automation_config as Record<string, AutomationState>) || {}
-  } catch { return {} }
+async function getConfig(sb: ReturnType<typeof getServiceClient>, shopId?: string) {
+  let query = sb.from('settings').select('automation_config').order('updated_at', { ascending: false }).limit(1)
+  if (shopId) query = query.eq('shop_id', shopId)
+  const { data, error } = await query.maybeSingle()
+  if (error) {
+    console.error('[system-automations] config lookup failed:', error.message)
+    return {}
+  }
+  return (data?.automation_config as Record<string, AutomationState>) || {}
 }
 
 interface AutomationState {
@@ -157,16 +162,19 @@ interface AutomationState {
   last_status: 'ok' | 'error' | 'never'
 }
 
-async function saveConfig(sb: ReturnType<typeof getServiceClient>, config: Record<string, AutomationState>) {
-  const { data: existing } = await sb.from('settings').select('id').limit(1).single()
+async function saveConfig(sb: ReturnType<typeof getServiceClient>, config: Record<string, AutomationState>, shopId: string) {
+  const { data: existing } = await sb.from('settings').select('id').eq('shop_id', shopId).order('updated_at', { ascending: false }).limit(1).maybeSingle()
   if (existing?.id) {
-    await sb.from('settings').update({ automation_config: config }).eq('id', existing.id)
+    const { error } = await sb.from('settings').update({ automation_config: config, updated_at: new Date().toISOString() }).eq('id', existing.id).eq('shop_id', shopId)
+    if (error) throw new Error(error.message)
   }
 }
 
 export async function GET() {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
   const sb = getServiceClient()
-  const config = await getConfig(sb)
+  const config = await getConfig(sb, auth.shopId)
 
   const result = SYSTEM_AUTOMATIONS.map(auto => ({
     ...auto,
@@ -185,9 +193,77 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   const sb = getServiceClient()
-  const body = await req.json()
+  const body = await req.json().catch(() => ({})) as { action?: string; id?: string; enabled?: boolean; config?: Record<string, unknown> }
+  const internal = hasInternalApiSecret(req)
+  const auth = await getAuthedShop()
   const { action, id } = body
-  const config = await getConfig(sb)
+  const aiSource = req.headers.get('x-ai-source') === 'ai'
+  const approval = req.headers.get('x-ai-approval') === 'confirm'
+  if (aiSource && ['toggle', 'configure', 'run_now'].includes(String(action)) && !approval) {
+    return NextResponse.json({ ok: false, error: 'Explicit confirmation is required before changing automation state or running external actions', approvalRequired: true }, { status: 409 })
+  }
+
+  // Only the cron secret may run the all-shops worker. User actions always
+  // operate on the authenticated shop and never on a caller-provided id.
+  if (!auth && !(internal && action === 'run_all_due')) return unauthorized()
+  if (action === 'run_all_due') {
+    if (!internal) return unauthorized()
+    const { data: settingsRows, error: settingsError } = await sb
+      .from('settings')
+      .select('id,shop_id,automation_config')
+      .not('shop_id', 'is', null)
+    if (settingsError) return NextResponse.json({ ok: false, error: settingsError.message }, { status: 500 })
+
+    const secret = process.env.CRON_SECRET || process.env.INTERNAL_API_SECRET || ''
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL
+      || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : req.nextUrl.origin)
+    const results: Record<string, unknown> = {}
+    let allOk = true
+
+    for (const row of settingsRows || []) {
+      const shopId = String(row.shop_id)
+      const shopConfig = (row.automation_config as Record<string, AutomationState>) || {}
+      for (const auto of SYSTEM_AUTOMATIONS) {
+        const state = shopConfig[auto.id]
+        if (!state?.enabled || (state.last_run && !isScheduleDue(auto.schedule, state.last_run))) continue
+        try {
+          const mergedBody = { ...auto.endpointBody, ...(state.config || {}), shopId }
+          const res = await fetch(`${baseUrl}${auto.endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${secret}` },
+            body: JSON.stringify(mergedBody),
+            signal: AbortSignal.timeout(30000),
+          })
+          const data = await res.json().catch(() => ({}))
+          const success = res.ok && data?.success !== false && data?.ok !== false && !data?.error
+          state.last_run = new Date().toISOString()
+          state.run_count = (state.run_count || 0) + 1
+          state.last_result = JSON.stringify(data).slice(0, 500)
+          state.last_status = success ? 'ok' : 'error'
+          if (!success) allOk = false
+          results[`${shopId}:${auto.id}`] = { ok: success, result: data }
+        } catch (error) {
+          allOk = false
+          state.last_status = 'error'
+          state.last_result = error instanceof Error ? error.message : 'Unknown error'
+          results[`${shopId}:${auto.id}`] = { ok: false, error: state.last_result }
+        }
+      }
+
+      const { error } = await sb.from('settings').update({
+        automation_config: shopConfig,
+        updated_at: new Date().toISOString(),
+      }).eq('id', row.id).eq('shop_id', shopId)
+      if (error) {
+        allOk = false
+        results[`${shopId}:config`] = { ok: false, error: error.message }
+      }
+    }
+    return NextResponse.json({ ok: allOk, results }, { status: allOk ? 200 : 502 })
+  }
+
+  if (!auth || !id) return NextResponse.json({ ok: false, error: 'A shop and automation id are required' }, { status: 400 })
+  const config = await getConfig(sb, auth.shopId)
 
   if (!config[id]) {
     const auto = SYSTEM_AUTOMATIONS.find(a => a.id === id)
@@ -203,13 +279,13 @@ export async function POST(req: NextRequest) {
 
   if (action === 'toggle') {
     config[id].enabled = body.enabled
-    await saveConfig(sb, config)
+    await saveConfig(sb, config, auth!.shopId)
     return NextResponse.json({ ok: true, state: config[id] })
   }
 
   if (action === 'configure') {
     config[id].config = { ...config[id].config, ...body.config }
-    await saveConfig(sb, config)
+    await saveConfig(sb, config, auth!.shopId)
     return NextResponse.json({ ok: true, state: config[id] })
   }
 
@@ -221,69 +297,38 @@ export async function POST(req: NextRequest) {
       const baseUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
       const userConfig = config[id].config || {}
       const mergedBody = { ...auto.endpointBody, ...userConfig }
-      const cookie = req.headers.get('cookie')
-
+      const secret = process.env.CRON_SECRET || process.env.INTERNAL_API_SECRET || ''
+      const forwardedHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (secret) forwardedHeaders.Authorization = `Bearer ${secret}`
+      else {
+        const authorization = req.headers.get('authorization')
+        const cookie = req.headers.get('cookie')
+        if (authorization) forwardedHeaders.Authorization = authorization
+        if (cookie) forwardedHeaders.Cookie = cookie
+      }
       const res = await fetch(`${baseUrl}${auto.endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(cookie ? { cookie } : {}) },
-        body: JSON.stringify(mergedBody),
-      })
-      const data = await res.json()
+        headers: forwardedHeaders,
+        body: JSON.stringify({ ...mergedBody, shopId: auth!.shopId }),
+      })      const data = await res.json()
       const resultStr = JSON.stringify(data).slice(0, 500)
 
       config[id].last_run = new Date().toISOString()
       config[id].run_count = (config[id].run_count || 0) + 1
       config[id].last_result = resultStr
-      config[id].last_status = res.ok ? 'ok' : 'error'
-      await saveConfig(sb, config)
+      config[id].last_status = res.ok && data?.success !== false && data?.ok !== false && !data?.error ? 'ok' : 'error'
+      await saveConfig(sb, config, auth!.shopId)
 
       return NextResponse.json({ ok: true, result: data, state: config[id] })
     } catch (e) {
       config[id].last_status = 'error'
       config[id].last_result = (e as Error).message
-      await saveConfig(sb, config)
+      await saveConfig(sb, config, auth!.shopId)
       return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 })
     }
   }
 
-  // run_all_due: called by cron
-  if (action === 'run_all_due') {
-    const results: Record<string, unknown> = {}
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
-    const cookie = req.headers.get('cookie')
 
-    for (const auto of SYSTEM_AUTOMATIONS) {
-      const state = config[auto.id]
-      if (!state?.enabled) continue
-
-      // Check schedule — simple approach: if enabled and last_run is null or > schedule_interval ago
-      const shouldRun = !state.last_run || isScheduleDue(auto.schedule, state.last_run)
-      if (!shouldRun) continue
-
-      try {
-        const userConfig = state.config || {}
-        const mergedBody = { ...auto.endpointBody, ...userConfig }
-        const res = await fetch(`${baseUrl}${auto.endpoint}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...(cookie ? { cookie } : {}) },
-          body: JSON.stringify(mergedBody),
-        })
-        const data = await res.json()
-        config[auto.id].last_run = new Date().toISOString()
-        config[auto.id].run_count = (config[auto.id].run_count || 0) + 1
-        config[auto.id].last_result = JSON.stringify(data).slice(0, 300)
-        config[auto.id].last_status = res.ok ? 'ok' : 'error'
-        results[auto.id] = { ran: true, ok: res.ok }
-      } catch (e) {
-        config[auto.id].last_status = 'error'
-        config[auto.id].last_result = (e as Error).message
-        results[auto.id] = { ran: true, error: (e as Error).message }
-      }
-    }
-
-    await saveConfig(sb, config)
-    return NextResponse.json({ ok: true, results })
-  }
 
   return NextResponse.json({ ok: false, error: 'Unknown action' }, { status: 400 })
 }

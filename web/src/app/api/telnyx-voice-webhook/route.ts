@@ -10,60 +10,105 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { waitUntil } from '@vercel/functions'
 import { verifyTelnyxSignature } from '@/lib/telnyx-verify'
+import { verifyVoiceClientState } from '@/lib/voice-state'
+import { getServiceClient } from '@/lib/supabase'
+import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 
-const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
-const GROQ_API_KEY = process.env.GROQ_API_KEY || ''
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || ''
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
-// OpenRouter fallback model (Groq is primary for voice)
-const AI_MODEL = 'google/gemini-2.5-flash-lite'
 const VOICE = 'Telnyx.NaturalHD.orion'
 const VOICE_FB = 'Telnyx.NaturalHD.sirius'
 
+type VoiceSettings = {
+  shop_name?: string | null
+  shop_address?: string | null
+  shop_phone?: string | null
+  telnyx_api_key?: string | null
+  ai_api_key?: string | null
+  ai_base_url?: string | null
+  ai_model?: string | null
+}
+
+async function getVoiceSettings(shopId: string): Promise<VoiceSettings | null> {
+  if (!shopId) return null
+  const { data, error } = await getServiceClient()
+    .from('settings')
+    .select('shop_name,shop_address,shop_phone,telnyx_api_key,ai_api_key,ai_base_url,ai_model')
+    .eq('shop_id', shopId)
+    .limit(1)
+    .maybeSingle()
+  if (error) {
+    console.error('[voice] settings lookup failed:', error.message)
+    return null
+  }
+  return data as VoiceSettings | null
+}
+
 // ── Supabase helpers ──
-async function dbGet(callId: string) {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/ai_calls?id=eq.${encodeURIComponent(callId)}&limit=1`, {
+function callFilter(callId: string, shopId: string) {
+  return `id=eq.${encodeURIComponent(callId)}&shop_id=eq.${encodeURIComponent(shopId)}`
+}
+
+async function dbGet(callId: string, shopId: string) {
+  if (!SUPABASE_URL || !SUPABASE_KEY || !shopId) return null
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/ai_calls?${callFilter(callId, shopId)}&limit=1`, {
     headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
   })
-  const rows = await r.json()
+  if (!r.ok) { console.error('[dbGet] Supabase error:', r.status); return null }
+  const rows = await r.json().catch(() => [])
   return Array.isArray(rows) && rows.length > 0 ? rows[0] : null
 }
 
-async function dbUpsert(callId: string, data: Record<string, unknown>) {
-  await fetch(`${SUPABASE_URL}/rest/v1/ai_calls`, {
+async function dbUpsert(callId: string, data: Record<string, unknown>, shopId: string) {
+  if (!SUPABASE_URL || !SUPABASE_KEY || !shopId) return false
+  const existing = await dbGet(callId, shopId)
+  if (existing) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/ai_calls?id=eq.${encodeURIComponent(callId)}&shop_id=eq.${encodeURIComponent(shopId)}`, {
+      method: 'PATCH',
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!r.ok) console.error('[dbUpsert] Supabase update error:', r.status, await r.text().catch(() => ''))
+    return r.ok
+  }
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/ai_calls`, {
     method: 'POST',
-    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates' },
-    body: JSON.stringify({ id: callId, ...data }),
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: callId, shop_id: shopId, ...data }),
   })
+  if (!r.ok) console.error('[dbUpsert] Supabase insert error:', r.status, await r.text().catch(() => ''))
+  return r.ok
 }
 
-async function dbPatch(callId: string, patch: Record<string, unknown>) {
-  await fetch(`${SUPABASE_URL}/rest/v1/ai_calls?id=eq.${encodeURIComponent(callId)}`, {
+async function dbPatch(callId: string, patch: Record<string, unknown>, shopId: string) {
+  if (!SUPABASE_URL || !SUPABASE_KEY || !shopId) return false
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/ai_calls?${callFilter(callId, shopId)}`, {
     method: 'PATCH',
     headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
   })
+  if (!r.ok) console.error('[dbPatch] Supabase error:', r.status, await r.text().catch(() => ''))
+  return r.ok
 }
-
 // ── Telnyx helpers ──
-async function telnyxPost(path: string, body: Record<string, unknown>) {
+async function telnyxPost(path: string, body: Record<string, unknown>, apiKey: string) {
+  if (!apiKey) return { ok: false, status: 503, data: { error: 'Telnyx is not configured for this shop' } }
   const r = await fetch(`${TELNYX_BASE}${path}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  return { ok: r.ok, status: r.status, data: await r.json() }
+  return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) }
 }
 
-async function speak(callId: string, text: string) {
+async function speak(callId: string, text: string, shopId: string, apiKey: string) {
   const clean = text.replace(/"/g, "'").slice(0, 3000)
-  await dbPatch(callId, { is_speaking: true, last_ai_text: clean })
-  const r = await telnyxPost(`/calls/${callId}/actions/speak`, { payload: clean, payload_type: 'text', voice: VOICE })
+  await dbPatch(callId, { is_speaking: true, last_ai_text: clean }, shopId)
+  const r = await telnyxPost(`/calls/${callId}/actions/speak`, { payload: clean, payload_type: 'text', voice: VOICE }, apiKey)
   if (!r.ok) {
     console.log('[speak] primary voice failed, trying fallback')
-    await telnyxPost(`/calls/${callId}/actions/speak`, { payload: clean, payload_type: 'text', voice: VOICE_FB })
+    await telnyxPost(`/calls/${callId}/actions/speak`, { payload: clean, payload_type: 'text', voice: VOICE_FB }, apiKey)
   }
   console.log(`[speak] sent TTS: "${clean.slice(0, 80)}..."`)
 }
@@ -85,75 +130,63 @@ function cleanAiText(text: string): string {
   return text.trim()
 }
 
-// ── AI Chat — Groq first (~30ms TTFT), OpenRouter fallback ──
-async function aiChat(messages: Array<{ role: string; content: string }>, maxTokens = 60): Promise<string> {
-  // Try Groq first — llama-3.1-8b-instant is ~30ms TTFT vs ~500ms OpenRouter
-  if (GROQ_API_KEY) {
-    try {
-      const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'llama-3.1-8b-instant', messages, max_tokens: maxTokens, temperature: 0.7 }),
-      })
-      const d = await r.json()
-      if (r.ok && !d?.error) {
-        const text = cleanAiText(d?.choices?.[0]?.message?.content?.trim() || '')
-        if (text) { console.log('[aiChat] Groq OK'); return text }
-      }
-      console.warn('[aiChat] Groq failed, falling back to OpenRouter:', r.status, JSON.stringify(d?.error))
-    } catch (e) { console.warn('[aiChat] Groq error, falling back:', e) }
-  }
-  // Fall back to OpenRouter (Gemini Flash Lite)
+// ── AI Chat — uses the calling shop's configured provider ──
+async function aiChat(messages: Array<{ role: string; content: string }>, maxTokens = 60, settings: VoiceSettings): Promise<string> {
+  const apiKey = String(settings.ai_api_key || '').trim()
+  if (!apiKey) return ''
   try {
-    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    const baseUrl = normalizeAiBaseUrl(settings.ai_base_url || AI_BASE_URLS.OPENROUTER)
+    const model = normalizeAiModel(settings.ai_model, baseUrl)
+    const r = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${OPENROUTER_API_KEY}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://alpha-ai-desk.vercel.app' },
-      body: JSON.stringify({ model: AI_MODEL, messages, max_tokens: maxTokens, temperature: 0.7 }),
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        ...(baseUrl.includes('openrouter.ai') ? {
+          'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'https://alpha-ai-desk.vercel.app',
+          'X-Title': 'Alpha AI Desk',
+        } : {}),
+      },
+      body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature: 0.7 }),
+      signal: AbortSignal.timeout(30000),
     })
-    const d = await r.json()
-    if (!r.ok) { console.error('[aiChat] OpenRouter HTTP error:', r.status, JSON.stringify(d)); return '' }
-    if (d?.error) { console.error('[aiChat] OpenRouter API error:', JSON.stringify(d.error)); return '' }
-    return cleanAiText(d?.choices?.[0]?.message?.content?.trim() || '')
-  } catch (e) { console.error('[aiChat] OpenRouter error:', e); return '' }
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok || d?.error) return ''
+    return cleanAiText(String(d?.choices?.[0]?.message?.content || ''))
+  } catch (e) {
+    console.error('[aiChat] provider error:', e)
+    return ''
+  }
 }
 
-// ── Alpha Auto Center system prompt ──
-const ALPHA_SYSTEM = `You are Sam, an outbound salesperson calling local Houston customers for Alpha International Auto Center at 10710 South Main Street, Houston Texas. Phone: seven one three six six three six nine seven nine.
+// ── Shop-specific outbound sales prompt ──
+function buildSalesSystem(settings: VoiceSettings): string {
+  const shopName = String(settings.shop_name || 'the configured auto repair shop')
+  const address = String(settings.shop_address || 'the configured shop address')
+  const phone = String(settings.shop_phone || 'the configured shop phone')
+  return `You are a friendly outbound service representative calling on behalf of ${shopName} at ${address}. Phone: ${phone}.
 
-YOUR JOB: Sell oil changes. Be friendly, confident, and persuasive.
-
-OIL CHANGE PRICES:
-- Regular oil: thirty-four dollars and ninety-nine cents
-- House synthetic: forty-four dollars and ninety-nine cents
-- Valvoline full synthetic: fifty-four dollars and ninety-nine cents
-- All prices include up to five quarts. Additional quarts cost extra.
-
-OTHER SERVICES (only if asked): brakes, diagnostics, suspension, AC, engine, transmission, state inspections, paint and body.
-
-REBUTTALS (use one per objection, then accept gracefully if they still say no):
-- "I already have a place" -> "That is cool, we just want a chance to earn your business. We are fast, affordable, and right here on Main Street. Can we get you in this week?"
-- "Not due yet" -> "Perfect timing, gives you a chance to try us out. Can we go ahead and get you on the schedule? This week or next?"
-- "Too expensive" -> "I hear you, thirty-four ninety-nine including up to five quarts is honestly one of the best deals in Houston. What were you paying before?"
-- "Busy" -> "I get it, we are quick, most oil changes done in under thirty minutes. Morning or afternoon work better?"
-- "Just text me" -> "Absolutely, but real quick, do you have a day this week that works even tentatively? Thursday or Friday?"
-
-CLOSING: Always try to get a specific day. Can I put you down for a day? Even tentatively, just so we hold a spot.
+YOUR JOB: Help the customer with the requested auto-repair conversation and, when appropriate, offer to schedule service.
 
 RULES:
-- YOU called THEM. Never say Thanks for calling.
-- 1-3 sentences max per reply. Short and punchy.
-- Wait for them to finish. Never answer your own questions.
-- If not interested or no thanks: give ONE rebuttal, then if still no say No problem, have a great day! and stop.
-- If they say hold on or one sec say Of course, take your time. and wait.
-- Spoken words only. No markdown, no bullets, no stage directions.`
+- You called them. Never say Thanks for calling.
+- Keep every reply to 1-3 short sentences.
+- Answer only from the configured shop context or what the customer tells you. Never invent prices, appointments, guarantees, or vehicle facts.
+- If they are not interested, acknowledge it once and end politely.
+- Spoken words only. No markdown, bullets, stage directions, or quotes.`
+}
 
+// ── Handle call.answered ──
 // ── Handle call.answered ──
 // Three call types:
 // 1. Alpha sales call: task === 'Alpha Auto Center oil change call' or mentions auto services
 // 2. AI task call: task has custom instructions (e.g. "ask if he's going to church")
 // 3. Personal call: task is empty — user just wants to talk, no AI involvement
-async function handleAnswered(callId: string, task: string) {
+async function handleAnswered(callId: string, task: string, shopId: string, settings: VoiceSettings) {
+  const patch = (data: Record<string, unknown>) => dbPatch(callId, data, shopId)
   try {
+    const upsert = (data: Record<string, unknown>) => dbUpsert(callId, data, shopId)
+    const say = (text: string) => speak(callId, text, shopId, String(settings.telnyx_api_key || ''))
     console.log(`[handleAnswered] START callId=${callId.slice(0, 25)} task="${task.slice(0, 80)}"`)
     const isAlpha = task === 'Alpha Auto Center oil change call' || (
       /oil.?change|brake|transmission|engine|state inspection/i.test(task) &&
@@ -164,7 +197,7 @@ async function handleAnswered(callId: string, task: string) {
 
     console.log(`[handleAnswered] callType: isAlpha=${isAlpha} isPersonalCall=${isPersonalCall} isCustomTask=${isCustomTask}`)
 
-    await dbUpsert(callId, { status: 'active', task: task || 'personal call', greeted: false, processing: true, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' })
+    await upsert({ status: 'active', task: task || 'personal call', greeted: false, processing: true, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' })
 
     // Start transcription — use 'both' since 'inbound'/'outbound' alone can miss audio
     const txResult = await telnyxPost(`/calls/${callId}/actions/transcription_start`, {
@@ -172,15 +205,15 @@ async function handleAnswered(callId: string, task: string) {
       transcription_engine: 'B',
       transcription_tracks: 'both',
       interim_results: false,
-    })
+    }, String(settings.telnyx_api_key || ''))
     console.log(`[handleAnswered] transcription_start result: ok=${txResult.ok} status=${txResult.status}`)
 
-    await telnyxPost(`/calls/${callId}/actions/record_start`, { format: 'mp3', channels: 'dual', play_beep: false })
+    await telnyxPost(`/calls/${callId}/actions/record_start`, { format: 'mp3', channels: 'dual', play_beep: false }, String(settings.telnyx_api_key || ''))
 
     // Personal call: no AI greeting, just connect silently
     if (isPersonalCall) {
       console.log('[handleAnswered] Personal call — skipping AI greeting, just connecting')
-      await dbPatch(callId, { greeted: true, processing: false })
+      await patch({ greeted: true, processing: false })
       return
     }
 
@@ -188,8 +221,8 @@ async function handleAnswered(callId: string, task: string) {
     let greetingPrompt: string
     let fallbackGreeting: string
     if (isAlpha) {
-      greetingPrompt = ALPHA_SYSTEM + '\n\nSay your opening line to a Houston customer. One punchy sentence.\nYOU called THEM. Never say Thanks for calling.'
-      fallbackGreeting = 'Hey there, this is Sam from Alpha International Auto Center. How are you doing today?'
+      greetingPrompt = buildSalesSystem(settings) + '\n\nSay your opening line to the customer. One punchy sentence.\nYOU called THEM. Never say Thanks for calling.'
+      fallbackGreeting = `Hey there, this is ${String(settings.shop_name || 'the shop')}. How are you doing today?`
     } else {
       // Custom AI task — greeting should reflect the user's actual instructions
       greetingPrompt = `You are making an outbound phone call on behalf of someone. Your specific task for this call is: "${task}"
@@ -200,24 +233,27 @@ Spoken words only.`
       fallbackGreeting = 'Hey, how are you doing today?'
     }
 
-    const greeting = await aiChat([{ role: 'system', content: greetingPrompt }], 60) || fallbackGreeting
+    const greeting = await aiChat([{ role: 'system', content: greetingPrompt }], 60, settings) || fallbackGreeting
 
     const transcript = [{ speaker: 'ai', text: greeting }]
     const conversation = [{ role: 'assistant', content: greeting }]
-    await dbPatch(callId, { greeted: true, transcript, conversation, greeting_sent_at: Date.now() })
-    await speak(callId, greeting)
+    await patch({ greeted: true, transcript, conversation, greeting_sent_at: Date.now() })
+    await say(greeting)
     // Do NOT unlock processing here — let call.speak.ended clear both
     // is_speaking and processing, so no echo transcription sneaks through
     console.log('[handleAnswered] DONE greeting sent, waiting for speak.ended to unlock')
   } catch (e) {
     console.error('[handleAnswered] ERROR:', e)
-    await dbPatch(callId, { processing: false, is_speaking: false })
+    await patch({ processing: false, is_speaking: false })
   }
 }
 
 // ── Handle transcription — conversation loop ──
-async function handleTranscription(callId: string, text: string, isFinal: boolean) {
+async function handleTranscription(callId: string, text: string, isFinal: boolean, shopId: string, settings: VoiceSettings) {
+  const patch = (data: Record<string, unknown>) => dbPatch(callId, data, shopId)
   try {
+    const getState = () => dbGet(callId, shopId)
+    const say = (text: string) => speak(callId, text, shopId, String(settings.telnyx_api_key || ''))
     console.log(`[handleTranscription] text="${text}" isFinal=${isFinal}`)
 
     // Only process final transcriptions for AI reply
@@ -232,7 +268,7 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
       return
     }
 
-    const state = await dbGet(callId)
+    const state = await getState()
     if (!state) {
       console.log('[VOICE DEBUG] Dropped: no state found in DB', { callId: callId.slice(0, 20) })
       return
@@ -278,8 +314,8 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     // If AI is currently speaking and human says 2+ words, barge-in
     if (state.is_speaking && text.split(' ').length >= 2) {
       console.log('[handleTranscription] BARGE-IN: stopping AI speech')
-      await telnyxPost(`/calls/${callId}/actions/playback_stop`, { stop: 'all' })
-      await dbPatch(callId, { is_speaking: false, processing: false })
+      await telnyxPost(`/calls/${callId}/actions/playback_stop`, { stop: 'all' }, String(settings.telnyx_api_key || ''))
+      await patch({ is_speaking: false, processing: false })
       await new Promise(res => setTimeout(res, 200))
       // Update local state so processing check below uses correct value
       state.is_speaking = false
@@ -294,12 +330,12 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
 
     // Lock immediately
     console.log(`[handleTranscription] PROCESSING: "${text}"`)
-    await dbPatch(callId, { processing: true })
+    await patch({ processing: true })
 
     const transcript: Array<{ speaker: string; text: string }> = Array.isArray(state.transcript) ? [...state.transcript] : []
     const conversation: Array<{ role: string; content: string }> = Array.isArray(state.conversation) ? [...state.conversation] : []
     transcript.push({ speaker: 'customer', text })
-    await dbPatch(callId, { transcript })
+    await patch({ transcript })
 
     const objectionCount = (state.objection_count as number) || 0
     const isHardNo = /not interested|do not call|take me off|remove me|stop calling/i.test(text)
@@ -310,10 +346,10 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
       const bye = 'No problem at all, I appreciate your time. Have a great day!'
       transcript.push({ speaker: 'ai', text: bye })
       conversation.push({ role: 'assistant', content: bye })
-      await dbPatch(callId, { transcript, conversation })
-      await speak(callId, bye)
+      await patch({ transcript, conversation })
+      await say(bye)
       // Unlock processing immediately — don't wait for speak.ended
-      await dbPatch(callId, { processing: false })
+      await patch({ processing: false })
       console.log('[handleTranscription] END: said goodbye')
       return
     }
@@ -331,10 +367,10 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
       const closing = farewells[Math.floor(Math.random() * farewells.length)]
       transcript.push({ speaker: 'ai', text: closing })
       conversation.push({ role: 'assistant', content: closing })
-      await dbPatch(callId, { transcript, conversation, processing: false })
-      await speak(callId, closing)
+      await patch({ transcript, conversation, processing: false })
+      await say(closing)
       // Hang up after TTS finishes
-      setTimeout(() => telnyxPost('/calls/' + callId + '/actions/hangup', {}), 3500)
+      setTimeout(() => telnyxPost('/calls/' + callId + '/actions/hangup', {}, String(settings.telnyx_api_key || '')), 3500)
       console.log('[handleTranscription] END: farewell detected, hanging up')
       return
     }
@@ -365,29 +401,38 @@ RULES:
 
     const messages = [{ role: 'system', content: systemPrompt }, ...conversation.slice(-10), { role: 'user', content: text }]
     console.log('[handleTranscription] calling AI for response...')
-    const reply = await aiChat(messages, 60)
+    const reply = await aiChat(messages, 60, settings)
 
     if (reply) {
       console.log(`[handleTranscription] AI replied: "${reply.slice(0, 80)}"`)
       transcript.push({ speaker: 'ai', text: reply })
       conversation.push({ role: 'assistant', content: reply })
       const newObjCount = isSoftNo ? objectionCount + 1 : objectionCount
-      await dbPatch(callId, { transcript, conversation, objection_count: newObjCount })
-      await speak(callId, reply)
+      await patch({ transcript, conversation, objection_count: newObjCount })
+      await say(reply)
       // Unlock processing immediately so next transcription can be processed
       // call.speak.ended acts as a safety net to clear is_speaking
-      await dbPatch(callId, { processing: false })
+      await patch({ processing: false })
     } else {
       console.log('[handleTranscription] AI returned empty, unlocking')
-      await dbPatch(callId, { processing: false })
+      await patch({ processing: false })
     }
   } catch (e) {
     console.error('[handleTranscription] ERROR:', e)
-    await dbPatch(callId, { processing: false, is_speaking: false })
+    await patch({ processing: false, is_speaking: false })
   }
 }
 
 // ── Main webhook — return 200 IMMEDIATELY then process ──
+function readClientState(value: unknown): { task: string; shopId: string } {
+  const decoded = verifyVoiceClientState(value)
+  if (!decoded) return { task: '', shopId: '' }
+  return {
+    task: typeof decoded.task === 'string' ? decoded.task.slice(0, 2000) : '',
+    shopId: typeof decoded.shopId === 'string' ? decoded.shopId : '',
+  }
+}
+
 export async function POST(req: NextRequest) {
   const rawBody = await req.text()
   const sig = req.headers.get('telnyx-signature-ed25519')
@@ -396,47 +441,56 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'Invalid signature' }, { status: 401 })
   }
 
-  const body = JSON.parse(rawBody)
+  let body: Record<string, any>
+  try {
+    body = JSON.parse(rawBody)
+  } catch {
+    return NextResponse.json({ ok: false, error: 'Invalid JSON' }, { status: 400 })
+  }
   const eventType = body?.data?.event_type as string
-  const payload = body?.data?.payload as Record<string, unknown>
+  const payload = (body?.data?.payload || {}) as Record<string, unknown>
   const callId = payload?.call_control_id as string
   console.log(`[webhook] ${eventType} callId=${callId?.slice(0, 25) || 'n/a'}`)
 
   if (eventType === 'version') return NextResponse.json({ v: 'v8.0-groq' })
+  if (!callId) return NextResponse.json({ ok: false, error: 'Missing call control id' }, { status: 400 })
+  const callState = readClientState(payload?.client_state)
+  if (!callState.shopId) {
+    console.error('[webhook] Missing tenant context; refusing to touch call state')
+    return NextResponse.json({ ok: false, error: 'Missing tenant context' }, { status: 400 })
+  }
+  const { task, shopId } = callState
+  const settings = await getVoiceSettings(shopId)
+  if (!settings) {
+    console.error('[webhook] Shop settings could not be loaded; refusing to process call')
+    return NextResponse.json({ ok: false, error: 'Shop settings could not be loaded' }, { status: 503 })
+  }
 
   // call.initiated — create DB row early so state exists when other events arrive
   if (eventType === 'call.initiated') {
-    let task = ''
-    const cs = payload?.client_state as string
-    if (cs) { try { task = JSON.parse(Buffer.from(cs, 'base64').toString()).task || '' } catch { /* ok */ } }
     console.log(`[webhook] call.initiated — creating DB row, task="${task.slice(0, 50)}"`)
-    waitUntil(dbUpsert(callId, { task, status: 'calling', greeted: false, processing: false, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' }))
+    waitUntil(dbUpsert(callId, { task, status: 'calling', greeted: false, processing: false, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' }, shopId))
     return NextResponse.json('OK')
   }
 
   if (eventType === 'call.answered') {
-    let task = ''
-    const cs = payload?.client_state as string
-    if (cs) { try { task = JSON.parse(Buffer.from(cs, 'base64').toString()).task || '' } catch { /* ok */ } }
-    waitUntil(handleAnswered(callId, task))
+    waitUntil(handleAnswered(callId, task, shopId, settings))
     return NextResponse.json('OK')
   }
 
   // call.speak.ended — clear is_speaking AND processing flags
-  // This is the authoritative unlock point: no transcription should be
-  // processed while TTS is still playing (prevents echo re-processing).
   if (eventType === 'call.speak.ended') {
     console.log('[webhook] call.speak.ended — clearing is_speaking + processing')
-    waitUntil(dbPatch(callId, { is_speaking: false, processing: false }))
+    waitUntil(dbPatch(callId, { is_speaking: false, processing: false }, shopId))
     return NextResponse.json('OK')
   }
 
   if (eventType === 'call.transcription') {
     const td = payload?.transcription_data as Record<string, unknown>
-    const text = (td?.transcript as string || '').trim()
+    const text = (td?.transcript as string || '').trim().slice(0, 2000)
     const isFinal = td?.is_final as boolean
     console.log(`[webhook] transcription: final=${isFinal} text="${text?.slice(0, 50)}"`)
-    if (text) { waitUntil(handleTranscription(callId, text, isFinal)) }
+    if (text) { waitUntil(handleTranscription(callId, text, isFinal, shopId, settings)) }
     return NextResponse.json('OK')
   }
 
@@ -445,21 +499,20 @@ export async function POST(req: NextRequest) {
     let url = ''
     if (typeof urls === 'string') url = urls
     else if (urls && typeof urls === 'object') { url = (urls as Record<string, string>).mp3 || (urls as Record<string, string>).wav || Object.values(urls as Record<string, string>)[0] || '' }
-    if (!url && payload?.public_url) url = payload.public_url as string
-    if (url) waitUntil(dbPatch(callId, { recording_url: url }))
+    if (url) waitUntil(dbPatch(callId, { recording_url: url.slice(0, 2000) }, shopId))
     return NextResponse.json('OK')
   }
 
   if (eventType === 'call.hangup') {
-    waitUntil(dbPatch(callId, { status: 'ended', is_speaking: false, processing: false }))
+    waitUntil(dbPatch(callId, { status: 'ended', is_speaking: false, processing: false }, shopId))
     waitUntil((async () => {
-      const state = await dbGet(callId)
+      const state = await dbGet(callId, shopId)
       if (!state) return
       const transcript: Array<{ speaker: string; text: string }> = Array.isArray(state.transcript) ? state.transcript : []
       if (transcript.length > 1) {
         const lines = transcript.map((t: { speaker: string; text: string }) => `${t.speaker === 'ai' ? 'AI' : 'Person'}: ${t.text}`).join('\n')
-        const summary = await aiChat([{ role: 'user', content: `Summarize this call in 3-5 bullet points.\nTask: ${state.task}\n\nTranscript:\n${lines}` }], 200)
-        await dbPatch(callId, { summary: summary || `Call ended. ${transcript.length} exchanges.`, status: 'ended' })
+        const summary = await aiChat([{ role: 'user', content: `Summarize this call in 3-5 bullet points.\nTask: ${state.task}\n\nTranscript:\n${lines}` }], 200, settings)
+        await dbPatch(callId, { summary: summary || `Call ended. ${transcript.length} exchanges.`, status: 'ended' }, shopId)
       }
     })())
     return NextResponse.json('OK')

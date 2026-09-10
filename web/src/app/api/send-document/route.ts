@@ -11,14 +11,17 @@ export async function POST(req: NextRequest) {
     if (!auth) return unauthorized()
 
     const { documentId, channel, email: reqEmail, phone: reqPhone } = await req.json()
+    if (!['email', 'sms'].includes(channel)) return NextResponse.json({ error: 'channel must be email or sms' }, { status: 400 })
     const db = getServiceClient()
 
     // Scope both the document and settings to the caller's shop so one shop can
     // never email/SMS another shop's document.
-    const [{ data: doc }, { data: settings }] = await Promise.all([
+    const [{ data: doc, error: docError }, { data: settings, error: settingsError }] = await Promise.all([
       db.from('documents').select('*').eq('id', documentId).eq('shop_id', auth.shopId).single(),
-      db.from('settings').select('*').eq('shop_id', auth.shopId).limit(1).single(),
+      db.from('settings').select('*').eq('shop_id', auth.shopId).limit(1).maybeSingle(),
     ])
+    if (docError) return NextResponse.json({ error: 'Document could not be loaded' }, { status: 500 })
+    if (settingsError) return NextResponse.json({ error: 'Shop settings could not be loaded' }, { status: 500 })
     if (!doc) return NextResponse.json({ error: 'Document not found' }, { status: 404 })
 
     // Resolve customer contact info: request body > document fields > customer table
@@ -37,19 +40,22 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const shopName = settings?.shop_name || 'Alpha International Auto Center'
+    const shopName = settings?.shop_name || 'Your Auto Shop'
     const docType = doc.type as string
 
     if (channel === 'email') {
       const email = custEmail
       if (!email) return NextResponse.json({ error: 'No email on file for this customer' }, { status: 400 })
 
+      if (!settings?.resend_api_key || !settings?.from_email) return NextResponse.json({ error: 'Email is not configured for this shop' }, { status: 503 })
       const html = estimateEmailHtml(doc, settings || {})
       await sendEmail({
         to: email,
         subject: `${docType} #${doc.doc_number} from ${shopName}`,
         html,
         replyTo: settings?.shop_email,
+        apiKey: settings.resend_api_key,
+        from: settings.from_email,
       })
 
       await db.from('messages').insert({
@@ -76,9 +82,13 @@ export async function POST(req: NextRequest) {
     if (channel === 'sms') {
       const phone = custPhone
       if (!phone) return NextResponse.json({ error: 'No phone number on file for this customer' }, { status: 400 })
+      if (!settings?.telnyx_api_key || !settings?.telnyx_phone_number) return NextResponse.json({ error: 'SMS is not configured for this shop' }, { status: 503 })
       const formatted = formatPhone(phone)
-      const smsBody = `Hi! Your ${docType} #${doc.doc_number} from ${shopName} is ready. Total: $${calcTotals(doc).total.toFixed(2)}. Call us at ${settings?.shop_phone || ''} with any questions.`
-      await sendSMS(formatted, smsBody)
+      const smsBody = `Hi! Your ${docType} #${doc.doc_number} from ${shopName} is ready. Total: ${calcTotals(doc).total.toFixed(2)}. Call us at ${settings?.shop_phone || ''} with any questions.`
+      await sendSMS(formatted, smsBody, settings.telnyx_phone_number, {
+        apiKey: settings.telnyx_api_key,
+        messagingProfileId: settings.telnyx_messaging_profile_id || '',
+      })
       await db.from('messages').insert({
         shop_id: auth.shopId,
         direction: 'outbound',

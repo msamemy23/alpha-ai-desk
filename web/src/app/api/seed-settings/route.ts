@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import { getServiceClient } from '@/lib/supabase'
 import { requireAdmin } from '@/lib/admin-guard'
 import { AI_BASE_URLS, DEFAULT_OPENROUTER_MODEL } from '@/lib/ai-config'
 
@@ -7,15 +7,17 @@ export async function POST(req: NextRequest) {
   const denied = requireAdmin(req)
   if (denied) return denied
   try {
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!
-    )
-
-    const { data: existing } = await supabase.from('settings').select('id').limit(1).single()
+    const body = await req.json().catch(() => null)
+    const shopId = typeof body?.shopId === 'string' ? body.shopId : ''
+    if (!shopId) return NextResponse.json({ error: 'shopId is required' }, { status: 400 })
+    const supabase = getServiceClient()
+    const { data: shop } = await supabase.from('shop_profiles').select('id').eq('id', shopId).maybeSingle()
+    if (!shop) return NextResponse.json({ error: 'Shop not found' }, { status: 404 })
+    const { data: existing } = await supabase.from('settings').select('id').eq('shop_id', shopId).maybeSingle()
 
     // Only include columns that definitely exist in the schema
     const defaults: Record<string, unknown> = {
+      shop_id: shopId,
       shop_name: 'Alpha International Auto Center',
       shop_address: '10710 S Main St, Houston TX 77025',
       shop_phone: '(713) 663-6979',
@@ -23,7 +25,7 @@ export async function POST(req: NextRequest) {
       labor_rate: 120,
       tax_rate: 8.25,
       warranty_months: 12,
-      payment_methods: ['Cash', 'Card', 'Zelle', 'Cash App'],
+      payment_methods: 'Cash, Card, Zelle, Cash App',
       // Never copy API secrets from env into the database — server routes read
       // them from env directly. Rows in `settings` are visible to any
       // authenticated shop user; secrets don't belong there.
@@ -34,13 +36,13 @@ export async function POST(req: NextRequest) {
     }
 
     if (existing?.id) {
-      const { data: current } = await supabase.from('settings').select('*').limit(1).single()
+      const { data: current } = await supabase.from('settings').select('*').eq('shop_id', shopId).maybeSingle()
       const updates: Record<string, unknown> = {}
       for (const [k, v] of Object.entries(defaults)) {
         if (!current?.[k]) updates[k] = v
       }
       if (Object.keys(updates).length > 0) {
-        const { error } = await supabase.from('settings').update(updates).eq('id', existing.id)
+        const { error } = await supabase.from('settings').update(updates).eq('id', existing.id).eq('shop_id', shopId)
         if (error) console.warn('seed-settings update warn:', error.message)
       }
     } else {

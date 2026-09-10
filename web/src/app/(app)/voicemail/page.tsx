@@ -1,6 +1,6 @@
 ﻿'use client'
 import { useEffect, useState, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { getShopId, supabase } from '@/lib/supabase'
 
 const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
 // Publishable anon key — goes in apikey header to identify the project
@@ -127,7 +127,7 @@ export default function VoicemailPage() {
   const [calls, setCalls] = useState<AiCall[]>([])
   const [callHistory, setCallHistory] = useState<CallRecord[]>([])
   const [loading, setLoading] = useState(true)
-  const [shopPhone, setShopPhone] = useState('(713) 663-6979')
+  const [shopPhone, setShopPhone] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
   const [tab, setTab] = useState<'inbound' | 'outbound' | 'history'>('history')
   const [histPage, setHistPage] = useState(0)
@@ -137,14 +137,19 @@ export default function VoicemailPage() {
   // This bypasses GoTrue's localStorage lock â€” no 5000ms delays ever.
   const load = useCallback(async () => {
     try {
+      const shopId = await getShopId()
+      if (!shopId) { setCalls([]); setCallHistory([]); setLoading(false); return }
+      const { data: settings } = await supabase.from('settings').select('shop_phone').eq('shop_id', shopId).limit(1).maybeSingle()
+      if (settings?.shop_phone) setShopPhone(settings.shop_phone)
       const headers = buildHeaders()
+      const encodedShopId = encodeURIComponent(shopId)
       const [r1, r2] = await Promise.all([
         fetch(
-          `${SB_URL}/rest/v1/ai_calls?status=not.in.(testing,test)&task=not.eq.test&task=not.eq.test%20insert%20permissions&order=started_at.desc.nullslast&limit=200`,
+          SB_URL + '/rest/v1/ai_calls?shop_id=eq.' + encodedShopId + '&status=not.in.(testing,test)&task=not.eq.test&task=not.eq.test%20insert%20permissions&order=started_at.desc.nullslast&limit=200',
           { headers }
         ),
         fetch(
-          `${SB_URL}/rest/v1/call_history?direction=eq.inbound&order=start_time.desc&limit=500`,
+          SB_URL + '/rest/v1/call_history?shop_id=eq.' + encodedShopId + '&direction=eq.inbound&order=start_time.desc&limit=500',
           { headers }
         ),
       ])
@@ -157,7 +162,6 @@ export default function VoicemailPage() {
     }
     setLoading(false)
   }, [])
-
   useEffect(() => {
     // Safety net: never stuck at "Loading calls..." forever
     const timeout = setTimeout(() => setLoading(false), 8000)
@@ -178,9 +182,10 @@ export default function VoicemailPage() {
 
   const markRead = async (id: string) => {
     setCalls(prev => prev.map(c => c.id === id ? { ...c, read: true } : c))
-    await supabase.from('ai_calls').update({ read: true }).eq('id', id)
+    const shopId = await getShopId()
+    if (!shopId) return
+    await supabase.from('ai_calls').update({ read: true }).eq('id', id).eq('shop_id', shopId)
   }
-
   const activeCalls   = calls.filter(c => c.status === 'ringing' || c.status === 'active')
   const inboundCalls  = calls.filter(c => isInbound(c) && !['ringing','active'].includes(c.status || '') && !!c.started_at)
   const outboundCalls = calls.filter(c => !isInbound(c) && !['ringing','active'].includes(c.status || '') && !!c.started_at)

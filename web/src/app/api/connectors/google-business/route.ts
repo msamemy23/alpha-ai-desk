@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getConnector, getValidGoogleToken, updateConnector } from '@/lib/connectors'
 
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
@@ -88,6 +89,14 @@ async function discoverLocation(token: string): Promise<{
 export async function POST(req: NextRequest) {
   const body = await req.json() as Record<string, unknown>
   const { action } = body
+  const aiSource = req.headers.get('x-ai-source') === 'ai'
+  const approval = req.headers.get('x-ai-approval') === 'confirm'
+  if (aiSource && ['post', 'reply_review'].includes(String(action)) && !approval) {
+    return fail('This connector action requires explicit approval', 409)
+  }
+
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
 
   const connector = await getConnector('google_business')
   if (!connector?.enabled) return fail('Google Business not connected', 401)

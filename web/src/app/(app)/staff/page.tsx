@@ -1,6 +1,15 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { getShopId, supabase } from '@/lib/supabase'
+
+async function getAuthJsonHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  try {
+    const { data } = await supabase.auth.getSession()
+    if (data.session?.access_token) headers.Authorization = 'Bearer ' + data.session.access_token
+  } catch {}
+  return headers
+}
 
 interface ClockEntry {
   id: string
@@ -61,16 +70,17 @@ export default function StaffPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
+      const shopId = await getShopId()
+      if (!shopId) { setEntries([]); setStaff([]); return }
       const weekAgo = new Date(); weekAgo.setDate(weekAgo.getDate() - 7)
       const [{ data: tc }, { data: sm }] = await Promise.all([
-        supabase.from('timeclock').select('*').gte('date', weekAgo.toISOString().slice(0,10)).order('clock_in', { ascending: false }),
-        supabase.from('staff').select('*').order('name')
+        supabase.from('timeclock').select('*').eq('shop_id', shopId).gte('date', weekAgo.toISOString().slice(0,10)).order('clock_in', { ascending: false }),
+        supabase.from('staff').select('*').eq('shop_id', shopId).order('name')
       ])
       setEntries((tc || []) as ClockEntry[])
       setStaff((sm || []) as StaffMember[])
     } finally { setLoading(false) }
   }, [])
-
   useEffect(() => {
     load()
     const ch = supabase.channel('timeclock_ch').on('postgres_changes', { event: '*', schema: 'public', table: 'timeclock' }, load).subscribe()
@@ -82,7 +92,7 @@ export default function StaffPage() {
     try {
       await fetch('/api/timeclock', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await getAuthJsonHeaders(),
         body: JSON.stringify({ action, staff_name: staffName })
       })
       setTimeout(load, 500)
@@ -93,13 +103,19 @@ export default function StaffPage() {
     if (!editStaff?.name) return alert('Name is required')
     setSaving(true)
     try {
-      const data = { ...editStaff, updated_at: new Date().toISOString() }
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const data = { ...editStaff, shop_id: shopId, updated_at: new Date().toISOString() }
       if (editStaff.id) {
-        await supabase.from('staff').update(data).eq('id', editStaff.id)
+        const { error } = await supabase.from('staff').update(data).eq('id', editStaff.id).eq('shop_id', shopId)
+        if (error) throw error
       } else {
-        await supabase.from('staff').insert({ ...data, active: true, created_at: new Date().toISOString() })
+        const { error } = await supabase.from('staff').insert({ ...data, active: true, created_at: new Date().toISOString() })
+        if (error) throw error
       }
-      setEditStaff(null); load()
+      setEditStaff(null); await load()
+    } catch (error) {
+      alert('Staff member could not be saved: ' + (error instanceof Error ? error.message : 'Unknown error'))
     } finally { setSaving(false) }
   }
 

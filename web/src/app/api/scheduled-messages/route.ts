@@ -26,6 +26,19 @@ export async function POST(req: NextRequest) {
   const body = await req.json()
 
   const { customer_id, customer_name, channel, scheduled_for, message_body, subject } = body
+  if (channel !== undefined && !['sms', 'email'].includes(String(channel))) {
+    return NextResponse.json({ error: 'channel must be sms or email' }, { status: 400 })
+  }
+  if (customer_id) {
+    const { data: customer, error: customerError } = await sb
+      .from('customers')
+      .select('id')
+      .eq('id', String(customer_id))
+      .eq('shop_id', auth.shopId)
+      .maybeSingle()
+    if (customerError) return NextResponse.json({ error: customerError.message }, { status: 500 })
+    if (!customer) return NextResponse.json({ error: 'Customer not found in this shop' }, { status: 404 })
+  }
 
   const { data, error } = await sb.from('scheduled_messages').insert({
     shop_id: auth.shopId,
@@ -48,10 +61,33 @@ export async function PATCH(req: NextRequest) {
   if (!auth) return unauthorized()
 
   const sb = getServiceClient()
-  const body = await req.json()
-  const { id, ...updates } = body as { id: string; [key: string]: unknown }
+  const body = await req.json().catch(() => ({}))
+  const { id } = body as { id?: unknown }
+  if (typeof id !== 'string' || !id) return NextResponse.json({ error: 'id is required' }, { status: 400 })
 
-  if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 })
+  const allowed = ['customer_id', 'customer_name', 'channel', 'scheduled_for', 'message_body', 'subject', 'status']
+  const updates = Object.fromEntries(
+    allowed
+      .filter(key => Object.prototype.hasOwnProperty.call(body, key))
+      .map(key => [key, body[key]])
+  ) as Record<string, unknown>
+  if (!Object.keys(updates).length) return NextResponse.json({ error: 'No editable fields supplied' }, { status: 400 })
+  if (updates.channel !== undefined && !['sms', 'email'].includes(String(updates.channel))) {
+    return NextResponse.json({ error: 'channel must be sms or email' }, { status: 400 })
+  }
+  if (updates.status !== undefined && !['pending', 'sent', 'failed', 'cancelled'].includes(String(updates.status))) {
+    return NextResponse.json({ error: 'Invalid scheduled message status' }, { status: 400 })
+  }
+  if (updates.customer_id) {
+    const { data: customer, error: customerError } = await sb
+      .from('customers')
+      .select('id')
+      .eq('id', String(updates.customer_id))
+      .eq('shop_id', auth.shopId)
+      .maybeSingle()
+    if (customerError) return NextResponse.json({ error: customerError.message }, { status: 500 })
+    if (!customer) return NextResponse.json({ error: 'Customer not found in this shop' }, { status: 404 })
+  }
 
   const { data, error } = await sb
     .from('scheduled_messages')
