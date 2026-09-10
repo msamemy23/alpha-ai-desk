@@ -54,7 +54,7 @@ export async function GET() {
     .maybeSingle()
 
   if (error) return fail('Shop settings could not be loaded', 500)
-  return NextResponse.json({ ok: true, settings: data ? publicSettings(data as Record<string, unknown>) : null })
+  return NextResponse.json({ ok: true, settings: data ? publicSettings(data as unknown as Record<string, unknown>) : null })
 }
 
 export async function POST(req: NextRequest) {

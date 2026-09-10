@@ -184,10 +184,34 @@ export default function GrowthPage() {
   }, [notify])
   useEffect(() => { load() }, [load])
   useEffect(() => {
-    getShopId().then(shopId => shopId ? supabase.from('settings').select('google_review_url').eq('shop_id', shopId).limit(1).single() : { data: null })
-      .then(({ data }) => { if (data?.google_review_url) setReviewUrl(data.google_review_url) })
+    let cancelled = false
+    const loadReviewUrl = async () => {
+      const shopId = await getShopId()
+      if (!shopId) return
+      const { data, error } = await supabase.from('settings').select('google_review_url').eq('shop_id', shopId).limit(1).single()
+      if (!cancelled && !error && data?.google_review_url) setReviewUrl(data.google_review_url)
+    }
+    void loadReviewUrl()
+    return () => { cancelled = true }
   }, [])
-    useEffect(() => { if (tab === 'capture') getShopId().then(shopId => shopId ? supabase.from('call_history').select('*').eq('shop_id', shopId).order('start_time', { ascending: false }).limit(50) : { data: [] }).then(({ data }) => setCallHistory(data || [])) }, [tab])
+  useEffect(() => {
+    if (tab !== 'capture') return
+    let cancelled = false
+    const loadCallHistory = async () => {
+      const shopId = await getShopId()
+      if (!shopId) {
+        if (!cancelled) setCallHistory([])
+        return
+      }
+      const { data, error } = await supabase.from('call_history').select('*').eq('shop_id', shopId).order('start_time', { ascending: false }).limit(50)
+      if (!cancelled) {
+        if (error) notify('Call history could not be loaded', 'error')
+        setCallHistory(error ? [] : (data || []))
+      }
+    }
+    void loadCallHistory()
+    return () => { cancelled = true }
+  }, [tab, notify])
   const staleCustomers = customers.filter(c => {
     const lastSeen = c.last_contact || c.last_visit || c.created_at
     if (!lastSeen) return true // no date = definitely needs follow-up
@@ -213,11 +237,13 @@ export default function GrowthPage() {
       await logActivity('follow_up_sms', c.name, 'Sent to ' + c.phone, 'sent')
       notify('Follow-up sent to ' + c.name, 'success')
       await load()
+      return true
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Failed', 'error')
+      return false
     } finally { setSending(null) }
   }
-  const bulkFollowUp = async () => { const eligible = staleCustomers.filter(c => c.phone); if (!eligible.length) return notify('No customers with phone', 'error'); if (!confirm(`Send follow-up to ${eligible.length} customers?`)) return; let sent = 0; for (const c of eligible) { if (await sendFollowUp(c)) sent++ } } notify(`Sent ${sent} of ${eligible.length}`, 'success') }
+  const bulkFollowUp = async () => { const eligible = staleCustomers.filter(c => c.phone); if (!eligible.length) return notify('No customers with phone', 'error'); if (!confirm(`Send follow-up to ${eligible.length} customers?`)) return; let sent = 0; for (const c of eligible) { if (await sendFollowUp(c)) sent++ } notify(`Sent ${sent} of ${eligible.length}`, 'success') }
   const requestReview = async (c: Rec) => {
     if (!c.phone) return notify('No phone', 'error')
     setSending(c.id)

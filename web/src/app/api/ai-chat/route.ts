@@ -49,7 +49,19 @@ RULES:
 - Never make up customer info. Always search first.
 - Format currency as $X.XX`
 
-function buildSystemPrompt(settings: Record<string, unknown>) {
+type AiChatSettings = {
+  ai_api_key?: string | null
+  ai_model?: string | null
+  ai_base_url?: string | null
+  shop_name?: string | null
+  shop_address?: string | null
+  shop_phone?: string | null
+  labor_rate?: number | string | null
+  tax_rate?: number | string | null
+  payment_methods?: string | string[] | null
+}
+
+function buildSystemPrompt(settings: AiChatSettings) {
   const paymentMethods = Array.isArray(settings.payment_methods)
     ? settings.payment_methods.join(', ')
     : String(settings.payment_methods || 'not configured')
@@ -66,7 +78,7 @@ LIVE SHOP CONTEXT:
 
 export const dynamic = 'force-dynamic'
 
-async function getSettings(shopId: string) {
+async function getSettings(shopId: string): Promise<AiChatSettings> {
   const db = getServiceClient()
   const { data, error } = await db
     .from('settings')
@@ -79,7 +91,7 @@ async function getSettings(shopId: string) {
     console.error('[ai-chat] settings lookup failed:', error.message)
     return {}
   }
-  return data || {}
+  return (data || {}) as AiChatSettings
 }
 
 async function callDbAction(

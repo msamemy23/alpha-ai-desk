@@ -244,7 +244,7 @@ export async function POST(req: NextRequest) {
       }
       let analysis = ''
       if (task) {
-        analysis = await aiAnalyze(`You scraped a web page.\n\nTitle: ${title}\nURL: ${url}\n\nContent:\n${text}\n\n---\nUser task: ${task}\n\nAnswer the task based on the page content. Be specific and concise.`, settings)
+        analysis = await aiAnalyze(`You scraped a web page.\n\nTitle: ${title}\nURL: ${url}\n\nContent:\n${text}\n\n---\nUser task: ${task}\n\nAnswer the task based on the page content. Be specific and concise.`, shopSettings)
       }
       await log('scrape', task || url, analysis || text.slice(0, 200), true)
       const scrapeScreenshotUrl = `/api/screenshot?url=${encodeURIComponent(url)}`
@@ -279,7 +279,7 @@ export async function POST(req: NextRequest) {
       let analysis = ''
       if (task && results.length > 0) {
         const content = results.map(r => `${r.title}\n${r.snippet}`).join('\n\n')
-        analysis = await aiAnalyze(`Search results for "${searchQuery}":\n\n${content}\n\nTask: ${task}\n\nAnswer based on the search results.`, settings)
+        analysis = await aiAnalyze(`Search results for "${searchQuery}":\n\n${content}\n\nTask: ${task}\n\nAnswer based on the search results.`, shopSettings)
       }
       const searchSucceeded = results.length > 0
       await log('search', searchQuery, analysis || (searchSucceeded ? 'Search completed' : 'No verified results'), searchSucceeded)
@@ -328,7 +328,7 @@ export async function POST(req: NextRequest) {
         const organic = d.organic || []
         priceInfo = organic.map((item: {title: string; snippet: string; link: string}) => `${item.title}: ${item.snippet} (${item.link})`).join('\n')
       }
-      const analysis = priceInfo ? await aiAnalyze(`Find the best price for this auto part: "${partQuery}"\n\nSearch results:\n${priceInfo}\n\nExtract prices, part numbers, and recommend the best option.`, settings) : ''
+      const analysis = priceInfo ? await aiAnalyze(`Find the best price for this auto part: "${partQuery}"\n\nSearch results:\n${priceInfo}\n\nExtract prices, part numbers, and recommend the best option.`, shopSettings) : ''
       const priceVerified = Boolean(priceInfo)
       await log('parts_price', partQuery, analysis || (priceVerified ? 'Price results found' : 'No verified price results'), priceVerified)
       return NextResponse.json({
@@ -353,7 +353,7 @@ export async function POST(req: NextRequest) {
         pageData = await fetchAndParse(target)
         if (pageData.error) return NextResponse.json({ ok: false, error: pageData.error }, { status: 502 })
       }
-      const analysis = await aiAnalyze(`Analyze this competitor auto shop information:\n\nTarget: ${target}\nContent: ${pageData.text.slice(0, 3000)}\n\nExtract: services offered, prices listed, special offers, contact info, hours.`, settings)
+      const analysis = await aiAnalyze(`Analyze this competitor auto shop information:\n\nTarget: ${target}\nContent: ${pageData.text.slice(0, 3000)}\n\nExtract: services offered, prices listed, special offers, contact info, hours.`, shopSettings)
       await log('monitor', target, analysis, true)
       return NextResponse.json({ ok: true, type: 'monitor', target, analysis })
     }
@@ -368,7 +368,7 @@ export async function POST(req: NextRequest) {
       const result = await runBrowserTask(task, url, actions, typeof shopSettings.browserless_token === 'string' ? shopSettings.browserless_token.trim() : '')
       let analysis = ''
       if (result.success && result.text && task) {
-        analysis = await aiAnalyze(`Task was: ${task}\n\nPage after automation:\n${result.text}\n\nDid the task succeed?`, settings)
+        analysis = await aiAnalyze(`Task was: ${task}\n\nPage after automation:\n${result.text}\n\nDid the task succeed?`, shopSettings)
       }
       await log('browser', task, result.error || analysis, result.success)
       return NextResponse.json({ ok: result.success, type: 'browser', ...result, analysis })
@@ -379,7 +379,7 @@ export async function POST(req: NextRequest) {
       if (!url) return NextResponse.json({ ok: false, error: 'URL required' }, { status: 400 })
       const { text, title, error: fetchError } = await fetchAndParse(url)
       if (fetchError) return NextResponse.json({ ok: false, error: fetchError }, { status: 502 })
-      const formAnalysis = await aiAnalyze(`This is a web form page: ${title}\n\nPage content:\n${text.slice(0, 3000)}\n\nTask: ${task}\n\nIdentify the form fields and what data should go in each field.`, settings)
+      const formAnalysis = await aiAnalyze(`This is a web form page: ${title}\n\nPage content:\n${text.slice(0, 3000)}\n\nTask: ${task}\n\nIdentify the form fields and what data should go in each field.`, shopSettings)
       await log('smart_fill', task, formAnalysis, true)
       return NextResponse.json({ ok: true, type: 'smart_fill', url, title, analysis: formAnalysis })
     }

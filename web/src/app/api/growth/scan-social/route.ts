@@ -14,7 +14,7 @@ export async function POST(req: NextRequest) {
     const rawKeywords = Array.isArray(body?.keywords) ? body.keywords : []
     const keywords = rawKeywords
       .filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
-      .map(value => value.trim().slice(0, 120))
+      .map((value: string) => value.trim().slice(0, 120))
       .slice(0, 10)
     const db = getServiceClient()
     const { data: settings, error: settingsError } = await db.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle()
