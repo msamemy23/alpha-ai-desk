@@ -5,7 +5,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { AI_BASE_URLS, normalizeAiModel } from '@/lib/ai-config'
+import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 import { hasInternalApiSecret } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
 

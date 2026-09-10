@@ -7,6 +7,8 @@ import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-con
 export const dynamic = 'force-dynamic'
 export const maxDuration = 30
 
+type ParsedPage = { text: string; links: string[]; title: string; error?: string }
+
 type AutomationSettings = {
   browserless_token?: unknown
   ai_api_key?: unknown
@@ -15,7 +17,7 @@ type AutomationSettings = {
 }
 
 // -- Fetch + parse page (no browser needed) --
-async function fetchAndParse(url: string, selector?: string): Promise<{ text: string; links: string[]; title: string; error?: string }> {
+async function fetchAndParse(url: string, selector?: string): Promise<ParsedPage> {
   try {
     const parsedUrl = new URL(url)
     const hostname = parsedUrl.hostname.toLowerCase()
@@ -344,7 +346,7 @@ export async function POST(req: NextRequest) {
     if (type === 'monitor_competitor') {
       const target = url || task
       if (!target) return NextResponse.json({ ok: false, error: 'URL or competitor name required' }, { status: 400 })
-      let pageData = { text: '', title: '', links: [] as string[] }
+      let pageData: ParsedPage = { text: '', title: '', links: [] }
       if (target.startsWith('http')) {
         const targetError = validateUrl(target)
         if (targetError) return NextResponse.json({ ok: false, error: targetError }, { status: 400 })

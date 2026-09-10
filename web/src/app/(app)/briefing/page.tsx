@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
-import { getShopId, supabase, formatCurrency } from '@/lib/supabase'
+import { getShopId, supabase, formatCurrency, calcTotals } from '@/lib/supabase'
 
 export default function BriefingPage() {
   const [loading, setLoading] = useState(true)

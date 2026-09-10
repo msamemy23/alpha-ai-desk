@@ -12,7 +12,7 @@ function normalizeMessages(value: unknown): HistoryMessage[] {
     .filter((message): message is Record<string, unknown> => Boolean(message) && typeof message === 'object')
     .map(message => ({
       ...message,
-      role: message.role === 'user' || message.role === 'browser' ? message.role : 'assistant',
+      role: (message.role === 'user' || message.role === 'browser' ? message.role : 'assistant') as HistoryMessage['role'],
       content: typeof message.content === 'string' ? message.content.slice(0, 12000) : '',
     }))
     .filter(message => message.content || message.role === 'browser')
@@ -83,8 +83,8 @@ export async function GET(req: NextRequest) {
 
     const sessions = new Map<string, { id: string; date: string; messages: HistoryMessage[] }>()
     for (const row of rows || []) {
-      const entry = sessions.get(row.session_id) || { id: row.session_id, date: row.created_at, messages: [] }
-      let message: HistoryMessage
+      const entry: { id: string; date: string; messages: HistoryMessage[] } = sessions.get(row.session_id) || { id: row.session_id, date: row.created_at, messages: [] }
+      let message: HistoryMessage | undefined
       try {
         const parsed = JSON.parse(row.content)
         message = normalizeMessages([parsed])[0]

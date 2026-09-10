@@ -107,8 +107,6 @@ export default function InventoryPage() {
     await load()
   }
 
-  const filtered
-
   const filtered = parts.filter(p => {
     if (tab === 'low') return (p.qty_on_hand || 0) <= (p.qty_reorder || 0)
     if (tab === 'on-order') return (p.qty_on_order || 0) > 0

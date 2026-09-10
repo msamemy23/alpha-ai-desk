@@ -381,7 +381,7 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
 
     let systemPrompt: string
     if (isAlpha) {
-      systemPrompt = ALPHA_SYSTEM + `\n\nThe customer just said: "${text}"\nRespond naturally. 1-3 sentences max. Spoken words only.`
+      systemPrompt = buildSalesSystem(settings) + `\n\nThe customer just said: "${text}"\nRespond naturally. 1-3 sentences max. Spoken words only.`
     } else if (isPersonal) {
       // Personal call — AI should just have a natural conversation, no script
       systemPrompt = `You are on a live phone call. This is a personal call — just have a natural, friendly conversation. No sales pitch, no script.\n\nRULES:\n- Be conversational and friendly.\n- HOLD phrases: say Of course, take your time. and wait.\n- 1-3 sentences max. Natural spoken words. No markdown.`

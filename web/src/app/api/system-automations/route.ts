@@ -278,6 +278,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (action === 'toggle') {
+    if (typeof body.enabled !== 'boolean') return NextResponse.json({ ok: false, error: 'enabled must be a boolean' }, { status: 400 })
     config[id].enabled = body.enabled
     await saveConfig(sb, config, auth!.shopId)
     return NextResponse.json({ ok: true, state: config[id] })
