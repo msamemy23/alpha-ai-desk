@@ -55,13 +55,14 @@ export async function POST(req: NextRequest) {
     if (!customer) continue
 
     // Check if already followed up on this estimate
-    const { data: existing } = await sb
+    const { data: existing, error: existingError } = await sb
       .from('estimate_followups_sent')
       .select('id')
       .eq('shop_id', auth.shopId)
       .eq('estimate_id', est.id)
       .eq('sent', true)
       .limit(1)
+    if (existingError) return NextResponse.json({ ok: false, error: 'Unable to check estimate follow-up history' }, { status: 500 })
 
     if (existing && existing.length > 0) continue
 
@@ -112,5 +113,7 @@ export async function POST(req: NextRequest) {
     })
   }
 
-  return NextResponse.json({ ok: true, processed: results.length, followed_up: results.filter(r => r.sent).length, results })
+  const failed = !dryRun && results.some(result => result.sent !== true)
+  const success = dryRun || !failed
+  return NextResponse.json({ ok: success, success, processed: results.length, followed_up: results.filter(r => r.sent).length, results }, { status: success ? 200 : 502 })
 }

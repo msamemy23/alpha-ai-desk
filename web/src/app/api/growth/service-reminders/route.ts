@@ -33,17 +33,19 @@ export async function POST(req: NextRequest) {
 
   if (action === 'run') {
     // Check vehicles for upcoming service needs
-    const { data: vehicles } = await sb
+    const { data: vehicles, error: vehiclesError } = await sb
       .from('vehicles')
       .select('*, customers(name, phone)')
       .eq('shop_id', auth.shopId)
       .order('updated_at', { ascending: true })
+    if (vehiclesError) return NextResponse.json({ ok: false, error: 'Unable to load vehicles' }, { status: 500 })
 
-    const { data: invoices } = await sb
+    const { data: invoices, error: invoicesError } = await sb
       .from('invoices')
       .select('customer_id, vehicle_id, created_at, items')
       .eq('shop_id', auth.shopId)
       .order('created_at', { ascending: false })
+    if (invoicesError) return NextResponse.json({ ok: false, error: 'Unable to load invoices' }, { status: 500 })
 
     const results: Array<Record<string, unknown>> = []
 
@@ -97,13 +99,14 @@ export async function POST(req: NextRequest) {
           })
           if (reminderError) throw reminderError
         } catch { /* table may not exist yet */ }
-        results.push({ vehicle: `${vehicle.year} ${vehicle.make} ${vehicle.model}`, customer: customer.name, sent: result.success })
+        results.push({ vehicle: `${vehicle.year} ${vehicle.make} ${vehicle.model}`, customer: customer.name, sent: result.success, error: result.error })
       } else {
         results.push({ vehicle: `${vehicle.year} ${vehicle.make} ${vehicle.model}`, customer: customer.name, sent: false, dry_run: true, message: msg })
       }
     }
 
-    return NextResponse.json({ ok: true, processed: results.length, results })
+    const success = dryRun || results.every(result => result.sent === true)
+    return NextResponse.json({ ok: success, success, processed: results.length, results }, { status: success ? 200 : 502 })
   }
 
   if (action === 'appointment_reminders') {
@@ -114,12 +117,13 @@ export async function POST(req: NextRequest) {
     tomorrow.setDate(tomorrow.getDate() + 1)
     const tomorrowStr = tomorrow.toISOString().split('T')[0]
 
-    const { data: appts } = await sb
+    const { data: appts, error: appointmentsError } = await sb
       .from('appointments')
       .select('*')
       .eq('shop_id', auth.shopId)
       .eq('date', tomorrowStr)
       .in('status', ['Scheduled', 'Confirmed'])
+    if (appointmentsError) return NextResponse.json({ ok: false, error: 'Unable to load appointments' }, { status: 500 })
 
     const results: Array<Record<string, unknown>> = []
 
@@ -147,7 +151,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({ ok: true, processed: results.length, results })
+    const success = dryRun || results.every(result => result.sent === true)
+    return NextResponse.json({ ok: success, success, processed: results.length, results }, { status: success ? 200 : 502 })
   }
 
   return NextResponse.json({ ok: false, error: 'Unknown action' }, { status: 400 })

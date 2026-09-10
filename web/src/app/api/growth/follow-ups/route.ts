@@ -131,11 +131,12 @@ export async function POST(req: NextRequest) {
     })
 
     const recentCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-    const { data: recentFollowups } = await supabase
+    const { data: recentFollowups, error: recentFollowupsError } = await supabase
       .from('growth_followups')
       .select('customer_id')
       .eq('shop_id', auth.shopId)
       .gte('created_at', recentCutoff)
+    if (recentFollowupsError) throw recentFollowupsError
     const recentlyContacted = new Set((recentFollowups || []).map(row => row.customer_id))
 
     const results: Array<{
@@ -197,14 +198,18 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const failed = !dryRun && results.some(result => result.sent !== true)
+    const success = dryRun || !failed
     return NextResponse.json({
+      ok: success,
+      success,
       total_stale_customers: staleCustomers.length,
       messages_sent: results.filter(r => r.sent).length,
       messages_failed: results.filter(r => !r.sent).length,
       threshold_months: monthsThreshold,
       dry_run: dryRun,
       results
-    })
+    }, { status: success ? 200 : 502 })
   } catch (e) {
     console.error('Follow-ups error:', e)
     return NextResponse.json({ error: 'Failed to process follow-ups' }, { status: 500 })

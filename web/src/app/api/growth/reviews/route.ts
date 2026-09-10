@@ -110,6 +110,8 @@ export async function POST(req: NextRequest) {
       if (requestError) throw requestError
 
       return NextResponse.json({
+        ok: result.success,
+        success: result.success,
         sent: result.success,
         customer: customer_name,
         error: result.error,
@@ -124,29 +126,33 @@ export async function POST(req: NextRequest) {
       const sevenDaysAgo = new Date()
       sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
 
-      const { data: recentInvoices } = await supabase
+      const { data: recentInvoices, error: recentInvoicesError } = await supabase
         .from('invoices')
         .select('customer_id')
         .eq('shop_id', auth.shopId)
         .gte('created_at', sevenDaysAgo.toISOString())
+      if (recentInvoicesError) return NextResponse.json({ ok: false, error: 'Unable to load recent invoices' }, { status: 500 })
 
       if (!recentInvoices || recentInvoices.length === 0) {
-        return NextResponse.json({ message: 'No recent customers found', sent: 0 })
+        return NextResponse.json({ ok: true, success: true, message: 'No recent customers found', sent: 0 })
       }
 
-      const customerIds = [...new Set(recentInvoices.map((i: { customer_id: string }) => i.customer_id))]
-      const { data: customers } = await supabase
+      const customerIds = [...new Set(recentInvoices.map((i: { customer_id: string }) => i.customer_id).filter(Boolean))]
+      if (customerIds.length === 0) return NextResponse.json({ ok: true, success: true, message: 'No recent customers found', sent: 0 })
+      const { data: customers, error: customersError } = await supabase
         .from('customers')
         .select('id, name, phone')
         .eq('shop_id', auth.shopId)
         .in('id', customerIds)
+      if (customersError) return NextResponse.json({ ok: false, error: 'Unable to load customers' }, { status: 500 })
 
       // Check who already got a request recently
-      const { data: recentRequests } = await supabase
+      const { data: recentRequests, error: recentRequestsError } = await supabase
         .from('growth_review_requests')
         .select('phone')
         .eq('shop_id', auth.shopId)
         .gte('created_at', sevenDaysAgo.toISOString())
+      if (recentRequestsError) return NextResponse.json({ ok: false, error: 'Unable to load review request history' }, { status: 500 })
 
       const alreadySent = new Set((recentRequests || []).map((r: { phone: string }) => r.phone))
 
@@ -173,9 +179,17 @@ export async function POST(req: NextRequest) {
         results.push({ name: cust.name, sent: result.success })
       }
 
-      return NextResponse.json({ sent: sentCount, total: results.length, results })
+      const success = results.every(result => result.sent === true)
+      return NextResponse.json({ ok: success, success, sent: sentCount, total: results.length, results }, { status: success ? 200 : 502 })
     }
 
+    if (action === 'check_and_respond') {
+      return NextResponse.json({
+        ok: false,
+        success: false,
+        error: 'Automatic review fetching is not connected for this shop. Supply a review through the Google Business connector before generating a response; nothing was posted.',
+      }, { status: 409 })
+    }
     if (action === 'respond_to_review') {
       // Generate AI response to a Google review
       const { reviewer_name, rating, review_text } = body
@@ -204,6 +218,9 @@ export async function POST(req: NextRequest) {
       if (responseError) throw responseError
 
       return NextResponse.json({
+        ok: true,
+        success: true,
+        posted: false,
         response,
         reviewer: reviewer_name,
         rating,

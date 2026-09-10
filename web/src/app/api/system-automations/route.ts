@@ -119,7 +119,7 @@ const SYSTEM_AUTOMATIONS = [
   {
     id: 'review_responses',
     name: 'Auto Review Responses',
-    description: 'AI generates responses for new Google reviews — you just copy and post',
+    description: 'Review response drafts require a supplied Google review; nothing is fetched or posted automatically',
     category: 'marketing',
     schedule: 'Daily at 7am',
     icon: '💬',
@@ -148,7 +148,7 @@ async function getConfig(sb: ReturnType<typeof getServiceClient>, shopId?: strin
   const { data, error } = await query.maybeSingle()
   if (error) {
     console.error('[system-automations] config lookup failed:', error.message)
-    return {}
+    throw new Error('Unable to load automation configuration')
   }
   return (data?.automation_config as Record<string, AutomationState>) || {}
 }
@@ -163,11 +163,11 @@ interface AutomationState {
 }
 
 async function saveConfig(sb: ReturnType<typeof getServiceClient>, config: Record<string, AutomationState>, shopId: string) {
-  const { data: existing } = await sb.from('settings').select('id').eq('shop_id', shopId).order('updated_at', { ascending: false }).limit(1).maybeSingle()
-  if (existing?.id) {
-    const { error } = await sb.from('settings').update({ automation_config: config, updated_at: new Date().toISOString() }).eq('id', existing.id).eq('shop_id', shopId)
-    if (error) throw new Error(error.message)
-  }
+  const { data: existing, error: lookupError } = await sb.from('settings').select('id').eq('shop_id', shopId).order('updated_at', { ascending: false }).limit(1).maybeSingle()
+  if (lookupError) throw new Error('Unable to load shop settings')
+  if (!existing?.id) throw new Error('Shop settings not found')
+  const { error } = await sb.from('settings').update({ automation_config: config, updated_at: new Date().toISOString() }).eq('id', existing.id).eq('shop_id', shopId)
+  if (error) throw new Error(error.message)
 }
 
 export async function GET() {
@@ -318,10 +318,11 @@ export async function POST(req: NextRequest) {
       config[id].last_run = new Date().toISOString()
       config[id].run_count = (config[id].run_count || 0) + 1
       config[id].last_result = resultStr
-      config[id].last_status = res.ok && data?.success !== false && data?.ok !== false && !data?.error ? 'ok' : 'error'
+      const success = res.ok && data?.success !== false && data?.ok !== false && !data?.error
+      config[id].last_status = success ? 'ok' : 'error'
       await saveConfig(sb, config, auth!.shopId)
 
-      return NextResponse.json({ ok: true, result: data, state: config[id] })
+      return NextResponse.json({ ok: success, success, result: data, state: config[id] }, { status: success ? 200 : 502 })
     } catch (e) {
       config[id].last_status = 'error'
       config[id].last_result = (e as Error).message
