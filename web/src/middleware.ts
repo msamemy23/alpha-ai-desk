@@ -91,8 +91,12 @@ function getAccessTokenFromCookie(req: NextRequest) {
   }
 }
 
-async function verifyUserFromCookie(req: NextRequest) {
-  const accessToken = getAccessTokenFromCookie(req)
+function getAccessTokenFromHeader(req: NextRequest) {
+  const value = req.headers.get('authorization') || ''
+  return value.toLowerCase().startsWith('bearer ') ? value.slice(7).trim() : null
+}
+
+async function verifyUserFromToken(accessToken: string | null) {
   if (!accessToken) return null
 
   try {
@@ -114,11 +118,20 @@ async function verifyUserFromCookie(req: NextRequest) {
   }
 }
 
+async function verifyUserFromRequest(req: NextRequest) {
+  // API clients may authenticate with a bearer token rather than browser
+  // cookies. Middleware must agree with the route handlers about that user.
+  return verifyUserFromToken(getAccessTokenFromHeader(req) || getAccessTokenFromCookie(req))
+}
+
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl
 
   if (
     pathname.startsWith('/login') ||
+    pathname.startsWith('/help') ||
+    pathname.startsWith('/privacy') ||
+    pathname.startsWith('/terms') ||
     pathname.startsWith('/auth/') ||
     pathname.startsWith('/sign/') ||
     pathname.startsWith('/_next/') ||
@@ -140,7 +153,7 @@ export async function middleware(req: NextRequest) {
   })
 
   const { data: { user: supabaseUser } } = await supabase.auth.getUser()
-  const user = supabaseUser || await verifyUserFromCookie(req)
+  const user = supabaseUser || await verifyUserFromRequest(req)
 
   if (pathname.startsWith('/api/')) {
     if (isPublicApiPath(pathname) || hasInternalApiSecret(req)) return withSecurityHeaders(res)

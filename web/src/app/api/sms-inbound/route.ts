@@ -23,16 +23,16 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
-    const { from, text, messageId } = normalizeInbound(body)
+    const { from, text, messageId, toNumber } = normalizeInbound(body)
 
     if (!from || !text) {
       return NextResponse.json({ ok: true, skipped: 'missing from/text' })
     }
 
-    await handleInboundSms({ from, body: text, messageId })
+    await handleInboundSms({ from, body: text, messageId, toNumber })
     return NextResponse.json({ ok: true })
   } catch (e: unknown) {
     console.error('Phone SMS inbound error:', e)
-    return NextResponse.json({ ok: true })
+    return NextResponse.json({ ok: false, error: 'Inbound SMS could not be processed' }, { status: 500 })
   }
 }

@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
-import { AI_BASE_URLS, normalizeAiModel } from '@/lib/ai-config'
+import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 
 const SERPER_KEY = process.env.SERPER_API_KEY || ''
-const AI_KEY = process.env.OPENROUTER_API_KEY || ''
-const AI_URL = 'https://openrouter.ai/api/v1/chat/completions'
-const AI_MODEL = normalizeAiModel(process.env.AI_MODEL, AI_BASE_URLS.OPENROUTER)
 
 const BUSINESS_CATEGORIES = [
   'plumbing company', 'HVAC company', 'electrician company', 'landscaping company',
@@ -70,22 +68,22 @@ async function deepResearchBusiness(biz: any) {
   }
 }
 
-async function aiDeepAnalyze(businesses: any[], city: string) {
-  if (!AI_KEY || !businesses.length) return businesses.map(b => ({
+async function aiDeepAnalyze(businesses: any[], city: string, aiKey: string, aiUrl: string, aiModel: string, shopName: string) {
+  if (!aiKey || !businesses.length) return businesses.map(b => ({
     ...b, fleet_score: 5, owner_name: 'Unknown', owner_title: 'Owner',
     estimated_vehicles: '2-5', revenue_estimate: 'Unknown', years_in_business: null,
     has_maintenance_contract: false, vehicle_types: 'Mixed', service_area: city,
     pain_points: '', outreach_pitch: 'Contact for fleet services'
   }))
   try {
-    const res = await fetchT(AI_URL, {
+    const res = await fetchT(aiUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AI_KEY}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${aiKey}` },
       body: JSON.stringify({
-        model: AI_MODEL,
+        model: aiModel,
         messages: [{
           role: 'system',
-          content: `You are an expert business intelligence analyst for Alpha International Auto Center in Houston TX. Do DEEP research analysis on each business. Extract every detail possible. Return a JSON array where each object has ALL these fields:\n{\n  "name": "exact business name",\n  "owner_name": "owner/president/CEO name from search data or best guess",\n  "owner_title": "their title (Owner, President, CEO, GM, Fleet Manager)",\n  "phone": "business phone",\n  "email": "business email",\n  "address": "full street address",\n  "city": "city",\n  "zip": "zip code",\n  "website": "website url",\n  "business_type": "industry category",\n  "industry": "specific industry",\n  "employee_count": "estimated employees (e.g. 10-25)",\n  "revenue_estimate": "estimated annual revenue (e.g. $500K-$1M)",\n  "years_in_business": estimated number or null,\n  "fleet_size": "estimated vehicles (e.g. 5-10)",\n  "vehicle_types": "types of vehicles (vans, trucks, cars, etc)",\n  "has_maintenance_contract": true/false guess,\n  "current_shop": "who they likely use for maintenance or Unknown",\n  "service_area": "areas they serve in Houston",\n  "google_rating": number or null,\n  "google_reviews_count": number or null,\n  "facebook_url": "facebook page url or null",\n  "linkedin_url": "linkedin page url or null",\n  "pain_points": "likely vehicle/fleet pain points",\n  "fleet_score": 1-10 (10 = highest fleet service need),\n  "confidence": "high/medium/low",\n  "outreach_pitch": "personalized 2-sentence pitch mentioning their business by name",\n  "best_services": ["oil change", "brakes", etc],\n  "annual_value_estimate": "$X,XXX estimated annual spend on fleet maintenance"\n}\nUse the search snippets provided to fill in real data. If info is not available, make intelligent estimates based on business type and size. Be thorough.`
+          content: `You are an expert business intelligence analyst for ${shopName} in ${city}. Do DEEP research analysis on each business. Extract every detail possible. Return a JSON array where each object has ALL these fields:\n{\n  "name": "exact business name",\n  "owner_name": "owner/president/CEO name from search data or best guess",\n  "owner_title": "their title (Owner, President, CEO, GM, Fleet Manager)",\n  "phone": "business phone",\n  "email": "business email",\n  "address": "full street address",\n  "city": "city",\n  "zip": "zip code",\n  "website": "website url",\n  "business_type": "industry category",\n  "industry": "specific industry",\n  "employee_count": "estimated employees (e.g. 10-25)",\n  "revenue_estimate": "estimated annual revenue (e.g. $500K-$1M)",\n  "years_in_business": estimated number or null,\n  "fleet_size": "estimated vehicles (e.g. 5-10)",\n  "vehicle_types": "types of vehicles (vans, trucks, cars, etc)",\n  "has_maintenance_contract": true/false guess,\n  "current_shop": "who they likely use for maintenance or Unknown",\n  "service_area": "areas they serve in Houston",\n  "google_rating": number or null,\n  "google_reviews_count": number or null,\n  "facebook_url": "facebook page url or null",\n  "linkedin_url": "linkedin page url or null",\n  "pain_points": "likely vehicle/fleet pain points",\n  "fleet_score": 1-10 (10 = highest fleet service need),\n  "confidence": "high/medium/low",\n  "outreach_pitch": "personalized 2-sentence pitch mentioning their business by name",\n  "best_services": ["oil change", "brakes", etc],\n  "annual_value_estimate": "$X,XXX estimated annual spend on fleet maintenance"\n}\nUse the search snippets provided to fill in real data. If info is not available, make intelligent estimates based on business type and size. Be thorough.`
         }, {
           role: 'user',
           content: `Deep analyze these ${city} businesses for fleet potential. Use the search data provided:\n${JSON.stringify(businesses.slice(0, 12))}`
@@ -94,6 +92,7 @@ async function aiDeepAnalyze(businesses: any[], city: string) {
         max_tokens: 4000
       })
     }, 45000)
+    if (!res.ok) return []
     const data = await res.json()
     const content = data.choices?.[0]?.message?.content || '[]'
     return JSON.parse(content.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
@@ -102,9 +101,21 @@ async function aiDeepAnalyze(businesses: any[], city: string) {
 
 export async function POST(req: NextRequest) {
   try {
-    const { city = 'Houston TX', categories } = await req.json()
+    const body = await req.json().catch(() => ({}))
+    const auth = await getRouteShop(req, body.shopId)
+    if (!auth) return unauthorized()
+    const { city: rawCity = 'Houston TX', categories } = body
+    const city = typeof rawCity === 'string' ? rawCity.trim().slice(0, 120) || 'Houston TX' : 'Houston TX'
     const db = getServiceClient()
-    const cats = categories || BUSINESS_CATEGORIES
+    const { data: settings, error: settingsError } = await db.from('settings').select('ai_api_key,ai_base_url,ai_model,shop_name').eq('shop_id', auth.shopId).maybeSingle()
+    if (settingsError) throw settingsError
+    const shopName = typeof settings?.shop_name === 'string' && settings.shop_name.trim() ? settings.shop_name.trim().slice(0, 160) : 'this shop'
+    const aiKey = typeof settings?.ai_api_key === 'string' ? settings.ai_api_key.trim() : ''
+    if (!aiKey) return NextResponse.json({ error: 'AI is not configured for this shop' }, { status: 503 })
+    const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
+    const aiUrl = aiBase + '/chat/completions'
+    const aiModel = normalizeAiModel(settings?.ai_model, aiBase)
+    const cats = Array.isArray(categories) ? categories.filter((item): item is string => typeof item === 'string').slice(0, 20) : BUSINESS_CATEGORIES
     const shuffled = [...cats].sort(() => Math.random() - 0.5).slice(0, 5)
 
     // Step 1: Search Google Places for businesses
@@ -122,7 +133,7 @@ export async function POST(req: NextRequest) {
     const researched = await Promise.all(topBiz.map(b => deepResearchBusiness(b)))
 
     // Step 3: AI deep analysis with all gathered intel
-    const leads = await aiDeepAnalyze(researched, city)
+    const leads = await aiDeepAnalyze(researched, city, aiKey, aiUrl, aiModel, shopName)
     const sorted = leads.sort((a: any, b: any) => (b.fleet_score || 0) - (a.fleet_score || 0)).slice(0, 15)
 
     // Step 4: Save to DB with all deep research fields
@@ -166,21 +177,24 @@ export async function POST(req: NextRequest) {
         research_completed_at: new Date().toISOString(),
         notes: JSON.stringify(lead),
         follow_up_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        shop_id: auth.shopId,
       }))
-      await db.from('leads').insert(rows)
+      const { error } = await db.from('leads').insert(rows)
+      if (error) throw error
     }
 
-    await db.from('growth_activity').insert({
+    const { error: activityError } = await db.from('growth_activity').insert({
       action: 'ai_fleet_scan',
       target: city,
       details: `Deep research: ${sorted.length} fleet leads from ${allBiz.length} businesses (${shuffled.join(', ')})`,
       status: 'complete',
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      shop_id: auth.shopId,
     })
+    if (activityError) throw activityError
 
-    return NextResponse.json({
-      success: true, total_businesses_scanned: allBiz.length,
+    return NextResponse.json({ success: true, total_businesses_scanned: allBiz.length,
       total_leads: sorted.length, categories_searched: shuffled,
       all_categories: BUSINESS_CATEGORIES, leads: sorted
     })

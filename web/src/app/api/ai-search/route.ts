@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getRouteShop, unauthorized } from '@/lib/api-auth'
 
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY || ''
 
@@ -186,8 +187,11 @@ function generateRelatedSearches(query: string, cls: ReturnType<typeof classifyQ
 
 // ── Main GET Handler ──────────────────────────────────────
 export async function GET(req: NextRequest) {
-  const query = req.nextUrl.searchParams.get('q')
-  if (!query) return NextResponse.json({ results: [] })
+  const requestedShopId = req.nextUrl.searchParams.get('shop_id') || undefined
+  const auth = await getRouteShop(req, requestedShopId)
+  if (!auth) return unauthorized()
+  const query = req.nextUrl.searchParams.get('q')?.trim().slice(0, 500)
+  if (!query) return NextResponse.json({ ok: true, results: [], search_succeeded: false })
 
   const cls = classifyQuery(query)
 
@@ -206,12 +210,16 @@ export async function GET(req: NextRequest) {
         max_results: 10,
       }),
       signal: AbortSignal.timeout(12000),
-    }).then(r => r.json()),
+    }).then(async response => {
+      if (!response.ok) throw new Error(`Tavily returned ${response.status}`)
+      return response.json()
+    }),
     searchVideos(query),
     searchImages(query),
   ])
 
   const tavilyData = tavilyResult.status === 'fulfilled' ? tavilyResult.value : null
+  const tavilyError = tavilyResult.status === 'rejected' ? String(tavilyResult.reason?.message || tavilyResult.reason || 'Search provider unavailable') : ''
   let videoResults = videos.status === 'fulfilled' ? videos.value : []
   const imageResults = searxImages.status === 'fulfilled' ? searxImages.value : []
 
@@ -280,9 +288,13 @@ export async function GET(req: NextRequest) {
   // Related Searches
   const relatedSearches = generateRelatedSearches(query, cls)
 
+  const searchSucceeded = Boolean(results.length || videoResults.length || allImages.length)
   return NextResponse.json({
+    ok: true,
     results,
     query,
+    search_succeeded: searchSucceeded,
+    ...(searchSucceeded ? {} : { notice: tavilyError || 'No verified search results were returned.' }),
     ...(tavilyData?.answer ? { answer: tavilyData.answer } : {}),
     images: allImages,
     videos: videoResults,

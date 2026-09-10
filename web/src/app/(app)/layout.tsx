@@ -7,32 +7,54 @@ import type { ReactNode } from 'react'
 import { supabase, getUnreadCount, getShopProfile } from '@/lib/supabase'
 import PhoneWidget from '@/components/PhoneWidget'
 
-const NAV = [
-  { href: '/dashboard', icon: 'dashboard', label: 'Dashboard' },
-  { href: '/briefing', icon: 'briefing', label: 'Daily Briefing' },
-  { href: '/appointments', icon: 'calendar', label: 'Appointments' },
-  { href: '/customers', icon: 'customer', label: 'Customers' },
-  { href: '/vehicles', icon: 'vehicle', label: 'Vehicles' },
-  { href: '/jobs', icon: 'wrench', label: 'Jobs' },
-  { href: '/shopboard', icon: 'board', label: 'Shop Board' },
-  { href: '/estimates', icon: 'doc', label: 'Estimates' },
-  { href: '/invoices', icon: 'invoice', label: 'Invoices' },
-  { href: '/canned-jobs', icon: 'bolt', label: 'Canned Jobs' },
-  { href: '/insurance', icon: 'shield', label: 'Insurance' },
-  { href: '/repair', icon: 'manual', label: 'Repair' },
-  { href: '/parts', icon: 'parts', label: 'Parts Lookup' },
-  { href: '/inventory', icon: 'box', label: 'Inventory' },
-  { href: '/dvi', icon: 'inspect', label: 'Inspections (DVI)' },
-  { href: '/messages', icon: 'message', label: 'Calls & Messages' },
-  { href: '/voicemail', icon: 'phone', label: 'AI Voicemail' },
-  { href: '/ai', icon: 'spark', label: 'Alpha AI' },
-  { href: '/tools', icon: 'tools', label: 'Agents & Tools' },
-  { href: '/growth', icon: 'growth', label: 'Growth' },
-  { href: '/automations', icon: 'clock', label: 'Automations' },
-  { href: '/reports', icon: 'reports', label: 'Reports' },
-  { href: '/onboarding', icon: 'rocket', label: 'Onboarding' },
-  { href: '/settings', icon: 'settings', label: 'Settings' },
+const NAV_GROUPS = [
+  {
+    label: 'Daily work',
+    items: [
+      { href: '/dashboard', icon: 'dashboard', label: 'Dashboard' },
+      { href: '/briefing', icon: 'briefing', label: 'Daily Briefing' },
+      { href: '/appointments', icon: 'calendar', label: 'Appointments' },
+      { href: '/shopboard', icon: 'board', label: 'Shop Board' },
+      { href: '/jobs', icon: 'wrench', label: 'Jobs' },
+      { href: '/customers', icon: 'customer', label: 'Customers' },
+      { href: '/vehicles', icon: 'vehicle', label: 'Vehicles' },
+    ],
+  },
+  {
+    label: 'Work & money',
+    items: [
+      { href: '/estimates', icon: 'doc', label: 'Estimates' },
+      { href: '/invoices', icon: 'invoice', label: 'Invoices' },
+      { href: '/canned-jobs', icon: 'bolt', label: 'Canned Jobs' },
+      { href: '/insurance', icon: 'shield', label: 'Insurance' },
+      { href: '/repair', icon: 'manual', label: 'Repair' },
+      { href: '/parts', icon: 'parts', label: 'Parts Lookup' },
+      { href: '/inventory', icon: 'box', label: 'Inventory' },
+      { href: '/dvi', icon: 'inspect', label: 'Inspections (DVI)' },
+    ],
+  },
+  {
+    label: 'Communications & growth',
+    items: [
+      { href: '/messages', icon: 'message', label: 'Calls & Messages' },
+      { href: '/voicemail', icon: 'phone', label: 'AI Voicemail' },
+      { href: '/ai', icon: 'spark', label: 'Alpha AI' },
+      { href: '/growth', icon: 'growth', label: 'Growth' },
+      { href: '/automations', icon: 'clock', label: 'Automations' },
+    ],
+  },
+  {
+    label: 'Administration',
+    items: [
+      { href: '/reports', icon: 'reports', label: 'Reports' },
+      { href: '/tools', icon: 'tools', label: 'Agents & Tools' },
+      { href: '/onboarding', icon: 'rocket', label: 'Onboarding' },
+      { href: '/settings', icon: 'settings', label: 'Settings' },
+    ],
+  },
 ]
+
+const NAV = NAV_GROUPS.flatMap(group => group.items)
 
 const PAGE_TITLES: Record<string, string> = Object.fromEntries(NAV.map(item => [item.href, item.label]))
 
@@ -160,9 +182,11 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const loadNotifications = async () => {
     setNotifLoading(true)
     try {
+      const shopId = (await getShopProfile())?.id
+      if (!shopId) { setNotifications([]); return }
       const [{ data: msgs }, { data: calls }] = await Promise.all([
-        supabase.from('messages').select('id,body,from_address,created_at').eq('direction','inbound').eq('read',false).order('created_at',{ascending:false}).limit(5),
-        supabase.from('calls').select('id,from_number,start_time').eq('direction','inbound').lt('duration_secs',15).order('start_time',{ascending:false}).limit(5)
+        supabase.from('messages').select('id,body,from_address,created_at').eq('shop_id', shopId).eq('direction','inbound').eq('read',false).order('created_at',{ascending:false}).limit(5),
+        supabase.from('calls').select('id,from_number,start_time').eq('shop_id', shopId).eq('direction','inbound').lt('duration_secs',15).order('start_time',{ascending:false}).limit(5)
       ])
       const items: Notification[] = []
       for (const m of (msgs||[])) {
@@ -230,23 +254,30 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           </select>
         </div>
 
-        <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
-          {NAV.map(item => {
-            const active = pathname.startsWith(item.href)
-            return (
-              <Link key={item.href} href={item.href} className={`nav-item group ${active ? 'active' : ''}`}>
-                <span className={`grid h-7 w-7 place-items-center rounded-md shrink-0 transition-colors ${active ? 'bg-blue/20 text-blue' : 'bg-white/[0.04] text-text-secondary group-hover:bg-white/[0.08] group-hover:text-text-primary'}`}>
-                  <Icon name={item.icon} className="h-4 w-4" />
-                </span>
-                <span className="flex-1 truncate">{item.label}</span>
-                {item.href === '/messages' && unread > 0 && (
-                  <span className="bg-red text-white text-xs font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
-                    {unread > 99 ? '99+' : unread}
-                  </span>
-                )}
-              </Link>
-            )
-          })}
+        <nav className="flex-1 p-3 overflow-y-auto" aria-label="Shop navigation">
+          {NAV_GROUPS.map(group => (
+            <div key={group.label} className="mb-4 last:mb-0">
+              <div className="px-3 pb-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-text-muted">{group.label}</div>
+              <div className="space-y-1">
+                {group.items.map(item => {
+                  const active = pathname.startsWith(item.href)
+                  return (
+                    <Link key={item.href} href={item.href} className={`nav-item group ${active ? 'active' : ''}`}>
+                      <span className={`grid h-7 w-7 place-items-center rounded-md shrink-0 transition-colors ${active ? 'bg-blue/20 text-blue' : 'bg-white/[0.04] text-text-secondary group-hover:bg-white/[0.08] group-hover:text-text-primary'}`}>
+                        <Icon name={item.icon} className="h-4 w-4" />
+                      </span>
+                      <span className="flex-1 truncate">{item.label}</span>
+                      {item.href === '/messages' && unread > 0 && (
+                        <span className="bg-red text-white text-xs font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
+                          {unread > 99 ? '99+' : unread}
+                        </span>
+                      )}
+                    </Link>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
 
         <div className="p-4 border-t border-white/10">

@@ -1,25 +1,33 @@
 ﻿'use client'
-import { useEffect, useState, useCallback } from 'react'
-import { supabase, calcTotals, formatCurrency } from '@/lib/supabase'
-import { getLaborFlatAmount, laborLineTotal } from '@/lib/document-money'
+import { useEffect, useState, useCallback, useRef } from 'react'
+import { getShopId, supabase, calcTotals, formatCurrency } from '@/lib/supabase'
+import { getLaborFlatAmount, laborLineTotal, partLineTotal, quantityFromUnknown, nonNegativeMoney } from '@/lib/document-money'
 
 interface Customer { id: string; name: string; phone: string; email: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin: string; vehicle_plate: string; vehicle_mileage: string }
 interface Doc { id: string; type: string; doc_number: string; status: string; shop_id?: string; doc_date: string; customer_name: string; customer_id: string; customer_phone?: string; customer_email?: string; signature_requested_at?: string; signature_signed_at?: string; signature_signer_name?: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin?: string; vehicle_plate?: string; vehicle_mileage?: string | number; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; warranty_months: number | null; warranty_mileage: number | null; warranty_start: string | null; warranty_exclusions: string | null; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
 
-// Every dollar received gets a real payment record — that's what makes revenue
-// reports and "who actually paid" trustworthy. Fire-and-forget: if the payments
-// table isn't there yet, marking the document still works.
-async function recordPayment(doc: Pick<Doc, 'id' | 'shop_id'>, amount: number, method = 'unspecified', note = '') {
-  if (!(amount > 0)) return
-  try {
-    await supabase.from('payments').insert({
-      shop_id: doc.shop_id || null,
-      document_id: doc.id,
-      amount: Math.round(amount * 100) / 100,
-      method,
-      note,
-    })
-  } catch { /* payments table may not exist yet */ }
+const PAYMENT_OPERATION_STORAGE_KEY = 'alpha_ai_payment_operations_v1'
+
+// Every dollar received is recorded and applied by one authenticated database transaction.
+async function recordPayment(
+  doc: Pick<Doc, 'id' | 'shop_id'>,
+  amount: number,
+  method = 'unspecified',
+  note = '',
+  idempotencyKey: string
+): Promise<{ amount_paid?: number; status?: string; balance_due?: number; total?: number } | null> {
+  if (!(amount > 0)) return null
+  if (!doc.shop_id) throw new Error('Payment is missing its shop')
+  if (!idempotencyKey?.trim()) throw new Error('Payment idempotency key is required')
+  const { data, error } = await supabase.rpc('record_document_payment_safe', {
+    p_document_id: doc.id,
+    p_amount: Math.round(amount * 100) / 100,
+    p_method: method,
+    p_note: note,
+    p_idempotency_key: idempotencyKey.trim(),
+  })
+  if (error) throw new Error(`Payment could not be recorded: ${error.message}`)
+  return (data || null) as { amount_paid?: number; status?: string; balance_due?: number; total?: number } | null
 }
 
 async function getAuthJsonHeaders(): Promise<Record<string, string>> {
@@ -255,15 +263,60 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   const [planForm, setPlanForm] = useState({ down_payment: 0, installments: 3, frequency: 'monthly' })
     const [emailSending, setEmailSending] = useState<string | null>(null)
   const [signatureImg, setSignatureImg] = useState<string | null>(null)
+  const [shopSettings, setShopSettings] = useState<Record<string, string>>({})
+  const paymentOperationKeys = useRef(new Map<string, string>())
+
+  const persistPaymentOperationKeys = () => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(PAYMENT_OPERATION_STORAGE_KEY, JSON.stringify(Object.fromEntries(paymentOperationKeys.current)))
+  }
+
+  const forgetPaymentOperation = (fingerprint: string) => {
+    paymentOperationKeys.current.delete(fingerprint)
+    persistPaymentOperationKeys()
+  }
+
+  const getPaymentOperation = (docId: string, amount: number, method: string, operation: string) => {
+    const fingerprint = `${docId}:${operation}:${Math.round(amount * 100) / 100}:${method || 'unspecified'}`
+    if (!paymentOperationKeys.current.has(fingerprint) && typeof window !== 'undefined') {
+      try {
+        const stored = JSON.parse(window.localStorage.getItem(PAYMENT_OPERATION_STORAGE_KEY) || '{}') as Record<string, unknown>
+        for (const [storedFingerprint, storedKey] of Object.entries(stored)) {
+          if (typeof storedKey === 'string') paymentOperationKeys.current.set(storedFingerprint, storedKey)
+        }
+      } catch { /* ignore malformed local retry state */ }
+    }
+    let key = paymentOperationKeys.current.get(fingerprint)
+    if (!key) {
+      key = `document-payment-${docId}-${crypto.randomUUID()}`
+      paymentOperationKeys.current.set(fingerprint, key)
+      persistPaymentOperationKeys()
+    }
+    return { fingerprint, key }
+  }
+
+  const shopName = shopSettings.shop_name?.trim() || 'Your Shop'
+  const shopAddress = shopSettings.shop_address?.trim() || 'Your shop address'
+  const shopPhone = shopSettings.shop_phone?.trim() || 'Your shop phone'
+  const shopEmail = shopSettings.shop_email?.trim() || ''
+  const formatWarrantyText = (value: unknown) => String(value || '')
+    .replace(/Alpha International Auto Center/g, shopName)
+    .replace(/Alpha's/g, `${shopName}'s`)
+    .replace(/\bAlpha\b/g, shopName)
+    .replace(/10710 S\. Main St, Houston, TX 77025/g, shopAddress)
+    .replace(/\(713\) 663-6979/g, shopPhone)
 
   const load = useCallback(async () => {
-    const [{ data: d }, { data: c }] = await Promise.all([
-      supabase.from('documents').select('*').in('type', type === 'Invoice' ? ['Invoice', 'Receipt'] : [type]).order('created_at', { ascending: false }),
-      supabase.from('customers').select('id,name,phone,email,vehicle_year,vehicle_make,vehicle_model,vehicle_vin,vehicle_plate,vehicle_mileage').order('name')
+    const shopId = await getShopId()
+    if (!shopId) { setDocs([]); setCustomers([]); return }
+    const [{ data: d }, { data: c }, { data: settings }] = await Promise.all([
+      supabase.from('documents').select('*').eq('shop_id', shopId).in('type', type === 'Invoice' ? ['Invoice', 'Receipt'] : [type]).order('created_at', { ascending: false }),
+      supabase.from('customers').select('id,name,phone,email,vehicle_year,vehicle_make,vehicle_model,vehicle_vin,vehicle_plate,vehicle_mileage').eq('shop_id', shopId).order('name'),
+      supabase.from('settings').select('shop_name,shop_address,shop_phone,shop_email').eq('shop_id', shopId).maybeSingle()
     ])
     setDocs((d || []) as Doc[]); setCustomers((c || []) as Customer[])
+    setShopSettings((settings || {}) as Record<string, string>)
   }, [type])
-
   useEffect(() => {
     load()
     const ch = supabase.channel(`docs_${type}`).on('postgres_changes', { event: '*', schema: 'public', table: 'documents' }, load).subscribe()
@@ -271,14 +324,12 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   }, [load, type])
 
   const genDocNumber = async () => {
-    const prefix = type === 'Estimate' ? 'EST' : type === 'Invoice' ? 'INV' : 'REC'
-    const year = new Date().getFullYear()
-    const { data } = await supabase.from('documents').select('doc_number').in('type', type === 'Invoice' ? ['Invoice', 'Receipt'] : [type]).like('doc_number', `${prefix}-${year}-%`)
-    const nums = (data || []).map((d: Record<string,string>) => parseInt(d.doc_number.split('-').pop() || '0'))
-    const next = Math.max(0, ...nums) + 1
-    return `${prefix}-${year}-${String(next).padStart(4,'0')}`
+    const shopId = await getShopId()
+    if (!shopId) throw new Error('No shop is associated with the signed-in user')
+    const { data, error } = await supabase.rpc('next_document_number', { p_shop_id: shopId, p_type: type })
+    if (error || typeof data !== 'string') throw error || new Error('Document numbering failed')
+    return data
   }
-
   const openNew = async () => {
     const docNumber = await genDocNumber()
     setForm({ type, doc_number: docNumber, doc_date: new Date().toISOString().split('T')[0], status: 'Draft', tax_rate: 8.25, apply_tax: true, warranty_type: 'No Warranty', parts: [], labors: [] })
@@ -321,10 +372,13 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   }
 
   const save = async (keepOpen = false) => {
-    const VALID_COLS = new Set(['type','doc_number','status','doc_date','due_date','expires_date','customer_id','customer_name','job_id','vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage','parts','labors','shop_supplies','sublet','tax_rate','apply_tax','deposit','amount_paid','payment_method','cashier','payment_terms','payment_methods','warranty_type','warranty_months','warranty_mileage','warranty_start','warranty_exclusions','warranty_claim','notes','internal_notes','locked','sent_at','created_at','updated_at','customer_phone','customer_email','signature_signed_at','signature_signer_name','signature_requested_at','line_items','payment_plan'])
+    const shopId = await getShopId()
+    if (!shopId) { alert('No shop is associated with the signed-in user'); return }
+    const VALID_COLS = new Set(['type','doc_number','status','doc_date','due_date','expires_date','customer_id','customer_name','job_id','vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage','parts','labors','shop_supplies','sublet','tax_rate','apply_tax','deposit','payment_method','cashier','payment_terms','payment_methods','warranty_type','warranty_months','warranty_mileage','warranty_start','warranty_exclusions','warranty_claim','notes','internal_notes','locked','sent_at','created_at','updated_at','customer_phone','customer_email','signature_signed_at','signature_signer_name','signature_requested_at','line_items','payment_plan'])
     const raw = { ...form, type, updated_at: new Date().toISOString() } as Record<string,unknown>
     const data: Record<string,unknown> = {}
     for (const k of Object.keys(raw)) { if (VALID_COLS.has(k)) data[k] = raw[k] }
+    data.shop_id = shopId
     // Auto-detect warranty only when creating a new document, never override on edits
     if (editing === 'new' && (!data.warranty_type || data.warranty_type === 'No Warranty')) {
       const detected = detectWarranty(data)
@@ -332,7 +386,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
         data.warranty_type = detected.label
         data.warranty_months = detected.months || null
         data.warranty_mileage = detected.mileage || null
-        data.warranty_exclusions = detected.exclusions || null
+        data.warranty_exclusions = formatWarrantyText(detected.exclusions) || null
         data.warranty_start = (data.doc_date as string) || new Date().toISOString().split('T')[0]
       }
     }
@@ -341,7 +395,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
         const result = await supabase.from('documents').insert({ ...data, created_at: new Date().toISOString() }).select()
         if (result.error) throw new Error(result.error.message)
       } else if (editing) {
-        const result = await supabase.from('documents').update(data).eq('id', editing).select()
+        const result = await supabase.from('documents').update(data).eq('id', editing).eq('shop_id', shopId).select()
         if (result.error) throw new Error(result.error.message)
         if (!result.data || result.data.length === 0) {
           // RLS blocked the update — refresh shop_id and retry with service route
@@ -365,8 +419,14 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   const del = async () => {
     if (!editing || editing === 'new') return
     if (!confirm('Delete?')) return
-    await supabase.from('documents').delete().eq('id', editing)
-    setEditing(null); setForm({}); load()
+    const shopId = await getShopId()
+    if (!shopId) { alert('No shop is associated with the signed-in user'); return }
+    const { error } = await supabase.from('documents').delete().eq('id', editing).eq('shop_id', shopId)
+    if (error) {
+      alert('Delete failed: ' + error.message)
+      return
+    }
+    setEditing(null); setForm({}); await load()
   }
 
   const selectCustomer = (id: string) => {
@@ -383,7 +443,10 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     if (!newCustName.trim()) return
     setSavingCustomer(true)
     try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
       const { data, error } = await supabase.from('customers').insert({
+        shop_id: shopId,
         name: newCustName.trim(),
         email: newCustEmail.trim() || null,
         phone: newCustPhone.trim() || null,
@@ -444,17 +507,23 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     if (!email) return alert('No email on file for this customer')
     setEmailSending(doc.id)
     try {
-      await fetch('/api/send-document', {
+      const response = await fetch('/api/send-document', {
         method: 'POST', headers: await getAuthJsonHeaders(),
         body: JSON.stringify({ documentId: doc.id, channel: 'email', email })
       })
-    } catch { alert('Failed to send email') }
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}))
+        throw new Error(detail.error || 'Failed to send email')
+      }
+    } catch (error) { alert(error instanceof Error ? error.message : 'Failed to send email') }
     finally { setEmailSending(null); load() }
   }
 
   // Feature 13: Save payment plan
   const savePaymentPlan = async () => {
     if (!planModal) return
+    const shopId = await getShopId()
+    if (!shopId) { alert('No shop is associated with the signed-in user'); return }
     const t = calcTotals(planModal as unknown as Record<string,unknown>)
     const remaining = t.total - planForm.down_payment
     const perPayment = remaining / planForm.installments
@@ -466,10 +535,13 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
       payments.push({ date: d.toISOString().split('T')[0], amount: Math.round(perPayment * 100) / 100, paid: false })
     }
     const plan = { enabled: true, down_payment: planForm.down_payment, installments: planForm.installments, frequency: planForm.frequency, payments }
-    await supabase.from('documents').update({ payment_plan: plan, updated_at: new Date().toISOString() }).eq('id', planModal.id)
-    setPlanModal(null); load()
+    const { error } = await supabase.from('documents').update({ payment_plan: plan, updated_at: new Date().toISOString() }).eq('id', planModal.id).eq('shop_id', shopId)
+    if (error) {
+      alert('Payment plan could not be saved: ' + error.message)
+      return
+    }
+    setPlanModal(null); await load()
   }
-
   return (
     <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
       {editing !== null ? (
@@ -483,26 +555,48 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                 <button className="btn btn-primary" onClick={() => save()}>Save {type}</button>
                 {editing !== 'new' && <button className="btn btn-danger" onClick={del}>Delete</button>}
                 {editing !== 'new' && <button className="btn btn-secondary" onClick={async () => { await save(true); setSendModal(form as Doc) }}>Send</button>} <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={async () => { if (form.id) { await save(true); setSigModal(form as Doc); setSigResult(null) } }}>✍️ Sign</button>
-              {editing !== 'new' && form.status !== 'Paid' && <button type="button" className="btn btn-sm" style={{background:'#16a34a',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={async () => {
-                if (!form.id) return;
+              {editing !== 'new' && type !== 'Estimate' && form.status !== 'Paid' && <button type="button" className="btn btn-sm" style={{background:'#16a34a',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={async () => {
+                if (!form.id || !form.shop_id) return;
                 const t = calcTotals(form as unknown as Record<string,unknown>);
-                await recordPayment(form as Doc, t.total - (Number(form.amount_paid) || 0), form.payment_method || 'unspecified', `Marked paid from ${form.type} editor`);
-                setForm(f => ({...f, status: 'Paid', deposit: t.total, amount_paid: t.total}));
-                await supabase.from('documents').update({ status: 'Paid', deposit: t.total, amount_paid: t.total, updated_at: new Date().toISOString() }).eq('id', form.id);
-                await load();
+                 const owed = Math.max(0, t.total - nonNegativeMoney(form.amount_paid));
+                if (!(owed > 0)) return;
+                try {
+                  const operation = getPaymentOperation(form.id, owed, form.payment_method || 'unspecified', 'editor-mark-paid')
+                  const result = await recordPayment(form as Doc, owed, form.payment_method || 'unspecified', `Marked paid from ${form.type} editor`, operation.key);
+                   forgetPaymentOperation(operation.fingerprint)
+                  setForm(f => ({...f, status: result?.status || 'Paid', amount_paid: Number(result?.amount_paid ?? t.total)}));
+                  await load();
+                } catch (error) {
+                  alert('Payment failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+                }
               }}>💰 Mark Paid</button>}
-              {editing !== 'new' && type === 'Invoice' && form.status !== 'Partial' && form.status !== 'Paid' && <button type="button" className="btn btn-sm" style={{background:'#f59e0b',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={async () => { if (!form.id) return; setForm(f => ({...f, status: 'Partial'})); await supabase.from('documents').update({ status: 'Partial', updated_at: new Date().toISOString() }).eq('id', form.id); await load() }}>💵 Mark Partial</button>}
+              {editing !== 'new' && type === 'Invoice' && form.status !== 'Partial' && form.status !== 'Paid' && <button type="button" className="btn btn-sm" style={{background:'#f59e0b',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={async () => {
+                if (!form.id || !form.shop_id) return;
+                const t = calcTotals(form as unknown as Record<string,unknown>);
+                 const owed = Math.max(0, t.total - nonNegativeMoney(form.amount_paid));
+                if (!(owed > 0)) return;
+                const raw = window.prompt(`How much did they pay? (Remaining: $${owed.toFixed(2)})`);
+                if (!raw) return;
+                const amount = Number.parseFloat(raw.replace(/[^0-9.]/g, ''));
+                if (!(amount > 0)) { alert('Enter a payment greater than zero.'); return; }
+                if (amount > owed + 0.005) { alert(`Payment cannot exceed the remaining balance of $${owed.toFixed(2)}.`); return; }
+                try {
+                  const operation = getPaymentOperation(form.id, amount, form.payment_method || 'unspecified', 'editor-partial')
+                  const result = await recordPayment(form as Doc, amount, form.payment_method || 'unspecified', 'Partial payment from invoice editor', operation.key);
+                   forgetPaymentOperation(operation.fingerprint)
+                  setForm(f => ({...f, status: result?.status || 'Partial', amount_paid: Number(result?.amount_paid ?? ((Number(f.amount_paid) || 0) + amount))}));
+                  await load();
+                } catch (error) {
+                  alert('Payment failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+                }
+              }}>💵 Record Partial</button>}
               {editing !== 'new' && type === 'Estimate' && <button className="btn btn-primary btn-sm" onClick={async () => {
                 if (!form.id) return;
                 if (!confirm('Convert this estimate to an invoice? The estimate will become the invoice (it will no longer appear under Estimates).')) return;
-                const prefix = 'INV';
-                const year = new Date().getFullYear();
-                const { data: existing } = await supabase.from('documents').select('doc_number').eq('type','Invoice').like('doc_number',`${prefix}-${year}-%`);
-                const nums = (existing||[]).map((d:Record<string,string>) => parseInt(d.doc_number.split('-').pop()||'0'));
-                const next = Math.max(0,...nums)+1;
-                const doc_number = `${prefix}-${year}-${String(next).padStart(4,'0')}`;
+                const shopId = await getShopId(); if (!shopId) { alert('No shop is associated with the signed-in user'); return }; const { data: doc_number, error: numberingError } = await supabase.rpc('next_document_number', { p_shop_id: shopId, p_type: 'Invoice' });
+                if (numberingError || typeof doc_number !== 'string') { alert('Invoice numbering failed: ' + (numberingError?.message || 'Unknown error')); return }
                 // UPDATE the existing row in place — don't insert a duplicate.
-                await supabase.from('documents').update({ type:'Invoice', doc_number, status:'Draft', updated_at: new Date().toISOString() }).eq('id', form.id);
+                const { error: convertError } = await supabase.from('documents').update({ type:'Invoice', doc_number, status:'Draft', updated_at: new Date().toISOString() }).eq('id', form.id).eq('shop_id', shopId); if (convertError) { alert('Conversion failed: ' + convertError.message); return }
                 setEditing(null);
                 setForm({});
                 window.location.href='/invoices';
@@ -516,7 +610,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
               <div><label className="form-label">Doc #</label><input className="form-input opacity-60" readOnly value={form.doc_number||''} /></div>
               <div><label className="form-label">Status</label>
                 <select className="form-select" value={form.status||'Draft'} onChange={sf('status')}>
-                  {getStatuses(type).map(s=><option key={s}>{s}</option>)}
+                  {getStatuses(type).filter(s => ['Paid','Partial'].includes(form.status || '') ? s === form.status : !['Paid','Partial'].includes(s)).map(s=><option key={s}>{s}</option>)}
                 </select>
               </div>
               <div><label className="form-label">Date</label><input className="form-input" type="date" value={form.doc_date||''} onChange={sf('doc_date')} /></div>
@@ -527,7 +621,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                   {customers.map(c=><option key={c.id} value={c.id}>{c.name}{c.email ? ` (${c.email})` : ''}</option>)}
                 </select>
               </div>
-              <div><label className="form-label">Tax Rate %</label><input className="form-input" type="number" step="0.01" value={form.tax_rate||8.25} onChange={sf('tax_rate')} />
+              <div><label className="form-label">Tax Rate %</label><input className="form-input" type="number" step="0.01" value={(form.tax_rate as number) ?? 8.25} onChange={sf('tax_rate')} />
               </div>
               <div>
                 <label className="form-label flex items-center gap-2"><input type="checkbox" checked={form.apply_tax !== false} onChange={e => setForm(f => ({...f, apply_tax: e.target.checked}))} /> Apply Tax</label></div>
@@ -559,7 +653,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                     <input className="form-input col-span-1" type="number" placeholder="Qty" value={p.qty as number||1} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],qty:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
                     <input className="form-input col-span-2" type="number" step="0.01" placeholder="Price" value={p.unitPrice as number||0} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],unitPrice:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
                     <div className="col-span-1 flex items-center gap-1"><input type="checkbox" checked={p.taxable !== false} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],taxable:e.target.checked}; setForm(f=>({...f,parts:p2})) }} /><span className="text-xs">Tax</span></div>
-                    <div className="col-span-1 text-right text-sm">{formatCurrency((Number(p.qty)||1)*(Number(p.unitPrice)||0))}</div>
+                    <div className="col-span-1 text-right text-sm">{formatCurrency(partLineTotal(p))}</div>
                     <button className="col-span-1 btn btn-danger btn-sm" onClick={() => setForm(f=>({...f,parts:((f.parts||[]) as Record<string,unknown>[]).filter((_,j)=>j!==i)}))}>✕</button>
                   </div>
                   <div className="flex items-center gap-2 pl-1 text-xs flex-wrap">
@@ -573,7 +667,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                     <input className="form-input !py-1 w-20" type="number" step="0.01" placeholder="0.00" value={p.cost as number||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],cost:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
                     <span className="text-text-muted ml-2" title="Refundable core deposit — added to the total, refunded when the old core is returned">Core $</span>
                     <input className="form-input !py-1 w-20" type="number" step="0.01" placeholder="0.00" value={p.core as number||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],core:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
-                    {Number(p.cost) > 0 && Number(p.unitPrice) > 0 ? <span className="text-green" title="Profit on this line">margin {formatCurrency((Number(p.unitPrice) - Number(p.cost)) * (Number(p.qty) || 1))}</span> : null}
+                    {nonNegativeMoney(p.cost) > 0 && nonNegativeMoney(p.unitPrice) > 0 ? <span className="text-green" title="Profit on this line">margin {formatCurrency((nonNegativeMoney(p.unitPrice) - nonNegativeMoney(p.cost)) * quantityFromUnknown(p.qty))}</span> : null}
                   </div>
                   </div>
                 ))}
@@ -622,7 +716,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                         warranty_type: preset.label,
                         warranty_months: preset.months || null,
                         warranty_mileage: preset.mileage || null,
-                        warranty_exclusions: preset.exclusions || null,
+                        warranty_exclusions: formatWarrantyText(preset.exclusions) || null,
                         warranty_start: f.doc_date || new Date().toISOString().split('T')[0],
                       }))
                     }
@@ -640,7 +734,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                           warranty_type: matched.label,
                           warranty_months: matched.months || null,
                           warranty_mileage: matched.mileage || null,
-                          warranty_exclusions: matched.exclusions || null,
+                          warranty_exclusions: formatWarrantyText(matched.exclusions) || null,
                           warranty_start: f.doc_date || new Date().toISOString().split("T")[0],
                         }))
                       }
@@ -789,8 +883,8 @@ tr, td, th, thead, table { break-inside: avoid; }
             <div id="doc-preview-panel" className="sticky top-4 bg-white text-gray-900 rounded-xl shadow-2xl overflow-hidden" style={{fontFamily:'Arial,Helvetica,sans-serif'}}>
               {/* Header */}
               <div style={{background:'#1a1a2e',padding:'24px 28px',textAlign:'center'}}>
-                <img src="/alpha-bot.jpg" alt="Logo" style={{width:48,height:48,borderRadius:'50%',margin:'0 auto 8px',display:'block',objectFit:'cover',border:'2px solid rgba(255,255,255,0.2)'}} />               <h2 style={{margin:0,fontSize:'18px',fontWeight:700,color:'#fff',letterSpacing:'0.5px'}}>Alpha International Auto Center</h2>
-                <p style={{margin:'4px 0 0',fontSize:'11px',color:'#9ca3af'}}>10710 S Main St, Houston TX 77025 &nbsp;·&nbsp; (713) 663-6979</p>
+                <img src="/alpha-bot.jpg" alt="Logo" style={{width:48,height:48,borderRadius:'50%',margin:'0 auto 8px',display:'block',objectFit:'cover',border:'2px solid rgba(255,255,255,0.2)'}} />               <h2 style={{margin:0,fontSize:'18px',fontWeight:700,color:'#fff',letterSpacing:'0.5px'}}>{shopName}</h2>
+                <p style={{margin:'4px 0 0',fontSize:'11px',color:'#9ca3af'}}>{shopAddress} &nbsp;·&nbsp; {shopPhone}</p>
               </div>
 
               {/* Doc type badge + info */}
@@ -833,9 +927,9 @@ tr, td, th, thead, table { break-inside: avoid; }
                       {((form.parts||[]) as Record<string,unknown>[]).map((p,i) => (
                         <tr key={i} style={{background:i%2===1?'#fafafa':'transparent'}}>
                           <td style={{padding:'6px 8px',color:'#111'}}>{(p.name as string) || '—'}{p.brand ? <span style={{color:'#999',fontSize:'10px',marginLeft:'4px'}}>({p.brand as string})</span> : ''}{p.warranty ? <span style={{color:'#2563eb',fontSize:'9px',display:'block',fontWeight:600}}>Warranty: {p.warranty as string}</span> : ''}</td>
-                          <td style={{padding:'6px 8px',textAlign:'center',color:'#666'}}>{(p.qty as number)||1}</td>
-                          <td style={{padding:'6px 8px',textAlign:'right',color:'#666'}}>{formatCurrency(Number(p.unitPrice)||0)}</td>
-                          <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600,color:'#111'}}>{formatCurrency((Number(p.qty)||1)*(Number(p.unitPrice)||0))}</td>
+                          <td style={{padding:'6px 8px',textAlign:'center',color:'#666'}}>{quantityFromUnknown(p.qty)}</td>
+                          <td style={{padding:'6px 8px',textAlign:'right',color:'#666'}}>{formatCurrency(nonNegativeMoney(p.unitPrice))}</td>
+                          <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600,color:'#111'}}>{formatCurrency(partLineTotal(p))}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -889,15 +983,20 @@ tr, td, th, thead, table { break-inside: avoid; }
                       <span>Shop Supplies</span><span>{formatCurrency(Number(form.shop_supplies))}</span>
                     </div>
                   )}
+                  {totals.sublet > 0 && (
+                    <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
+                      <span>Sublet</span><span>{formatCurrency(totals.sublet)}</span>
+                    </div>
+                  )}
                   <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
-                    <span>Tax ({form.tax_rate || 8.25}%)</span><span>{formatCurrency(totals.taxAmount)}</span>
+                    <span>Tax ({totals.taxRate}%)</span><span>{formatCurrency(totals.taxAmount)}</span>
                   </div>
                   <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0 4px',fontSize:'16px',fontWeight:700,color:'#111',borderTop:'2px solid #111',marginTop:'6px'}}>
                     <span>TOTAL</span><span>{formatCurrency(totals.total)}</span>
                   </div>
                   {Number(form.deposit) > 0 && (
                     <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
-                      <span>Deposit</span><span>-{formatCurrency(Number(form.deposit))}</span>
+                      <span>Deposit recorded</span><span>{formatCurrency(Number(form.deposit))}</span>
                     </div>
                   )}
                   {form.status === 'Paid' ? (
@@ -940,11 +1039,11 @@ tr, td, th, thead, table { break-inside: avoid; }
                   </div>
                   {form.warranty_exclusions && (
                     <div style={{marginTop:'8px',fontSize:'10px',color:'#666',lineHeight:'1.4',borderTop:'1px solid #bfdbfe',paddingTop:'8px'}}>
-                      <strong>Exclusions:</strong> {form.warranty_exclusions}
+                      <strong>Exclusions:</strong> {formatWarrantyText(form.warranty_exclusions)}
                     </div>
                   )}
                   <div style={{marginTop:'10px',fontSize:'9px',color:'#888',lineHeight:'1.4',borderTop:'1px solid #bfdbfe',paddingTop:'8px'}}>
-                    All warranty claims must be submitted to Alpha International Auto Center at 10710 S. Main St, Houston, TX 77025 during normal business hours. Contact (713) 663-6979 before beginning any warranty repair. Unauthorized repairs will void this warranty. This warranty is governed by the laws of the State of Texas.
+                    All warranty claims must be submitted to {shopName} at {shopAddress} during normal business hours. Contact {shopPhone} before beginning any warranty repair. Unauthorized repairs will void this warranty. This warranty is governed by the laws of the State of Texas.
                   </div>
                 </div>
               )}
@@ -952,7 +1051,7 @@ tr, td, th, thead, table { break-inside: avoid; }
               {signatureImg && (<div style={{padding:'16px 28px',borderTop:'1px solid #eee',textAlign:'center'}}><div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'#999',marginBottom:'8px'}}>Customer Signature</div><img src={signatureImg} alt="Signature" style={{maxWidth:220,maxHeight:80,margin:'0 auto'}} />{form.signature_signer_name && <div style={{fontSize:'11px',color:'#555',marginTop:'4px'}}>{form.signature_signer_name}</div>}{form.signature_signed_at && <div style={{fontSize:'10px',color:'#999'}}>{new Date(form.signature_signed_at).toLocaleString()}</div>}</div>)}{/* Footer */}
               <div style={{padding:'12px 28px',textAlign:'center',fontSize:'10px',color:'#999',borderTop:'1px solid #eee',background:'#fafafa'}}>
                 <div>Payment Terms: Due on receipt &nbsp;|&nbsp; Accepted: Cash, Card, Zelle, Cash App</div>
-                <div style={{marginTop:'4px'}}>(713) 663-6979 &nbsp;·&nbsp; alphainternationalauto.com</div>
+                <div style={{marginTop:'4px'}}>{shopPhone}{shopEmail ? <> &nbsp;·&nbsp; {shopEmail}</> : null}</div>
               </div>
             </div>
           </div>
@@ -1008,22 +1107,40 @@ tr, td, th, thead, table { break-inside: avoid; }
                       <td className="font-semibold">{formatCurrency(t.total)}</td>
                       <td onClick={e => e.stopPropagation()}>
                         <div className="flex gap-1">
-                          {d.status !== 'Paid' && <button className="btn btn-sm" style={{background:'#16a34a',color:'white',fontSize:'11px',padding:'4px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}} onClick={async () => {
+                          {type !== 'Estimate' && d.status !== 'Paid' && <button className="btn btn-sm" style={{background:'#16a34a',color:'white',fontSize:'11px',padding:'4px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}} onClick={async () => {
+                            if (!d.shop_id) return;
                             const t = calcTotals(d as unknown as Record<string,unknown>);
-                            await recordPayment(d, t.total - (Number(d.amount_paid) || 0), d.payment_method || 'unspecified', 'Marked paid from list');
-                            await supabase.from('documents').update({ status: 'Paid', deposit: t.total, amount_paid: t.total, updated_at: new Date().toISOString() }).eq('id', d.id);
-                            await load();
+                             const owed = Math.max(0, t.total - nonNegativeMoney(d.amount_paid));
+                            if (!(owed > 0)) return;
+                            try {
+                              const operation = getPaymentOperation(d.id, owed, d.payment_method || 'unspecified', 'list-mark-paid')
+                              await recordPayment(d, owed, d.payment_method || 'unspecified', 'Marked paid from list', operation.key);
+                               forgetPaymentOperation(operation.fingerprint)
+                              await load();
+                            } catch (error) {
+                              alert('Payment failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+                            }
                           }} title="Mark as Paid (balance → $0)">💰 Paid</button>}
                           {type === 'Invoice' && d.status !== 'Paid' && <button className="btn btn-sm" style={{background:'#f59e0b',color:'white',fontSize:'11px',padding:'4px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}} onClick={async () => {
+                            if (!d.shop_id) return;
                             const t = calcTotals(d as unknown as Record<string,unknown>);
-                            const owed = Math.max(0, t.total - (Number(d.amount_paid) || 0));
+                             const alreadyPaid = nonNegativeMoney(d.amount_paid);
+                            const owed = Math.max(0, t.total - alreadyPaid);
                             const raw = window.prompt(`How much did they pay? (Owed: $${owed.toFixed(2)})`);
                             const amt = parseFloat((raw || '').replace(/[^0-9.]/g, ''));
-                            if (!raw || !(amt > 0)) return;
-                            const newPaid = Math.min(t.total, (Number(d.amount_paid) || 0) + amt);
-                            await recordPayment(d, amt, d.payment_method || 'unspecified', 'Partial payment');
-                            await supabase.from('documents').update({ status: newPaid >= t.total ? 'Paid' : 'Partial', amount_paid: newPaid, updated_at: new Date().toISOString() }).eq('id', d.id);
-                            await load();
+                            if (!raw || !(amt > 0) || !(owed > 0)) return;
+                            if (amt > owed + 0.005) {
+                              alert(`Payment cannot exceed the remaining balance of ${owed.toFixed(2)}.`);
+                              return;
+                            }
+                            try {
+                              const operation = getPaymentOperation(d.id, amt, d.payment_method || 'unspecified', 'list-partial')
+                              await recordPayment(d, amt, d.payment_method || 'unspecified', 'Partial payment', operation.key);
+                               forgetPaymentOperation(operation.fingerprint)
+                              await load();
+                            } catch (error) {
+                              alert('Payment failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+                            }
                           }} title="Record a partial payment">💵 Partial</button>}
                           <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:'11px',padding:'4px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}} onClick={() => { setSigModal(d); setSigResult(null) }} title="Send for e-signature">✍️ Sign</button>
                           {/* Feature 9: Quick email button */}

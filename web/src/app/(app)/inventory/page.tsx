@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { getShopId, supabase } from '@/lib/supabase'
 
 interface Part {
   id: string
@@ -38,15 +38,21 @@ export default function InventoryPage() {
   const [catFilter, setCatFilter] = useState('All')
   const [saving, setSaving] = useState(false)
   const [tab, setTab] = useState<'all'|'low'|'on-order'>('all')
+  const [loadError, setLoadError] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const { data } = await supabase.from('inventory').select('*').order('name')
+      const shopId = await getShopId()
+      if (!shopId) { setParts([]); setLoadError('No shop is associated with the signed-in user'); return }
+      const { data, error } = await supabase.from('inventory').select('*').eq('shop_id', shopId).order('name')
+      if (error) throw error
       setParts((data || []) as Part[])
+      setLoadError('')
+    } catch (error) {
+      setLoadError('Inventory could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error'))
     } finally { setLoading(false) }
   }, [])
-
   useEffect(() => {
     load()
     const ch = supabase.channel('inventory_ch').on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, load).subscribe()
@@ -57,29 +63,53 @@ export default function InventoryPage() {
     if (!form.name) return alert('Part name is required')
     setSaving(true)
     try {
-      const data = { ...form, updated_at: new Date().toISOString() }
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const data = { ...form, shop_id: shopId, updated_at: new Date().toISOString() }
       if (editing === 'new') {
-        await supabase.from('inventory').insert({ ...data, qty_on_hand: data.qty_on_hand ?? 0, qty_reorder: data.qty_reorder ?? 0, qty_on_order: data.qty_on_order ?? 0, created_at: new Date().toISOString() })
+        const result = await supabase.from('inventory').insert({
+          ...data,
+          qty_on_hand: data.qty_on_hand ?? 0,
+          qty_reorder: data.qty_reorder ?? 0,
+          qty_on_order: data.qty_on_order ?? 0,
+          created_at: new Date().toISOString(),
+        })
+        if (result.error) throw new Error(result.error.message)
       } else if (editing) {
-        await supabase.from('inventory').update(data).eq('id', editing)
+        const result = await supabase.from('inventory').update(data).eq('id', editing).eq('shop_id', shopId)
+        if (result.error) throw new Error(result.error.message)
       }
-      setEditing(null); setForm({}); load()
+      setEditing(null); setForm({}); await load()
+    } catch (error) {
+      alert('Inventory item could not be saved: ' + (error instanceof Error ? error.message : 'Unknown error'))
     } finally { setSaving(false) }
   }
 
   const del = async () => {
     if (!editing || editing === 'new') return
     if (!confirm('Delete this part?')) return
-    await supabase.from('inventory').delete().eq('id', editing)
-    setEditing(null); setForm({}); load()
+    const shopId = await getShopId()
+    if (!shopId) return
+    const { error } = await supabase.from('inventory').delete().eq('id', editing).eq('shop_id', shopId)
+    if (error) {
+      alert('Inventory item could not be deleted: ' + error.message)
+      return
+    }
+    setEditing(null); setForm({}); await load()
   }
 
   const adjustQty = async (id: string, delta: number) => {
     const part = parts.find(p => p.id === id)
     if (!part) return
     const newQty = Math.max(0, (part.qty_on_hand || 0) + delta)
-    await supabase.from('inventory').update({ qty_on_hand: newQty, updated_at: new Date().toISOString() }).eq('id', id)
-    load()
+    const shopId = await getShopId()
+    if (!shopId) return
+    const { error } = await supabase.from('inventory').update({ qty_on_hand: newQty, updated_at: new Date().toISOString() }).eq('id', id).eq('shop_id', shopId)
+    if (error) {
+      alert('Quantity could not be updated: ' + error.message)
+      return
+    }
+    await load()
   }
 
   const filtered = parts.filter(p => {
@@ -184,6 +214,10 @@ export default function InventoryPage() {
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
+      {loadError && <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red/30 bg-red/10 px-4 py-3 text-sm text-red">
+        <span>{loadError}</span>
+        <button className="btn btn-secondary btn-sm" onClick={load}>Retry</button>
+      </div>}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <div>
           <h1 className="text-2xl font-bold">Inventory</h1>

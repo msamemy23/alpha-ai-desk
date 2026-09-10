@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { getShopId, supabase } from '@/lib/supabase'
 
 interface Appointment {
   id: string
@@ -56,14 +56,21 @@ export default function AppointmentsPage() {
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [loadError, setLoadError] = useState('')
 
   const weekDays = getWeekDays(weekBase)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const { data } = await supabase.from('appointments').select('*').order('date').order('time')
+      const shopId = await getShopId()
+      if (!shopId) { setAppts([]); setLoadError('No shop is associated with the signed-in user'); return }
+      const { data, error } = await supabase.from('appointments').select('*').eq('shop_id', shopId).order('date').order('time')
+      if (error) throw error
       setAppts((data || []) as Appointment[])
+      setLoadError('')
+    } catch (error) {
+      setLoadError('Appointments could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error'))
     } finally { setLoading(false) }
   }, [])
 
@@ -71,8 +78,14 @@ export default function AppointmentsPage() {
     load()
     fetch('/api/staff?role=technician').then(r => r.json()).then(d => {
       if (d.ok && d.staff) setTechs(['Unassigned', ...d.staff.map((s: {name: string}) => s.name)])
-    }).catch(() => {})
-    supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model').order('name').then(({ data }) => setCustomers((data||[]) as Customer[]))
+    }).catch(error => setLoadError('Technicians could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error')))
+    getShopId().then(shopId => {
+      if (!shopId) { setCustomers([]); return }
+      return supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).order('name').then(({ data, error }) => {
+        if (error) throw error
+        setCustomers((data||[]) as Customer[])
+      })
+    }).catch(error => setLoadError('Customers could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error')))
     const ch = supabase.channel('appts').on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, load).subscribe()
     return () => { supabase.removeChannel(ch) }
   }, [load])
@@ -81,21 +94,37 @@ export default function AppointmentsPage() {
     if (!form.customer_name || !form.date || !form.time) return alert('Name, date and time are required')
     setSaving(true)
     try {
-      const data = { ...form, updated_at: new Date().toISOString() }
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const data = { ...form, shop_id: shopId, updated_at: new Date().toISOString() }
       if (editing === 'new') {
-        await supabase.from('appointments').insert({ ...data, status: data.status || 'Scheduled', created_at: new Date().toISOString() })
+        const result = await supabase.from('appointments').insert({
+          ...data,
+          status: data.status || 'Scheduled',
+          created_at: new Date().toISOString(),
+        })
+        if (result.error) throw new Error(result.error.message)
       } else if (editing) {
-        await supabase.from('appointments').update(data).eq('id', editing)
+        const result = await supabase.from('appointments').update(data).eq('id', editing).eq('shop_id', shopId)
+        if (result.error) throw new Error(result.error.message)
       }
-      setEditing(null); setForm({}); load()
+      setEditing(null); setForm({}); await load()
+    } catch (error) {
+      alert('Appointment could not be saved: ' + (error instanceof Error ? error.message : 'Unknown error'))
     } finally { setSaving(false) }
   }
 
   const del = async () => {
     if (!editing || editing === 'new') return
     if (!confirm('Delete this appointment?')) return
-    await supabase.from('appointments').delete().eq('id', editing)
-    setEditing(null); setForm({}); load()
+    const shopId = await getShopId()
+    if (!shopId) return
+    const { error } = await supabase.from('appointments').delete().eq('id', editing).eq('shop_id', shopId)
+    if (error) {
+      alert('Appointment could not be deleted: ' + error.message)
+      return
+    }
+    setEditing(null); setForm({}); await load()
   }
 
   const openNew = (date?: string, time?: string) => {
@@ -220,6 +249,11 @@ export default function AppointmentsPage() {
           <button className="btn btn-primary btn-sm" onClick={() => openNew()}>+ New Appointment</button>
         </div>
       </div>
+
+      {loadError && <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red/30 bg-red/10 px-4 py-3 text-sm text-red">
+        <span>{loadError}</span>
+        <button className="btn btn-secondary btn-sm" onClick={load}>Retry</button>
+      </div>}
 
       {view === 'week' ? (
         <>

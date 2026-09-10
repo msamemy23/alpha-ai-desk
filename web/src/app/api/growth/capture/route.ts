@@ -1,46 +1,34 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { getServiceClient } from '@/lib/supabase'
+import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { isSmsOptedOut } from '@/lib/sms-consent'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-)
+// Leads are shop data — every caller must resolve to one shop.
 
-// The cron job calls this with the internal secret; everything else needs a
-// logged-in session. Leads are shop data — never expose them anonymously.
-async function requireCallerAllowed(req: NextRequest): Promise<boolean> {
-  const secret = process.env.CRON_SECRET || process.env.INTERNAL_API_SECRET
-  if (secret && req.headers.get('authorization') === `Bearer ${secret}`) return true
-  const auth = await getAuthedShop()
-  return !!auth
-}
 
-const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
-const TELNYX_FROM_NUMBER = process.env.TELNYX_PHONE_NUMBER || '+17134001234'
-
-async function sendFollowUpSMS(phone: string, name: string): Promise<{ success: boolean; error?: string }> {
-  if (!TELNYX_API_KEY) {
+async function sendFollowUpSMS(phone: string, name: string, shopName: string, shopPhone: string, apiKey: string, fromNumber: string): Promise<{ success: boolean; error?: string }> {
+  if (!apiKey || !fromNumber) {
     return { success: false, error: 'Telnyx not configured' }
   }
 
-  const message = `Hi ${name}! Thanks for reaching out to Alpha International Auto Center. We'd love to help with your vehicle. Ready to schedule? Call us at (713) 663-6979 or reply to this text!`
+  const message = `Hi ${name}! Thanks for reaching out to ${shopName}. We'd love to help with your vehicle. Ready to schedule? Call us at ${shopPhone} or reply to this text!`
 
   try {
     const res = await fetch('https://api.telnyx.com/v2/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${TELNYX_API_KEY}`
+        'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        from: TELNYX_FROM_NUMBER,
+        from: fromNumber,
         to: phone,
         text: message
       })
     })
-    const data = await res.json()
-    return data.data?.id ? { success: true } : { success: false, error: data.errors?.[0]?.detail || 'Failed' }
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) return { success: false, error: data.errors?.[0]?.detail || `Telnyx returned ${res.status}` }
+    return data.data?.id ? { success: true } : { success: false, error: data.errors?.[0]?.detail || 'Telnyx did not return a message id' }
   } catch (e: unknown) {
     return { success: false, error: (e as Error).message }
   }
@@ -48,10 +36,18 @@ async function sendFollowUpSMS(phone: string, name: string): Promise<{ success: 
 
 // POST - Capture a walk-in or call lead
 export async function POST(req: NextRequest) {
-  if (!(await requireCallerAllowed(req))) return unauthorized()
   try {
-    const body = await req.json()
-    const { action } = body
+    const body = await req.json().catch(() => null)
+    const auth = await getRouteShop(req, body?.shopId)
+    if (!auth) return unauthorized()
+    const supabase = getServiceClient()
+    const { data: settings, error: settingsError } = await supabase.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle()
+    if (settingsError) return NextResponse.json({ error: 'Unable to load shop settings' }, { status: 500 })
+    const shopName = String(settings?.shop_name || settings?.company_name || settings?.business_name || 'your shop').slice(0, 120)
+    const shopPhone = String(settings?.shop_phone || settings?.phone || settings?.business_phone || '').slice(0, 40)
+    const telnyxKey = String(settings?.telnyx_api_key || '')
+    const telnyxFrom = String(settings?.telnyx_phone_number || '')
+    const { action } = body || {}
 
     if (action === 'capture') {
       const { name, phone, email, source, vehicle_info, notes, needs_followup = true } = body
@@ -66,14 +62,15 @@ export async function POST(req: NextRequest) {
         const { data } = await supabase
           .from('growth_leads')
           .select('*')
+          .eq('shop_id', auth.shopId)
           .eq('phone', phone)
-          .single()
+          .maybeSingle()
         existingLead = data
       }
 
       if (existingLead) {
         // Update existing lead
-        await supabase
+        const { error: updateError } = await supabase
           .from('growth_leads')
           .update({
             name: name || existingLead.name,
@@ -85,6 +82,8 @@ export async function POST(req: NextRequest) {
             source: source || existingLead.source
           })
           .eq('id', existingLead.id)
+          .eq('shop_id', auth.shopId)
+        if (updateError) throw updateError
 
         return NextResponse.json({
           lead_id: existingLead.id,
@@ -97,6 +96,7 @@ export async function POST(req: NextRequest) {
       const { data: newLead, error } = await supabase
         .from('growth_leads')
         .insert({
+          shop_id: auth.shopId,
           name: name || 'Unknown',
           phone: phone || null,
           email: email || null,
@@ -131,41 +131,58 @@ export async function POST(req: NextRequest) {
         .from('growth_leads')
         .select('*')
         .eq('needs_followup', true)
+        .eq('shop_id', auth.shopId)
         .eq('converted', false)
         .lt('last_contact', oneDayAgo.toISOString())
         .order('last_contact', { ascending: true })
 
       if (error) throw error
 
-      const results: Array<{ name: string; phone: string; sent: boolean; error?: string }> = []
+      const results: Array<{ name: string; phone: string; sent: boolean; recorded?: boolean; error?: string }> = []
 
       for (const lead of pendingLeads || []) {
         if (!lead.phone) continue
+        if (await isSmsOptedOut(supabase, auth.shopId, lead.phone)) continue
 
-        const smsResult = await sendFollowUpSMS(lead.phone, lead.name)
+        const smsResult = await sendFollowUpSMS(lead.phone, lead.name, shopName, shopPhone, telnyxKey, telnyxFrom)
         
-        // Update last contact
-        await supabase
-          .from('growth_leads')
-          .update({
-            last_contact: new Date().toISOString(),
-            touch_count: (lead.touch_count || 0) + 1
-          })
-          .eq('id', lead.id)
+        // Update only after recording whether the attempt succeeded. Keep a failed
+        // lead eligible for a later retry instead of silently marking it contacted.
+        let recorded = true
+        let recordError = ''
+        if (smsResult.success) {
+          const { error: updateError } = await supabase
+            .from('growth_leads')
+            .update({
+              last_contact: new Date().toISOString(),
+              touch_count: (lead.touch_count || 0) + 1
+            })
+            .eq('id', lead.id)
+            .eq('shop_id', auth.shopId)
+          if (updateError) {
+            recorded = false
+            recordError = 'Follow-up sent, but the lead could not be updated for retry protection'
+            console.error('Lead follow-up update error:', updateError.message)
+          }
+        }
 
         results.push({
           name: lead.name,
           phone: lead.phone,
           sent: smsResult.success,
-          error: smsResult.error
+          recorded,
+          error: smsResult.error || recordError || undefined
         })
       }
 
+      const success = results.every(result => result.sent === true && result.recorded !== false)
       return NextResponse.json({
+        ok: success,
+        success,
         total_pending: (pendingLeads || []).length,
         followed_up: results.filter(r => r.sent).length,
         results
-      })
+      }, { status: success ? 200 : 502 })
     }
 
     if (action === 'convert') {
@@ -184,6 +201,7 @@ export async function POST(req: NextRequest) {
           converted_at: new Date().toISOString()
         })
         .eq('id', lead_id)
+        .eq('shop_id', auth.shopId)
 
       if (error) throw error
 
@@ -199,15 +217,18 @@ export async function POST(req: NextRequest) {
 
 // GET - List all leads
 export async function GET(req: NextRequest) {
-  if (!(await requireCallerAllowed(req))) return unauthorized()
   try {
     const { searchParams } = new URL(req.url)
+    const auth = await getRouteShop(req, searchParams.get('shop_id'))
+    if (!auth) return unauthorized()
+    const supabase = getServiceClient()
     const status = searchParams.get('status')
     const source = searchParams.get('source')
 
     let query = supabase
       .from('growth_leads')
       .select('*')
+      .eq('shop_id', auth.shopId)
       .order('created_at', { ascending: false })
 
     if (status === 'pending') {

@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { getShopId, supabase } from '@/lib/supabase'
 
 interface CannedJob {
   id: string
@@ -33,15 +33,21 @@ export default function CannedJobsPage() {
   const [search, setSearch] = useState('')
   const [catFilter, setCatFilter] = useState('All')
   const [saving, setSaving] = useState(false)
+  const [loadError, setLoadError] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const { data } = await supabase.from('canned_jobs').select('*').order('category').order('name')
+      const shopId = await getShopId()
+      if (!shopId) { setJobs([]); setLoadError('No shop is associated with the signed-in user'); return }
+      const { data, error } = await supabase.from('canned_jobs').select('*').eq('shop_id', shopId).order('category').order('name')
+      if (error) throw error
       setJobs((data || []) as CannedJob[])
+      setLoadError('')
+    } catch (error) {
+      setLoadError('Canned jobs could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error'))
     } finally { setLoading(false) }
   }, [])
-
   useEffect(() => { load() }, [load])
 
   const calcTotal = (laborHours: number, laborRate: number, jobParts: CannedPart[]) => {
@@ -54,22 +60,35 @@ export default function CannedJobsPage() {
     if (!form.name) return alert('Job name is required')
     setSaving(true)
     try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
       const total = calcTotal(form.labor_hours || 0, form.labor_rate || 0, parts)
-      const data = { ...form, parts, total_price: total, active: form.active !== false, updated_at: new Date().toISOString() }
+      const data = { ...form, shop_id: shopId, parts, total_price: total, active: form.active !== false, updated_at: new Date().toISOString() }
       if (editing === 'new') {
-        await supabase.from('canned_jobs').insert({ ...data, created_at: new Date().toISOString() })
+        const { error } = await supabase.from('canned_jobs').insert({ ...data, created_at: new Date().toISOString() })
+        if (error) throw error
       } else if (editing) {
-        await supabase.from('canned_jobs').update(data).eq('id', editing)
+        const { error } = await supabase.from('canned_jobs').update(data).eq('id', editing).eq('shop_id', shopId)
+        if (error) throw error
       }
-      setEditing(null); setForm({}); setParts([]); load()
+      setEditing(null); setForm({}); setParts([]); await load()
+    } catch (error) {
+      alert('Canned job could not be saved: ' + (error instanceof Error ? error.message : 'Unknown error'))
     } finally { setSaving(false) }
   }
 
   const del = async () => {
     if (!editing || editing === 'new') return
     if (!confirm('Delete this canned job?')) return
-    await supabase.from('canned_jobs').delete().eq('id', editing)
-    setEditing(null); setForm({}); setParts([]); load()
+    try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const { error } = await supabase.from('canned_jobs').delete().eq('id', editing).eq('shop_id', shopId)
+      if (error) throw error
+      setEditing(null); setForm({}); setParts([]); await load()
+    } catch (error) {
+      alert('Canned job could not be deleted: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    }
   }
 
   const addPart = () => setParts(p => [...p, { name: '', part_number: '', cost: 0, qty: 1 }])
@@ -179,6 +198,10 @@ export default function CannedJobsPage() {
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
+      {loadError && <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red/30 bg-red/10 px-4 py-3 text-sm text-red">
+        <span>{loadError}</span>
+        <button className="btn btn-secondary btn-sm" onClick={load}>Retry</button>
+      </div>}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <div>
           <h1 className="text-2xl font-bold">Canned Jobs</h1>

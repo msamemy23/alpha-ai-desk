@@ -1,89 +1,123 @@
-/**
- * AI Chat History Persistence API
- * Saves and retrieves AI chat conversations to/from Supabase.
- * The ai/page.tsx currently uses localStorage only — this API provides
- * a Supabase-backed persistence layer so chat history survives across
- * devices and browser clears.
- *
- * POST: Save a chat session (array of messages + metadata)
- * GET:  Retrieve recent chat sessions
- */
 import { NextRequest, NextResponse } from 'next/server'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { getServiceClient } from '@/lib/supabase'
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+export const dynamic = 'force-dynamic'
 
-const headers = {
-  apikey: SUPABASE_KEY,
-  Authorization: `Bearer ${SUPABASE_KEY}`,
-  'Content-Type': 'application/json',
+type HistoryMessage = { role: 'user' | 'assistant' | 'browser'; content: string; [key: string]: unknown }
+type StoredHistoryMessage = HistoryMessage & { sequence: number }
+
+function normalizeMessages(value: unknown): HistoryMessage[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter((message): message is Record<string, unknown> => Boolean(message) && typeof message === 'object')
+    .map(message => ({
+      ...message,
+      role: (message.role === 'user' || message.role === 'browser' ? message.role : 'assistant') as HistoryMessage['role'],
+      content: typeof message.content === 'string' ? message.content.slice(0, 12000) : '',
+    }))
+    .filter(message => message.content || message.role === 'browser')
+    .slice(-60)
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
+
   try {
-    const { messages, preview } = await req.json()
-    if (!messages || !Array.isArray(messages) || messages.length < 2) {
+    const body = await req.json().catch(() => null)
+    const messages = normalizeMessages(body?.messages)
+    if (messages.length < 2) {
       return NextResponse.json({ ok: false, error: 'Need at least 2 messages' }, { status: 400 })
     }
+    const sessionId = typeof body?.sessionId === 'string' && /^[A-Za-z0-9._:-]{1,120}$/.test(body.sessionId)
+      ? body.sessionId
+      : crypto.randomUUID()
+    const db = getServiceClient()
 
-    const entry = {
-      id: Date.now().toString(),
-      date: new Date().toISOString(),
-      preview: preview || messages.find((m: { role: string; content: string }) => m.role === 'user')?.content?.slice(0, 60) || 'Conversation',
-      messages,
-    }
-
-    // Upsert into ai_chat_history — uses activities table as a fallback
-    // since we cannot create new Supabase tables per requirements.
-    // Store as an activity of type 'ai_chat' with the full messages in summary.
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/activities`, {
-      method: 'POST',
-      headers: { ...headers, Prefer: 'return=minimal' },
-      body: JSON.stringify({
-        type: 'ai_chat',
-        direction: 'internal',
-        summary: JSON.stringify(entry),
-        created_at: new Date().toISOString(),
-      }),
+    const { error: replaceError } = await db.rpc('replace_ai_chat_history', {
+      p_shop_id: auth.shopId,
+      p_user_id: auth.userId,
+      p_session_id: sessionId,
+      p_messages: messages,
     })
+    if (replaceError) throw replaceError
 
-    if (!r.ok) {
-      const errText = await r.text()
-      console.error('[ai-chat-history] save failed:', r.status, errText)
-      return NextResponse.json({ ok: false, error: `DB error: ${r.status}` }, { status: 500 })
-    }
-
-    return NextResponse.json({ ok: true, id: entry.id })
-  } catch (e: unknown) {
-    console.error('[ai-chat-history] error:', e)
-    return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 })
+    return NextResponse.json({
+      ok: true,
+      id: sessionId,
+      preview: messages.find(message => message.role === 'user')?.content.slice(0, 60) || 'Conversation',
+    })
+  } catch (e) {
+    console.error('[ai-chat-history] save failed:', e)
+    return NextResponse.json({ ok: false, error: 'Conversation could not be saved' }, { status: 500 })
   }
 }
 
+export async function DELETE(req: NextRequest) {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
+  const sessionId = req.nextUrl.searchParams.get('sessionId')
+  const deleteAll = req.nextUrl.searchParams.get('all') === 'true'
+  if (!deleteAll && (!sessionId || !/^[A-Za-z0-9._:-]{1,120}$/.test(sessionId))) {
+    return NextResponse.json({ ok: false, error: 'A valid sessionId or all=true is required' }, { status: 400 })
+  }
+  const db = getServiceClient()
+  let query = db.from('ai_chat_history').delete().eq('shop_id', auth.shopId).eq('user_id', auth.userId)
+  if (!deleteAll) query = query.eq('session_id', sessionId as string)
+  const { error } = await query
+  if (error) return NextResponse.json({ ok: false, error: 'Conversation could not be deleted' }, { status: 500 })
+  return NextResponse.json({ ok: true })
+}
+
 export async function GET(req: NextRequest) {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
+
   try {
-    const limit = parseInt(req.nextUrl.searchParams.get('limit') || '30')
+    const rawLimit = Number(req.nextUrl.searchParams.get('limit') || 30)
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.floor(rawLimit), 1), 30) : 30
+    const db = getServiceClient()
+    const { data: rows, error } = await db.from('ai_chat_history')
+      .select('session_id,role,content,created_at,sequence_no')
+      .eq('shop_id', auth.shopId)
+      .eq('user_id', auth.userId)
+      .order('created_at', { ascending: false })
+      .limit(limit * 60)
+    if (error) throw error
 
-    const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/activities?type=eq.ai_chat&order=created_at.desc&limit=${limit}`,
-      { headers },
-    )
-
-    if (!r.ok) {
-      return NextResponse.json({ ok: false, error: `DB error: ${r.status}` }, { status: 500 })
+    const sessions = new Map<string, { id: string; date: string; messages: StoredHistoryMessage[] }>()
+    for (const row of rows || []) {
+      const entry: { id: string; date: string; messages: StoredHistoryMessage[] } = sessions.get(row.session_id) || { id: row.session_id, date: row.created_at, messages: [] }
+      let message: HistoryMessage | undefined
+      try {
+        const parsed = JSON.parse(row.content)
+        message = normalizeMessages([parsed])[0]
+      } catch {
+        message = { role: row.role === 'user' ? 'user' : row.role === 'browser' ? 'browser' : 'assistant', content: row.content }
+      }
+      if (message) entry.messages.push({
+        ...message,
+        sequence: Number.isFinite(Number(row.sequence_no)) ? Number(row.sequence_no) : entry.messages.length + 1,
+      })
+      entry.date = row.created_at > entry.date ? row.created_at : entry.date
+      sessions.set(row.session_id, entry)
     }
 
-    const rows = await r.json()
-    const history = (rows || []).map((row: { summary: string; created_at: string }) => {
-      try {
-        return JSON.parse(row.summary)
-      } catch {
-        return null
-      }
-    }).filter(Boolean)
+    const history = [...sessions.values()]
+      .map(entry => ({
+        ...entry,
+        messages: entry.messages
+          .sort((a, b) => a.sequence - b.sequence)
+          .map(({ sequence: _sequence, ...message }) => message),
+        preview: entry.messages.find(message => message.role === 'user')?.content.slice(0, 60) || 'Conversation',
+      }))
+      .filter(entry => entry.messages.length >= 2)
+      .slice(0, limit)
 
     return NextResponse.json({ ok: true, history })
-  } catch (e: unknown) {
-    return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 })
+  } catch (e) {
+    console.error('[ai-chat-history] load failed:', e)
+    return NextResponse.json({ ok: false, error: 'Conversation history could not be loaded' }, { status: 500 })
   }
 }

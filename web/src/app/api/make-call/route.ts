@@ -1,36 +1,46 @@
 import { NextRequest, NextResponse } from 'next/server'
-
-const WEBHOOK_URL = 'https://alpha-ai-desk.vercel.app/api/telnyx-voice-webhook'
+import { getServiceClient } from '@/lib/supabase'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { createVoiceClientState } from '@/lib/voice-state'
 
 export async function POST(req: NextRequest) {
   try {
-    const { to, name, task, callerName } = await req.json()
-    if (!to) return NextResponse.json({ error: 'Missing to' }, { status: 400 })
+    const auth = await getAuthedShop()
+    if (!auth) return unauthorized()
+    const body = await req.json().catch(() => null)
+    const { to, name, task, callerName } = body || {}
+    if (typeof to !== 'string' || !to.trim()) return NextResponse.json({ error: 'Missing to' }, { status: 400 })
 
-    const apiKey = process.env.TELNYX_API_KEY!
-    const shopPhone = '+17136636979'
-    if (!apiKey) return NextResponse.json({ error: 'TELNYX_API_KEY not configured' }, { status: 500 })
+    const db = getServiceClient()
+    const { data: settings, error: settingsError } = await db.from('settings').select('telnyx_api_key,telnyx_phone_number,telnyx_connection_id').eq('shop_id', auth.shopId).maybeSingle()
+    if (settingsError) return NextResponse.json({ error: 'Shop calling settings could not be loaded' }, { status: 500 })
+    const apiKey = String(settings?.telnyx_api_key || '')
+    const shopPhone = String(settings?.telnyx_phone_number || '')
+    const connectionId = String(settings?.telnyx_connection_id || '')
+    const webhookUrl = `${process.env.NEXT_PUBLIC_APP_URL || req.nextUrl.origin}/api/telnyx-voice-webhook`
+    if (!apiKey || !shopPhone || !connectionId) return NextResponse.json({ error: 'Telnyx calling is not configured for this shop' }, { status: 503 })
 
     const digits = to.replace(/\D/g, '')
-    const e164 = digits.startsWith('1') ? '+' + digits : digits.length === 10 ? '+1' + digits : '+' + digits
+    if (![10, 11].includes(digits.length) || (digits.length === 11 && !digits.startsWith('1'))) return NextResponse.json({ error: 'Enter a valid US phone number' }, { status: 400 })
+    const e164 = digits.length === 11 ? '+' + digits : '+1' + digits
 
     // Build task — use passed task as-is
     // Empty/undefined task = personal call (user just wants to talk, no AI script)
     // Non-empty task = AI call (AI follows these instructions)
-    const callTask = task || ''
+    const callTask = typeof task === 'string' ? task.slice(0, 2000) : ''
 
     // Encode task in client_state so webhook knows what to do
-    const clientState = Buffer.from(JSON.stringify({ task: callTask, name: name || e164, callerName: callerName || '' })).toString('base64')
+    const clientState = createVoiceClientState({ shopId: auth.shopId, task: callTask, name: typeof name === 'string' ? name.slice(0, 160) : e164, callerName: typeof callerName === 'string' ? callerName.slice(0, 160) : '' })
 
     const res = await fetch('https://api.telnyx.com/v2/calls', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        connection_id: '2912878759822493204',
+        connection_id: connectionId,
         to: e164,
         from: shopPhone,
         client_state: clientState,
-        webhook_url: WEBHOOK_URL,
+        webhook_url: webhookUrl,
         webhook_url_method: 'POST',
         answering_machine_detection: 'disabled',
       }),
@@ -41,30 +51,24 @@ export async function POST(req: NextRequest) {
 
     const callId = data.data?.call_control_id
 
-    // Pre-create the row so it shows up in the UI immediately
-    await fetch(
-      `${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/ai_calls`,
-      {
-        method: 'POST',
-        headers: {
-          apikey: process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-          Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''}`,
-          'Content-Type': 'application/json',
-          Prefer: 'resolution=merge-duplicates',
-        },
-        body: JSON.stringify({
-          id: callId,
-          task: callTask,
-          status: 'calling',
-          greeted: false,
-          processing: false,
-          is_speaking: false,
-          script_stage: 0,
-          objection_count: 0,
-          started_at: Date.now(),
-        }),
-      }
-    )
+    // Pre-create the row so the UI can follow this call in the same shop.
+    const { error: callLogError } = await db.from('ai_calls').insert({
+      id: callId,
+      shop_id: auth.shopId,
+      task: callTask,
+      caller: e164,
+      status: 'calling',
+      greeted: false,
+      processing: false,
+      is_speaking: false,
+      script_stage: 0,
+      objection_count: 0,
+      started_at: Date.now(),
+    })
+    if (callLogError) {
+      console.error('Call started but could not be logged:', callLogError)
+      return NextResponse.json({ ok: true, callId, warning: 'Call started, but the call record could not be saved' }, { status: 207 })
+    }
 
     return NextResponse.json({ ok: true, callId })
   } catch (e: unknown) {

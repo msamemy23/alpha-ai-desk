@@ -13,6 +13,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
+import { getRouteShop, unauthorized } from '@/lib/api-auth'
 
 const GOOGLE_MAPS_KEY = process.env.GOOGLE_MAPS_API_KEY || ''
 const HUNTER_KEY = process.env.HUNTER_IO_API_KEY || ''
@@ -217,9 +218,8 @@ async function enrichOneLead(lead: any) {
 
   // Build DB update — only fill in fields that are currently blank
   const updateData: any = {
-    enrichment_data: JSON.stringify(enriched),
-    enriched_at: new Date().toISOString(),
-    enrichment_source: enriched.sources.join(',') || 'none',
+    apollo_data: JSON.stringify(enriched),
+    apollo_enriched_at: new Date().toISOString(),
   }
 
   // Phone: prefer Google Maps (most accurate for local businesses)
@@ -245,7 +245,7 @@ async function enrichOneLead(lead: any) {
   // Rating info (useful for competitive analysis)
   if (mapsResult?.rating) {
     updateData.google_rating = mapsResult.rating
-    updateData.google_review_count = mapsResult.review_count
+    updateData.google_reviews_count = mapsResult.review_count
   }
 
   // Owner name from Hunter
@@ -261,8 +261,10 @@ async function enrichOneLead(lead: any) {
 // ─── Route handler ───────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
-  try {
-    const { lead_id, bulk_lead_ids } = await req.json()
+  try {    const body = await req.json().catch(() => ({}))
+    const auth = await getRouteShop(req, body.shopId)
+    if (!auth) return unauthorized()
+    const { lead_id, bulk_lead_ids } = body
     const db = getServiceClient()
 
     // ── Bulk enrichment ──────────────────────────────────────────────────
@@ -271,14 +273,14 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Bulk limit is 50 leads per request to avoid rate limits' }, { status: 400 })
       }
 
-      const { data: leadsData } = await db.from('leads').select('*').in('id', bulk_lead_ids)
+      const { data: leadsData } = await db.from('leads').select('*').eq('shop_id', auth.shopId).in('id', bulk_lead_ids)
       if (!leadsData?.length) return NextResponse.json({ error: 'No leads found' }, { status: 404 })
 
       const results = []
       for (const lead of leadsData) {
         try {
           const { updateData, enriched } = await enrichOneLead(lead)
-          await db.from('leads').update(updateData).eq('id', lead.id)
+          await db.from('leads').update(updateData).eq('id', lead.id).eq('shop_id', auth.shopId)
           results.push({
             id: lead.id,
             name: lead.name,
@@ -295,13 +297,15 @@ export async function POST(req: NextRequest) {
         await delay(1200)
       }
 
-      await db.from('growth_activity').insert({
+      const { error: activityError } = await db.from('growth_activity').insert({
         action: 'bulk_enrich',
         target: `${results.length} leads`,
-        details: `Enriched via Google Maps + Hunter.io + Serper`,
+        details: 'Enriched via Google Maps + Hunter.io + Serper',
         status: 'complete',
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        shop_id: auth.shopId,
       })
+      if (activityError) throw activityError
 
       return NextResponse.json({
         success: true,
@@ -313,26 +317,28 @@ export async function POST(req: NextRequest) {
 
     // ── Single lead enrichment ────────────────────────────────────────────
     if (lead_id) {
-      const { data: lead } = await db.from('leads').select('*').eq('id', lead_id).single()
+      const { data: lead } = await db.from('leads').select('*').eq('id', lead_id).eq('shop_id', auth.shopId).single()
       if (!lead) return NextResponse.json({ error: 'Lead not found' }, { status: 404 })
 
       const { updateData, enriched } = await enrichOneLead(lead)
-      await db.from('leads').update(updateData).eq('id', lead_id)
+      await db.from('leads').update(updateData).eq('id', lead_id).eq('shop_id', auth.shopId)
 
-      await db.from('growth_activity').insert({
+      const { error: activityError } = await db.from('growth_activity').insert({
         action: 'lead_enrich',
         target: lead.name,
         details: `Enriched via ${enriched.sources.join(', ') || 'no data found'}`,
         status: 'complete',
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        shop_id: auth.shopId,
       })
+      if (activityError) throw activityError
 
       return NextResponse.json({
         success: true,
         contacts_found: enriched.contacts.length,
         sources_used: enriched.sources,
         enrichment_data: enriched,
-        updated_fields: Object.keys(updateData).filter(k => k !== 'enrichment_data' && k !== 'enriched_at'),
+        updated_fields: Object.keys(updateData).filter(k => k !== 'apollo_data' && k !== 'apollo_enriched_at'),
       })
     }
 

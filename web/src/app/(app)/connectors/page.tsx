@@ -1,6 +1,5 @@
 'use client'
 import { useEffect, useState, useCallback, Suspense } from 'react'
-import { supabase } from '@/lib/supabase'
 import { useSearchParams } from 'next/navigation'
 
 interface Connector {
@@ -71,24 +70,19 @@ function ConnectorsContent() {
   const loadConnectors = useCallback(async () => {
     setLoading(true)
     try {
-      const { data, error } = await supabase.from('connectors').select('*')
-      if (error) {
-        // Table might not exist yet — show instructions
-        console.error('connectors table error:', error)
-        setLoading(false)
-        return
+      const response = await fetch('/api/connectors', { cache: 'no-store' })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || payload.ok !== true) {
+        throw new Error(payload.error || 'Connectors could not be loaded')
       }
       const map: Record<string, Connector> = {}
-      for (const c of (data || [])) {
-        map[c.service] = c
-      }
+      for (const c of (payload.connectors || [])) map[c.service] = c
       setConnectors(map)
     } catch (e) {
       console.error(e)
     }
     setLoading(false)
   }, [])
-
   useEffect(() => {
     loadConnectors()
     // Check for OAuth callback params
@@ -112,21 +106,13 @@ function ConnectorsContent() {
   const handleDisconnect = async (service: string) => {
     setDisconnecting(service)
     try {
-      const { error } = await supabase
-        .from('connectors')
-        .update({
-          enabled: false,
-          access_token: null,
-          refresh_token: null,
-          token_expires_at: null,
-          page_id: null,
-          page_access_token: null,
-          metadata: {},
-          updated_at: new Date().toISOString(),
-        })
-        .eq('service', service)
-
-      if (error) throw error
+      const response = await fetch('/api/connectors/disconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service }),
+      })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok || result.ok !== true) throw new Error(result.error || 'Disconnect failed')
       showToast(`${SERVICE_INFO[service]?.name || service} disconnected`)
       await loadConnectors()
     } catch (e) {
@@ -134,7 +120,6 @@ function ConnectorsContent() {
     }
     setDisconnecting(null)
   }
-
   const getAccountName = (connector: Connector): string | null => {
     const meta = connector.metadata || {}
     if (meta.page_name) return meta.page_name as string
@@ -163,34 +148,11 @@ function ConnectorsContent() {
         </div>
       )}
 
-      {/* Table-not-found notice */}
+      {/* Empty state — connector rows are created by a successful OAuth flow. */}
       {!loading && Object.keys(connectors).length === 0 && (
-        <div className="mb-6 p-4 rounded-xl bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-sm">
-          <div className="font-semibold mb-2">⚠️ Connectors table not found in Supabase</div>
-          <p className="mb-2">Run this SQL in your Supabase dashboard (SQL Editor):</p>
-          <pre className="bg-black/30 rounded-lg p-3 text-xs overflow-x-auto whitespace-pre-wrap text-yellow-200">{`CREATE TABLE IF NOT EXISTS connectors (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  service TEXT NOT NULL UNIQUE,
-  enabled BOOLEAN DEFAULT false,
-  access_token TEXT,
-  refresh_token TEXT,
-  token_expires_at TIMESTAMPTZ,
-  page_id TEXT,
-  page_access_token TEXT,
-  metadata JSONB DEFAULT '{}',
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-ALTER TABLE connectors DISABLE ROW LEVEL SECURITY;
-INSERT INTO connectors (service) VALUES
-  ('facebook'),('instagram'),('google_business'),('google_calendar')
-ON CONFLICT (service) DO NOTHING;`}</pre>
-          <button
-            className="mt-3 px-4 py-2 bg-yellow-500/20 hover:bg-yellow-500/30 rounded-lg text-xs font-semibold transition-colors"
-            onClick={loadConnectors}
-          >
-            Retry
-          </button>
+        <div className="mb-6 p-4 rounded-xl bg-blue-500/10 border border-blue-500/30 text-blue-300 text-sm">
+          <div className="font-semibold mb-1">No connectors are connected yet.</div>
+          <p>Use the Connect buttons below. A connector record appears after the OAuth flow succeeds.</p>
         </div>
       )}
 
