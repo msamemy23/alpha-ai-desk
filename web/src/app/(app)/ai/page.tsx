@@ -463,8 +463,13 @@ GOOGLE CALENDAR CREATE EVENT:
 STAFF MANAGEMENT - Add, remove, or list shop employees. Use when user says "add employee", "hire someone", "remove staff", "fire", "who works here", "list the team":
 Add employee:    {"tool":"action","action":"addStaff","payload":{"name":"Carlos","role":"technician"}}
 Remove employee: {"tool":"action","action":"removeStaff","payload":{"name":"Carlos"}}
-List all staff:  {"tool":"action","action":"listStaff","payload":{}}
+List active staff (inactive records are excluded): {"tool":"action","action":"listStaff","payload":{}}
 Roles available: technician | employee | manager | owner
+
+INVENTORY LOOKUP - Read the shop's inventory items or search by item name:
+{"tool":"action","action":"getInventory","payload":{}}
+Search: {"tool":"action","action":"getInventory","payload":{"query":"brake"}}
+This returns at most 50 matching items. Report the returned count, not an unverified total when the limit is reached. It is a read-only action.
 
 TIME CLOCK REPORT - Get attendance and hours worked for any date range or specific employee. Use when user asks "how many hours did X work", "show me attendance", "time report", "who clocked in today", "payroll hours":
 All staff:       {"tool":"action","action":"getTimeclockReport","payload":{"startDate":"2026-03-01","endDate":"2026-03-26"}}
@@ -476,9 +481,10 @@ Create: {"tool":"action","action":"createAppointment","payload":{"customer_name"
 Update: {"tool":"action","action":"updateAppointment","payload":{"id":"123","status":"Confirmed","scheduled_time":"11:00"}}
 Delete: {"tool":"action","action":"deleteAppointment","payload":{"id":"123"}}
 
-DOCUMENTS - Update existing estimates or invoices. Use when user says "mark as paid", "update the invoice", "change the status", "add notes to the estimate", "close this job out":
-{"tool":"action","action":"updateDocument","payload":{"id":"uuid-here","status":"Paid","notes":"Customer paid cash"}}
-Updatable fields: status | notes | amount | tax | warranty_type | warranty_months | warranty_mileage
+DOCUMENTS - Update notes or warranty terms on existing estimates or invoices:
+{"tool":"action","action":"updateDocument","payload":{"id":"uuid-here","notes":"Customer requested a written warranty"}}
+Updatable fields include notes | warranty_type | warranty_months | warranty_mileage.
+PAYMENTS - Paid and Partial statuses are controlled by the payment ledger. Never set them through updateDocument, and never claim a payment was recorded from a note. Open the invoices screen so the user can use its payment form: {"tool":"navigate","view":"invoices"}. Say that payment recording is still pending until the payment form confirms it.
 
 AUTOMATION CONTROL - Turn built-in automations on/off, run them now, or check status. Use when user says "turn on review requests", "enable service reminders", "pause follow-ups", "run win-back campaign now", "what automations are running":
 Toggle on:  {"tool":"automationControl","action":"toggle","id":"review_requests","enabled":true}
