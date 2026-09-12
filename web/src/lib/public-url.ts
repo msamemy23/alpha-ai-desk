@@ -183,7 +183,7 @@ export async function fetchPublicUrl(
           if (Array.isArray(value)) responseHeaders.set(key, value.join(', '))
           else if (value !== undefined) responseHeaders.set(key, value)
         }
-        resolve(new Response(Buffer.concat(chunks), {
+        resolve(new Response(requestOptions.method === 'HEAD' || [204, 205, 304].includes(response.statusCode || 0) ? null : Buffer.concat(chunks), {
           status: response.statusCode || 502,
           statusText: response.statusMessage || '',
           headers: responseHeaders,

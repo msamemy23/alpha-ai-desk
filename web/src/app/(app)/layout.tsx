@@ -214,7 +214,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const shopPhone = shopProfile?.phone || '(713) 663-6979'
 
   return (
-    <div className="flex h-screen overflow-hidden bg-bg-base text-text-primary">
+    <div className="flex h-dvh overflow-hidden bg-bg-base text-text-primary">
       {sidebarOpen && (
         <div className="fixed inset-0 bg-black/70 z-40 backdrop-blur-sm lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
@@ -291,7 +291,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         </div>
       </aside>
 
-      <div className="flex-1 flex flex-col overflow-hidden w-full">
+      <div className="min-h-0 min-w-0 flex-1 flex flex-col overflow-hidden w-full">
         <div className="h-16 border-b border-border/80 flex items-center justify-between px-3 sm:px-5 shrink-0 bg-bg-card/90 backdrop-blur">
           <div className="flex items-center gap-3 min-w-0">
             <button className="grid h-10 w-10 place-items-center rounded-lg border border-border bg-bg-hover/60 hover:border-blue/40 transition-colors lg:hidden" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
@@ -369,7 +369,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
             </button>
           </div>
         </div>
-        <main className="flex-1 overflow-y-auto bg-bg-base">
+        <main className={`min-h-0 flex-1 bg-bg-base ${pathname === '/ai' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
           {children}
           <PhoneWidget />
         </main>

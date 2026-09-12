@@ -2,7 +2,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { supabase, updateSettings, getSettings, getShopProfile, getShopId } from '@/lib/supabase'
 import { addOpenAIOAuthHeaders } from '@/lib/openai-oauth-client'
-import { useSignInWithChatGPT } from '@openai-oauth/react'
+import ChatGPTConnection from '@/components/ChatGPTConnection'
 
 async function getAuthJsonHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -13,41 +13,6 @@ async function getAuthJsonHeaders(): Promise<Record<string, string>> {
   return addOpenAIOAuthHeaders(headers)
 }
 
-function ChatGPTConnection() {
-  const auth = useSignInWithChatGPT()
-
-  if (auth.status === 'checking' || auth.status === 'starting' || auth.status === 'redirecting') {
-    return <div className="text-sm text-text-muted">Checking ChatGPT connection…</div>
-  }
-
-  if (auth.status === 'signed-in') {
-    return (
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="text-sm text-green-300">✓ ChatGPT connected in this browser</span>
-        <button type="button" className="btn btn-secondary btn-sm" onClick={() => void auth.logout()}>Disconnect</button>
-      </div>
-    )
-  }
-
-  if (auth.status === 'needs-extension') {
-    return (
-      <div className="space-y-3">
-        <p className="text-sm text-amber-200">Hosted browser sign-in needs the Sign in with ChatGPT extension.</p>
-        <div className="flex flex-wrap gap-2">
-          <a className="btn btn-secondary btn-sm" href={auth.installUrl} target="_blank" rel="noreferrer">Install extension</a>
-          <button type="button" className="btn btn-primary btn-sm" onClick={() => void auth.login()}>Try again</button>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-3">
-      <button type="button" className="btn btn-primary btn-sm" onClick={() => void auth.login()}>Continue with ChatGPT</button>
-      {auth.status === 'error' && <p className="text-sm text-red-300" role="alert">{auth.error.message}</p>}
-    </div>
-  )
-}
 import {
   AI_BASE_URLS,
   DEEPSEEK_PRO_OPENROUTER_MODEL,
@@ -248,7 +213,7 @@ export default function SettingsPage() {
           </div>
           <div className="rounded-lg border border-emerald-400/30 bg-emerald-400/10 p-4 space-y-3">
             <div className="text-sm font-bold">Use your ChatGPT plan for Alpha AI</div>
-            <p className="text-xs text-text-muted">Connect your ChatGPT account using the third-party openai-oauth adapter. Hosted sign-in requires its Chrome or Firefox extension and does not work inside the embedded browser. This is separate from Alpha sign-in; your connection stays in this browser and your plan's limits still apply. It is not an official OpenAI API integration.</p>
+            <p className="text-xs text-text-muted">Approve a one-time code on OpenAI’s sign-in page. No extension is needed. Your connection is encrypted, stored on Alpha’s server, and used only for your account’s chat requests. This third-party integration uses your plan’s Codex access and limits; it is separate from Alpha sign-in and the billed OpenAI API. Disconnect here at any time.</p>
             <ChatGPTConnection />
           </div>
           <div><label className="form-label">AI API Key</label><input className="form-input font-mono" type="password" value={settings.ai_api_key as string||''} onChange={sf('ai_api_key')} placeholder="sk-or-v1-... or sk-..." /></div>

@@ -1,12 +1,13 @@
 type DecimalParts = { negative: boolean; digits: bigint; scale: number }
 
 function parseDecimalText(value: string): DecimalParts | null {
+  if (value.length > 128) return null
   const match = value.trim().match(/^(-?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i)
   if (!match) return null
 
   const fraction = match[3] || ''
   const exponent = Number(match[4] || 0)
-  if (!Number.isSafeInteger(exponent)) return null
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 30) return null
   let digits = BigInt(`${match[2]}${fraction}`)
   let scale = fraction.length - exponent
   if (scale < 0) {

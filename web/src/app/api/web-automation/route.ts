@@ -4,9 +4,11 @@ import { getServiceClient } from '@/lib/supabase'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 import { assertPublicUrl, fetchPublicUrl, tryPublicUrl } from '@/lib/public-url'
+import { runHostedBrowser, validateBrowserActions } from '@/lib/hosted-browser'
+import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 30
+export const maxDuration = 60
 
 type ParsedPage = { text: string; links: string[]; title: string; error?: string }
 
@@ -107,131 +109,6 @@ async function aiAnalyze(prompt: string, settings: AutomationSettings = {}): Pro
   }
 }
 
-interface BrowserAction {
-  type: 'navigate' | 'click' | 'fill' | 'select' | 'wait' | 'submit'
-  selector?: string
-  value?: string
-  url?: string
-  ms?: number
-}
-
-interface BrowserStep {
-  action: string
-  screenshot: string
-  url: string
-  title: string
-}
-
-interface BrowserResult {
-  success: boolean
-  error?: string
-  screenshot?: string
-  steps?: BrowserStep[]
-  text?: string
-  title?: string
-  requiresSetup?: boolean
-}
-
-// This textual guard runs inside Browserless for subresources and redirects.
-// The initial URL and every explicit navigate action are also DNS-validated on
-// our server before the remote browser is allowed to run.
-function hasBlockedBrowserHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/\.$/, '')
-  return !host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.test') || host === '0.0.0.0' || host === '::1' || host === '[::1]' || host.includes(':') || /^(0|10|127)\./.test(host) || /^169\.254\./.test(host) || /^192\.0\.2\./.test(host) || /^192\.168\./.test(host) || /^198\.51\.100\./.test(host) || /^203\.0\.113\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host)
-}
-
-// -- Browserless full automation --
-async function runBrowserTask(task: string, url: string, actions: BrowserAction[], browserlessKey: string): Promise<BrowserResult> {
-  if (!browserlessKey) {
-    return { success: false, error: 'Full browser automation is not configured for this shop. Add a Browserless token in Settings.', requiresSetup: true }
-  }
-  const js = (value: unknown) => JSON.stringify(String(value ?? ''))
-  const actionsCode = actions.map((a) => {
-    let actionCode = ''
-    let actionLabel = ''
-    const selector = js(a.selector || '')
-    const value = js(a.value || '')
-    const actionUrl = js(a.url || '')
-    const waitMs = Number.isFinite(Number(a.ms)) ? Math.min(Math.max(Math.floor(Number(a.ms)), 0), 15000) : 1000
-    if (a.type === 'navigate') { actionCode = `await page.goto(${actionUrl}, {waitUntil:'networkidle2',timeout:15000});`; actionLabel = `Navigate to ${String(a.url || '')}` }
-    else if (a.type === 'click') { actionCode = `await page.click(${selector});await page.waitForTimeout(800);`; actionLabel = `Click ${String(a.selector || '')}` }
-    else if (a.type === 'fill') { actionCode = `await page.click(${selector});await page.evaluate((el, value) => { el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); }, await page.$(${selector}), ${value});`; actionLabel = `Fill ${String(a.selector || '')}` }
-    else if (a.type === 'select') { actionCode = `await page.select(${selector}, ${value});`; actionLabel = `Select ${String(a.value || '')}` }
-    else if (a.type === 'wait') { actionCode = `await page.waitForTimeout(${waitMs});`; actionLabel = `Wait ${waitMs}ms` }
-    else if (a.type === 'submit') { actionCode = `await page.click(${selector});await page.waitForTimeout(2000);`; actionLabel = 'Submit form' }
-    if (!actionCode) return ''
-    const successLabel = JSON.stringify(actionLabel)
-    const failureLabel = JSON.stringify(`Failed: ${actionLabel}`)
-    return `
-      if (halted) break;
-      try {
-        ${actionCode}
-        steps.push({action:${successLabel},screenshot:(await page.screenshot({type:'png',fullPage:false})).toString('base64'),url:page.url(),title:await page.title()});
-      } catch(stepErr) {
-        stepFailures += 1;
-        halted = true;
-        steps.push({action:${failureLabel}+' — '+String(stepErr?.message || stepErr),screenshot:'',url:page.url(),title:await page.title()});
-      }`
-  }).join('\n    ')
-
-  const blockedHostFunction = hasBlockedBrowserHost.toString()
-  const script = `
-    const browser = await puppeteer.launch();
-    const page = await browser.newPage();
-    await page.setViewport({width:1280,height:800});
-    const hasBlockedBrowserHost = ${blockedHostFunction};
-    await page.setRequestInterception(true);
-    page.on('request', request => {
-      try {
-        const requested = new URL(request.url());
-        if (!['http:', 'https:'].includes(requested.protocol) || hasBlockedBrowserHost(requested.hostname)) {
-          request.abort();
-        } else {
-          request.continue();
-        }
-      } catch (_) {
-        request.abort();
-      }
-    });
-    const steps = [];
-    let stepFailures = 0;
-    let halted = false;
-    try {
-      await page.goto(${JSON.stringify(url)}, {waitUntil:'networkidle2',timeout:15000});
-      steps.push({action:'Opened page',screenshot:(await page.screenshot({type:'png',fullPage:false})).toString('base64'),url:page.url(),title:await page.title()});
-      ${actionsCode}
-      const text = await page.evaluate(() => document.body.innerText.slice(0,3000));
-      const finalTitle = await page.title();
-      await browser.close();
-      const lastStep = steps[steps.length-1];
-      return {
-        steps,
-        screenshot:lastStep?lastStep.screenshot:'',
-        text,
-        title:finalTitle,
-        success: stepFailures === 0,
-        ...(stepFailures > 0 ? {error: String(stepFailures) + ' browser step(s) failed'} : {}),
-      };
-    } catch(e) {
-      try { steps.push({action:'Error: '+e.message,screenshot:(await page.screenshot({type:'png',fullPage:false})).toString('base64'),url:page.url(),title:await page.title()}); } catch(_){}
-      await browser.close();
-      return {success:false, error:e.message, steps};
-    }
-  `
-  try {
-    const r = await fetch(`https://production-sfo.browserless.io/function?token=${browserlessKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: script, context: {} }),
-      signal: AbortSignal.timeout(25000),
-    })
-    if (!r.ok) return { success: false, error: `Browserless returned ${r.status}` }
-    const result = await r.json()
-    return { success: result.success !== false, ...result }
-  } catch (e) {
-    return { success: false, error: (e as Error).message }
-  }
-}
 
 // -- Log automation run --
 async function logRun(shopId: string, type: string, task: string, result: string, success: boolean) {
@@ -246,6 +123,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null)
     const auth = await getRouteShop(req, body?.shopId)
     if (!auth) return unauthorized()
+    if (!checkRateLimit(rateLimitKey('web-browser', auth.userId, auth.shopId), 12, 60_000).ok) return NextResponse.json({ ok: false, error: 'Browser request limit reached. Try again in a minute.' }, { status: 429 })
     const { data: settings, error: settingsError } = await getServiceClient()
       .from('settings')
       .select('browserless_token,ai_api_key,ai_base_url,ai_model')
@@ -258,7 +136,12 @@ export async function POST(req: NextRequest) {
     const task = typeof body?.task === 'string' ? body.task.trim().slice(0, 4000) : ''
     const url = typeof body?.url === 'string' ? body.url.trim() : ''
     const type = typeof body?.type === 'string' ? body.type : 'scrape'
-    const actions = Array.isArray(body?.actions) ? body.actions.slice(0, 20) : []
+    const actions = body?.actions ?? []
+    if (['browser', 'browse', 'fill_form', 'click'].includes(type)) {
+      try { validateBrowserActions(actions) } catch (error) {
+        return NextResponse.json({ ok: false, error: (error as Error).message }, { status: 400 })
+      }
+    }
     const query = typeof body?.query === 'string' ? body.query.trim().slice(0, 500) : ''
     const validateUrl = async (value: string) => {
       if (!value) return 'URL required'
@@ -273,7 +156,7 @@ export async function POST(req: NextRequest) {
       const urlError = await validateUrl(url)
       if (urlError) return NextResponse.json({ ok: false, error: urlError }, { status: 400 })
     }
-    for (const action of actions) {
+    for (const action of (Array.isArray(actions) ? actions : [])) {
       if (action && action.type === 'navigate') {
         const actionError = await validateUrl(typeof action.url === 'string' ? action.url.trim() : '')
         if (actionError) return NextResponse.json({ ok: false, error: `Navigate action rejected: ${actionError}` }, { status: 400 })
@@ -406,19 +289,14 @@ export async function POST(req: NextRequest) {
     }
 
     // -- FULL BROWSER --
-    if (type === 'browser' || type === 'fill_form' || type === 'click') {
+    if (type === 'browser' || type === 'browse' || type === 'fill_form' || type === 'click') {
       if (!url) return NextResponse.json({ ok: false, error: 'URL required' }, { status: 400 })
-      if (!['browser', 'click'].includes(type) && type !== 'fill_form') return NextResponse.json({ ok: false, error: 'Unsupported browser action' }, { status: 400 })
-      if (!body?.approval || body.approval !== 'confirm') {
+      if (actions.length > 0 && body?.approval !== 'confirm') {
         return NextResponse.json({ ok: false, approvalRequired: true, error: 'Browser actions require explicit approval' }, { status: 409 })
       }
-      const result = await runBrowserTask(task, url, actions, typeof shopSettings.browserless_token === 'string' ? shopSettings.browserless_token.trim() : '')
-      let analysis = ''
-      if (result.success && result.text && task) {
-        analysis = await aiAnalyze(`Task was: ${task}\n\nPage after automation:\n${result.text}\n\nDid the task succeed?`, shopSettings)
-      }
-      await log('browser', task, result.error || analysis, result.success)
-      return NextResponse.json({ ok: result.success, type: 'browser', ...result, analysis })
+      const result = await runHostedBrowser(url, actions)
+      await log('browser', task || url, result.error || 'Browser steps completed; see page evidence', result.success)
+      return NextResponse.json({ ok: result.success, type: 'browser', ...result }, { status: result.success ? 200 : 502 })
     }
 
     // -- SMART FILL --
@@ -441,13 +319,6 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   const auth = await getRouteShop(req, new URL(req.url).searchParams.get('shop_id'))
   if (!auth) return unauthorized()
-  const { data: settings } = await getServiceClient()
-    .from('settings')
-    .select('browserless_token')
-    .eq('shop_id', auth.shopId)
-    .limit(1)
-    .maybeSingle()
-  const hasBrowserless = Boolean(settings?.browserless_token)
   const hasSerper = !!process.env.SERPER_API_KEY
   return NextResponse.json({
     ok: true,
@@ -457,7 +328,7 @@ export async function GET(req: NextRequest) {
       search: { available: hasSerper, description: 'Web search via Serper' },
       parts_price: { available: hasSerper, description: 'Search auto parts prices' },
       monitor_competitor: { available: true, description: 'Scrape and analyze competitor websites' },
-      browser: { available: hasBrowserless, description: 'Full browser automation' },
+      browser: { available: true, description: 'Alpha-hosted isolated public browser: navigation, reading and approved form preparation; submissions need handoff' },
       smart_fill: { available: true, description: 'AI analyzes form structure' },
     }
   })

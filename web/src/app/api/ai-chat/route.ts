@@ -10,7 +10,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getAuthedShop, hasInternalApiSecret } from '@/lib/api-auth'
 import { AI_BASE_URLS, isOpenRouterBaseUrl, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
-import { chatGptModel, fetchOpenAIChatCompletion, getOpenAIOAuthTransport } from '@/lib/openai-oauth-server'
+import { chatGptModel, fetchOpenAIChatCompletion } from '@/lib/openai-oauth-server'
+import { getUserChatGptTransport } from '@/lib/chatgpt-connection'
 import { verifyReadClaims, unverifiedReadMessage } from '@/lib/ai/read-verification'
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://alpha-ai-desk.vercel.app'
@@ -207,7 +208,7 @@ export async function POST(req: NextRequest) {
     }
 
     const settings = await getSettings(caller.shopId)
-    const chatGptTransport = getOpenAIOAuthTransport(req)
+    const chatGptTransport = await getUserChatGptTransport(caller)
     const apiKey = typeof settings.ai_api_key === 'string' ? settings.ai_api_key.trim() : ''
     const baseUrl = normalizeAiBaseUrl(settings.ai_base_url || AI_BASE_URLS.OPENROUTER)
     const model = chatGptTransport ? chatGptModel(settings.ai_model) : normalizeAiModel(settings.ai_model, baseUrl)

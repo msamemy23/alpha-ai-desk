@@ -13,6 +13,7 @@
     "@openai-oauth/core": "2.0.0",
     "@openai-oauth/react": "2.0.0",
     "@openai-oauth/web": "2.0.0",
+    "@sparticuz/chromium": "152.0.0",
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.43.5",
     "@telnyx/react-client": "^1.0.2",
@@ -20,7 +21,7 @@
     "@vercel/functions": "^3.4.3",
     "next": "^16.2.9",
     "nodemailer": "^9.0.0",
-    "puppeteer-core": "^23.5.3",
+    "puppeteer-core": "^25.10.0",
     "react": "^18",
     "react-dom": "^18",
     "resend": "^3.3.0"

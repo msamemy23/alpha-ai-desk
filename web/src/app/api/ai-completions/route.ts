@@ -3,7 +3,8 @@ import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
 import { AI_BASE_URLS, normalizeAiModel } from '@/lib/ai-config'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
-import { chatGptModel, fetchOpenAIChatCompletion, getOpenAIOAuthTransport } from '@/lib/openai-oauth-server'
+import { chatGptModel, fetchOpenAIChatCompletion } from '@/lib/openai-oauth-server'
+import { getUserChatGptTransport } from '@/lib/chatgpt-connection'
 
 export const dynamic = 'force-dynamic'
 
@@ -48,7 +49,7 @@ export async function POST(req: NextRequest) {
       return error('AI request has too many messages', 400)
     }
 
-    const chatGptTransport = getOpenAIOAuthTransport(req)
+    const chatGptTransport = await getUserChatGptTransport(auth)
     if (chatGptTransport) {
       const completion = await fetchOpenAIChatCompletion(chatGptTransport, {
         model: chatGptModel(body.model),
