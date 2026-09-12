@@ -11,7 +11,6 @@ import { isSmsOptedOut } from '@/lib/sms-consent'
 import { nonNegativeMoney } from '@/lib/document-money'
 
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
-function fail(error: string, status = 400) { return NextResponse.json({ ok: false, error }, { status }) }
 
 const mutatingActions = new Set([
   'createCustomer', 'createJob', 'createInvoice', 'updateJobStatus', 'updateCustomer',
@@ -28,6 +27,11 @@ function pickFields(payload: Record<string, unknown>, allowed: readonly string[]
 }
 
 export async function POST(req: NextRequest) {
+  let failureMessage: string | null = null
+  const fail = (error: string, status = 400) => {
+    failureMessage = error
+    return NextResponse.json({ ok: false, error }, { status })
+  }
   const sb = getServiceClient()
   const body = await req.json().catch(() => null) as { action?: unknown; payload?: unknown; shopId?: unknown } | null
   const sessionAuth = await getAuthedShop()
@@ -68,6 +72,9 @@ export async function POST(req: NextRequest) {
   let operationId: string | null = null
   let operationFinalized = false
   let mutationCommitted = false
+  let readAuditAttempted = false
+  // Reads need a new audit entry on each execution, not one per payload hash.
+  const readAuditKey = `${shopId}:read:${randomUUID()}`
   if (isMutation && req.headers.get('x-ai-approval') !== 'confirm') {
     return NextResponse.json({
       ok: false,
@@ -184,6 +191,15 @@ export async function POST(req: NextRequest) {
         updated_at: new Date().toISOString(),
       }).eq('id', operationId).eq('shop_id', shopId).eq('status', 'succeeded')
       if (auditStateError) return fail('Action completed, but its audit state could not be recorded', 502)
+      if (auditResult.pending) return NextResponse.json({ ok: true, data, auditPending: true })
+    } else {
+      readAuditAttempted = true
+      const auditResult = await writeAuditLog({
+        shopId, userId: caller.userId, action: `ai.${action}`,
+        permission: 'read', approved: true, idempotencyKey: readAuditKey,
+        metadata: { payload: safePayload, result: data, success: true },
+      })
+      if (!auditResult.ok) return fail('The data was read, but its audit record could not be saved', 502)
       if (auditResult.pending) return NextResponse.json({ ok: true, data, auditPending: true })
     }
     return ok(data)
@@ -370,7 +386,7 @@ export async function POST(req: NextRequest) {
           jobs = jRes.data || []
           docs = dRes.data || []
         }
-        return ok({ jobs, documents: docs, messages: msgs })
+        return await auditedOk({ jobs, documents: docs, messages: msgs })
       }
 
 
@@ -443,7 +459,7 @@ export async function POST(req: NextRequest) {
             return acc
           }, {} as Record<string, Record<string, unknown>>)
 
-        return ok({
+        return await auditedOk({
           customers: [...enriched, ...Object.values(jobOnlyCustomers)],
           documents: allDocs,
           jobs: allJobs,
@@ -468,7 +484,7 @@ export async function POST(req: NextRequest) {
         const jobs = jobsRes.data || []
         const docs = docsRes.data || []
 
-        return ok({
+        return await auditedOk({
           today,
           totalCustomers: custRes.count || 0,
           unreadMessages: msgsRes.count || 0,
@@ -502,7 +518,7 @@ export async function POST(req: NextRequest) {
         const res = await fetch(searchUrl, { headers: searchHeaders, signal: AbortSignal.timeout(20000) })
         const data = await res.json().catch(() => ({}))
         if (!res.ok || data.ok === false) return fail(data.error || `Search returned ${res.status}`, 502)
-        return ok(data)
+        return await auditedOk(data)
       }
 
       // ── Send Estimate/Invoice via Email ────────────────────
@@ -634,7 +650,7 @@ export async function POST(req: NextRequest) {
       case 'listStaff': {
         const { data, error } = await sb.from('staff').select('*').eq('shop_id', shopId).eq('active', true).order('name')
         if (error) return fail(error.message, 500)
-        return ok({ staff: data || [] })
+        return await auditedOk({ staff: data || [] })
       }
 
       // ── Update Document ──────────────────────────────────────
@@ -703,7 +719,7 @@ export async function POST(req: NextRequest) {
           grouped[n].entries.push(e)
           grouped[n].totalHours += (e.hours_worked as number) || 0
         }
-        return ok({ entries, grouped: Object.values(grouped), startDate: start, endDate: end })
+        return await auditedOk({ entries, grouped: Object.values(grouped), startDate: start, endDate: end })
       }
 
       // ── Delete Appointment ───────────────────────────────────
@@ -743,7 +759,7 @@ export async function POST(req: NextRequest) {
         if (q) dbQuery = dbQuery.ilike('name', `%${String(q)}%`)
         const { data, error } = await dbQuery.limit(50)
         if (error) return fail(error.message, 500)
-        return ok({ inventory: data || [] })
+        return await auditedOk({ inventory: data || [] })
       }
 
       // ── Update Inventory ─────────────────────────────────────
@@ -768,12 +784,20 @@ export async function POST(req: NextRequest) {
     const message = err instanceof Error ? err.message : 'Unknown error'
     return fail(message, 500)
   } finally {
+    if (!isMutation && failureMessage && !readAuditAttempted) {
+      const auditResult = await writeAuditLog({
+        shopId, userId: caller.userId, action: `ai.${action}`,
+        permission: 'read', approved: true, idempotencyKey: readAuditKey,
+        metadata: { payload: safePayload, error: failureMessage, success: false },
+      })
+      if (!auditResult.ok) console.error('[ai-action] read failure audit could not be saved')
+    }
     if (isMutation && operationId && !operationFinalized) {
       const { error } = await sb.from('ai_action_operations').update({
         status: mutationCommitted ? 'unknown' : 'failed',
         error: mutationCommitted
-          ? 'AI action business write completed, but its durable result is uncertain; reconcile before retrying'
-          : 'AI action did not complete',
+          ? `AI action outcome is uncertain; reconcile before retrying. ${failureMessage || 'Durable result unavailable'}`
+          : failureMessage || 'AI action did not complete',
         lease_expires_at: null,
         updated_at: new Date().toISOString(),
       }).eq('id', operationId).eq('shop_id', shopId).eq('status', 'running')
