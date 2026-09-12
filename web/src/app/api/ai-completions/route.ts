@@ -48,6 +48,9 @@ export async function POST(req: NextRequest) {
     if (body.messages.length > 40) {
       return error('AI request has too many messages', 400)
     }
+    if (body.messages.some((message: { role?: unknown }) => !message || !['system', 'developer', 'user', 'assistant', 'tool'].includes(String(message.role)))) {
+      return error('Chat contains an unsupported message type. Reload the page and try again.', 400)
+    }
 
     const chatGptTransport = await getUserChatGptTransport(auth)
     if (chatGptTransport) {

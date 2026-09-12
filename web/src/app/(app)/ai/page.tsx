@@ -2,6 +2,7 @@
 import { useEffect, useState, useRef, useCallback, type MouseEvent as ReactMouseEvent } from 'react'
 import { getShopId, supabase } from '@/lib/supabase'
 import { addOpenAIOAuthHeaders } from '@/lib/openai-oauth-client'
+import { toModelMessages } from '@/lib/ai/model-messages'
 import { AGENTS, SKILLS } from '@/lib/ai/capabilities'
 import { classifyRequest, type RouteDecision } from '@/lib/ai/router'
 import { normalizeDocumentDraft } from '@/lib/ai/document-draft'
@@ -2029,7 +2030,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let lastSearchMedia: {images: any[], videos: any[]} | null = null
-    const agentMessages: {role: string; content: string}[] = history.map(m => ({ role: m.role, content: m.content }))
+    const agentMessages: {role: string; content: string}[] = toModelMessages(history)
 
     for (let step = 0; step < 10; step++) {
       const repairOnlyContext = repairOnlyMode

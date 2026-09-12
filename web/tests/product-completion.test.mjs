@@ -16,6 +16,21 @@ function load(path, imports = {}, globals = {}) {
   return module.exports
 }
 const sealed = load('../src/lib/private-state.ts', { 'node:crypto': crypto })
+const modelMessages = load('../src/lib/ai/model-messages.ts')
+
+test('browser and document follow-ups use valid provider roles and retain context', () => {
+  const messages = modelMessages.toModelMessages([
+    { role: 'user', content: 'Open the page' },
+    { role: 'browser', content: '', browserSteps: [{ action: 'Opened', title: 'Example Domain', url: 'https://example.com' }] },
+    { role: 'assistant', content: '', html: '<div>Invoice $280.00, no tax</div>' },
+    { role: 'user', content: 'Click its link' },
+  ])
+  assert.equal(messages.length, 4)
+  assert.ok(messages.every(message => ['user', 'assistant'].includes(message.role)))
+  assert.match(messages[1].content, /Example Domain/)
+  assert.match(messages[2].content, /Invoice \$280.00/)
+  assert.doesNotMatch(messages[2].content, /<div>/)
+})
 
 test('private credentials are encrypted, randomized, tamper-proof and bound to shop/user', () => {
   const first = sealed.sealPrivateState({ refreshToken: 'private-token' }, 'shop-a:user-a')
