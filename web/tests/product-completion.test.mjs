@@ -155,6 +155,7 @@ test('chat reserves the viewport for messages, keeps controls bounded, and saves
   assert.match(chat, /_request_id: proposalId/)
   assert.match(chat, /element.disabled = saved/)
   assert.match(chat, /typeof parsed.actions === 'string'/, 'browser actions arrays must never be renamed/deleted as a typo correction')
+  assert.match(chat, /if \(!loading && !confirmingAction && messages.length > 1\) saveToHistory\(messages\)/, 'settled approval results and browser evidence must persist without another model turn')
   const history = read('../src/app/api/ai-chat-history/route.ts')
   const normalize = history.match(/function normalizeMessages\(value: unknown\): HistoryMessage\[\] \{([\s\S]*?)\n\}/)[1]
   const js = ts.transpileModule(`function normalizeMessages(value) {${normalize}}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
