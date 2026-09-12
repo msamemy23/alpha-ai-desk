@@ -21,7 +21,7 @@ export function isPrivateIp(address: string): boolean {
       (a === 100 && b >= 64 && b <= 127) ||
       (a === 169 && b === 254) ||
       (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && (b === 0 || b === 168)) ||
+      (a === 192 && (b === 168 || (b === 0 && [0, 2].includes(octets[2])))) ||
       (a === 198 && (b === 18 || b === 19 || b === 51)) ||
       (a === 203 && b === 0 && octets[2] === 113) ||
       a >= 224
@@ -183,7 +183,7 @@ export async function fetchPublicUrl(
           if (Array.isArray(value)) responseHeaders.set(key, value.join(', '))
           else if (value !== undefined) responseHeaders.set(key, value)
         }
-        resolve(new Response(Buffer.concat(chunks), {
+        resolve(new Response(requestOptions.method === 'HEAD' || [204, 205, 304].includes(response.statusCode || 0) ? null : Buffer.concat(chunks), {
           status: response.statusCode || 502,
           statusText: response.statusMessage || '',
           headers: responseHeaders,

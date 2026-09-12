@@ -95,6 +95,7 @@ for (const scenario of ['recovered', 'repeated-claim', 'failed-lookup']) {
         ? ['{"tool":"dbAction","action":"getInventory","payload":{}}', '0 inventory items returned.', '0 inventory items returned.']
         : ['I ran getInventory. 0 items returned.', '0 inventory items returned.']
     const route = load('../src/app/api/ai-chat/route.ts', {
+      '@/lib/chatgpt-connection': { getUserChatGptTransport: async () => null },
       'next/server': { NextResponse: Response },
       '@/lib/supabase': { getServiceClient: () => ({ from: () => query({ data: { ai_api_key: 'test-only', ai_base_url: 'https://provider.invalid', ai_model: 'test-model' }, error: null }) }) },
       '@/lib/api-auth': { getAuthedShop: async () => ({ shopId: 'shop-a', userId: 'user-a', role: 'owner' }), hasInternalApiSecret: () => false },

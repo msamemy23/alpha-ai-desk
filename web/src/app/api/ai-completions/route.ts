@@ -3,7 +3,8 @@ import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
 import { AI_BASE_URLS, normalizeAiModel } from '@/lib/ai-config'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
-import { chatGptModel, fetchOpenAIChatCompletion, getOpenAIOAuthTransport } from '@/lib/openai-oauth-server'
+import { chatGptModel, fetchOpenAIChatCompletion } from '@/lib/openai-oauth-server'
+import { getUserChatGptTransport } from '@/lib/chatgpt-connection'
 
 export const dynamic = 'force-dynamic'
 
@@ -47,8 +48,11 @@ export async function POST(req: NextRequest) {
     if (body.messages.length > 40) {
       return error('AI request has too many messages', 400)
     }
+    if (body.messages.some((message: { role?: unknown }) => !message || !['system', 'developer', 'user', 'assistant', 'tool'].includes(String(message.role)))) {
+      return error('Chat contains an unsupported message type. Reload the page and try again.', 400)
+    }
 
-    const chatGptTransport = getOpenAIOAuthTransport(req)
+    const chatGptTransport = await getUserChatGptTransport(auth)
     if (chatGptTransport) {
       const completion = await fetchOpenAIChatCompletion(chatGptTransport, {
         model: chatGptModel(body.model),
