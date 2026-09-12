@@ -19,6 +19,16 @@ const sealed = load('../src/lib/private-state.ts', { 'node:crypto': crypto })
 const modelMessages = load('../src/lib/ai/model-messages.ts')
 const clicks = load('../src/lib/ai/browser-interaction.ts')
 
+test('browser destination replies use the actual execution trace, including partial failures', () => {
+  const messages = [{ role: 'assistant', content: 'The click is proposed; not run yet.' }, { role: 'browser', browserSteps: [{ action: 'click: a', title: 'Example Domains', url: 'https://www.iana.org/help/example-domains' }] }]
+  const answer = modelMessages.browserDestinationAnswer('Which page did the click actually reach?', messages)
+  assert.match(answer, /The browser reached Example Domains/)
+  assert.match(answer, /www.iana.org/)
+  assert.equal(modelMessages.browserDestinationAnswer('Open another page in the browser', messages), null)
+  messages.push({ role: 'assistant', content: 'I did not complete webAutomation.browser: navigation failed' })
+  assert.match(modelMessages.browserDestinationAnswer('What page did the browser reach?', messages), /did not complete.*\n\nLast observed page/)
+})
+
 test('explicit link requests resolve only to a unique observed page control', () => {
   const links = [{ tag: 'a', text: 'Learn more', href: 'https://iana.org/domains/example' }]
   assert.equal(clicks.observedLinkClick('Click that Learn more link', links).selector, 'a[href="https://iana.org/domains/example"]')
