@@ -2373,7 +2373,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       if (parsed.tool === 'browse' || parsed.tool === 'webAutomation') {
         const browseUrl = (parsed.url || '') as string
         const browseTask = (parsed.task || parsed.query || '') as string
-        const automationType = String(parsed.type || (Array.isArray(parsed.actions) && parsed.actions.length > 0 ? 'browser' : 'browse'))
+        const automationType = Array.isArray(parsed.actions) && parsed.actions.length > 0 ? 'browser' : String(parsed.type || 'browse')
         if (['browser', 'fill_form', 'click'].includes(automationType) && Array.isArray(parsed.actions) && parsed.actions.length > 0) {
           const pendingPayload: Record<string, unknown> = {
             type: automationType,

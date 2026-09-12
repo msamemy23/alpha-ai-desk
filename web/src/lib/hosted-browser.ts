@@ -5,6 +5,10 @@ import { assertPublicUrl, fetchPublicUrl } from '@/lib/public-url'
 export type BrowserAction = { type: 'navigate' | 'click' | 'fill' | 'select' | 'wait'; url?: string; selector?: string; value?: string; ms?: number }
 export type BrowserStep = { action: string; screenshot: string; url: string; title: string }
 
+export function assertBrowserPage(url: string, status?: number) {
+  if (!/^https?:\/\//i.test(url) || (status !== undefined && status >= 400)) throw new Error('The requested page failed to load. The browser task did not complete.')
+}
+
 export function validateBrowserActions(input: unknown): BrowserAction[] {
   if (!Array.isArray(input) || input.length > 8) throw new Error('A browser task supports up to 8 actions')
   return input.map(value => {
@@ -58,6 +62,7 @@ export async function runHostedBrowser(url: string, input: unknown) {
     })() })
     page.on('dialog', dialog => { void dialog.dismiss() })
     const capture = async (action: string) => {
+      assertBrowserPage(page.url())
       const shot = await page.screenshot({ type: 'jpeg', quality: 45, fullPage: false })
       steps.push({ action, screenshot: `data:image/jpeg;base64,${Buffer.from(shot).toString('base64')}`, url: page.url(), title: await page.title() })
       if (steps.length > 5) steps.splice(1, 1)
@@ -87,7 +92,10 @@ export async function runHostedBrowser(url: string, input: unknown) {
         }, action.value!)
         else if (action.type === 'select') await page.select(action.selector!, action.value!)
         else if (action.type === 'click') {
-          await Promise.all([page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 2000 }).catch(() => null), target.click()])
+          const navigates = await target.evaluate(el => el instanceof HTMLAnchorElement && !!el.href && new URL(el.href).href.split('#')[0] !== location.href.split('#')[0])
+          const navigation = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: navigates ? 15000 : 2000 })
+          const [response] = await Promise.all([navigates ? navigation : navigation.catch(() => null), target.click()])
+          assertBrowserPage(page.url(), response?.status())
         }
       }
       await capture(`${action.type === 'fill' ? 'Prepared field' : action.type}: ${action.selector || action.url || ''}`)

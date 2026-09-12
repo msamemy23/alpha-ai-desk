@@ -118,6 +118,18 @@ test('device cancellation and expired attempts cannot expose or reuse a session'
 })
 
 const browser = load('../src/lib/hosted-browser.ts', { 'puppeteer-core': {}, '@sparticuz/chromium': {}, '@/lib/public-url': {} })
+test('failed browser pages never count as completed navigation', () => {
+  browser.assertBrowserPage('https://www.iana.org/domains/example', 200)
+  assert.throws(() => browser.assertBrowserPage('chrome-error://chromewebdata/'))
+  assert.throws(() => browser.assertBrowserPage('https://example.com/missing', 404))
+})
+
+test('public IANA addresses are allowed while private and documentation ranges stay blocked', () => {
+  const network = load('../src/lib/public-url.ts', { 'node:dns/promises': {}, 'node:net': { isIP: value => value.includes(':') ? 6 : /^\d+\.\d+\.\d+\.\d+$/.test(value) ? 4 : 0 }, 'node:http': {}, 'node:https': {} })
+  assert.equal(network.isPrivateIp('192.0.43.8'), false)
+  for (const ip of ['192.0.0.8', '192.0.2.5', '192.168.1.1', '127.0.0.1', '10.0.0.1', '169.254.169.254']) assert.equal(network.isPrivateIp(ip), true)
+})
+
 test('hosted browser validates every action and rejects unsupported consequential steps', () => {
   assert.equal(browser.validateBrowserActions([{ type: 'fill', selector: '#search', value: 'brake pads' }]).length, 1)
   for (const actions of [null, Array(9).fill({ type: 'wait', ms: 1 }), [{ type: 'submit', selector: '#pay' }], [{ type: 'shell', value: 'whoami' }], [{ type: 'click' }], [{ type: 'wait', ms: 50000 }]]) assert.throws(() => browser.validateBrowserActions(actions))
