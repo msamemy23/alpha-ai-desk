@@ -22,7 +22,7 @@ function redact(value: unknown, depth = 0): unknown {
   if (!value || typeof value !== 'object') return value
   const result: Record<string, unknown> = {}
   for (const [key, child] of Object.entries(value as Record<string, unknown>).slice(0, 100)) {
-    if (/(?:password|secret|token|api[_-]?key|authorization|cookie)/i.test(key)) {
+    if (/(?:password|secret|token|api[_-]?key|authorization|cookie|(?:^|_)pin(?:_|$))/i.test(key)) {
       result[key] = '[redacted]'
     } else {
       result[key] = redact(child, depth + 1)

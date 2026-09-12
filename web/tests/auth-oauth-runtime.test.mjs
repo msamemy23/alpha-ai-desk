@@ -24,6 +24,19 @@ function load(relativePath, stubs = {}, globals = {}) {
 }
 
 const callback = load('../src/lib/auth-callback.ts')
+test('stored audit results redact passwords, API credentials, and staff PINs', async () => {
+  let saved
+  const audit = load('../src/lib/audit-log.ts', {
+    '@/lib/supabase': { getServiceClient: () => ({ from: () => ({ insert: async row => { saved = row; return { error: null } } }) }) },
+  })
+  await audit.writeAuditLog({ shopId: 'shop-a', action: 'ai.listStaff', metadata: {
+    result: { staff: [{ name: 'Test', pin: '1234', pin_hash: 'test-hash', password: 'test-password', access_token: 'test-token', api_key: 'test-key' }] },
+  } })
+  const entry = saved.metadata.result.staff[0]
+  assert.equal(entry.name, 'Test')
+  for (const key of ['pin', 'pin_hash', 'password', 'access_token', 'api_key']) assert.equal(entry[key], '[redacted]')
+})
+
 test('Google callback waits for automatic PKCE initialization and never exchanges twice', async () => {
   const calls = []
   const session = { user: { id: 'owner' } }
@@ -48,9 +61,41 @@ test('callback surfaces initialization errors and missing sessions instead of pr
 })
 
 function query(result) {
-  const chain = { async maybeSingle() { return result } }
+  const chain = { async maybeSingle() { return result }, then(resolve, reject) { return Promise.resolve(result).then(resolve, reject) } }
   for (const name of ['select', 'eq', 'order', 'limit']) chain[name] = () => chain
   return chain
+}
+
+for (const scenario of ['success', 'query-error', 'audit-error']) {
+  test(`read-only AI actions durably audit results and failures: ${scenario}`, async () => {
+    const audits = []
+    const row = { id: 'inventory-test', name: 'Brake pad' }
+    const route = load('../src/app/api/ai-action/route.ts', {
+      'next/server': { NextResponse: Response },
+      'node:crypto': crypto,
+      '@/lib/supabase': { getServiceClient: () => ({ from: () => query(scenario === 'query-error' ? { data: null, error: { message: 'Test database outage' } } : { data: [row], error: null }) }) },
+      '@/lib/api-auth': { getAuthedShop: async () => ({ shopId: 'shop-a', userId: 'user-a', role: 'owner' }), hasInternalApiSecret: () => false },
+      '@/lib/email': {},
+      '@/lib/api-response': { getIdempotencyKey: () => 'test-key' },
+      '@/lib/audit-log': { writeAuditLog: async entry => { audits.push(entry); return scenario === 'audit-error' ? { ok: false, error: 'Audit unavailable' } : { ok: true } } },
+      '@/lib/rate-limit': { checkRateLimit: () => ({ ok: true }), rateLimitKey: () => 'test-limit' },
+      '@/lib/sms-consent': {},
+      '@/lib/document-money': {},
+    })
+    const response = await route.POST(new Request('https://alpha.invalid/api/ai-action', { method: 'POST', body: JSON.stringify({ action: 'getInventory', payload: {} }) }))
+    assert.equal(audits.length, 1)
+    assert.equal(audits[0].permission, 'read')
+    assert.equal(audits[0].shopId, 'shop-a')
+    assert.equal(audits[0].action, 'ai.getInventory')
+    if (scenario === 'query-error') {
+      assert.equal(response.status, 500)
+      assert.equal(audits[0].metadata.success, false)
+      assert.equal(audits[0].metadata.error, 'Test database outage')
+    } else {
+      assert.equal(response.status, scenario === 'audit-error' ? 502 : 200)
+      assert.equal(audits[0].metadata.result.inventory[0].id, row.id)
+    }
+  })
 }
 for (const [name, membership, expected] of [
   ['active owner', { data: { shop_id: 'shop-a', role: 'owner' }, error: null }, 'shop-a'],
