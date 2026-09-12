@@ -2017,6 +2017,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     const verifiedClaims = new Set<string>()
     const successfulReads = new Set<string>()
     let readVerificationRetried = false
+    let proposalRetried = false
     const latestRequest = [...history].reverse().find(message => message.role === 'user')?.content || ''
     const markVerifiedClaims = (...claims: string[]) => {
       claims.forEach(claim => verifiedClaims.add(claim))
@@ -2140,7 +2141,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           if (!parsed.tool && parsed.tools) { parsed.tool = parsed.tools; delete parsed.tools }
           if (parsed.tool === 'connect' || parsed.tool === 'connectors') parsed.tool = 'connector'
           if (!parsed.connector && parsed.connect) { parsed.connector = parsed.connect; delete parsed.connect }
-          if (!parsed.action && parsed.actions) { parsed.action = parsed.actions; delete parsed.actions }
+          if (!parsed.action && typeof parsed.actions === 'string' && ['action', 'connector'].includes(String(parsed.tool))) { parsed.action = parsed.actions; delete parsed.actions }
           if (!parsed.payload && parsed.paylods) { parsed.payload = parsed.paylods; delete parsed.paylods }
           if (!parsed.payload && parsed.payloads) { parsed.payload = parsed.payloads; delete parsed.payloads }
           // Normalize connector names: Google_Business ? google_business, etc.
@@ -2153,6 +2154,17 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
 
       // No tool call = final answer - show to user
       if (!parsed) {
+        if (/\b(invoice|estimate|quote)\b/i.test(latestRequest) && /\b(draft|new|create|build|make|edit)\b/i.test(latestRequest) && /proposed (invoice|estimate)|save (invoice|estimate)|document card/i.test(cleanRaw)) {
+          if (!proposalRetried) {
+            proposalRetried = true
+            agentMessages.push({ role: 'assistant', content: raw })
+            agentMessages.push({ role: 'user', content: 'That is only text, not a usable document. Return the proposeDocument JSON tool with the requested type, customer, vehicle, parts, labors and tax. Do not imitate a card or write fake Save buttons. The application renders the real proposal and Save button.' })
+            continue
+          }
+          setMessages(prev => [...prev, { role: 'assistant', content: 'I could not produce a usable document draft. Nothing was saved or sent. Please retry this draft.' }])
+          setStatus('')
+          return
+        }
         const verification = verifyReadClaims(latestRequest, cleanRaw, successfulReads, readVerificationRetried)
         if (verification.decision === 'retry') {
           readVerificationRetried = true

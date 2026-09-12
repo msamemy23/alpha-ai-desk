@@ -9,7 +9,7 @@ const read = path => readFileSync(new URL(path, import.meta.url), 'utf8')
 function load(path, imports = {}, globals = {}) {
   const module = { exports: {} }
   vm.runInNewContext(ts.transpileModule(read(path), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, {
-    module, exports: module.exports, Buffer, URL, Response, Headers, AbortSignal, console,
+    module, exports: module.exports, Buffer, URL, Response, Headers, AbortSignal, console, atob, TextDecoder,
     process: { env: { ALPHA_CONNECTION_ENCRYPTION_KEY: 'test-only-key-not-a-production-secret-123456789' } },
     require: name => { if (name in imports) return imports[name]; throw new Error(`Unexpected import: ${name}`) }, ...globals,
   })
@@ -39,6 +39,10 @@ test('browser and document follow-ups use valid provider roles and retain contex
   assert.match(messages[1].content, /Example Domain/)
   assert.match(messages[2].content, /Invoice \$280.00/)
   assert.doesNotMatch(messages[2].content, /<div>/)
+  const encoded = Buffer.from(JSON.stringify({ type: 'Invoice', customer: 'QA', _request_id: 'old' })).toString('base64url')
+  const draft = modelMessages.toModelMessages([{ role: 'assistant', content: '', html: '<button data-payload="' + encoded + '">Save Invoice</button>' }])[0]
+  assert.equal(JSON.parse(draft.content).tool, 'proposeDocument')
+  assert.ok(!draft.content.includes('_request_id'))
 })
 
 test('private credentials are encrypted, randomized, tamper-proof and bound to shop/user', () => {
@@ -49,7 +53,11 @@ test('private credentials are encrypted, randomized, tamper-proof and bound to s
   assert.equal(sealed.openPrivateState(first, 'shop-a:user-a').refreshToken, 'private-token')
   assert.throws(() => sealed.openPrivateState(first, 'shop-b:user-a'))
   assert.throws(() => sealed.openPrivateState(first, 'shop-a:user-b'))
-  assert.throws(() => sealed.openPrivateState(first.replace(/.$/, first.endsWith('x') ? 'a' : 'x'), 'shop-a:user-a'))
+  const tampered = first.split('.')
+  const ciphertext = Buffer.from(tampered[3], 'base64url')
+  ciphertext[0] ^= 1
+  tampered[3] = ciphertext.toString('base64url')
+  assert.throws(() => sealed.openPrivateState(tampered.join('.'), 'shop-a:user-a'))
 })
 
 function fixture() {
@@ -124,6 +132,7 @@ test('chat reserves the viewport for messages, keeps controls bounded, and saves
   assert.match(chat, /'Idempotency-Key': key/)
   assert.match(chat, /_request_id: proposalId/)
   assert.match(chat, /element.disabled = saved/)
+  assert.match(chat, /typeof parsed.actions === 'string'/, 'browser actions arrays must never be renamed/deleted as a typo correction')
   const history = read('../src/app/api/ai-chat-history/route.ts')
   const normalize = history.match(/function normalizeMessages\(value: unknown\): HistoryMessage\[\] \{([\s\S]*?)\n\}/)[1]
   const js = ts.transpileModule(`function normalizeMessages(value) {${normalize}}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
