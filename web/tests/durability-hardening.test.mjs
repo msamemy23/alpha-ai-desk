@@ -76,3 +76,15 @@ test('signup membership trigger is not exposed as a public RPC', () => {
   assert.match(triggerPrivilegeMigration, /REVOKE ALL ON FUNCTION public\.bootstrap_shop_membership\(\) FROM anon/)
   assert.match(triggerPrivilegeMigration, /REVOKE ALL ON FUNCTION public\.bootstrap_shop_membership\(\) FROM authenticated/)
 })
+
+test('AI instructions expose inventory lookup and disclose result limits', () => {
+  assert.match(aiPage, /"tool":"action","action":"getInventory","payload":\{\}/)
+  assert.match(aiAction, /case 'getInventory'/)
+  assert.match(aiPage, /returns at most 50 matching items/)
+  assert.match(aiPage, /List active staff \(inactive records are excluded\)/)
+})
+
+test('AI instructions route payments to the ledger form, never a status-only update', () => {
+  assert.doesNotMatch(aiPage, /"action":"updateDocument","payload":\{[^}]*"status":"Paid"/)
+  assert.match(aiPage, /payment recording is still pending until the payment form confirms it/)
+})
