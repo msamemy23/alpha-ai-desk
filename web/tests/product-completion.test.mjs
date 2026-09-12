@@ -100,6 +100,12 @@ test('chat reserves the viewport for messages, keeps controls bounded, and saves
   assert.match(chat, /'Idempotency-Key': key/)
   assert.match(chat, /_request_id: proposalId/)
   assert.match(chat, /element.disabled = saved/)
+  const history = read('../src/app/api/ai-chat-history/route.ts')
+  const normalize = history.match(/function normalizeMessages\(value: unknown\): HistoryMessage\[\] \{([\s\S]*?)\n\}/)[1]
+  const js = ts.transpileModule(`function normalizeMessages(value) {${normalize}}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  const saved = vm.runInNewContext(`${js}; normalizeMessages([{ role: 'assistant', content: '', html: '<div>Unsaved invoice draft</div>' }])`)
+  assert.equal(saved.length, 1, 'rich document drafts must survive cloud history normalization')
+  assert.equal(saved[0].html, '<div>Unsaved invoice draft</div>')
 })
 
 test('credentials have no browser grants and browser traffic has no direct private-network path', () => {

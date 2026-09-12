@@ -15,8 +15,9 @@ function normalizeMessages(value: unknown): HistoryMessage[] {
       ...message,
       role: (message.role === 'user' || message.role === 'browser' ? message.role : 'assistant') as HistoryMessage['role'],
       content: typeof message.content === 'string' ? message.content.slice(0, 12000) : '',
+      ...(typeof message.html === 'string' ? { html: message.html.slice(0, 60000) } : {}),
     }))
-    .filter(message => message.content || message.role === 'browser')
+    .filter(message => message.content || (typeof message.html === 'string' && message.html) || message.role === 'browser')
     .slice(-60)
 }
 
