@@ -24,6 +24,55 @@ function load(relativePath, stubs = {}, globals = {}) {
 }
 
 const callback = load('../src/lib/auth-callback.ts')
+const readVerification = load('../src/lib/ai/read-verification.ts')
+test('inventory claims require a successful live read and fail closed after one retry', () => {
+  const request = 'Read-only verification: use getInventory to count inventory items. Keep all records unchanged.'
+  const answer = 'I ran getInventory. 0 items returned.'
+  assert.equal(readVerification.verifyReadClaims(request, answer, new Set(), false).decision, 'retry')
+  assert.equal(readVerification.verifyReadClaims(request, answer, new Set(), true).decision, 'block')
+  assert.equal(readVerification.verifyReadClaims(request, answer, new Set(['listStaff']), true).decision, 'block')
+  assert.equal(readVerification.verifyReadClaims(request, answer, new Set(['getInventory']), true).decision, 'allow')
+  assert.doesNotMatch(readVerification.unverifiedReadMessage(['getInventory']), /0 items|no inventory records/)
+})
+test('natural inventory questions and named lookup claims are checked, explanations are not', () => {
+  assert.equal(readVerification.verifyReadClaims('How many inventory items do we have?', '0 items.', new Set(), false).decision, 'retry')
+  assert.equal(readVerification.verifyReadClaims('Check my shop.', 'I called `listStaff`.', new Set(), false).decision, 'retry')
+  assert.equal(readVerification.verifyReadClaims('Explain how inventory counts work.', 'Inventory tracks parts.', new Set(), false).decision, 'allow')
+})
+for (const scenario of ['recovered', 'repeated-claim', 'failed-lookup']) {
+  test(`mobile agent enforces verified lookup results: ${scenario}`, async () => {
+    let completions = 0
+    let actions = 0
+    const outputs = scenario === 'recovered'
+      ? ['I ran getInventory. 0 items returned.', '{"tool":"dbAction","action":"getInventory","payload":{}}', '0 inventory items returned.']
+      : scenario === 'failed-lookup'
+        ? ['{"tool":"dbAction","action":"getInventory","payload":{}}', '0 inventory items returned.', '0 inventory items returned.']
+        : ['I ran getInventory. 0 items returned.', '0 inventory items returned.']
+    const route = load('../src/app/api/ai-chat/route.ts', {
+      'next/server': { NextResponse: Response },
+      '@/lib/supabase': { getServiceClient: () => ({ from: () => query({ data: { ai_api_key: 'test-only', ai_base_url: 'https://provider.invalid', ai_model: 'test-model' }, error: null }) }) },
+      '@/lib/api-auth': { getAuthedShop: async () => ({ shopId: 'shop-a', userId: 'user-a', role: 'owner' }), hasInternalApiSecret: () => false },
+      '@/lib/ai-config': { AI_BASE_URLS: {}, isOpenRouterBaseUrl: () => false, normalizeAiBaseUrl: value => value, normalizeAiModel: value => value },
+      '@/lib/openai-oauth-server': { getOpenAIOAuthTransport: () => null },
+      '@/lib/ai/read-verification': readVerification,
+    }, { fetch: async (url) => {
+      if (String(url).endsWith('/api/ai-action')) {
+        actions++
+        return Response.json(scenario === 'failed-lookup' ? { ok: false, error: 'Test outage' } : { ok: true, data: { inventory: [] } })
+      }
+      const content = outputs[completions++]
+      assert.ok(content, 'agent exceeded its bounded retry')
+      return Response.json({ choices: [{ message: { content } }] })
+    } })
+    const response = await route.POST(new Request('https://alpha.invalid/api/ai-chat', { method: 'POST', body: JSON.stringify({ message: 'Use getInventory to count inventory items.' }) }))
+    const body = await response.json()
+    assert.equal(response.status, scenario === 'recovered' ? 200 : 502)
+    assert.equal(actions, scenario === 'repeated-claim' ? 0 : 1)
+    if (scenario === 'recovered') assert.equal(body.reply, '0 inventory items returned.')
+    else { assert.match(body.reply, /could not verify/); assert.doesNotMatch(body.reply, /0 inventory/) }
+  })
+}
+
 test('stored audit results redact passwords, API credentials, and staff PINs', async () => {
   let saved
   const audit = load('../src/lib/audit-log.ts', {

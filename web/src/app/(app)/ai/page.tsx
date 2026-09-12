@@ -5,6 +5,7 @@ import { addOpenAIOAuthHeaders } from '@/lib/openai-oauth-client'
 import { AGENTS, SKILLS } from '@/lib/ai/capabilities'
 import { classifyRequest, type RouteDecision } from '@/lib/ai/router'
 import { normalizeDocumentDraft } from '@/lib/ai/document-draft'
+import { verifyReadClaims, unverifiedReadMessage } from '@/lib/ai/read-verification'
 import { calculateDocumentTotals, getLaborFlatAmount, laborLineTotal, partLineTotal } from '@/lib/document-money'
 import type { RepairSearchResult } from '@/lib/repair/sources'
 import { parseRepairQuery } from '@/lib/repair/sources'
@@ -2004,6 +2005,9 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
 
     const accumulated: string[] = []
     const verifiedClaims = new Set<string>()
+    const successfulReads = new Set<string>()
+    let readVerificationRetried = false
+    const latestRequest = [...history].reverse().find(message => message.role === 'user')?.content || ''
     const markVerifiedClaims = (...claims: string[]) => {
       claims.forEach(claim => verifiedClaims.add(claim))
     }
@@ -2139,10 +2143,26 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
 
       // No tool call = final answer - show to user
       if (!parsed) {
+        const verification = verifyReadClaims(latestRequest, cleanRaw, successfulReads, readVerificationRetried)
+        if (verification.decision === 'retry') {
+          readVerificationRetried = true
+          agentMessages.push({ role: 'assistant', content: raw })
+          agentMessages.push({ role: 'user', content: `Execution check: ${verification.missing.join(', ')} has NOT successfully run in this turn. Your proposed answer is unverified and was not shown. Return a JSON tool call using {"tool":"action","action":"<required action>","payload":{...}} with the appropriate arguments for my request. Do not invent a result or reuse an old answer.` })
+          continue
+        }
+        if (verification.decision === 'block') {
+          const message = unverifiedReadMessage(verification.missing)
+          addToolEvent({ agent: 'Alpha AI', tool: 'readVerification', status: 'error', detail: message })
+          const assistantMsg: ChatMessage = { role: 'assistant', content: message }
+          setMessages(prev => [...prev, assistantMsg])
+          saveToHistory([...history, assistantMsg])
+          setStatus('')
+          return
+        }
         const claimedActions = Array.from(cleanRaw.matchAll(/\b(sent|posted|published|created|updated|deleted|scheduled|called|opened|downloaded|saved|searched)\b/gi), match => match[1].toLowerCase())
         const unverifiedClaims = [...new Set(claimedActions)].filter(claim => !verifiedClaims.has(claim))
         const truthfulRaw = unverifiedClaims.length
-          ? `I could not verify these action claims (${unverifiedClaims.join(', ')}), so I have not marked them as completed. ${cleanRaw}`
+          ? `I could not verify these action claims (${unverifiedClaims.join(', ')}), so I have not marked them as completed. Check the tool activity before retrying.`
           : cleanRaw
         let mediaHtml = ''
             if (lastSearchMedia) {
@@ -2432,9 +2452,13 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             body: JSON.stringify({ action: actionName, payload: parsed.payload || {} })
           })
           const d = await r.json()
-          if (d.ok === true) markActionClaims(actionName)
-          actionResult = d.ok ? `Success: ${JSON.stringify(d.data).slice(0, 2000)}` : `Failed: ${d.error}`
-          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `action.${actionName}`, status: d.ok ? 'ok' : 'error', detail: d.ok ? 'Shop action completed' : (d.error || 'Shop action failed') })
+          const succeeded = r.ok && d.ok === true
+          if (succeeded) {
+            markActionClaims(actionName)
+            successfulReads.add(actionName)
+          }
+          actionResult = succeeded ? `Success: ${JSON.stringify(d.data).slice(0, 2000)}` : `Failed: ${d.error || `HTTP ${r.status}`}`
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `action.${actionName}`, status: succeeded ? 'ok' : 'error', detail: succeeded ? 'Shop action completed' : (d.error || 'Shop action failed') })
         } catch (err) {
           actionResult = `Error: ${err instanceof Error ? err.message : 'Unknown'}`
           addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `action.${actionName}`, status: 'error', detail: err instanceof Error ? err.message : 'Unknown' })
@@ -2956,10 +2980,10 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       }
       // -- END DESKTOP TOOLS --------------------------------------------------
 
-// Unknown - treat as final response
-      const assistantMsg: ChatMessage = { role: 'assistant', content: raw }
+      // An unsupported tool is not a completed operation or a final answer.
+      const assistantMsg: ChatMessage = { role: 'assistant', content: 'The AI requested an unsupported tool, so I stopped without marking it completed.' }
       setMessages(prev => [...prev, assistantMsg])
-      speak(raw)
+      speak(assistantMsg.content)
       saveToHistory([...history, assistantMsg])
       return
     }
@@ -2967,9 +2991,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
     // Max steps reached
     const finalMsg: ChatMessage = {
       role: 'assistant',
-      content: accumulated.length
-        ? `Done. Completed ${accumulated.length} steps.`
-        : 'Had trouble completing that. Please try again.'
+      content: 'I reached the safe tool limit before finishing. Review the tool activity for individual results; the overall request has not been marked completed.'
     }
     setMessages(prev => [...prev, finalMsg])
     speak(finalMsg.content)

@@ -11,6 +11,7 @@ import { getServiceClient } from '@/lib/supabase'
 import { getAuthedShop, hasInternalApiSecret } from '@/lib/api-auth'
 import { AI_BASE_URLS, isOpenRouterBaseUrl, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 import { chatGptModel, fetchOpenAIChatCompletion, getOpenAIOAuthTransport } from '@/lib/openai-oauth-server'
+import { verifyReadClaims, unverifiedReadMessage } from '@/lib/ai/read-verification'
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://alpha-ai-desk.vercel.app'
 const INTERNAL_SECRET = process.env.CRON_SECRET || process.env.INTERNAL_API_SECRET || ''
@@ -43,6 +44,9 @@ Available actions:
 - updateJobStatus: { id, status }
 - scheduleFollowUp: { customer_name, channel: "sms"|"email", scheduled_for, message_body }
 - listStaff: {}
+- getInventory: { query?: string } (up to 50 matching items; report the returned count)
+- getTimeclockReport: { startDate?: string, endDate?: string }
+- searchWeb: { query: string }
 
 RULES:
 - Keep responses SHORT. Max 3-5 sentences.
@@ -116,7 +120,7 @@ async function callDbAction(
       body: JSON.stringify({ action, payload, shopId }),
     })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) {
+    if (!res.ok || data?.ok !== true) {
       return { error: data?.error || `Action failed with HTTP ${res.status}`, approvalRequired: data?.approvalRequired }
     }
     return data?.data ?? data
@@ -218,6 +222,8 @@ export async function POST(req: NextRequest) {
       { role: 'user', content: message },
     ]
 
+    const successfulReads = new Set<string>()
+    let readVerificationRetried = false
     // Agent loop — up to 5 steps to handle read-only tool calls.
     for (let step = 0; step < 5; step++) {
       const completion = chatGptTransport
@@ -273,6 +279,13 @@ export async function POST(req: NextRequest) {
       } catch { parsed = null }
 
       if (!parsed) {
+        const verification = verifyReadClaims(message, raw, successfulReads, readVerificationRetried)
+        if (verification.decision === 'retry') {
+          readVerificationRetried = true
+          agentMessages.push({ role: 'user', content: `Execution check: ${verification.missing.join(', ')} has NOT successfully run. Return a JSON dbAction call for the requested lookup; do not invent a result or reuse an old answer.` })
+          continue
+        }
+        if (verification.decision === 'block') return respond(unverifiedReadMessage(verification.missing), {}, 502)
         return respond(raw)
       }
 
@@ -302,15 +315,14 @@ export async function POST(req: NextRequest) {
         authorization: req.headers.get('authorization') || undefined,
         cookie: req.headers.get('cookie') || undefined,
       })
+      if (!result?.error && !result?.approvalRequired) successfulReads.add(action)
       agentMessages.push({
         role: 'user',
         content: `Tool result for ${action}:\n${JSON.stringify(result, null, 2)}`,
       })
     }
 
-    const lastAssistant = agentMessages.filter(m => m.role === 'assistant').pop()?.content
-    const reply = lastAssistant || 'I reached the safe tool limit before finishing. Please try again.'
-    return respond(reply)
+    return respond('I reached the safe tool limit before finishing. The overall request has not been marked completed.', {}, 502)
   } catch (err) {
     console.error('[ai-chat] error:', err)
     return NextResponse.json({ reply: 'Something went wrong. Please try again.' }, { status: 500 })
