@@ -959,6 +959,7 @@ export default function AIPage() {
   const [speakEnabled, setSpeakEnabled] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [history, setHistory] = useState<HistoryEntry[]>([])
+  const [historySaveError, setHistorySaveError] = useState<HistoryEntry | null>(null)
 const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:string;subject?:string;customerId?:string;customerName?:string;idempotencyKey:string}|null>(null)
   const [pendingAction, setPendingAction] = useState<{ action: string; payload: Record<string, unknown>; kind?: 'connector' | 'automation' | 'browser'; endpoint?: string; idempotencyKey?: string } | null>(null)
   const [confirmingAction, setConfirmingAction] = useState(false)
@@ -1152,10 +1153,10 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     return () => { cancelled = true }
   }, [])
 
-  const saveToHistory = useCallback((msgs: ChatMessage[]) => {
+  const saveToHistory = useCallback((msgs: ChatMessage[], sessionId = chatSessionIdRef.current) => {
     if (msgs.length < 2) return
     const entry: HistoryEntry = {
-      id: chatSessionIdRef.current,
+      id: sessionId,
       date: new Date().toISOString(),
       preview: msgs.find(m => m.role === 'user')?.content?.slice(0, 60) || 'Conversation',
       messages: msgs,
@@ -1168,9 +1169,11 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
           headers: await getAuthJsonHeaders(),
           body: JSON.stringify({ sessionId: entry.id, messages: entry.messages, preview: entry.preview }),
         })
-        if (!res.ok) console.error('[ai] history save failed:', await res.text().catch(() => ''))
-      } catch (error) {
-        console.error('[ai] history save failed:', error)
+        if (!res.ok) throw new Error('History save failed')
+        setHistorySaveError(prev => prev?.id === entry.id ? null : prev)
+      } catch {
+        setHistorySaveError(entry)
+        console.error('[ai] history save failed')
       }
     })
   }, [])
@@ -3363,6 +3366,12 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
   }
 
   const loadConversation = (entry: HistoryEntry) => {
+    if (loading || confirmingAction || sendingSms) return
+    chatSessionIdRef.current = entry.id
+    setPendingAction(null)
+    setPendingSms(null)
+    setToolTimeline([])
+    setRouteDecision(null)
     setMessages(entry.messages)
     setShowHistory(false)
   }
@@ -3442,7 +3451,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         </div>
         <div className="flex gap-2 shrink-0">
           {/* Feature 5: History button */}
-          <button onClick={() => setShowHistory(!showHistory)} className="btn btn-secondary btn-sm" title="Conversation History">
+          <button disabled={loading || confirmingAction || sendingSms} onClick={() => setShowHistory(!showHistory)} className="btn btn-secondary btn-sm" title="Conversation History">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
             History
           </button>
@@ -4099,6 +4108,13 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {historySaveError && (
+        <div role="alert" className="fixed bottom-20 right-6 max-w-sm bg-red-900 text-white px-4 py-3 rounded-lg text-sm z-50">
+          <p>This conversation could not be saved to the cloud. Keep this tab open until saving succeeds.</p>
+          <button className="mt-2 underline" onClick={() => saveToHistory(historySaveError.messages, historySaveError.id)}>Retry saving</button>
         </div>
       )}
 

@@ -25,6 +25,52 @@ function load(relativePath, stubs = {}, globals = {}) {
 
 const callback = load('../src/lib/auth-callback.ts')
 const readVerification = load('../src/lib/ai/read-verification.ts')
+for (const busy of [false, true]) {
+  test(`restoring chat uses the existing session ID and clears stale actions: busy=${busy}`, () => {
+    const source = readFileSync(new URL('../src/app/(app)/ai/page.tsx', import.meta.url), 'utf8')
+    const body = source.match(/const loadConversation = \(entry: HistoryEntry\) => \{([\s\S]*?)\n  \}/)?.[1]
+    assert.ok(body)
+    const session = { current: 'new-unused-session' }
+    const calls = []
+    const restore = vm.runInNewContext(`(entry) => {${body}}`, {
+      loading: busy, confirmingAction: false, sendingSms: false, chatSessionIdRef: session,
+      setPendingAction: value => calls.push(['action', value]),
+      setPendingSms: value => calls.push(['sms', value]),
+      setToolTimeline: () => {}, setRouteDecision: () => {},
+      setMessages: value => calls.push(['messages', value]), setShowHistory: () => {},
+    })
+    const messages = [{ role: 'assistant', content: 'Saved answer' }]
+    restore({ id: 'existing-cloud-session', messages })
+    assert.equal(session.current, busy ? 'new-unused-session' : 'existing-cloud-session')
+    assert.equal(calls.length, busy ? 0 : 3)
+    if (!busy) assert.deepEqual(calls, [['action', null], ['sms', null], ['messages', messages]])
+  })
+}
+
+test('failed history saves stay retryable under the original conversation ID', async () => {
+  const source = readFileSync(new URL('../src/app/(app)/ai/page.tsx', import.meta.url), 'utf8')
+  const callbackSource = source.match(/const saveToHistory = useCallback\([\s\S]*?\n  \}, \[\]\)/)?.[0]
+  assert.ok(callbackSource)
+  const queue = { current: Promise.resolve() }
+  const payloads = []
+  let saveError = null
+  const compiled = ts.transpileModule(`${callbackSource}; saveToHistory`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  const save = vm.runInNewContext(compiled, {
+    useCallback: fn => fn, chatSessionIdRef: { current: 'different-active-session' }, historyWriteRef: queue,
+    setHistory: () => {}, setHistorySaveError: value => { saveError = typeof value === 'function' ? value(saveError) : value },
+    getAuthJsonHeaders: async () => ({}), console: { error() {} },
+    fetch: async (_url, options) => { payloads.push(JSON.parse(options.body)); return { ok: payloads.length > 1 } },
+  })
+  const messages = [{ role: 'user', content: 'Read only' }, { role: 'assistant', content: 'Verified answer' }]
+  save(messages, 'original-session')
+  await queue.current
+  assert.equal(saveError.id, 'original-session')
+  save(saveError.messages, saveError.id)
+  await queue.current
+  assert.equal(saveError, null)
+  assert.deepEqual(payloads.map(payload => payload.sessionId), ['original-session', 'original-session'])
+})
+
 test('inventory claims require a successful live read and fail closed after one retry', () => {
   const request = 'Read-only verification: use getInventory to count inventory items. Keep all records unchanged.'
   const answer = 'I ran getInventory. 0 items returned.'
