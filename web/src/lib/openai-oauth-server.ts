@@ -78,10 +78,19 @@ export async function fetchOpenAIChatCompletion(
     signal,
   })
   const raw = await upstream.json().catch(() => ({}))
+  if (!upstream.ok) return { ok: false, status: upstream.status, data: raw }
+  const completion = responsesToChatCompletion(raw, request.model)
+  if (raw.status !== 'completed' || !completion.choices[0].message.content.trim()) {
+    return {
+      ok: false,
+      status: 502,
+      data: { error: { message: 'ChatGPT did not return a completed answer. Try again or reconnect your account.' } },
+    }
+  }
   return {
-    ok: upstream.ok,
+    ok: true,
     status: upstream.status,
-    data: upstream.ok ? responsesToChatCompletion(raw, request.model) : raw,
+    data: completion,
   }
 }
 

@@ -154,8 +154,11 @@ export async function POST(req: NextRequest) {
     }
 
     const shopName = String(settings?.shop_name || settings?.company_name || settings?.business_name || 'your auto repair shop').slice(0, 120)
-    const shopAddress = String(settings?.address || '').slice(0, 200)
-    const shopPhone = String(settings?.phone || settings?.business_phone || '').slice(0, 40)
+    // The settings table stores these as shop_address / shop_phone. The bare
+    // `address` and `phone` keys do not exist on that table, so every ad was
+    // built with no contact details. Legacy keys are kept as fallbacks.
+    const shopAddress = String(settings?.shop_address || settings?.address || '').slice(0, 200)
+    const shopPhone = String(settings?.shop_phone || settings?.phone || settings?.business_phone || '').slice(0, 40)
 
     // Step 1: Use AI to generate ad copy. A provider replay uses a
     // deterministic local fallback so recovery never calls AI again.
@@ -235,10 +238,24 @@ Return ONLY valid JSON object. No markdown.`
         } else {
           socialOperationId = started.id
 
+          // Whatever Facebook has already created must survive a later failure
+          // so a retry can reconcile instead of creating a second campaign.
+          // Once any artifact exists the operation is 'unknown', never
+          // 'failed' — 'failed' invites a clean retry that would orphan it.
+          const createdArtifacts: Record<string, unknown> = {}
+
           const failSocial = async (message: string, result?: unknown, status = 502, operationStatus: 'failed' | 'unknown' = 'failed') => {
-            const saved = await finishSocialPublishingOperation(socialOperationId as string, operationStatus, result, message)
+            const orphaned = Object.keys(createdArtifacts).length > 0
+            const durableStatus = orphaned ? 'unknown' : operationStatus
+            const durableResult = orphaned
+              ? { ...createdArtifacts, partial: true, provider_error: result ?? null }
+              : result
+            const durableMessage = orphaned
+              ? `${message}. Facebook already created ${Object.keys(createdArtifacts).join(', ')}; reconcile Ads Manager before retrying.`
+              : message
+            const saved = await finishSocialPublishingOperation(socialOperationId as string, durableStatus, durableResult, durableMessage)
             if (!saved.ok) return NextResponse.json({ ok: false, error: 'The Facebook Ads outcome is uncertain because its durable status could not be saved' }, { status: 502 })
-            return NextResponse.json({ ok: false, error: message }, { status })
+            return NextResponse.json({ ok: false, error: durableMessage }, { status })
           }
 
           try {
@@ -257,8 +274,9 @@ Return ONLY valid JSON object. No markdown.`
           })
           const campData = await campRes.json().catch(() => ({}))
           if (!campRes.ok || !campData.id) {
-            return await failSocial(campData?.error?.message || 'Facebook did not create the campaign', campData, campRes.status || 502)
+            return await failSocial(campData?.error?.message || 'Facebook did not return a campaign id', campData, campRes.ok ? 502 : campRes.status, campRes.ok ? 'unknown' : 'failed')
           }
+          createdArtifacts.campaign_id = campData.id
 
           const adSetRes = await fetch(`https://graph.facebook.com/v19.0/act_${fbAdAccountId}/adsets`, {
             method: 'POST',
@@ -289,8 +307,9 @@ Return ONLY valid JSON object. No markdown.`
           })
           const adSetData = await adSetRes.json().catch(() => ({}))
           if (!adSetRes.ok || !adSetData.id) {
-            return await failSocial(adSetData?.error?.message || 'Facebook did not create the ad set', adSetData, adSetRes.status || 502)
+            return await failSocial(adSetData?.error?.message || 'Facebook did not create the ad set', adSetData, adSetRes.ok ? 502 : adSetRes.status)
           }
+          createdArtifacts.adset_id = adSetData.id
 
           const creativeRes = await fetch(`https://graph.facebook.com/v19.0/act_${fbAdAccountId}/adcreatives`, {
             method: 'POST',
@@ -312,8 +331,9 @@ Return ONLY valid JSON object. No markdown.`
           })
           const creativeData = await creativeRes.json().catch(() => ({}))
           if (!creativeRes.ok || !creativeData.id) {
-            return await failSocial(creativeData?.error?.message || 'Facebook did not create the ad creative', creativeData, creativeRes.status || 502)
+            return await failSocial(creativeData?.error?.message || 'Facebook did not create the ad creative', creativeData, creativeRes.ok ? 502 : creativeRes.status)
           }
+          createdArtifacts.creative_id = creativeData.id
 
           const adRes = await fetch(`https://graph.facebook.com/v19.0/act_${fbAdAccountId}/ads`, {
             method: 'POST',
@@ -328,7 +348,7 @@ Return ONLY valid JSON object. No markdown.`
           })
           const adData = await adRes.json().catch(() => ({}))
           if (!adRes.ok || !adData.id) {
-            return await failSocial(adData?.error?.message || 'Facebook did not return a final ad id', adData, adRes.status || 502, 'unknown')
+            return await failSocial(adData?.error?.message || 'Facebook did not return a final ad id', adData, adRes.ok ? 502 : adRes.status, 'unknown')
           }
 
           fbResult = {
@@ -343,7 +363,14 @@ Return ONLY valid JSON object. No markdown.`
         } catch (e) {
           console.error('Facebook Ads API error:', e)
           const message = 'Facebook Ads outcome is uncertain; reconcile Ads Manager before retrying'
-          const saved = await finishSocialPublishingOperation(socialOperationId, 'unknown', undefined, e instanceof Error ? e.message : message)
+          // Persist whatever Facebook had already accepted so a replay can
+          // reconcile the existing campaign instead of creating another one.
+          const saved = await finishSocialPublishingOperation(
+            socialOperationId,
+            'unknown',
+            Object.keys(createdArtifacts).length > 0 ? { ...createdArtifacts, partial: true } : undefined,
+            e instanceof Error ? e.message : message,
+          )
           if (!saved.ok) return NextResponse.json({ ok: false, error: 'The Facebook Ads outcome is uncertain because its durable status could not be saved' }, { status: 502 })
           return NextResponse.json({ ok: false, error: message }, { status: 502 })
         }

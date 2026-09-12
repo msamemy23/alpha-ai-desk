@@ -56,9 +56,8 @@ export async function getAuthedShop(): Promise<AuthenticatedShop | null> {
   if (!user) return null
   const svc = getServiceClient()
 
-  // Membership is the authorization source of truth. Profile ownership is
-  // retained only as a legacy fallback for rows created before memberships
-  // were bootstrapped.
+  // An active membership is the only authorization source. Profile ownership
+  // is no longer accepted as a fallback; see the note below the lookup.
   const { data: membership, error: membershipError } = await svc
     .from('shop_memberships')
     .select('shop_id,role')
@@ -76,32 +75,27 @@ export async function getAuthedShop(): Promise<AuthenticatedShop | null> {
     return { userId: user.id, shopId: String(membership.shop_id), role }
   }
 
-  const { data, error: profileError } = await svc
+  // No active membership means no access. Profile ownership is deliberately
+  // NOT a fallback any more: migration 044 bootstrapped a membership for every
+  // existing shop and the shop_profiles trigger creates one for every new
+  // shop, so a missing row means access was revoked or never granted. Treating
+  // shop_profiles.user_id as authorization would let a hard revocation (the
+  // row deleted rather than its status flipped) silently regain owner access.
+  const { data: profile, error: profileError } = await svc
     .from('shop_profiles')
     .select('id')
     .eq('user_id', user.id)
-    .single()
+    .maybeSingle()
   if (profileError) {
     console.error('[auth] shop profile lookup failed:', profileError.message)
     return null
   }
-  if (!data) return null
-  const { data: membershipRecord, error: membershipRecordError } = await svc
-    .from('shop_memberships')
-    .select('status')
-    .eq('shop_id', data.id)
-    .eq('user_id', user.id)
-    .order('updated_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
-  if (membershipRecordError) {
-    console.error('[auth] membership status lookup failed:', membershipRecordError.message)
-    return null
+  if (profile?.id) {
+    console.error(
+      `[auth] user ${user.id} owns shop ${profile.id} but has no active membership; denying access`,
+    )
   }
-  // A revoked/suspended membership must not regain access through the
-  // legacy profile-ownership fallback.
-  if (membershipRecord && membershipRecord.status !== 'active') return null
-  return { userId: user.id, shopId: data.id as string, role: 'owner' }
+  return null
 }
 
 export function unauthorized() {

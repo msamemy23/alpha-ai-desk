@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { supabase } from '@/lib/supabase'
+import { ensureShopProfile, supabase } from '@/lib/supabase'
+import { getCallbackSession } from '@/lib/auth-callback'
 
 function isRecoveryUrl() {
   const params = new URLSearchParams(window.location.search)
@@ -46,35 +47,10 @@ function submitDesktopSession({ port, state }: { port: string; state: string }, 
 }
 
 async function ensureShopProfileAndRedirect(session: Session) {
-  const userId = session.user.id
-  const { data: profile, error: profileError } = await supabase
-    .from('shop_profiles')
-    .select('id')
-    .eq('user_id', userId)
-    .maybeSingle()
-
-  if (profileError) throw profileError
-
-  if (!profile) {
-    const email = session.user.email || ''
-    const name = session.user.user_metadata?.full_name || email.split('@')[0] || 'My Shop'
-    const { error: upsertError } = await supabase.from('shop_profiles').upsert(
-      {
-        user_id: userId,
-        shop_name: `${name}'s Shop`,
-        phone: '',
-        address: '',
-        city_state_zip: '',
-        services: [],
-      },
-      { onConflict: 'user_id' }
-    )
-    if (upsertError) throw upsertError
-    window.location.replace('/onboarding')
-    return
-  }
-
-  window.location.replace('/dashboard')
+  const email = session.user.email || ''
+  const name = session.user.user_metadata?.full_name || email.split('@')[0] || 'My Shop'
+  const profile = await ensureShopProfile(`${name}'s Shop`)
+  window.location.replace(profile.created ? '/onboarding' : '/dashboard')
 }
 
 function LockIcon() {
@@ -98,12 +74,13 @@ export default function AuthCallback() {
   useEffect(() => {
     let cancelled = false
     let handled = false
+    const recoveryFlow = isRecoveryUrl()
 
     const finish = async (session: Session) => {
       if (cancelled || handled) return
       handled = true
 
-      if (isRecoveryUrl()) {
+      if (recoveryFlow) {
         setRecovery(true)
         setStatus('Choose a new password')
         return
@@ -122,57 +99,11 @@ export default function AuthCallback() {
 
     const processAuth = async () => {
       try {
-        const params = new URLSearchParams(window.location.search)
-        const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''))
-        const code = params.get('code')
-        const hashAccessToken = hash.get('access_token')
-        const hashRefreshToken = hash.get('refresh_token')
-
-        if (hashAccessToken && hashRefreshToken) {
-          window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
-          const { data, error: sessionError } = await supabase.auth.setSession({
-            access_token: hashAccessToken,
-            refresh_token: hashRefreshToken,
-          })
-          if (sessionError) throw sessionError
-          if (data.session) {
-            await finish(data.session)
-            return
-          }
-        }
-
-        if (code) {
-          const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
-          if (exchangeError) throw exchangeError
-        }
-
-        const { data } = await supabase.auth.getSession()
-        if (data.session) {
-          await finish(data.session)
-          return
-        }
-
-        const {
-          data: { subscription },
-        } = supabase.auth.onAuthStateChange(async (_event, session) => {
-          if (session) {
-            subscription.unsubscribe()
-            await finish(session)
-          }
-        })
-
-        window.setTimeout(() => {
-          if (cancelled || handled) return
-          subscription.unsubscribe()
-          setStatus('No session found. Redirecting...')
-          window.setTimeout(() => window.location.replace('/login'), 1400)
-        }, 1800)
+        await finish(await getCallbackSession(supabase.auth))
       } catch (err) {
-        console.error('Auth callback error:', err)
         if (cancelled) return
         setError(err instanceof Error ? err.message : 'Authentication failed.')
-        setStatus('Authentication failed. Redirecting...')
-        window.setTimeout(() => window.location.replace('/login'), 2200)
+        setStatus('Sign-in could not finish')
       }
     }
 
@@ -216,13 +147,13 @@ export default function AuthCallback() {
     <main className="callback-screen">
       <section className="callback-panel" aria-live="polite">
         <div className="callback-icon">
-          {recovery ? <LockIcon /> : <span className="spinner" />}
+          {recovery || error ? <LockIcon /> : <span className="spinner" />}
         </div>
 
         <p className="kicker">Alpha AI Desk</p>
         <h1>{status}</h1>
 
-        {!recovery && <p className="helper">Keep this window open while the secure session finishes.</p>}
+        {!recovery && !error && <p className="helper">Keep this window open while the secure session finishes.</p>}
 
         {recovery && (
           <form className="password-form" onSubmit={updatePassword}>
@@ -257,6 +188,7 @@ export default function AuthCallback() {
         {error && (
           <div className="callback-error" role="alert">
             {error}
+            {!recovery && <p><a href="/login">Return to sign in</a></p>}
           </div>
         )}
       </section>

@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { supabase } from '@/lib/supabase'
+import { ensureShopProfile, supabase } from '@/lib/supabase'
 
 type AuthMode = 'login' | 'signup' | 'reset'
 type LoadingAction = 'email' | 'google' | null
@@ -144,18 +144,7 @@ export default function LoginPage() {
         }
 
         if (data.user) {
-          const { error: profileError } = await supabase.from('shop_profiles').upsert(
-            {
-              user_id: data.user.id,
-              shop_name: shopName.trim() || 'My Shop',
-              phone: '',
-              address: '',
-              city_state_zip: '',
-              services: [],
-            },
-            { onConflict: 'user_id' }
-          )
-          if (profileError) throw profileError
+          await ensureShopProfile(shopName.trim() || 'My Shop')
         }
 
         window.localStorage.setItem(LAST_EMAIL_KEY, cleanEmail)

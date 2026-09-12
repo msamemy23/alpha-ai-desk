@@ -37,10 +37,17 @@ export function getServiceClient() {
 
 // ─── DB Helpers ────────────────────────────────────────────────
 
+export async function ensureShopProfile(shopName: string) {
+  const { data, error } = await supabase.rpc('ensure_shop_profile', { p_shop_name: shopName })
+  if (error) throw error
+  if (!data?.id) throw new Error('Your shop could not be initialized.')
+  return data as { id: string; created: boolean }
+}
+
 export async function getShopProfile() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
-  const { data: membership } = await supabase
+  const { data: membership, error: membershipError } = await supabase
     .from('shop_memberships')
     .select('shop_id')
     .eq('user_id', user.id)
@@ -48,21 +55,8 @@ export async function getShopProfile() {
     .order('created_at', { ascending: true })
     .limit(1)
     .maybeSingle()
-  const profileQuery = supabase.from('shop_profiles').select('*')
-  const { data } = membership?.shop_id
-    ? await profileQuery.eq('id', membership.shop_id).maybeSingle()
-    : await profileQuery.eq('user_id', user.id).maybeSingle()
-  if (!membership?.shop_id && data?.id) {
-    const { data: membershipRecord } = await supabase
-      .from('shop_memberships')
-      .select('status')
-      .eq('shop_id', data.id)
-      .eq('user_id', user.id)
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-    if (membershipRecord && membershipRecord.status !== 'active') return null
-  }
+  if (membershipError || !membership?.shop_id) return null
+  const { data } = await supabase.from('shop_profiles').select('*').eq('id', membership.shop_id).maybeSingle()
   return data as {
     id: string
     user_id: string
@@ -79,7 +73,7 @@ export async function getShopProfile() {
 export async function getShopId(): Promise<string | null> {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
-  const { data: membership } = await supabase
+  const { data: membership, error } = await supabase
     .from('shop_memberships')
     .select('shop_id')
     .eq('user_id', user.id)
@@ -87,24 +81,7 @@ export async function getShopId(): Promise<string | null> {
     .order('created_at', { ascending: true })
     .limit(1)
     .maybeSingle()
-  if (membership?.shop_id) return membership.shop_id
-  const { data } = await supabase
-    .from('shop_profiles')
-    .select('id')
-    .eq('user_id', user.id)
-    .maybeSingle()
-  if (data?.id) {
-    const { data: membershipRecord } = await supabase
-      .from('shop_memberships')
-      .select('status')
-      .eq('shop_id', data.id)
-      .eq('user_id', user.id)
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-    if (membershipRecord && membershipRecord.status !== 'active') return null
-  }
-  return data?.id ?? null
+  return error ? null : membership?.shop_id ?? null
 }
 
 export async function getSettings() {

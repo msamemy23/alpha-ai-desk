@@ -248,7 +248,7 @@ export default function SettingsPage() {
           </div>
           <div className="rounded-lg border border-emerald-400/30 bg-emerald-400/10 p-4 space-y-3">
             <div className="text-sm font-bold">Use your ChatGPT plan for Alpha AI</div>
-            <p className="text-xs text-text-muted">Connect your own ChatGPT account for AI requests. The connection stays in this browser and is separate from your Alpha AI Desk sign-in. Hosted sign-in may require Chrome or Firefox.</p>
+            <p className="text-xs text-text-muted">Connect your ChatGPT account using the third-party openai-oauth adapter. Hosted sign-in requires its Chrome or Firefox extension and does not work inside the embedded browser. This is separate from Alpha sign-in; your connection stays in this browser and your plan's limits still apply. It is not an official OpenAI API integration.</p>
             <ChatGPTConnection />
           </div>
           <div><label className="form-label">AI API Key</label><input className="form-input font-mono" type="password" value={settings.ai_api_key as string||''} onChange={sf('ai_api_key')} placeholder="sk-or-v1-... or sk-..." /></div>
