@@ -17,6 +17,15 @@ function load(path, imports = {}, globals = {}) {
 }
 const sealed = load('../src/lib/private-state.ts', { 'node:crypto': crypto })
 const modelMessages = load('../src/lib/ai/model-messages.ts')
+const clicks = load('../src/lib/ai/browser-interaction.ts')
+
+test('explicit link requests resolve only to a unique observed page control', () => {
+  const links = [{ tag: 'a', text: 'Learn more', href: 'https://iana.org/domains/example' }]
+  assert.equal(clicks.observedLinkClick('Click that Learn more link', links).selector, 'a[href="https://iana.org/domains/example"]')
+  assert.equal(clicks.observedLinkClick('What does that link say?', links), null)
+  assert.equal(clicks.observedLinkClick('Do not click the link', links), null)
+  assert.equal(clicks.observedLinkClick('Click the link', [...links, { tag: 'a', text: 'Other', href: '/other' }]), null)
+})
 
 test('browser and document follow-ups use valid provider roles and retain context', () => {
   const messages = modelMessages.toModelMessages([
