@@ -1,0 +1,3 @@
+-- Kept as a schema marker for the application-side audit error contract.
+-- writeAuditLog now returns { ok: false, error } and logs the database error
+-- instead of silently discarding it.

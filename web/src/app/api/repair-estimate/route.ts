@@ -79,16 +79,11 @@ export async function POST(req: NextRequest) {
     }
 
     const db = getServiceClient()
-    const year = new Date().getFullYear()
-    const prefix = 'EST'
-    const { data: existingDocs } = await db
-      .from('documents')
-      .select('doc_number')
-      .eq('shop_id', auth.shopId)
-      .eq('type', 'Estimate')
-      .like('doc_number', `${prefix}-${year}-%`)
-    const nums = (existingDocs || []).map((d: Record<string, string>) => parseInt(d.doc_number.split('-').pop() || '0'))
-    const docNumber = `${prefix}-${year}-${String(Math.max(0, ...nums) + 1).padStart(4, '0')}`
+    const { data: docNumber, error: numberingError } = await db.rpc('next_document_number', {
+      p_shop_id: auth.shopId,
+      p_type: 'Estimate',
+    })
+    if (numberingError || typeof docNumber !== 'string') return apiFail('Document numbering failed', 500, 'INTERNAL_ERROR')
 
     const customerName = text(body.customerName, 'Customer')
     const customerEmail = text(body.customerEmail)

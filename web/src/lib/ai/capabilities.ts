@@ -213,7 +213,7 @@ export const TOOLS: ToolDefinition[] = [
     retry: { attempts: 1, backoffMs: 1000 },
     audit: true,
     requiresConfirmation: true,
-    inputSchema: { to: 'phone', body: 'message', customerId: 'string optional', idempotencyKey: 'string optional' },
+    inputSchema: { to: 'phone', body: 'message', customerId: 'string optional', idempotencyKey: 'string' },
     resultShape: { ok: 'boolean', messageId: 'string optional', error: 'string optional' },
   },
   {
@@ -225,7 +225,7 @@ export const TOOLS: ToolDefinition[] = [
     retry: { attempts: 0, backoffMs: 0 },
     audit: true,
     requiresConfirmation: false,
-    inputSchema: { action: 'string', payload: 'object', idempotencyKey: 'string optional' },
+    inputSchema: { action: 'string', payload: 'object', idempotencyKey: 'string' },
     resultShape: { ok: 'boolean', data: 'object optional', error: 'string optional' },
   },
 ]

@@ -1,57 +1,89 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
+import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { isSmsOptedOut } from '@/lib/sms-consent'
+import { revalidateAutomationInvocation, validateAutomationInvocation } from '@/lib/automation-fencing'
 
 export const dynamic = 'force-dynamic'
 
-const TELNYX_API_KEY = process.env.TELNYX_API_KEY || ''
-const TELNYX_FROM = process.env.TELNYX_PHONE_NUMBER || ''
 
-async function sendSMS(to: string, message: string) {
-  if (!TELNYX_API_KEY || !TELNYX_FROM) return { success: false, error: 'Telnyx not configured' }
+async function sendSMS(to: string, message: string, apiKey: string, from: string, idempotencyKey?: string) {
+  if (!apiKey || !from) return { success: false, error: 'Telnyx not configured' }
   const r = await fetch('https://api.telnyx.com/v2/messages', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${TELNYX_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: TELNYX_FROM, to, text: message }),
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) },
+    body: JSON.stringify({ from, to, text: message }),
   })
+  if (!r.ok) return { success: false, error: `Telnyx returned ${r.status}` }
   const d = await r.json()
   return d.data?.id ? { success: true } : { success: false, error: d.errors?.[0]?.detail }
 }
 
 export async function POST(req: NextRequest) {
-  const body = await req.json()
-  const { action = 'run', dry_run = false } = body
+  const body = await req.json().catch(() => null)
+  const auth = await getRouteShop(req, body?.shopId)
+  if (!auth) return unauthorized()
+  const automationCheck = await validateAutomationInvocation(req, body as Record<string, unknown> | null, auth.shopId, ['service_reminders', 'appointment_reminders'])
+  if (!automationCheck.ok) return NextResponse.json({ ok: false, error: automationCheck.error }, { status: automationCheck.status })
+  const action = body?.action || 'run'
+  const dryRun = body?.dry_run === true
   const sb = getServiceClient()
+  const { data: settings, error: settingsError } = await sb.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle()
+  if (settingsError) return NextResponse.json({ ok: false, error: 'Unable to load shop settings' }, { status: 500 })
+  const shopName = String(settings?.shop_name || 'our shop').slice(0, 120)
+  const shopPhone = String(settings?.shop_phone || '').slice(0, 40)
+  const telnyxKey = String(settings?.telnyx_api_key || '')
+  const telnyxFrom = String(settings?.telnyx_phone_number || '')
 
   if (action === 'run') {
     // Check vehicles for upcoming service needs
-    const { data: vehicles } = await sb
+    const { data: vehicles, error: vehiclesError } = await sb
       .from('vehicles')
-      .select('*, customers(name, phone)')
+      .select('*')
+      .eq('shop_id', auth.shopId)
       .order('updated_at', { ascending: true })
+    if (vehiclesError) return NextResponse.json({ ok: false, error: 'Unable to load vehicles' }, { status: 500 })
 
-    const { data: invoices } = await sb
-      .from('invoices')
-      .select('customer_id, vehicle_id, created_at, items')
+    const customerIds = [...new Set((vehicles || []).map(vehicle => vehicle.customer_id).filter(Boolean))]
+    const { data: customers, error: customersError } = customerIds.length
+      ? await sb.from('customers').select('id,name,phone,sms_opted_out').eq('shop_id', auth.shopId).in('id', customerIds)
+      : { data: [], error: null }
+    if (customersError) return NextResponse.json({ ok: false, error: 'Unable to load vehicle customers' }, { status: 500 })
+    const customerById = new Map((customers || []).map(customer => [customer.id, customer]))
+
+    const { data: invoices, error: invoicesError } = await sb
+      .from('documents')
+      .select('customer_id, vehicle_year, vehicle_make, vehicle_model, vehicle_vin, created_at, parts, labors, line_items')
+      .eq('shop_id', auth.shopId)
+      .in('type', ['Invoice', 'Receipt'])
       .order('created_at', { ascending: false })
+    if (invoicesError) return NextResponse.json({ ok: false, error: 'Unable to load service history' }, { status: 500 })
 
     const results: Array<Record<string, unknown>> = []
-    const sevenDaysAgo = Date.now() - 7 * 24 * 3600 * 1000
 
     // Build last oil change per vehicle
     const lastOilChange: Record<string, string> = {}
     for (const inv of invoices || []) {
-      const items = typeof inv.items === 'string' ? JSON.parse(inv.items) : (inv.items || [])
-      const hasOilChange = items.some((i: Record<string, string>) => /oil.?change/i.test(i.description || i.name || ''))
-      if (hasOilChange && inv.vehicle_id && !lastOilChange[inv.vehicle_id]) {
-        lastOilChange[inv.vehicle_id] = inv.created_at
+      const items = [
+        ...(Array.isArray(inv.parts) ? inv.parts : []),
+        ...(Array.isArray(inv.labors) ? inv.labors : []),
+        ...(Array.isArray(inv.line_items) ? inv.line_items : []),
+      ]
+      const hasOilChange = items.some((item: Record<string, unknown>) => /oil.?change/i.test(String(item.description || item.name || item.operation || '')))
+      if (hasOilChange && inv.customer_id) {
+        const key = vehicleHistoryKey(inv.customer_id, inv.vehicle_vin, inv.vehicle_year, inv.vehicle_make, inv.vehicle_model)
+        if (!lastOilChange[key]) lastOilChange[key] = inv.created_at
+        const customerKey = vehicleHistoryKey(inv.customer_id, '', '', '', '')
+        if (!lastOilChange[customerKey]) lastOilChange[customerKey] = inv.created_at
       }
     }
 
     for (const vehicle of vehicles || []) {
-      const customer = vehicle.customers as Record<string, string> | null
+      const customer = customerById.get(vehicle.customer_id) as { name?: string; phone?: string; sms_opted_out?: boolean } | undefined
       if (!customer?.phone) continue
 
-      const lastChange = lastOilChange[vehicle.id]
+      const lastChange = lastOilChange[vehicleHistoryKey(vehicle.customer_id, vehicle.vin, vehicle.year, vehicle.make, vehicle.model)]
+        || lastOilChange[vehicleHistoryKey(vehicle.customer_id, '', '', '', '')]
       if (!lastChange) continue
 
       const daysSinceOilChange = (Date.now() - new Date(lastChange).getTime()) / (1000 * 60 * 60 * 24)
@@ -62,69 +94,127 @@ export async function POST(req: NextRequest) {
       if (!isDue) continue
 
       // Don't spam — check if we sent a reminder in the last 30 days
-      const { data: recentReminder } = await sb
+      const { data: recentReminder, error: recentReminderError } = await sb
         .from('service_reminders_sent')
         .select('id')
+        .eq('shop_id', auth.shopId)
         .eq('vehicle_id', vehicle.id)
+        .eq('sent', true)
         .gte('created_at', new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString())
         .limit(1)
+      if (recentReminderError) return NextResponse.json({ ok: false, error: 'Unable to load service reminder history' }, { status: 500 })
 
       if (recentReminder && recentReminder.length > 0) continue
 
-      const msg = `Hi ${customer.name}! Your ${vehicle.year || ''} ${vehicle.make || ''} ${vehicle.model || ''} is due for an oil change. Alpha International Auto Center is ready for you — call (713) 663-6979 or just reply to this text!`
+      const msg = `Hi ${customer.name}! Your ${vehicle.year || ''} ${vehicle.make || ''} ${vehicle.model || ''} is due for an oil change. ${shopName} is ready for you${shopPhone ? ` — call ${shopPhone}` : ''} or just reply to this text!`
 
-      if (!dry_run) {
-        const result = await sendSMS(customer.phone, msg)
-        try {
-          await sb.from('service_reminders_sent').insert({
+      if (customer.sms_opted_out || await isSmsOptedOut(sb, auth.shopId, customer.phone)) {
+        results.push({ vehicle: `${vehicle.year} ${vehicle.make} ${vehicle.model}`, customer: customer.name, sent: false, skipped: true, error: 'Customer has opted out of SMS' })
+        continue
+      }
+
+      if (!dryRun) {
+        const beforeSms = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['service_reminders'])
+        if (!beforeSms.ok) return NextResponse.json({ ok: false, error: beforeSms.error }, { status: beforeSms.status })
+        const result = await sendSMS(customer.phone, msg, telnyxKey, telnyxFrom, `service-reminder-${vehicle.id}`)
+        let reminderError: { message: string } | null = null
+        if (automationCheck.ok && automationCheck.runId && automationCheck.fencingToken !== undefined) {
+          const fenced = await sb.rpc('insert_service_reminder_fenced', {
+            p_shop_id: auth.shopId,
+            p_run_id: automationCheck.runId,
+            p_fencing_token: automationCheck.fencingToken,
+            p_vehicle_id: vehicle.id,
+            p_customer_id: vehicle.customer_id,
+            p_message: msg,
+            p_sent: result.success,
+          })
+          reminderError = fenced.error
+        } else {
+          const beforeLog = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['service_reminders'])
+          if (!beforeLog.ok) return NextResponse.json({ ok: false, uncertain: true, reconciliation_required: true, error: 'Service reminder outcome is uncertain because its automation lease expired before recording' }, { status: 502 })
+          const logged = await sb.from('service_reminders_sent').insert({
+            shop_id: auth.shopId,
             vehicle_id: vehicle.id,
             customer_id: vehicle.customer_id,
             message: msg,
             sent: result.success,
             created_at: new Date().toISOString(),
           })
-        } catch { /* table may not exist yet */ }
-        results.push({ vehicle: `${vehicle.year} ${vehicle.make} ${vehicle.model}`, customer: customer.name, sent: result.success })
+          reminderError = logged.error
+        }
+        if (reminderError) return NextResponse.json({ ok: false, uncertain: true, reconciliation_required: true, error: 'Service reminder was sent but could not be logged' }, { status: 502 })
+        results.push({ vehicle: `${vehicle.year} ${vehicle.make} ${vehicle.model}`, customer: customer.name, sent: result.success, error: result.error })
       } else {
         results.push({ vehicle: `${vehicle.year} ${vehicle.make} ${vehicle.model}`, customer: customer.name, sent: false, dry_run: true, message: msg })
       }
     }
 
-    return NextResponse.json({ ok: true, processed: results.length, results })
+    const success = dryRun || results.every(result => result.skipped || result.sent === true)
+    return NextResponse.json({ ok: success, success, processed: results.length, results }, { status: success ? 200 : 502 })
   }
 
   if (action === 'appointment_reminders') {
     // Text everyone with an appointment tomorrow. Reads the real appointments
     // table (this used to query jobs.scheduled_date, which doesn't exist — the
     // reminder never fired once).
-    const tomorrow = new Date()
-    tomorrow.setDate(tomorrow.getDate() + 1)
-    const tomorrowStr = tomorrow.toISOString().split('T')[0]
+    const timezone = typeof settings?.timezone === 'string' && settings.timezone ? settings.timezone : 'America/Chicago'
+    const tomorrowStr = localDateString(new Date(Date.now() + 24 * 60 * 60 * 1000), timezone)
 
-    const { data: appts } = await sb
+    const { data: appts, error: appointmentsError } = await sb
       .from('appointments')
       .select('*')
+      .eq('shop_id', auth.shopId)
       .eq('date', tomorrowStr)
       .in('status', ['Scheduled', 'Confirmed'])
+    if (appointmentsError) return NextResponse.json({ ok: false, error: 'Unable to load appointments' }, { status: 500 })
 
     const results: Array<Record<string, unknown>> = []
 
+    const appointmentCustomerIds = [...new Set((appts || []).map(appt => appt.customer_id).filter(Boolean))]
+    const { data: appointmentCustomers, error: appointmentCustomersError } = appointmentCustomerIds.length
+      ? await sb.from('customers').select('id,phone,sms_opted_out').eq('shop_id', auth.shopId).in('id', appointmentCustomerIds)
+      : { data: [], error: null }
+    if (appointmentCustomersError) return NextResponse.json({ ok: false, error: 'Unable to load appointment customers' }, { status: 500 })
+    const appointmentCustomerById = new Map((appointmentCustomers || []).map(customer => [customer.id, customer]))
+
     for (const appt of appts || []) {
-      const phone = (appt.phone || '').trim()
+      const appointmentCustomer = appt.customer_id ? appointmentCustomerById.get(appt.customer_id) : null
+      const phone = String(appointmentCustomer?.phone || appt.phone || '').trim()
       if (!phone) continue
       // Never double-text: skip if a reminder already went out for this one.
       if (appt.reminder_sent_at) continue
 
       const timeText = appt.time ? ` at ${appt.time}` : ''
       const serviceText = appt.service ? ` for ${appt.service}` : ''
-      const msg = `Hi ${appt.customer_name || 'there'}! Reminder: you have an appointment${serviceText} at Alpha International Auto Center tomorrow${timeText}. Call (713) 663-6979 if you need to reschedule. See you then!`
+      const msg = `Hi ${appt.customer_name || 'there'}! Reminder: you have an appointment${serviceText} at ${shopName} tomorrow${timeText}.${shopPhone ? ` Call ${shopPhone}` : ''} if you need to reschedule. See you then!`
 
-      if (!dry_run) {
-        const result = await sendSMS(phone, msg)
+      if (appointmentCustomer?.sms_opted_out || await isSmsOptedOut(sb, auth.shopId, phone)) {
+        results.push({ appointment: appt.id, customer: appt.customer_name, time: appt.time, sent: false, skipped: true, error: 'Customer has opted out of SMS' })
+        continue
+      }
+
+      if (!dryRun) {
+        const beforeSms = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['appointment_reminders'])
+        if (!beforeSms.ok) return NextResponse.json({ ok: false, error: beforeSms.error }, { status: beforeSms.status })
+        const result = await sendSMS(phone, msg, telnyxKey, telnyxFrom, `appointment-reminder-${appt.id}`)
         if (result.success) {
-          try {
-            await sb.from('appointments').update({ reminder_sent_at: new Date().toISOString() }).eq('id', appt.id)
-          } catch { /* column may not exist yet — reminder still went out */ }
+          let appointmentError: { message: string } | null = null
+          if (automationCheck.ok && automationCheck.runId && automationCheck.fencingToken !== undefined) {
+            const fenced = await sb.rpc('mark_appointment_reminder_fenced', {
+              p_shop_id: auth.shopId,
+              p_run_id: automationCheck.runId,
+              p_fencing_token: automationCheck.fencingToken,
+              p_appointment_id: appt.id,
+              p_reminder_sent_at: new Date().toISOString(),
+            })
+            appointmentError = fenced.error
+          } else {
+            const beforeRecord = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['appointment_reminders'])
+            if (!beforeRecord.ok) return NextResponse.json({ ok: false, uncertain: true, reconciliation_required: true, error: 'Appointment reminder outcome is uncertain because its automation lease expired before recording' }, { status: 502 })
+            const updated = await sb.from('appointments').update({ reminder_sent_at: new Date().toISOString() }).eq('id', appt.id).eq('shop_id', auth.shopId)
+            appointmentError = updated.error
+          }
+          if (appointmentError) return NextResponse.json({ ok: false, uncertain: true, reconciliation_required: true, error: 'Appointment reminder was sent but could not be recorded' }, { status: 502 })
         }
         results.push({ appointment: appt.id, customer: appt.customer_name, time: appt.time, sent: result.success, error: result.error })
       } else {
@@ -132,8 +222,24 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({ ok: true, processed: results.length, results })
+    const success = dryRun || results.every(result => result.skipped || result.sent === true)
+    return NextResponse.json({ ok: success, success, processed: results.length, results }, { status: success ? 200 : 502 })
   }
 
   return NextResponse.json({ ok: false, error: 'Unknown action' }, { status: 400 })
+}
+
+function vehicleHistoryKey(customerId: string, vin: string, year: string, make: string, model: string) {
+  return [customerId || '', vin || '', year || '', make || '', model || ''].map(value => String(value).trim().toLowerCase()).join('|')
+}
+
+function localDateString(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date)
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]))
+  return `${values.year}-${values.month}-${values.day}`
 }

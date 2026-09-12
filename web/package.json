@@ -10,6 +10,9 @@
     "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
+    "@openai-oauth/core": "2.0.0",
+    "@openai-oauth/react": "2.0.0",
+    "@openai-oauth/web": "2.0.0",
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.43.5",
     "@telnyx/react-client": "^1.0.2",

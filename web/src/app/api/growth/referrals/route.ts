@@ -1,10 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-)
+import { getServiceClient } from '@/lib/supabase'
+import { getRouteShop, unauthorized } from '@/lib/api-auth'
 
 function generateCode(length = 6): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
@@ -21,12 +17,16 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url)
     const code = searchParams.get('code')
     const customerId = searchParams.get('customer_id')
+    const auth = await getRouteShop(req, searchParams.get('shop_id'))
+    if (!auth) return unauthorized()
+    const supabase = getServiceClient()
 
     if (code) {
       // Lookup specific referral code
       const { data, error } = await supabase
         .from('growth_referrals')
         .select('*')
+        .eq('shop_id', auth.shopId)
         .eq('code', code.toUpperCase())
         .single()
 
@@ -42,6 +42,7 @@ export async function GET(req: NextRequest) {
       const { data, error } = await supabase
         .from('growth_referrals')
         .select('*')
+        .eq('shop_id', auth.shopId)
         .eq('customer_id', customerId)
         .single()
 
@@ -56,6 +57,7 @@ export async function GET(req: NextRequest) {
     const { data, error } = await supabase
       .from('growth_referrals')
       .select('*')
+      .eq('shop_id', auth.shopId)
       .order('total_referrals', { ascending: false })
 
     if (error) throw error
@@ -70,21 +72,36 @@ export async function GET(req: NextRequest) {
 // POST - Create a referral code for a customer OR redeem a referral
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json()
-    const { action } = body
+    const body = await req.json().catch(() => null)
+    const auth = await getRouteShop(req, body?.shopId)
+    if (!auth) return unauthorized()
+    const supabase = getServiceClient()
+    const { action } = body || {}
 
     if (action === 'create') {
       // Create a new referral code for a customer
-      const { customer_id, customer_name, discount_percent = 10 } = body
+      const { customer_id, customer_name } = body
+      const discountValue = Number(body?.discount_percent ?? 10)
+      const discount_percent = Number.isFinite(discountValue) && discountValue >= 0 && discountValue <= 100
+        ? Math.round(discountValue * 100) / 100
+        : 10
 
-      if (!customer_id || !customer_name) {
+      if (typeof customer_id !== 'string' || !customer_id || typeof customer_name !== 'string' || !customer_name.trim()) {
         return NextResponse.json({ error: 'customer_id and customer_name required' }, { status: 400 })
       }
+      const { data: customer } = await supabase
+        .from('customers')
+        .select('id, name')
+        .eq('id', customer_id)
+        .eq('shop_id', auth.shopId)
+        .maybeSingle()
+      if (!customer) return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
 
       // Check if customer already has a code
       const { data: existing } = await supabase
         .from('growth_referrals')
         .select('code')
+        .eq('shop_id', auth.shopId)
         .eq('customer_id', customer_id)
         .single()
 
@@ -99,6 +116,7 @@ export async function POST(req: NextRequest) {
         const { data: dup } = await supabase
           .from('growth_referrals')
           .select('code')
+          .eq('shop_id', auth.shopId)
           .eq('code', code)
           .single()
         if (!dup) break
@@ -109,6 +127,7 @@ export async function POST(req: NextRequest) {
       const { data, error } = await supabase
         .from('growth_referrals')
         .insert({
+          shop_id: auth.shopId,
           customer_id,
           customer_name,
           code,
@@ -142,7 +161,8 @@ export async function POST(req: NextRequest) {
       const { data: referral, error: refError } = await supabase
         .from('growth_referrals')
         .select('*')
-        .eq('code', refCode.toUpperCase())
+        .eq('shop_id', auth.shopId)
+        .eq('code', String(refCode).trim().toUpperCase())
         .eq('active', true)
         .single()
 
@@ -150,29 +170,37 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Invalid or inactive referral code' }, { status: 404 })
       }
 
-      const discountAmount = (service_total * referral.discount_percent) / 100
+      const totalValue = Number(service_total)
+      if (!Number.isFinite(totalValue) || totalValue < 0 || totalValue > 100000000) {
+        return NextResponse.json({ error: 'service_total must be a valid non-negative amount' }, { status: 400 })
+      }
+      const discountAmount = (totalValue * Number(referral.discount_percent || 0)) / 100
 
       // Log the redemption
-      await supabase.from('growth_referral_redemptions').insert({
+      const { error: redemptionError } = await supabase.from('growth_referral_redemptions').insert({
+        shop_id: auth.shopId,
         referral_id: referral.id,
         referral_code: referral.code,
         referrer_id: referral.customer_id,
         referrer_name: referral.customer_name,
         new_customer_name: new_customer_name || 'Walk-in',
         new_customer_phone: new_customer_phone || null,
-        service_total,
+        service_total: totalValue,
         discount_amount: discountAmount,
         created_at: new Date().toISOString()
       })
+      if (redemptionError) throw redemptionError
 
       // Update referral stats
-      await supabase
+      const { error: updateError } = await supabase
         .from('growth_referrals')
         .update({
           total_referrals: (referral.total_referrals || 0) + 1,
           total_discount_given: (referral.total_discount_given || 0) + discountAmount
         })
         .eq('id', referral.id)
+        .eq('shop_id', auth.shopId)
+      if (updateError) throw updateError
 
       return NextResponse.json({
         valid: true,

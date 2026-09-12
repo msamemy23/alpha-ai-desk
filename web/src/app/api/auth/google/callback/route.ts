@@ -1,48 +1,35 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getAuthedShop } from '@/lib/api-auth'
+import { updateConnector } from '@/lib/connectors'
+import { verifyOAuthState } from '@/lib/oauth-state'
+
 export const dynamic = 'force-dynamic'
 
-const CLIENT_ID     = process.env.GOOGLE_CLIENT_ID || ''
+const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || ''
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET_V2 || process.env.GOOGLE_CLIENT_SECRET || ''
-const CALLBACK      = 'https://alpha-ai-desk.vercel.app/api/auth/google/callback'
-const SUPABASE_URL  = process.env.NEXT_PUBLIC_SUPABASE_URL  || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const SUPABASE_KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || ''
-const BASE          = 'https://alpha-ai-desk.vercel.app'
-
-async function updateConnector(service: string, data: Record<string, unknown>) {
-  // PATCH (update) existing row — rows were pre-seeded during table creation
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/connectors?service=eq.${service}`, {
-    method: 'PATCH',
-    headers: {
-      'apikey': SUPABASE_KEY,
-      'Authorization': `Bearer ${SUPABASE_KEY}`,
-      'Content-Type': 'application/json',
-      'Prefer': 'return=representation',
-    },
-    body: JSON.stringify(data),
-  })
-  if (!r.ok) {
-    const text = await r.text()
-    console.error(`[update ${service}] ${r.status}: ${text}`)
-  }
-  return r
-}
 
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl
-  const code  = searchParams.get('code')
-  const error = searchParams.get('error')
+  const base = (process.env.NEXT_PUBLIC_APP_URL || req.nextUrl.origin).replace(/\/$/, '')
+  const code = searchParams.get('code')
+  const oauthError = searchParams.get('error')
+  const state = searchParams.get('state')
+  const auth = await getAuthedShop()
 
-  if (error || !code) {
-    const msg = error || 'no_code'
-    return NextResponse.redirect(`${BASE}/connectors?error=google_denied&detail=${encodeURIComponent(msg)}`)
+  if (oauthError || !code) {
+    const msg = oauthError || 'no_code'
+    return NextResponse.redirect(`${base}/connectors?error=google_denied&detail=${encodeURIComponent(msg)}`)
   }
-
-  if (!CLIENT_ID || !CLIENT_SECRET || !SUPABASE_KEY) {
-    return NextResponse.redirect(`${BASE}/connectors?error=google_not_configured&detail=${encodeURIComponent('Missing GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, or SUPABASE_SERVICE_ROLE_KEY in Vercel env')}`)
+  if (!auth) return NextResponse.redirect(`${base}/login?error=google_auth_required`)
+  if (!verifyOAuthState(state, 'google', auth.shopId)) {
+    return NextResponse.redirect(`${base}/connectors?error=google_invalid_state`)
+  }
+  if (!CLIENT_ID || !CLIENT_SECRET) {
+    return NextResponse.redirect(`${base}/connectors?error=google_not_configured&detail=${encodeURIComponent('Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET in Vercel env')}`)
   }
 
   try {
-    // Exchange code for tokens
+    const callback = `${base}/api/auth/google/callback`
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -50,45 +37,30 @@ export async function GET(req: NextRequest) {
         code,
         client_id: CLIENT_ID,
         client_secret: CLIENT_SECRET,
-        redirect_uri: CALLBACK,
+        redirect_uri: callback,
         grant_type: 'authorization_code',
       }),
     })
-
-    const tokenData = await tokenRes.json()
-    if (!tokenData.access_token) {
-      const detail = tokenData.error_description || tokenData.error || JSON.stringify(tokenData)
-      console.error('[google-callback] token error:', detail)
-      return NextResponse.redirect(`${BASE}/connectors?error=google_token_failed&detail=${encodeURIComponent(detail)}`)
+    const tokenData = await tokenRes.json().catch(() => ({}))
+    if (!tokenRes.ok || !tokenData.access_token) {
+      const detail = tokenData.error_description || tokenData.error || `Google token exchange failed with HTTP ${tokenRes.status}`
+      return NextResponse.redirect(`${base}/connectors?error=google_token_failed&detail=${encodeURIComponent(detail)}`)
     }
 
-    const { access_token, refresh_token, expires_in } = tokenData
-    const expiresAt = new Date(Date.now() + (expires_in || 3600) * 1000).toISOString()
-
-    // Update google_business connector
-    await updateConnector('google_business', {
+    const expiresAt = new Date(Date.now() + (tokenData.expires_in || 3600) * 1000).toISOString()
+    const connectorData = {
       enabled: true,
-      access_token,
-      refresh_token: refresh_token || null,
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token || null,
       token_expires_at: expiresAt,
       metadata: {},
-      updated_at: new Date().toISOString(),
-    })
-
-    // Update google_calendar connector (same tokens, different service)
-    await updateConnector('google_calendar', {
-      enabled: true,
-      access_token,
-      refresh_token: refresh_token || null,
-      token_expires_at: expiresAt,
-      metadata: {},
-      updated_at: new Date().toISOString(),
-    })
-
-    return NextResponse.redirect(`${BASE}/connectors?success=google`)
+    }
+    await updateConnector('google_business', connectorData, auth.shopId)
+    await updateConnector('google_calendar', connectorData, auth.shopId)
+    return NextResponse.redirect(`${base}/connectors?success=google`)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[google-callback]', msg)
-    return NextResponse.redirect(`${BASE}/connectors?error=google_internal&detail=${encodeURIComponent(msg)}`)
+    return NextResponse.redirect(`${base}/connectors?error=google_internal&detail=${encodeURIComponent(msg.slice(0, 200))}`)
   }
 }

@@ -1,274 +1,319 @@
 /**
- * Inbound Call Handler — Alpha International Auto Center
- * Fires when someone calls (713) 663-6979.
- * Acts as an AI receptionist: answers, converses, takes messages.
- * Completely separate from the outbound AI agent (telnyx-voice-webhook).
+ * Inbound Call Handler.
+ *
+ * Telnyx webhooks are signed, but the call id alone is not a tenant selector.
+ * Resolve the shop from the called number (or an existing scoped call row) before
+ * reading or writing any call state.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyTelnyxSignature } from '@/lib/telnyx-verify'
-import { AI_BASE_URLS, normalizeAiModel } from '@/lib/ai-config'
+import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
+import { getServiceClient } from '@/lib/supabase'
 
-const TELNYX_API_KEY     = process.env.TELNYX_API_KEY     || ''
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
-const AI_MODEL           = normalizeAiModel(process.env.AI_MODEL, AI_BASE_URLS.OPENROUTER)
-const SUPABASE_URL       = process.env.NEXT_PUBLIC_SUPABASE_URL  || 'https://fztnsqrhjesqcnsszqdb.supabase.co'
-const SUPABASE_KEY       = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
-const TELNYX_BASE        = 'https://api.telnyx.com/v2'
-const VOICE              = 'Telnyx.Natural.abbie'
-const VOICE_FALLBACK     = 'female'
+const TELNYX_BASE = 'https://api.telnyx.com/v2'
+const VOICE = 'Telnyx.Natural.abbie'
+const VOICE_FALLBACK = 'female'
 
-// ── Supabase helpers ───────────────────────────────────────────────────────────
-async function dbGet(callId: string) {
-  const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/ai_calls?id=eq.${encodeURIComponent(callId)}&limit=1`,
-    { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
-  )
-  const rows = await r.json()
-  return Array.isArray(rows) && rows.length > 0 ? rows[0] : null
+type ShopSettings = {
+  shop_id: string
+  shop_name?: string | null
+  shop_phone?: string | null
+  telnyx_phone_number?: string | null
+  shop_address?: string | null
+  shop_email?: string | null
+  shop_hours?: string | null
+  ai_api_key?: string | null
+  ai_base_url?: string | null
+  ai_model?: string | null
+  telnyx_api_key?: string | null
 }
 
-async function dbUpsert(callId: string, patch: Record<string, unknown>) {
-  await fetch(`${SUPABASE_URL}/rest/v1/ai_calls`, {
-    method:  'POST',
-    headers: {
-      'apikey':        SUPABASE_KEY,
-      'Authorization': `Bearer ${SUPABASE_KEY}`,
-      'Content-Type':  'application/json',
-      'Prefer':        'resolution=merge-duplicates',
-    },
-    body: JSON.stringify({ id: callId, ...patch }),
+function digits(value: unknown) {
+  return String(value || '').replace(/\D/g, '').slice(-10)
+}
+
+async function resolveShop(payload: Record<string, unknown>, callId: string): Promise<ShopSettings | null> {
+  const db = getServiceClient()
+  const calledNumber = digits(payload.to || payload.phone_number || payload.called_number || payload.destination)
+  const { data: settings, error } = await db.from('settings')
+    .select('shop_id,shop_name,shop_phone,telnyx_phone_number,telnyx_api_key,shop_address,shop_email,ai_api_key,ai_base_url,ai_model')
+    .not('shop_id', 'is', null)
+  if (error) throw error
+
+  const matches = (settings || []).filter((row: ShopSettings) => {
+    const configured = digits(row.telnyx_phone_number || row.shop_phone)
+    return Boolean(calledNumber && configured && calledNumber === configured)
   })
+  if (matches.length === 1) return matches[0]
+
+  const { data: existing, error: existingError } = await db.from('ai_calls')
+    .select('shop_id')
+    .eq('id', callId)
+    .maybeSingle()
+  if (existingError) throw existingError
+  if (!existing?.shop_id) return null
+  return (settings || []).find((row: ShopSettings) => row.shop_id === existing.shop_id) || null
 }
 
-async function dbUpdate(callId: string, patch: Record<string, unknown>) {
-  await fetch(
-    `${SUPABASE_URL}/rest/v1/ai_calls?id=eq.${encodeURIComponent(callId)}`,
-    {
-      method:  'PATCH',
-      headers: {
-        'apikey':        SUPABASE_KEY,
-        'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'Content-Type':  'application/json',
-      },
-      body: JSON.stringify(patch),
-    }
-  )
+async function dbGet(callId: string, shopId: string) {
+  const { data, error } = await getServiceClient().from('ai_calls')
+    .select('*')
+    .eq('id', callId)
+    .eq('shop_id', shopId)
+    .maybeSingle()
+  if (error) throw error
+  return data
 }
 
-// ── Telnyx helpers ─────────────────────────────────────────────────────────────
-async function telnyxPost(path: string, body: Record<string, unknown>) {
+async function dbUpsert(callId: string, shopId: string, patch: Record<string, unknown>) {
+  const db = getServiceClient()
+  const { data: existing, error: existingError } = await db.from('ai_calls')
+    .select('shop_id')
+    .eq('id', callId)
+    .maybeSingle()
+  if (existingError) throw existingError
+  if (existing?.shop_id && existing.shop_id !== shopId) {
+    throw new Error('Call belongs to another shop')
+  }
+  const { error } = await db.from('ai_calls')
+    .upsert({ id: callId, shop_id: shopId, ...patch }, { onConflict: 'id' })
+  if (error) throw error
+}
+
+async function dbUpdate(callId: string, shopId: string, patch: Record<string, unknown>) {
+  const { error } = await getServiceClient().from('ai_calls')
+    .update(patch)
+    .eq('id', callId)
+    .eq('shop_id', shopId)
+  if (error) throw error
+}
+
+async function telnyxPost(path: string, body: Record<string, unknown>, apiKey: string) {
+  if (!apiKey) return { ok: false, data: { error: 'Telnyx is not configured' } }
   const r = await fetch(`${TELNYX_BASE}${path}`, {
-    method:  'POST',
-    headers: { 'Authorization': `Bearer ${TELNYX_API_KEY}`, 'Content-Type': 'application/json' },
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  return { ok: r.ok, data: await r.json() }
+  return { ok: r.ok, data: await r.json().catch(() => ({})) }
 }
 
-async function speak(callId: string, text: string): Promise<boolean> {
+async function speak(callId: string, text: string, apiKey: string): Promise<boolean> {
   const clean = text.replace(/"/g, "'").slice(0, 3000)
-  const r = await telnyxPost(`/calls/${callId}/actions/speak`, {
+  const primary = await telnyxPost(`/calls/${callId}/actions/speak`, {
     payload: clean, payload_type: 'text', voice: VOICE,
-  })
-  if (r.ok) return true
-  const fb = await telnyxPost(`/calls/${callId}/actions/speak`, {
+  }, apiKey)
+  if (primary.ok) return true
+  const fallback = await telnyxPost(`/calls/${callId}/actions/speak`, {
     payload: clean, payload_type: 'text', voice: VOICE_FALLBACK,
-  })
-  return fb.ok
+  }, apiKey)
+  return fallback.ok
 }
 
-async function aiChat(messages: Array<{role: string; content: string}>, maxTokens = 150): Promise<string> {
+async function aiChat(messages: Array<{ role: string; content: string }>, maxTokens: number, settings: ShopSettings) {
+  const apiKey = String(settings.ai_api_key || '')
+  if (!apiKey) return ''
   try {
-    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method:  'POST',
-      headers: { 'Authorization': `Bearer ${OPENROUTER_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: AI_MODEL, messages, max_tokens: maxTokens, temperature: 0.7 }),
+    const baseUrl = normalizeAiBaseUrl(settings.ai_base_url || AI_BASE_URLS.OPENROUTER)
+    const model = normalizeAiModel(settings.ai_model, baseUrl)
+    const r = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        ...(baseUrl.includes('openrouter.ai') ? {
+          'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'https://alpha-ai-desk.vercel.app',
+          'X-Title': 'Alpha AI Desk',
+        } : {}),
+      },
+      body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature: 0.7 }),
+      signal: AbortSignal.timeout(30000),
     })
-    const d = await r.json()
-    let text = d?.choices?.[0]?.message?.content?.trim() || ''
-    text = text.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\*([^*]+)\*/g, '$1')
-    text = text.replace(/^["']|["']$/g, '').trim()
-    text = text.replace(/\([^)]*\)/g, '').trim()
-    return text
-  } catch { return '' }
+    if (!r.ok) return ''
+    const d = await r.json().catch(() => ({}))
+    return String(d?.choices?.[0]?.message?.content || '')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/\*([^*]+)\*/g, '$1')
+      .replace(/^["']|["']$/g, '')
+      .replace(/\([^)]*\)/g, '')
+      .trim()
+  } catch {
+    return ''
+  }
 }
 
-// ── Main webhook handler ───────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   const rawBody = await req.text()
-  const sig = req.headers.get('telnyx-signature-ed25519')
-  const ts = req.headers.get('telnyx-timestamp')
-  if (!verifyTelnyxSignature(rawBody, sig, ts)) {
+  const signature = req.headers.get('telnyx-signature-ed25519')
+  const timestamp = req.headers.get('telnyx-timestamp')
+  if (!verifyTelnyxSignature(rawBody, signature, timestamp)) {
     return NextResponse.json({ ok: false, error: 'Invalid signature' }, { status: 401 })
   }
 
-  const body      = JSON.parse(rawBody)
-  const eventType = body?.data?.event_type as string
-  const payload   = body?.data?.payload    as Record<string, unknown>
-  const callId    = payload?.call_control_id as string
-
-  // ── call.initiated — inbound call ringing — write to DB IMMEDIATELY ──────────
-  if (eventType === 'call.initiated') {
-    const direction = payload?.direction as string
-    if (direction === 'incoming') {
-      const from = (payload?.from as string) || 'unknown'
-      // Write to Supabase immediately so it appears live on the dashboard
-      await dbUpsert(callId, {
-        task:       `Inbound call from ${from}. Act as AI receptionist for Alpha International Auto Center.`,
-        status:     'ringing',
-        caller:     from,
-        started_at: Date.now(),
-      })
-      // Answer the call
-      await telnyxPost(`/calls/${callId}/actions/answer`, {})
-    }
-    return NextResponse.json('OK')
+  let body: Record<string, unknown>
+  try {
+    body = JSON.parse(rawBody) as Record<string, unknown>
+  } catch {
+    return NextResponse.json({ ok: false, error: 'Invalid JSON' }, { status: 400 })
   }
 
-  // ── call.answered — call connected, greet the caller ─────────────────────────
-  if (eventType === 'call.answered') {
-    const from = (payload?.from as string) || 'unknown'
+  const data = body.data as Record<string, unknown> | undefined
+  const eventType = typeof data?.event_type === 'string' ? data.event_type : ''
+  const payload = (data?.payload && typeof data.payload === 'object' ? data.payload : {}) as Record<string, unknown>
+  if (eventType === 'version') return NextResponse.json({ v: 'v8.0-inbound' })
 
-    // Update record — call is now active
-    await dbUpsert(callId, {
-      task:       `Inbound call from ${from}. Act as AI receptionist for Alpha International Auto Center.`,
-      status:     'active',
-      caller:     from,
-      started_at: Date.now(),
-      greeted:    false,
-      processing: true,
-    })
+  const callId = typeof payload.call_control_id === 'string' ? payload.call_control_id : ''
+  if (!callId) return NextResponse.json({ ok: false, error: 'Missing call control id' }, { status: 400 })
 
-    // Start transcription — 'both' for reliable caller audio capture
-    await telnyxPost(`/calls/${callId}/actions/transcription_start`, {
-      language:             'en',
-      transcription_engine: 'B',
-      transcription_tracks: 'both',
-      interim_results:      false,
-    })
-
-    // Start recording
-    await telnyxPost(`/calls/${callId}/actions/record_start`, {
-      format:   'mp3',
-      channels: 'dual',
-    })
-
-    // Generate greeting
-    const greeting = await aiChat([{
-      role:    'user',
-      content: `You are the receptionist for Alpha International Auto Center, an auto repair shop at 10710 S Main St, Houston TX 77025.\nA customer is calling. Write a SHORT warm greeting (1-2 sentences). Plain conversational speech only - no markdown, no asterisks, no quotes around the text.`,
-    }], 60) || "Thank you for calling Alpha International Auto Center, how can I help you today?"
-
-    await dbUpdate(callId, {
-      greeted:      true,
-      transcript:   [{ speaker: 'ai', text: greeting }],
-      conversation: [{ role: 'assistant', content: greeting }],
-    })
-
-    await speak(callId, greeting)
-
-    // Unlock — do NOT rely on call.speak.ended
-    await dbUpdate(callId, { processing: false })
-
-    return NextResponse.json('OK')
+  const settings = await resolveShop(payload, callId)
+  if (!settings?.shop_id) {
+    return NextResponse.json({ ok: false, error: 'No configured shop matches this called number' }, { status: 400 })
   }
+  const shopId = settings.shop_id
+  const shopName = String(settings.shop_name || 'the configured auto repair shop')
+  const shopPhone = String(settings.shop_phone || settings.telnyx_phone_number || 'the shop phone')
+  const telnyxKey = String(settings.telnyx_api_key || '')
 
-  // ── call.transcription — customer spoke, AI responds ─────────────────────────
-  if (eventType === 'call.transcription') {
-    const td      = payload?.transcription_data as Record<string, unknown>
-    const text    = (td?.transcript as string || '').trim()
-    const isFinal = td?.is_final as boolean
-    console.log(`[inbound-webhook] transcription: final=${isFinal} text="${text?.slice(0, 50)}"`)
-    if (!text || !isFinal) {
-      console.log('[inbound-webhook] SKIP: empty or non-final', { text: text?.slice(0, 30), isFinal })
+  try {
+    if (eventType === 'call.initiated') {
+      if (payload.direction === 'incoming') {
+        const from = String(payload.from || 'unknown').slice(0, 40)
+        await dbUpsert(callId, shopId, {
+          task: `Inbound call from ${from}. Act as AI receptionist for ${shopName}.`,
+          status: 'ringing',
+          caller: from,
+          started_at: Date.now(),
+        })
+        const answer = await telnyxPost(`/calls/${callId}/actions/answer`, {}, telnyxKey)
+        if (!answer.ok) console.error('[inbound-webhook] answer failed:', answer.data)
+      }
       return NextResponse.json('OK')
     }
 
-    const state = await dbGet(callId)
-    if (!state) { console.log('[inbound-webhook] SKIP: no state'); return NextResponse.json('OK') }
-    if (state.processing) { console.log('[inbound-webhook] SKIP: processing=true'); return NextResponse.json('OK') }
+    if (eventType === 'call.answered') {
+      const from = String(payload.from || 'unknown').slice(0, 40)
+      await dbUpsert(callId, shopId, {
+        task: `Inbound call from ${from}. Act as AI receptionist for ${shopName}.`,
+        status: 'active',
+        caller: from,
+        started_at: Date.now(),
+        greeted: false,
+        processing: true,
+      })
 
-    // Lock immediately
-    await dbUpdate(callId, { processing: true })
+      const transcription = await telnyxPost(`/calls/${callId}/actions/transcription_start`, {
+        language: 'en',
+        transcription_engine: 'B',
+        transcription_tracks: 'both',
+        interim_results: false,
+      }, telnyxKey)
+      if (!transcription.ok) console.error('[inbound-webhook] transcription start failed:', transcription.data)
 
-    // Build arrays
-    const transcript: Array<{speaker: string; text: string}> =
-      Array.isArray(state.transcript) ? [...state.transcript]
-      : typeof state.transcript === 'string' ? JSON.parse(state.transcript || '[]')
-      : []
-    const conversation: Array<{role: string; content: string}> =
-      Array.isArray(state.conversation) ? [...state.conversation]
-      : typeof state.conversation === 'string' ? JSON.parse(state.conversation || '[]')
-      : []
+      const recording = await telnyxPost(`/calls/${callId}/actions/record_start`, {
+        format: 'mp3',
+        channels: 'dual',
+      }, telnyxKey)
+      if (!recording.ok) console.error('[inbound-webhook] recording start failed:', recording.data)
 
-    transcript.push({ speaker: 'customer', text })
-    await dbUpdate(callId, { transcript })
+      const greeting = await aiChat([{
+        role: 'user',
+        content: `You are the receptionist for ${shopName}, an auto repair shop at ${settings.shop_address || 'the configured shop address'}.
+A customer is calling. Write a short warm greeting (1-2 sentences). Plain conversational speech only — no markdown, asterisks, or quotes.`,
+      }], 60, settings) || `Thank you for calling ${shopName}. How can I help you today?`
 
-    const system = `You are the AI phone receptionist for Alpha International Auto Center, an auto repair shop at 10710 S Main St, Houston TX 77025. Phone: (713) 663-6979. Hours: Mon-Fri 8am-6pm, Sat 9am-3pm.\n\nRULES:\n- Live phone call. Keep replies SHORT — 1-3 sentences max. Natural and friendly.\n- Help with: appointments, vehicle questions, pricing, directions, hours.\n- If caller wants to leave a message, acknowledge you will pass it along.\n- Speak like a real, warm human receptionist. Never say you are AI unless directly asked.`
-
-    const messages = [
-      { role: 'system', content: system },
-      ...conversation.slice(-8),
-      { role: 'user',   content: text },
-    ]
-
-    const reply = await aiChat(messages, 100)
-    if (reply) {
-      transcript.push({ speaker: 'ai', text: reply })
-      conversation.push({ role: 'assistant', content: reply })
-      await dbUpdate(callId, { transcript, conversation })
-      await speak(callId, reply)
+      await dbUpdate(callId, shopId, {
+        greeted: true,
+        transcript: [{ speaker: 'ai', text: greeting }],
+        conversation: [{ role: 'assistant', content: greeting }],
+        processing: false,
+      })
+      if (!await speak(callId, greeting, telnyxKey)) {
+        console.error('[inbound-webhook] greeting could not be spoken')
+      }
+      return NextResponse.json('OK')
     }
 
-    await dbUpdate(callId, { processing: false })
-    return NextResponse.json('OK')
-  }
+    if (eventType === 'call.transcription') {
+      const td = (payload.transcription_data && typeof payload.transcription_data === 'object' ? payload.transcription_data : {}) as Record<string, unknown>
+      const text = String(td.transcript || '').trim().slice(0, 2000)
+      const isFinal = td.is_final === true
+      if (!text || !isFinal) return NextResponse.json('OK')
 
-  // ── call.speak.ended — safety net unlock ─────────────────────────────────────
-  if (eventType === 'call.speak.ended') {
-    await dbUpdate(callId, { processing: false })
-    return NextResponse.json('OK')
-  }
+      const state = await dbGet(callId, shopId)
+      if (!state) return NextResponse.json('OK')
+      if (state.processing) return NextResponse.json('OK')
+      await dbUpdate(callId, shopId, { processing: true })
 
-  // ── call.recording.saved ─────────────────────────────────────────────────────
-  if (eventType === 'call.recording.saved') {
-    const urls = payload?.recording_urls
-    let recordingUrl = ''
-    if (typeof urls === 'string') {
-      recordingUrl = urls
-    } else if (urls && typeof urls === 'object') {
-      recordingUrl = (urls as Record<string, string>).mp3
-        || (urls as Record<string, string>).wav
-        || Object.values(urls as Record<string, string>)[0] || ''
-    }
-    if (!recordingUrl && payload?.public_url) recordingUrl = payload.public_url as string
-    if (recordingUrl) await dbUpdate(callId, { recording_url: recordingUrl })
-    return NextResponse.json('OK')
-  }
+      const transcript = Array.isArray(state.transcript) ? [...state.transcript] as Array<{ speaker: string; text: string }> : []
+      const conversation = Array.isArray(state.conversation) ? [...state.conversation] as Array<{ role: string; content: string }> : []
+      transcript.push({ speaker: 'customer', text })
+      await dbUpdate(callId, shopId, { transcript })
 
-  // ── call.hangup — generate summary ───────────────────────────────────────────
-  if (eventType === 'call.hangup') {
-    const state = await dbGet(callId)
-    if (!state) return NextResponse.json('OK')
-    await dbUpdate(callId, { status: 'ended' })
+      const reply = await aiChat([
+        {
+          role: 'system',
+          content: `You are the AI phone receptionist for ${shopName}. Phone: ${shopPhone}. Hours: ${settings.shop_hours || 'the configured shop hours'}.
 
-    const transcript: Array<{speaker: string; text: string}> =
-      Array.isArray(state.transcript) ? state.transcript
-      : typeof state.transcript === 'string' ? JSON.parse(state.transcript || '[]')
-      : []
+Rules:
+- Live phone call. Keep replies short — 1-3 sentences max.
+- Help with appointments, vehicle questions, pricing, directions, and hours.
+- If caller wants to leave a message, acknowledge you will pass it along.
+- Speak naturally. Never say you are AI unless directly asked.`,
+        },
+        ...conversation.slice(-8),
+        { role: 'user', content: text },
+      ], 100, settings)
 
-    if (transcript.length > 0) {
-      const lines   = transcript.map(t => `${t.speaker === 'ai' ? 'AI' : 'Caller'}: ${t.text}`).join('\n')
-      const summary = await aiChat([{
-        role:    'user',
-        content: `Summarize this inbound customer call in bullet points.\n\nTranscript:\n${lines}`,
-      }], 300)
-      await dbUpdate(callId, { summary: summary || `Inbound call ended. ${transcript.length} exchanges.`, status: 'ended' })
+      if (reply) {
+        transcript.push({ speaker: 'ai', text: reply })
+        conversation.push({ role: 'assistant', content: reply })
+        await dbUpdate(callId, shopId, { transcript, conversation })
+        if (!await speak(callId, reply, telnyxKey)) console.error('[inbound-webhook] reply could not be spoken')
+      }
+      await dbUpdate(callId, shopId, { processing: false })
+      return NextResponse.json('OK')
     }
 
-    return NextResponse.json('OK')
-  }
+    if (eventType === 'call.speak.ended') {
+      await dbUpdate(callId, shopId, { processing: false })
+      return NextResponse.json('OK')
+    }
 
-  return NextResponse.json('OK')
+    if (eventType === 'call.recording.saved') {
+      const urls = payload.recording_urls
+      const recordingUrl = typeof urls === 'string'
+        ? urls
+        : urls && typeof urls === 'object'
+          ? String((urls as Record<string, unknown>).mp3 || (urls as Record<string, unknown>).wav || Object.values(urls as Record<string, unknown>)[0] || '')
+          : String(payload.public_url || '')
+      if (recordingUrl) await dbUpdate(callId, shopId, { recording_url: recordingUrl.slice(0, 2000) })
+      return NextResponse.json('OK')
+    }
+
+    if (eventType === 'call.hangup') {
+      const state = await dbGet(callId, shopId)
+      if (!state) return NextResponse.json('OK')
+      await dbUpdate(callId, shopId, { status: 'ended', processing: false })
+      const transcript = Array.isArray(state.transcript) ? state.transcript as Array<{ speaker: string; text: string }> : []
+      if (transcript.length > 0) {
+        const lines = transcript.map(item => `${item.speaker === 'ai' ? 'AI' : 'Caller'}: ${item.text}`).join('\n')
+        const summary = await aiChat([{
+          role: 'user',
+          content: `Summarize this inbound customer call in 2-4 concise bullet points for ${shopName}.
+
+Transcript:
+${lines}`,
+        }], 300, settings)
+        await dbUpdate(callId, shopId, { summary: summary || `Inbound call ended. ${transcript.length} exchanges.` })
+      }
+      return NextResponse.json('OK')
+    }
+
+    return NextResponse.json('OK')
+  } catch (error) {
+    console.error('[inbound-webhook] error:', error)
+    try { await dbUpdate(callId, shopId, { processing: false }) } catch { /* preserve original error */ }
+    return NextResponse.json({ ok: false, error: 'Webhook processing failed' }, { status: 500 })
+  }
 }

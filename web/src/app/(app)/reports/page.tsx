@@ -1,12 +1,48 @@
 ﻿'use client'
 import { useEffect, useState } from 'react'
-import { supabase, calcTotals } from '@/lib/supabase'
+import { getShopId, supabase, calcTotals } from '@/lib/supabase'
 
 interface Invoice { id: string; customer_name: string; total: number; amount_paid: number; status: string; created_at: string; payment_method: string }
+interface Payment { id: string; document_id: string | null; amount: number; method: string; paid_at: string; created_at: string }
 interface Job { id: string; status: string; tech: string; concern: string; created_at: string }
 interface CallRecord { id: string; direction: string; duration_secs: number; start_time: string; status: string }
 
 function fmtCur(n: number) { return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) }
+
+function collectedAmount(value: unknown): number {
+  const amount = Number(value)
+  return Number.isFinite(amount) && amount > 0 ? amount : 0
+}
+
+async function fetchAllShopRows<T>(table: string, select: string, shopId: string, orderColumn: string, snapshotAt: string, pageSize = 1000): Promise<T[]> {
+  const rows: T[] = []
+  let cursor: { value: string; id: string } | null = null
+  for (;;) {
+    let query = supabase
+      .from(table)
+      .select(select)
+      .eq('shop_id', shopId)
+      .lte(orderColumn, snapshotAt)
+      .order(orderColumn, { ascending: false })
+      .order('id', { ascending: false })
+    // Keyset pagination keeps the boundary stable even if a historical row
+    // is inserted while a later page is loading. Offset pagination can return
+    // the previous page's last row again in that situation.
+    if (cursor) {
+      query = query.or(`${orderColumn}.lt.${cursor.value},and(${orderColumn}.eq.${cursor.value},id.lt.${cursor.id})`)
+    }
+    const { data, error } = await query.range(0, pageSize - 1)
+    if (error) throw new Error(error.message)
+    const page = (data || []) as T[]
+    rows.push(...page)
+    if (page.length < pageSize) return rows
+    const last = page[page.length - 1] as T & Record<string, unknown>
+    const lastValue = last?.[orderColumn]
+    const lastId = last?.id
+    if (lastValue == null || lastId == null) throw new Error('Report row is missing its pagination cursor')
+    cursor = { value: String(lastValue), id: String(lastId) }
+  }
+}
 
 type Period = '7d' | '30d' | '90d' | 'ytd'
 
@@ -23,7 +59,9 @@ export default function ReportsPage() {
   const [invoices, setInvoices] = useState<Invoice[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
   const [calls, setCalls] = useState<CallRecord[]>([])
+  const [payments, setPayments] = useState<Payment[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [period, setPeriod] = useState<Period>('30d')
   const [tab, setTab] = useState<'overview'|'revenue'|'jobs'|'calls'|'tax'>('overview')
 
@@ -31,46 +69,76 @@ export default function ReportsPage() {
     const load = async () => {
       setLoading(true)
       try {
+        const shopId = await getShopId()
+        if (!shopId) { setInvoices([]); setJobs([]); setCalls([]); setPayments([]); return }
+        // Offset pages are stable only when the dataset is frozen. One shared
+        // cutoff prevents rows inserted while page two is loading from
+        // shifting the result set and being returned twice.
+        const snapshotAt = new Date().toISOString()
         // Invoices live in the documents table (this page used to query a
         // nonexistent `invoices` table, so every report showed zero).
-        const [{ data: inv }, { data: j }, { data: c }] = await Promise.all([
-          supabase.from('documents').select('*').in('type', ['Invoice', 'Receipt']).order('created_at', { ascending: false }).limit(1000),
-          supabase.from('jobs').select('id,status,tech,concern,created_at').order('created_at', { ascending: false }).limit(2000),
-          supabase.from('call_history').select('id,direction,duration_secs,start_time,status').order('start_time', { ascending: false }).limit(2000),
+        const [inv, paymentRows, j, c] = await Promise.all([
+          fetchAllShopRows<Record<string, unknown>>('documents', '*', shopId, 'created_at', snapshotAt),
+          fetchAllShopRows<Payment>('payments', 'id,document_id,amount,method,paid_at,created_at', shopId, 'paid_at', snapshotAt),
+          fetchAllShopRows<Job>('jobs', 'id,status,tech,concern,created_at', shopId, 'created_at', snapshotAt),
+          fetchAllShopRows<CallRecord>('call_history', 'id,direction,duration_secs,start_time,status', shopId, 'start_time', snapshotAt),
         ])
-        const mapped = (inv || []).map((d: Record<string, unknown>) => ({
+        const invoiceRows = inv.filter(row => row.type === 'Invoice' || row.type === 'Receipt')
+        const mapped = invoiceRows.map((d: Record<string, unknown>) => ({
           id: d.id as string,
           customer_name: (d.customer_name as string) || '',
           total: calcTotals(d).total,
-          amount_paid: Number(d.amount_paid) || 0,
+          amount_paid: collectedAmount(d.amount_paid),
           status: (d.status as string) || '',
           created_at: (d.created_at as string) || '',
           payment_method: (d.payment_method as string) || '',
         }))
         setInvoices(mapped as Invoice[])
-        setJobs((j || []) as Job[])
-        setCalls((c || []) as CallRecord[])
+        setPayments(paymentRows)
+        setJobs(j)
+        setCalls(c)
+        setLoadError('')
+      } catch (error) {
+        setLoadError(error instanceof Error ? error.message : 'Reports could not be loaded')
       } finally { setLoading(false) }
     }
     load()
   }, [])
 
   function periodStart(): Date {
-    const d = new Date()
+    const now = new Date()
+    if (period === 'ytd') return new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0)
+    const d = new Date(now)
     if (period === '7d') d.setDate(d.getDate() - 7)
     else if (period === '30d') d.setDate(d.getDate() - 30)
     else if (period === '90d') d.setDate(d.getDate() - 90)
-    else { d.setMonth(0); d.setDate(1) }
     return d
   }
 
   const start = periodStart()
   const filteredInvoices = invoices.filter(i => new Date(i.created_at) >= start)
+  const invoiceById = new Map(invoices.map(invoice => [invoice.id, invoice]))
+  const paymentDocumentIds = new Set(payments.map(payment => payment.document_id).filter(Boolean))
+  const collections = [
+    ...payments.map(payment => ({
+      ...payment,
+      customer_name: invoiceById.get(payment.document_id || '')?.customer_name || '',
+      total: invoiceById.get(payment.document_id || '')?.total || 0,
+      status: invoiceById.get(payment.document_id || '')?.status || '',
+    })),
+    // Compatibility fallback for a partially migrated database. The 028
+    // migration backfills these rows, so this branch disappears after rollout.
+    ...invoices
+      .filter(invoice => invoice.amount_paid > 0 && !paymentDocumentIds.has(invoice.id))
+      .map(invoice => ({ id: `historical-${invoice.id}`, document_id: invoice.id, amount: invoice.amount_paid, method: invoice.payment_method || 'historical_import', paid_at: invoice.created_at, created_at: invoice.created_at, customer_name: invoice.customer_name, total: invoice.total, status: invoice.status })),
+  ]
+  const filteredCollections = collections.filter(payment => new Date(payment.paid_at || payment.created_at) >= start)
   const filteredJobs = jobs.filter(j => new Date(j.created_at) >= start)
   const filteredCalls = calls.filter(c => new Date(c.start_time) >= start)
 
-  const totalRevenue = filteredInvoices.reduce((s, i) => s + (i.amount_paid || i.total || 0), 0)
-  const avgTicket = filteredInvoices.length ? totalRevenue / filteredInvoices.length : 0
+  const totalRevenue = filteredCollections.reduce((s, payment) => s + collectedAmount(payment.amount), 0)
+  const paidDocumentCount = new Set(filteredCollections.map(payment => payment.document_id).filter(Boolean)).size
+  const avgTicket = paidDocumentCount ? totalRevenue / paidDocumentCount : 0
   const completedJobs = filteredJobs.filter(j => ['Completed','Paid','Closed'].includes(j.status)).length
   const inboundCalls = filteredCalls.filter(c => c.direction === 'inbound').length
   const avgCallDuration = filteredCalls.length ? filteredCalls.reduce((s, c) => s + (c.duration_secs || 0), 0) / filteredCalls.length : 0
@@ -82,10 +150,10 @@ export default function ReportsPage() {
     const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`
     monthlyRevenue[key] = 0
   }
-  for (const inv of invoices) {
-    const key = inv.created_at?.slice(0, 7)
+  for (const payment of collections) {
+    const key = (payment.paid_at || payment.created_at)?.slice(0, 7)
     if (key && Object.prototype.hasOwnProperty.call(monthlyRevenue, key)) {
-      monthlyRevenue[key] += (inv.amount_paid || inv.total || 0)
+      monthlyRevenue[key] += collectedAmount(payment.amount)
     }
   }
   const monthlyData = Object.entries(monthlyRevenue).map(([k, v]) => ({
@@ -95,9 +163,9 @@ export default function ReportsPage() {
   const maxMonthly = Math.max(...monthlyData.map(m => m.value), 1)
 
   const payMethods: Record<string, number> = {}
-  for (const inv of filteredInvoices) {
-    const pm = inv.payment_method || 'Other'
-    payMethods[pm] = (payMethods[pm] || 0) + (inv.amount_paid || inv.total || 0)
+  for (const payment of filteredCollections) {
+    const pm = payment.method || 'Other'
+    payMethods[pm] = (payMethods[pm] || 0) + collectedAmount(payment.amount)
   }
 
   const techStats: Record<string, { jobs: number; name: string }> = {}
@@ -117,28 +185,29 @@ export default function ReportsPage() {
   const topServices = Object.entries(services).sort((a, b) => b[1] - a[1]).slice(0, 10)
 
   // Tax report: quarterly grouping
-  const quarterlyTax: Record<string, { revenue: number; count: number; invoices: Invoice[] }> = {}
-  for (const inv of invoices) {
-    const d = new Date(inv.created_at)
+  const quarterlyTax: Record<string, { revenue: number; count: number; invoices: Payment[] }> = {}
+  for (const payment of collections) {
+    const d = new Date(payment.paid_at || payment.created_at)
     const q = Math.ceil((d.getMonth() + 1) / 3)
     const key = `${d.getFullYear()} Q${q}`
     if (!quarterlyTax[key]) quarterlyTax[key] = { revenue: 0, count: 0, invoices: [] }
-    quarterlyTax[key].revenue += (inv.amount_paid || inv.total || 0)
+    quarterlyTax[key].revenue += collectedAmount(payment.amount)
     quarterlyTax[key].count++
-    quarterlyTax[key].invoices.push(inv)
+    quarterlyTax[key].invoices.push(payment)
   }
   const quarterList = Object.entries(quarterlyTax).sort((a, b) => b[0].localeCompare(a[0]))
 
   const exportTaxCsv = () => {
     const rows = [['Date', 'Customer', 'Invoice Total', 'Amount Paid', 'Payment Method', 'Status']]
-    for (const inv of filteredInvoices) {
+    for (const payment of filteredCollections) {
+      const invoice = invoiceById.get(payment.document_id || '')
       rows.push([
-        new Date(inv.created_at).toLocaleDateString('en-US'),
-        inv.customer_name || '',
-        (inv.total || 0).toFixed(2),
-        (inv.amount_paid || 0).toFixed(2),
-        inv.payment_method || '',
-        inv.status || ''
+        new Date(payment.paid_at || payment.created_at).toLocaleDateString('en-US'),
+        payment.customer_name || '',
+        (invoice?.total || payment.total || 0).toFixed(2),
+        collectedAmount(payment.amount).toFixed(2),
+        payment.method || '',
+        payment.status || ''
       ])
     }
     const pLabel = period === 'ytd' ? 'YTD' : period === '7d' ? '7days' : period === '30d' ? '30days' : '90days'
@@ -146,6 +215,7 @@ export default function ReportsPage() {
   }
 
   if (loading) return <div className="p-8 text-center text-text-muted animate-pulse">Loading reports...</div>
+  if (loadError) return <div className="p-8 text-center"><p className="text-red-400">{loadError}</p><p className="text-sm text-text-muted mt-2">No report values were substituted for a failed database query.</p></div>
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
@@ -250,17 +320,17 @@ export default function ReportsPage() {
           <table className="data-table">
             <thead><tr><th>Date</th><th>Customer</th><th>Total</th><th>Paid</th><th>Method</th><th>Status</th></tr></thead>
             <tbody>
-              {filteredInvoices.slice(0, 100).map(inv => (
-                <tr key={inv.id}>
-                  <td className="text-sm text-text-muted">{new Date(inv.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</td>
-                  <td className="font-medium">{inv.customer_name}</td>
-                  <td className="font-semibold">{fmtCur(inv.total || 0)}</td>
-                  <td className={`font-semibold ${(inv.amount_paid || 0) >= (inv.total || 0) ? 'text-green' : 'text-amber'}`}>{fmtCur(inv.amount_paid || 0)}</td>
-                  <td className="text-sm text-text-muted capitalize">{inv.payment_method || '-'}</td>
-                  <td><span className={`tag ${inv.status === 'Paid' ? 'tag-green' : inv.status === 'Partial' ? 'tag-amber' : 'tag-gray'}`}>{inv.status}</span></td>
+              {filteredCollections.map(payment => (
+                <tr key={payment.id}>
+                  <td className="text-sm text-text-muted">{new Date(payment.paid_at || payment.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</td>
+                  <td className="font-medium">{payment.customer_name}</td>
+                  <td className="font-semibold">{fmtCur(payment.total || 0)}</td>
+                  <td className="font-semibold text-green">{fmtCur(collectedAmount(payment.amount))}</td>
+                  <td className="text-sm text-text-muted capitalize">{payment.method || '-'}</td>
+                  <td><span className={`tag ${payment.status === 'Paid' ? 'tag-green' : payment.status === 'Partial' ? 'tag-amber' : 'tag-gray'}`}>{payment.status || '-'}</span></td>
                 </tr>
               ))}
-              {filteredInvoices.length === 0 && <tr><td colSpan={6} className="text-center py-8 text-text-muted">No invoices in this period</td></tr>}
+              {filteredCollections.length === 0 && <tr><td colSpan={6} className="text-center py-8 text-text-muted">No payments in this period</td></tr>}
             </tbody>
           </table>
         </div>
@@ -271,7 +341,7 @@ export default function ReportsPage() {
           <table className="data-table">
             <thead><tr><th>Date</th><th>Concern</th><th>Technician</th><th>Status</th></tr></thead>
             <tbody>
-              {filteredJobs.slice(0, 100).map(j => (
+              {filteredJobs.map(j => (
                 <tr key={j.id}>
                   <td className="text-sm text-text-muted">{new Date(j.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</td>
                   <td className="text-sm">{j.concern || '-'}</td>
@@ -296,7 +366,7 @@ export default function ReportsPage() {
             <table className="data-table">
               <thead><tr><th>Date</th><th>Direction</th><th>Duration</th><th>Status</th></tr></thead>
               <tbody>
-                {filteredCalls.slice(0, 100).map(c => (
+                {filteredCalls.map(c => (
                   <tr key={c.id}>
                     <td className="text-sm text-text-muted">{new Date(c.start_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</td>
                     <td><span className={`tag ${c.direction === 'inbound' ? 'tag-blue' : 'tag-gray'}`}>{c.direction}</span></td>
@@ -316,7 +386,7 @@ export default function ReportsPage() {
           <div className="card p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h2 className="text-lg font-bold">Tax & Revenue Export</h2>
-              <p className="text-sm text-text-muted mt-0.5">{filteredInvoices.length} invoices Â· {fmtCur(totalRevenue)} collected in selected period</p>
+              <p className="text-sm text-text-muted mt-0.5">{filteredCollections.length} payment entries · {fmtCur(totalRevenue)} collected in selected period</p>
             </div>
             <button className="btn btn-primary" onClick={exportTaxCsv}>
               Download CSV
@@ -354,8 +424,8 @@ export default function ReportsPage() {
 
           <div className="card overflow-hidden">
             <div className="p-4 border-b border-border flex items-center justify-between">
-              <h3 className="font-bold">Invoice Detail - Selected Period</h3>
-              <span className="text-sm text-text-muted">{filteredInvoices.length} records</span>
+              <h3 className="font-bold">Payment Detail - Selected Period</h3>
+              <span className="text-sm text-text-muted">{filteredCollections.length} records</span>
             </div>
             <table className="data-table">
               <thead>
@@ -364,26 +434,26 @@ export default function ReportsPage() {
                 </tr>
               </thead>
               <tbody>
-                {filteredInvoices.map(inv => (
-                  <tr key={inv.id}>
+                {filteredCollections.map(payment => (
+                  <tr key={payment.id}>
                     <td className="text-sm text-text-muted whitespace-nowrap">
-                      {new Date(inv.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                      {new Date(payment.paid_at || payment.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                     </td>
-                    <td className="font-medium">{inv.customer_name || '-'}</td>
-                    <td className="font-semibold">{fmtCur(inv.total || 0)}</td>
-                    <td className={`font-semibold ${(inv.amount_paid || 0) >= (inv.total || 0) ? 'text-green' : 'text-amber'}`}>
-                      {fmtCur(inv.amount_paid || 0)}
+                    <td className="font-medium">{payment.customer_name || '-'}</td>
+                    <td className="font-semibold">{fmtCur(payment.total || 0)}</td>
+                    <td className="font-semibold text-green">
+                      {fmtCur(collectedAmount(payment.amount))}
                     </td>
-                    <td className="text-sm text-text-muted capitalize">{inv.payment_method || '-'}</td>
+                    <td className="text-sm text-text-muted capitalize">{payment.method || '-'}</td>
                     <td>
-                      <span className={`tag ${inv.status === 'Paid' ? 'tag-green' : inv.status === 'Partial' ? 'tag-amber' : 'tag-gray'}`}>
-                        {inv.status}
+                      <span className={`tag ${payment.status === 'Paid' ? 'tag-green' : payment.status === 'Partial' ? 'tag-amber' : 'tag-gray'}`}>
+                        {payment.status || '-'}
                       </span>
                     </td>
                   </tr>
                 ))}
-                {filteredInvoices.length === 0 && (
-                  <tr><td colSpan={6} className="text-center py-8 text-text-muted">No invoices in this period</td></tr>
+                {filteredCollections.length === 0 && (
+                  <tr><td colSpan={6} className="text-center py-8 text-text-muted">No payments in this period</td></tr>
                 )}
               </tbody>
             </table>

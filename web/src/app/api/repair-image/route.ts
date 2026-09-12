@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { assertPublicUrl, fetchPublicUrl } from '@/lib/public-url'
 
 export const dynamic = 'force-dynamic'
 
@@ -15,6 +17,37 @@ const ALLOWED_HOSTS = new Set([
   'www.lemon-manuals.gy',
 ])
 const MAX_BYTES = 12 * 1024 * 1024
+const MAX_REDIRECTS = 3
+
+function isAllowedHost(hostname: string) {
+  return ALLOWED_HOSTS.has(hostname.toLowerCase())
+}
+
+async function fetchAllowedImage(target: URL): Promise<{ response: Response; url: URL } | null> {
+  let current = target
+  for (let attempt = 0; attempt <= MAX_REDIRECTS; attempt += 1) {
+    const response = await fetchPublicUrl(current, {
+      headers: {
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'referer': `${current.protocol}//${current.hostname}/`,
+        'accept': 'image/avif,image/webp,image/png,image/*,*/*;q=0.8',
+      },
+      signal: AbortSignal.timeout(15000),
+      maxBytes: MAX_BYTES,
+    })
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location')
+      if (!location || attempt === MAX_REDIRECTS) return null
+      let next: URL
+      try { next = await assertPublicUrl(location, current) } catch { return null }
+      if (!isAllowedHost(next.hostname)) return null
+      current = next
+      continue
+    }
+    return { response, url: current }
+  }
+  return null
+}
 
 /**
  * Streams a manual diagram/image from charm.li / lemon-manuals through our own
@@ -22,22 +55,23 @@ const MAX_BYTES = 12 * 1024 * 1024
  * Auth-gated by middleware; same-origin <img> requests carry the session cookie.
  */
 export async function GET(req: NextRequest) {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
   const raw = req.nextUrl.searchParams.get('url') || ''
   let target: URL
   try { target = new URL(raw) } catch { return new NextResponse('Bad URL', { status: 400 }) }
-  if (!['http:', 'https:'].includes(target.protocol) || !ALLOWED_HOSTS.has(target.hostname.toLowerCase())) {
+  if (!['http:', 'https:'].includes(target.protocol) || !isAllowedHost(target.hostname)) {
     return new NextResponse('Forbidden host', { status: 403 })
   }
   try {
-    const upstream = await fetch(target.toString(), {
-      headers: {
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'referer': `${target.protocol}//${target.hostname}/`,
-        'accept': 'image/avif,image/webp,image/png,image/*,*/*;q=0.8',
-      },
-      signal: AbortSignal.timeout(15000),
-    })
-    if (!upstream.ok) return new NextResponse('Upstream fetch failed', { status: 502 })
+    target = await assertPublicUrl(target.toString())
+  } catch {
+    return new NextResponse('Forbidden host', { status: 403 })
+  }
+  try {
+    const fetched = await fetchAllowedImage(target)
+    if (!fetched || !fetched.response.ok) return new NextResponse('Upstream fetch failed', { status: 502 })
+    const { response: upstream } = fetched
     const contentType = upstream.headers.get('content-type') || 'image/jpeg'
     if (!contentType.startsWith('image/')) return new NextResponse('Not an image', { status: 415 })
     const buf = Buffer.from(await upstream.arrayBuffer())

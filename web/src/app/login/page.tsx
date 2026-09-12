@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { supabase } from '@/lib/supabase'
+import { ensureShopProfile, supabase } from '@/lib/supabase'
 
 type AuthMode = 'login' | 'signup' | 'reset'
 type LoadingAction = 'email' | 'google' | null
@@ -144,18 +144,7 @@ export default function LoginPage() {
         }
 
         if (data.user) {
-          const { error: profileError } = await supabase.from('shop_profiles').upsert(
-            {
-              user_id: data.user.id,
-              shop_name: shopName.trim() || 'My Shop',
-              phone: '',
-              address: '',
-              city_state_zip: '',
-              services: [],
-            },
-            { onConflict: 'user_id' }
-          )
-          if (profileError) throw profileError
+          await ensureShopProfile(shopName.trim() || 'My Shop')
         }
 
         window.localStorage.setItem(LAST_EMAIL_KEY, cleanEmail)
@@ -222,11 +211,18 @@ export default function LoginPage() {
   return (
     <main className="auth-screen">
       <section className="auth-stage" aria-label="Alpha AI Desk sign in">
-        <div className="brand-panel" aria-hidden="true">
+        <div className="brand-panel">
           <div className="brand-mark">A</div>
-          <div>
+          <div className="brand-intro">
             <p className="eyebrow">Alpha AI Desk</p>
             <h1>Built for the front counter.</h1>
+            <p className="brand-copy">One secure workspace for the customer records, estimates, payments, appointments, and conversations that keep your shop moving.</p>
+            <div className="brand-features" aria-label="Alpha AI Desk features">
+              <span>Customer history</span>
+              <span>Estimates &amp; invoices</span>
+              <span>Messaging &amp; follow-ups</span>
+              <span>AI shop assistant</span>
+            </div>
           </div>
 
           <div className="desk-preview">
@@ -382,6 +378,12 @@ export default function LoginPage() {
               </button>
             )}
           </div>
+
+          <div className="auth-footer" aria-label="Help and legal links">
+            <a href="/help">Help</a>
+            <a href="/privacy">Privacy</a>
+            <a href="/terms">Terms</a>
+          </div>
         </form>
       </section>
 
@@ -466,6 +468,31 @@ export default function LoginPage() {
           font-weight: 900;
           letter-spacing: 0;
           padding-bottom: 8px;
+        }
+
+        .brand-copy {
+          max-width: 520px;
+          margin: 18px 0 0;
+          color: #cbd5e1;
+          font-size: 16px;
+          line-height: 1.6;
+        }
+
+        .brand-features {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-top: 22px;
+        }
+
+        .brand-features span {
+          border: 1px solid rgba(125, 211, 252, 0.22);
+          border-radius: 999px;
+          padding: 7px 11px;
+          color: #bae6fd;
+          background: rgba(14, 116, 144, 0.12);
+          font-size: 12px;
+          font-weight: 700;
         }
 
         .desk-preview {
@@ -760,6 +787,26 @@ export default function LoginPage() {
 
         .mode-row button:hover {
           color: #bae6fd;
+        }
+
+        .auth-footer {
+          display: flex;
+          justify-content: center;
+          gap: 16px;
+          margin-top: 22px;
+          padding-top: 16px;
+          border-top: 1px solid rgba(148, 163, 184, 0.14);
+          font-size: 12px;
+        }
+
+        .auth-footer a {
+          color: #94a3b8;
+          text-decoration: none;
+        }
+
+        .auth-footer a:hover {
+          color: #bae6fd;
+          text-decoration: underline;
         }
 
         @media (max-width: 920px) {

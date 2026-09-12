@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import { laborLineTotal, partLineTotal } from '@/lib/document-money'
+import { calculateDocumentTotals } from '@/lib/document-money'
 import { createBrowserClient } from '@supabase/ssr'
 
 // Publishable URL + anon key (safe to ship to the browser; access is governed
@@ -7,6 +7,14 @@ import { createBrowserClient } from '@supabase/ssr'
 // from Vercel env / .env.local; no hardcoded fallbacks.
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+
+// Next evaluates route modules during a production build, before deployment
+// environment variables are necessarily present. The SSR client rejects empty
+// configuration at module load, which turned a missing build-time environment
+// into a hard build crash. Keep the placeholder unreachable for real requests:
+// API helpers still fail closed when the required server variables are absent.
+const browserClientUrl = supabaseUrl || 'https://placeholder.invalid'
+const browserClientKey = supabaseAnonKey || 'placeholder-anon-key'
 export const supabaseBrowserUrl = supabaseUrl
 export const supabaseBrowserAnonKey = supabaseAnonKey
 export const supabaseAuthStorageKey = supabaseUrl
@@ -15,7 +23,7 @@ export const supabaseAuthStorageKey = supabaseUrl
 
 // Browser client that stores the auth session in COOKIES (not localStorage) so
 // the server (middleware + API routes) can read and verify the real session.
-export const supabase = createBrowserClient(supabaseUrl, supabaseAnonKey, {
+export const supabase = createBrowserClient(browserClientUrl, browserClientKey, {
   realtime: { params: { eventsPerSecond: 10 } }
 })
 
@@ -29,14 +37,26 @@ export function getServiceClient() {
 
 // ─── DB Helpers ────────────────────────────────────────────────
 
+export async function ensureShopProfile(shopName: string) {
+  const { data, error } = await supabase.rpc('ensure_shop_profile', { p_shop_name: shopName })
+  if (error) throw error
+  if (!data?.id) throw new Error('Your shop could not be initialized.')
+  return data as { id: string; created: boolean }
+}
+
 export async function getShopProfile() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
-  const { data } = await supabase
-    .from('shop_profiles')
-    .select('*')
+  const { data: membership, error: membershipError } = await supabase
+    .from('shop_memberships')
+    .select('shop_id')
     .eq('user_id', user.id)
-    .single()
+    .eq('status', 'active')
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  if (membershipError || !membership?.shop_id) return null
+  const { data } = await supabase.from('shop_profiles').select('*').eq('id', membership.shop_id).maybeSingle()
   return data as {
     id: string
     user_id: string
@@ -53,39 +73,57 @@ export async function getShopProfile() {
 export async function getShopId(): Promise<string | null> {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
-  const { data } = await supabase
-    .from('shop_profiles')
-    .select('id')
+  const { data: membership, error } = await supabase
+    .from('shop_memberships')
+    .select('shop_id')
     .eq('user_id', user.id)
-    .single()
-  return data?.id ?? null
+    .eq('status', 'active')
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  return error ? null : membership?.shop_id ?? null
 }
 
 export async function getSettings() {
-  const shopId = await getShopId()
-  if (!shopId) return null
-  const { data } = await supabase
-    .from('settings')
-    .select('*')
-    .eq('shop_id', shopId)
-    .limit(1)
-    .single()
-  return data
+  try {
+    const response = await fetch('/api/settings', { cache: 'no-store' })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok || data.ok !== true) return null
+    return data.settings || null
+  } catch {
+    return null
+  }
 }
 
 export async function updateSettings(updates: Record<string, unknown>) {
-  const shopId = await getShopId()
-  if (!shopId) return
-  const { data: existing } = await supabase
-    .from('settings')
-    .select('id')
-    .eq('shop_id', shopId)
-    .limit(1)
-    .single()
-  if (existing) {
-    await supabase.from('settings').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', existing.id)
-  } else {
-    await supabase.from('settings').insert({ ...updates, shop_id: shopId })
+  const allowed = new Set([
+    'shop_name', 'shop_address', 'shop_phone', 'shop_email',
+    'labor_rate', 'tax_rate', 'warranty_months', 'payment_terms',
+    'payment_methods', 'disclaimer', 'techs',
+    'ai_api_key', 'ai_model', 'ai_base_url',
+    'telnyx_api_key', 'telnyx_phone_number', 'telnyx_messaging_profile_id',
+    'telnyx_connection_id', 'telnyx_outbound_voice_profile_id',
+    'resend_api_key', 'from_email',
+    'browserless_token',
+    'google_review_url', 'timezone', 'automation_config',
+    'facebook_page_id', 'facebook_page_token', 'fb_ad_account_id', 'searxng_url',
+  ])
+  const payload = Object.fromEntries(
+    Object.entries(updates).filter(([key, value]) => allowed.has(key) && value !== undefined)
+  )
+  try {
+    const response = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok || data.ok !== true) {
+      return { error: new Error(data.error || 'Settings could not be saved') }
+    }
+    return { error: null }
+  } catch (error) {
+    return { error: error instanceof Error ? error : new Error('Settings could not be saved') }
   }
 }
 
@@ -151,7 +189,10 @@ export async function getUnreadCount() {
 }
 
 export async function markMessageRead(id: string) {
-  await supabase.from('messages').update({ read: true }).eq('id', id)
+  const shopId = await getShopId()
+  if (!shopId) return { error: new Error('No shop is associated with the signed-in user') }
+  const { error } = await supabase.from('messages').update({ read: true }).eq('id', id).eq('shop_id', shopId)
+  return { error: error || null }
 }
 
 export function formatCurrency(n: number | string) {
@@ -159,23 +200,7 @@ export function formatCurrency(n: number | string) {
 }
 
 export function calcTotals(doc: Record<string, unknown>) {
-  const parts = (doc.parts as Record<string,unknown>[]) || []
-  const labors = (doc.labors as Record<string,unknown>[]) || []
-  const taxRate = Number(doc.tax_rate) || 8.25
-  const shopSupplies = Number(doc.shop_supplies) || 0
-  const sublet = Number(doc.sublet) || 0
-  const deposit = Number(doc.deposit) || 0
-  const applyTax = doc.apply_tax !== false
-
-  const laborTotal = labors.reduce((s, l) => s + laborLineTotal(l), 0)
-  const partsTotal = parts.reduce((s, p) => s + partLineTotal(p), 0)
-  // Core charges: a refundable deposit on the old unit (alternators, batteries,
-  // calipers…). The customer pays it now and gets it back when the core is returned.
-  const coreTotal = parts.reduce((s, p) => s + (Number(p.qty)||1) * (Number(p.core)||0), 0)
-  const taxableBase = applyTax ? parts.filter(p => p.taxable !== false).reduce((s,p) => s + (Number(p.qty)||1)*(Number(p.unitPrice)||0), 0) + shopSupplies + sublet : 0
-  const taxAmount = taxableBase * (taxRate / 100)
-  const subtotal = laborTotal + partsTotal + shopSupplies + sublet + coreTotal
-  const total = subtotal + taxAmount
-  const balanceDue = Math.max(total - deposit, 0)
-  return { laborTotal, partsTotal, coreTotal, taxAmount, subtotal, total, balanceDue, deposit }
+  // amount_paid is the authoritative payment ledger. A deposit is a core
+  // charge, not a payment, so it must never silently reduce the balance.
+  return calculateDocumentTotals(doc)
 }

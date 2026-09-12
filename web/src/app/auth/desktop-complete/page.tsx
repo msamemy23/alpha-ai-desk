@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { supabase, supabaseAuthStorageKey } from '@/lib/supabase'
+import { ensureShopProfile, supabase, supabaseAuthStorageKey } from '@/lib/supabase'
 
 const COOKIE_MAX_AGE = 400 * 24 * 60 * 60
 const MAX_COOKIE_CHUNK_SIZE = 3180
@@ -67,35 +67,10 @@ function persistSupabaseSessionCookie(session: Session) {
 }
 
 async function ensureShopProfileAndRedirect(session: Session) {
-  const userId = session.user.id
-  const { data: profile, error: profileError } = await supabase
-    .from('shop_profiles')
-    .select('id')
-    .eq('user_id', userId)
-    .maybeSingle()
-
-  if (profileError) throw profileError
-
-  if (!profile) {
-    const email = session.user.email || ''
-    const name = session.user.user_metadata?.full_name || email.split('@')[0] || 'My Shop'
-    const { error: upsertError } = await supabase.from('shop_profiles').upsert(
-      {
-        user_id: userId,
-        shop_name: `${name}'s Shop`,
-        phone: '',
-        address: '',
-        city_state_zip: '',
-        services: [],
-      },
-      { onConflict: 'user_id' }
-    )
-    if (upsertError) throw upsertError
-    window.location.replace('/onboarding')
-    return
-  }
-
-  window.location.replace('/dashboard')
+  const email = session.user.email || ''
+  const name = session.user.user_metadata?.full_name || email.split('@')[0] || 'My Shop'
+  const profile = await ensureShopProfile(`${name}'s Shop`)
+  window.location.replace(profile.created ? '/onboarding' : '/dashboard')
 }
 
 export default function DesktopOAuthComplete() {

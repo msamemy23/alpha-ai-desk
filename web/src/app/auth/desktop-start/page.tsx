@@ -4,14 +4,21 @@ import { useEffect, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import { supabaseBrowserAnonKey, supabaseBrowserUrl } from '@/lib/supabase'
 
-const desktopOAuthClient = createClient(supabaseBrowserUrl, supabaseBrowserAnonKey, {
+// Keep route-module evaluation safe when a local build intentionally omits
+// deployment secrets. OAuth still fails closed at runtime until real values
+// are supplied through the deployment environment.
+const desktopOAuthClient = createClient(
+  supabaseBrowserUrl || 'https://placeholder.invalid',
+  supabaseBrowserAnonKey || 'placeholder-anon-key',
+  {
   auth: {
     autoRefreshToken: false,
     detectSessionInUrl: false,
     flowType: 'implicit',
     persistSession: false,
   },
-})
+  }
+)
 
 function validPort(value: string | null) {
   if (!value || !/^\d{2,5}$/.test(value)) return null

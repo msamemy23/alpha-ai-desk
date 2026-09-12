@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { getShopId, supabase } from '@/lib/supabase'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Employee {
@@ -22,14 +22,16 @@ interface TimeclockEntry {
 
 interface Job {
   id: number
-  title: string
+  title?: string
   customer_name?: string
+  concern?: string | null
   status: string
+  tech?: string | null
   assigned_tech?: string | null
-  year?: string | null
-  make?: string | null
-  model?: string | null
-  license_plate?: string | null
+  vehicle_year?: string | null
+  vehicle_make?: string | null
+  vehicle_model?: string | null
+  vehicle_plate?: string | null
   priority?: string | null
 }
 
@@ -223,10 +225,13 @@ export default function ShopBoardPage() {
 
   // ── Fetch jobs ─────────────────────────────────────────────────────────────
   const fetchJobs = useCallback(async () => {
+    const shopId = await getShopId()
+    if (!shopId) { setJobs([]); return }
     const { data } = await supabase
       .from('jobs')
-      .select('id, title, customer_name, status, assigned_tech, year, make, model, license_plate, priority')
-      .not('status', 'eq', 'completed')
+      .select('id, customer_name, concern, status, tech, vehicle_year, vehicle_make, vehicle_model, vehicle_plate, priority')
+      .eq('shop_id', shopId)
+      .not('status', 'in', '("Paid","Closed")')
       .order('created_at', { ascending: false })
     setJobs(data || [])
   }, [])
@@ -584,13 +589,13 @@ export default function ShopBoardPage() {
                         <span className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${PRIORITY_DOT[job.priority]}`} />
                       )}
                       <div className="flex-1 min-w-0">
-                        <p className="font-medium text-gray-900 text-sm truncate">{job.title}</p>
+                        <p className="font-medium text-gray-900 text-sm truncate">{job.concern || job.customer_name || 'Job'}</p>
                         <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5 text-xs text-gray-500">
                           {job.customer_name && <span>👤 {job.customer_name}</span>}
-                          {(job.year || job.make || job.model) && (
-                            <span>🚗 {[job.year, job.make, job.model].filter(Boolean).join(' ')}</span>
+                          {(job.vehicle_year || job.vehicle_make || job.vehicle_model) && (
+                            <span>🚗 {[job.vehicle_year, job.vehicle_make, job.vehicle_model].filter(Boolean).join(' ')}</span>
                           )}
-                          {job.license_plate && <span>🪪 {job.license_plate}</span>}
+          {job.vehicle_plate && <span>🪪 {job.vehicle_plate}</span>}
                         </div>
                       </div>
                       <span className={`flex-shrink-0 text-xs px-2.5 py-1 rounded-full border font-medium capitalize ${

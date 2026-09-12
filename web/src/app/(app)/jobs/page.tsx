@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
-import { supabase, formatCurrency } from '@/lib/supabase'
+import { getShopId, supabase, formatCurrency } from '@/lib/supabase'
 
 interface Job {
   id: string; ro_number: string; customer_name: string; concern: string; status: string; tech: string
@@ -20,9 +20,9 @@ function toTitleCase(str: string) {
   return str.replace(/\b\w/g, c => c.toUpperCase())
 }
 
-async function generateRoNumber(): Promise<string> {
+async function generateRoNumber(shopId: string): Promise<string> {
   const year = new Date().getFullYear()
-  const { count } = await supabase.from('jobs').select('*', { count: 'exact', head: true })
+  const { count } = await supabase.from('jobs').select('*', { count: 'exact', head: true }).eq('shop_id', shopId)
   const seq = ((count || 0) + 1).toString().padStart(4, '0')
   return `RO-${year}-${seq}`
 }
@@ -42,15 +42,16 @@ export default function JobsPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
+      const shopId = await getShopId()
+      if (!shopId) { setJobs([]); setCustomers([]); return }
       const [{ data: j }, { data: c }] = await Promise.all([
-        supabase.from('jobs').select('*').order('created_at', { ascending: false }),
-        supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model,vehicle_color,vehicle_engine,vehicle_plate').order('name')
+        supabase.from('jobs').select('*').eq('shop_id', shopId).order('created_at', { ascending: false }),
+        supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model,vehicle_color,vehicle_engine,vehicle_plate').eq('shop_id', shopId).order('name')
       ])
       setJobs((j || []) as Job[])
       setCustomers((c || []) as Customer[])
     } finally { setLoading(false) }
   }, [])
-
   useEffect(() => {
     load()
     fetch('/api/staff?role=technician').then(r => r.json()).then(d => {
@@ -63,22 +64,47 @@ export default function JobsPage() {
   const save = async () => {
     setSaving(true)
     try {
-      const data = { ...form, updated_at: new Date().toISOString() }
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const data = { ...form, shop_id: shopId, updated_at: new Date().toISOString() }
       if (editing === 'new') {
-        const ro_number = await generateRoNumber()
-        await supabase.from('jobs').insert({ ...data, ro_number, status: data.status || 'New', created_at: new Date().toISOString() })
+        const ro_number = await generateRoNumber(shopId)
+        const { error } = await supabase.from('jobs').insert({ ...data, ro_number, status: data.status || 'New', created_at: new Date().toISOString() })
+        if (error) throw error
       } else if (editing) {
-        await supabase.from('jobs').update(data).eq('id', editing)
+        const { error } = await supabase.from('jobs').update(data).eq('id', editing).eq('shop_id', shopId)
+        if (error) throw error
       }
-      setEditing(null); setForm({}); load()
+      setEditing(null); setForm({}); await load()
+    } catch (error) {
+      alert('Job could not be saved: ' + (error instanceof Error ? error.message : 'Unknown error'))
     } finally { setSaving(false) }
   }
 
   const del = async () => {
     if (!editing || editing === 'new') return
     if (!confirm('Delete this job?')) return
-    await supabase.from('jobs').delete().eq('id', editing)
-    setEditing(null); setForm({}); load()
+    try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const { error } = await supabase.from('jobs').delete().eq('id', editing).eq('shop_id', shopId)
+      if (error) throw error
+      setEditing(null); setForm({}); await load()
+    } catch (error) {
+      alert('Job could not be deleted: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    }
+  }
+
+  const markPaid = async (id: string) => {
+    try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const { error } = await supabase.from('jobs').update({ status: 'Paid', updated_at: new Date().toISOString() }).eq('id', id).eq('shop_id', shopId)
+      if (error) throw error
+      await load()
+    } catch (error) {
+      alert('Job status could not be updated: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    }
   }
 
   const openNew = () => { setForm({ status: 'New', priority: 'Normal' }); setEditing('new') }
@@ -284,7 +310,7 @@ export default function JobsPage() {
                             <button
                               className="btn btn-sm"
                               style={{background:'#16a34a',color:'white',fontSize:'11px',padding:'3px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}}
-                              onClick={async (e) => { e.stopPropagation(); await supabase.from('jobs').update({ status: 'Paid', updated_at: new Date().toISOString() }).eq('id', j.id); await load() }}
+                              onClick={async (e) => { e.stopPropagation(); await markPaid(j.id) }}
                               title="Mark job as Paid"
                             >💰 Paid</button>
                           )}

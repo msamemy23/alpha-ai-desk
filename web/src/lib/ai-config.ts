@@ -18,8 +18,17 @@ const LEGACY_DEEPSEEK_MODELS = new Set([
   'deepseek-reasoner',
 ])
 
+const ALLOWED_AI_HOSTS = new Set(['openrouter.ai', 'api.openai.com', 'api.deepseek.com'])
+
 export function normalizeAiBaseUrl(value: unknown, fallback = AI_BASE_URLS.OPENROUTER) {
-  return typeof value === 'string' && value.trim() ? value.trim().replace(/\/$/, '') : fallback
+  const candidate = typeof value === 'string' && value.trim() ? value.trim() : fallback
+  try {
+    const url = new URL(candidate)
+    if (url.protocol !== 'https:' || !ALLOWED_AI_HOSTS.has(url.hostname)) return fallback
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return fallback
+  }
 }
 
 export function isOpenRouterBaseUrl(baseUrl: unknown) {
