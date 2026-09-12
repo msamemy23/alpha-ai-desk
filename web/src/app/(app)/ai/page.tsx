@@ -2,7 +2,7 @@
 import { useEffect, useState, useRef, useCallback, type MouseEvent as ReactMouseEvent } from 'react'
 import { getShopId, supabase } from '@/lib/supabase'
 import { addOpenAIOAuthHeaders } from '@/lib/openai-oauth-client'
-import { toModelMessages } from '@/lib/ai/model-messages'
+import { browserDestinationAnswer, toModelMessages } from '@/lib/ai/model-messages'
 import { observedLinkClick } from '@/lib/ai/browser-interaction'
 import { AGENTS, SKILLS } from '@/lib/ai/capabilities'
 import { classifyRequest, type RouteDecision } from '@/lib/ai/router'
@@ -2019,6 +2019,11 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     let readVerificationRetried = false
     let proposalRetried = false
     const latestRequest = [...history].reverse().find(message => message.role === 'user')?.content || ''
+    const browserAnswer = browserDestinationAnswer(latestRequest, history)
+    if (browserAnswer) {
+      setMessages(prev => [...prev, { role: 'assistant', content: browserAnswer }])
+      return
+    }
     const markVerifiedClaims = (...claims: string[]) => {
       claims.forEach(claim => verifiedClaims.add(claim))
     }
@@ -3178,7 +3183,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       } else {
         const detail = data.message || data.data?.message || (data.executed === false
           ? 'A proposal was created; no external action was executed.'
-          : mode === 'browser' ? 'The listed browser steps completed. ' + (data.notice || '') : 'Confirmed action completed')
+          : mode === 'browser' ? 'The listed browser steps completed. Reached: ' + String(data.title || '') + ' — ' + String(data.url || '') + '. ' + (data.notice || '') : 'Confirmed action completed')
         addToolEvent({ agent: 'Alpha AI', tool: `action.${pendingAction.action}`, status: 'ok', detail })
         setMessages(prev => [...prev, { role: 'assistant', content: `${pendingAction.action}: ${detail}` }])
         closeDraft = true

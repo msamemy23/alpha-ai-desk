@@ -1,5 +1,18 @@
 type DisplayMessage = { role: string; content?: string; html?: string; browserSteps?: Array<{ action?: string; title?: string; url?: string }> }
 
+/** Destination questions are answered from execution evidence, not model recall. */
+export function browserDestinationAnswer(request: string, messages: DisplayMessage[]): string | null {
+  if (!/\b(which|what|where)\b/i.test(request) || !/\b(page|url|destination|reach|land)\b/i.test(request) || !/\b(browser|click|reach|land)\b/i.test(request)) return null
+  if (/\b(open|visit|navigate|go to|search)\b/i.test(request) && !/do not|don't/i.test(request)) return null
+  const index = messages.map(message => message.role).lastIndexOf('browser')
+  if (index < 0) return null
+  const steps = messages[index].browserSteps || []
+  const step = steps[steps.length - 1]
+  if (!step?.url || !/^https?:\/\//i.test(step.url)) return null
+  const failure = messages.slice(index + 1).find(message => message.role === 'assistant' && message.content?.startsWith('I did not complete webAutomation.'))
+  return (failure ? failure.content + '\n\nLast observed page: ' : 'The browser reached ') + (step.title ? step.title.slice(0, 200) + ' — ' : '') + step.url + '\nLast recorded step: ' + (step.action || 'Opened page')
+}
+
 /** Display-only cards are context, not additional provider protocol roles. */
 export function toModelMessages(messages: DisplayMessage[]): Array<{ role: 'user' | 'assistant'; content: string }> {
   return messages.flatMap(message => {
