@@ -1184,6 +1184,12 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     })
   }, [])
 
+  // Persist the settled display state, including approval results and browser
+  // evidence added outside agentLoop's model-answer branches.
+  useEffect(() => {
+    if (!loading && !confirmingAction && messages.length > 1) saveToHistory(messages)
+  }, [messages, loading, confirmingAction, saveToHistory])
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const isRepairMode = params.get('mode') === 'repair' || localStorage.getItem('ai_repair_mode') === 'true'
