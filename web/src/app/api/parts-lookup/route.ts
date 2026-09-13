@@ -453,6 +453,33 @@ function visibleHtmlEvidence(html: string) {
     .slice(0, 18_000)
 }
 
+function autoZoneEvidenceDiagnostics(results: SearchResult[]) {
+  return results
+    .filter(result => result.title === 'AutoZone fitment category' || result.title === 'AutoZone fitment category (Tavily extract)')
+    .slice(0, 6)
+    .map(result => {
+      const content = result.content || ''
+      const prices = visiblePriceMatches(content).slice(0, 10)
+      return {
+        title: result.title,
+        url: result.url,
+        contentLength: content.length,
+        prices: prices.map(price => ({ value: price.value, raw: price.raw.slice(0, 80) })),
+        contexts: prices.slice(0, 6).map(price => content
+          .slice(Math.max(0, price.index - 180), Math.min(content.length, price.index + 260))
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 460)),
+        relevantLines: content
+          .split(/\r?\n+/)
+          .map(line => line.trim())
+          .filter(line => /brake|rotor|pad|part|sku|location|price|dollar|front|rear/i.test(line))
+          .slice(0, 40)
+          .map(line => line.slice(0, 240)),
+      }
+    })
+}
+
 async function readBoundedResponseText(response: Response, maxBytes: number) {
   const declaredLength = Number(response.headers.get('content-length'))
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) throw new Error('Extract response exceeds size limit')
@@ -942,6 +969,7 @@ export async function POST(req: NextRequest) {
         query,
         stores,
         search: search.diagnostics,
+        autoZoneEvidence: autoZoneEvidenceDiagnostics(rawResults),
         parsed: {
           options: parsed.options?.length || 0,
           parts: parsed.options?.reduce((count, option) => count + (option.parts?.length || 0), 0) || 0,
@@ -963,3 +991,4 @@ export async function POST(req: NextRequest) {
     return apiFail(message, 500, 'INTERNAL_ERROR')
   }
 }
+
