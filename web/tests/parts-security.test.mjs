@@ -70,6 +70,7 @@ test('AutoZone category evidence is deterministic, fitment-bound, and price-back
   assert.match(route, /MAX_DIRECT_PAGE_BYTES = 2_000_000/)
   assert.match(route, /PARTS_AI_TIMEOUT_MS = 45_000/)
   assert.match(route, /function isStrictAutoZoneCategoryUrl/)
+  assert.match(route, /const title = isStrictAutoZoneCategoryUrl\(richer\.url\) \? 'AutoZone fitment category'/)
   assert.match(route, /url\.protocol === 'https:'/)
   assert.match(route, /requestedByCanonicalUrl\.get\(canonicalUrl\(result\.url\)\)/)
   assert.match(route, /function readBoundedResponseText/)

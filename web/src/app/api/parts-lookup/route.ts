@@ -754,7 +754,11 @@ async function searchParts(queries: string[], stores: string[] = [], vehicle: Ve
       .filter((value, index, values) => values.indexOf(value) === index)
       .join('\n')
       .slice(0, 24_000)
-    mergedResults.set(key, { ...richer, content })
+    // Search-provider titles are often generic or reflect a nearby result.
+    // The exact generated AutoZone category URL is the stronger identity
+    // signal, so preserve the category marker for deterministic parsing.
+    const title = isStrictAutoZoneCategoryUrl(richer.url) ? 'AutoZone fitment category' : richer.title
+    mergedResults.set(key, { ...richer, title, content })
   }
   const filteredResults = [...mergedResults.values()]
   const resultHasVisiblePrice = (result: { title: string; content: string }) => hasVisiblePrice(`${result.title}\n${result.content}`)
