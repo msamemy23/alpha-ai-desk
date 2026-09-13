@@ -6,6 +6,26 @@ function priceValue(dollars, cents) {
   return Number.isFinite(value) && value > 0 ? value : null
 }
 
+function priceRepresentationKind(raw) {
+  if (/\bdollars?\b|\bcents?\b/i.test(raw)) return 'worded'
+  if (/\$|\bUSD\b/i.test(raw)) return 'currency'
+  return 'unknown'
+}
+
+function deduplicateEquivalentRenderings(matches) {
+  const deduplicated = []
+  for (const match of matches) {
+    const kind = priceRepresentationKind(match.raw)
+    const duplicate = deduplicated.some(previous => {
+      if (previous.value !== match.value || match.index - previous.index > 96) return false
+      const previousKind = priceRepresentationKind(previous.raw)
+      return (previousKind === 'worded' && kind === 'currency') || (previousKind === 'currency' && kind === 'worded')
+    })
+    if (!duplicate) deduplicated.push(match)
+  }
+  return deduplicated
+}
+
 /**
  * Finds only explicit money representations. Bare numbers, part numbers,
  * years, and quantities are deliberately never accepted as prices.
@@ -22,7 +42,7 @@ function visiblePriceMatches(value) {
     const price = priceValue(match[1], match[2])
     if (price !== null) matches.push({ value: price, index: match.index || 0, raw: match[0] })
   }
-  return matches.sort((left, right) => left.index - right.index)
+  return deduplicateEquivalentRenderings(matches.sort((left, right) => left.index - right.index))
 }
 
 function hasVisiblePrice(value) {
@@ -41,3 +61,4 @@ function hasExactlyOneVisiblePrice(price, evidence) {
 }
 
 module.exports = { visiblePriceMatches, hasVisiblePrice, priceAppearsInEvidence, hasExactlyOneVisiblePrice }
+
