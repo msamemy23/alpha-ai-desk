@@ -426,11 +426,13 @@ function autoZoneCategoryUrls(vehicle: VehicleFitment, partType: string, queries
   const requested = `${partType} ${queries.join(' ')}`.toLowerCase()
   const isBrakeRequest = /brake|rotor|pad|disc/.test(requested)
   if (!isBrakeRequest) return []
+  const allFour = /\bfront\b[\s\S]*\brear\b|\brear\b[\s\S]*\bfront\b/.test(requested)
   const needsPads = /pad/.test(requested) || (!/rotor|disc/.test(requested) && /brake/.test(requested))
   const needsRotors = /rotor|disc/.test(requested) || (!/pad/.test(requested) && /brake/.test(requested))
   const categories = [
     ...(needsPads ? ['brake-pads'] : []),
     ...(needsRotors ? ['brake-rotor'] : []),
+    ...(allFour ? ['performance-brake-pads-rotors-kit'] : []),
   ]
   return categories.map(category => `https://www.autozone.com/brakes-and-traction-control/${category}/${make}/${model}/${vehicle.year}`)
 }
@@ -442,7 +444,7 @@ function isStrictAutoZoneCategoryUrl(value: string) {
       && url.hostname.toLowerCase() === 'www.autozone.com'
       && !url.search
       && !url.hash
-      && /^\/brakes-and-traction-control\/(?:brake-pads|brake-rotor)\/[a-z0-9-]+\/[a-z0-9-]+\/\d{4}\/?$/i.test(url.pathname)
+      && /^\/brakes-and-traction-control\/(?:brake-pads|brake-rotor|performance-brake-pads-rotors-kit)\/[a-z0-9-]+\/[a-z0-9-]+\/\d{4}\/?$/i.test(url.pathname)
   } catch {
     return false
   }
@@ -453,12 +455,15 @@ function visibleHtmlEvidence(html: string) {
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
     .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
+    // Keep block boundaries so a product row, its price, and its position
+    // remain parseable after HTML is converted to evidence text.
+    .replace(/<[^>]+>/g, '\n')
     .replace(/&(nbsp|#160);/gi, ' ')
     .replace(/&amp;/gi, '&')
     .replace(/&quot;/gi, '"')
     .replace(/&#39;|&apos;/gi, "'")
-    .replace(/\s+/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s*\n+/g, '\n')
     .trim()
     .slice(0, 18_000)
 }
@@ -709,11 +714,36 @@ async function searchParts(queries: string[], stores: string[] = [], vehicle: Ve
     if (!result.url || !urlMatchesStores(result.url, domains)) continue
     const key = canonicalUrl(result.url) || result.url.toLowerCase()
     const current = mergedResults.get(key)
-    if (!current || evidenceScore(result) > evidenceScore(current)) mergedResults.set(key, result)
+    if (!current) {
+      mergedResults.set(key, result)
+      continue
+    }
+    // The same category URL can return a different product slice for each
+    // front/rear query. Keep the richest title but union the evidence text so
+    // one query cannot hide the other axle's products.
+    const richer = evidenceScore(result) > evidenceScore(current) ? result : current
+    const content = [current.content, result.content]
+      .filter(Boolean)
+      .filter((value, index, values) => values.indexOf(value) === index)
+      .join('\n')
+      .slice(0, 24_000)
+    mergedResults.set(key, { ...richer, content })
   }
   const filteredResults = [...mergedResults.values()]
   const hasVisiblePrice = (result: { title: string; content: string }) => /(?:\$\s*|USD\s+)\d/i.test(`${result.title}\n${result.content}`)
-  filteredResults.sort((left, right) => Number(hasVisiblePrice(right)) - Number(hasVisiblePrice(left)))
+  // The parser has a bounded result window. A successful deterministic
+  // category extract is richer and vehicle-bound, so it must not be crowded
+  // out by a large number of lower-context shopping snippets that also list a
+  // price. URL and price validation still happen before any parsed result is
+  // returned to the caller.
+  const parserPriority = (result: SearchResult) => result.title === 'AutoZone fitment category (Tavily extract)'
+    ? 2
+    : result.title === 'AutoZone fitment category' ? 1 : 0
+  filteredResults.sort((left, right) =>
+    parserPriority(right) - parserPriority(left)
+    || Number(hasVisiblePrice(right)) - Number(hasVisiblePrice(left))
+    || evidenceScore(right) - evidenceScore(left)
+  )
   return {
     results: filteredResults,
     diagnostics: {
@@ -808,7 +838,17 @@ Rules:
   const raw = data.choices?.[0]?.message?.content || '{}'
   try {
     const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
-    return JSON.parse(cleaned)
+    try {
+      return JSON.parse(cleaned)
+    } catch {
+      // Recover a single object when a model adds a short explanation around
+      // otherwise valid JSON. This changes parsing tolerance only; all prices
+      // still pass the source/identity sanitizer below.
+      const start = cleaned.indexOf('{')
+      const end = cleaned.lastIndexOf('}')
+      if (start < 0 || end <= start) throw new Error('No JSON object')
+      return JSON.parse(cleaned.slice(start, end + 1))
+    }
   } catch {
     return { options: [], kits: [] }
   }

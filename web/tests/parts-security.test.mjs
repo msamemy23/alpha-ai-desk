@@ -75,6 +75,10 @@ test('AutoZone category evidence is deterministic, fitment-bound, and price-back
   assert.match(route, /tavilyExtractFetched/)
   assert.match(route, /const mergedResults = new Map/)
   assert.match(route, /evidenceScore\(result\) > evidenceScore\(current\)/)
+  assert.match(route, /const parserPriority = \(result: SearchResult\)/)
+  assert.match(route, /AutoZone fitment category \(Tavily extract\)/)
+  assert.match(route, /parserPriority\(right\) - parserPriority\(left\)/)
+  assert.match(route, /\|\| evidenceScore\(right\) - evidenceScore\(left\)/)
 })
 
 test('SMS and AI shop actions have rate limit, audit, and idempotency safeguards', () => {
