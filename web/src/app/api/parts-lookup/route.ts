@@ -162,8 +162,10 @@ function priceAppearsInEvidence(price: unknown, evidence: string) {
   if (!Number.isFinite(value) || value <= 0) return false
   const normalized = evidence.replace(/,/g, '')
   // A model number, SKU, year, or substring of a larger price is not a quote.
-  return [...normalized.matchAll(/(?:\$\s*|USD\s+)(\d+(?:\.\d{1,2})?)(?![\d.])/gi)]
-    .some(match => Number(match[1]) === value)
+  // Some retailer pages render cents as "$52 99", so normalize both that
+  // presentation and the usual "$52.99" / "USD 52.99" forms.
+  return [...normalized.matchAll(/(?:\$\s*|USD\s+)(\d+)(?:[.\s](\d{2}))?(?![\d.])/gi)]
+    .some(match => Number(`${match[1]}${match[2] ? `.${match[2]}` : ''}`) === value)
 }
 
 function sanitizeParsedParts(parsed: { options?: PartOption[]; kits?: KitOption[] }, rawResults: { title: string; url: string; content: string }[], stores: string[] = []) {
@@ -334,7 +336,7 @@ async function searchParts(queries: string[], stores: string[] = []): Promise<{
   const domains = normalizeStoreFilter(stores)
   const expandedQueries: string[] = []
   for (const q of queries) {
-    if (domains.length) expandedQueries.push(`${q} ${domains.map(domain => `site:${domain}`).join(' OR ')}`)
+    if (domains.length) expandedQueries.push(`${q} price ${domains.map(domain => `site:${domain}`).join(' OR ')}`)
     else {
       expandedQueries.push(q)
       expandedQueries.push(q + ' site:oreilly.com OR site:advanceautoparts.com OR site:pepboys.com')
@@ -358,16 +360,17 @@ async function searchParts(queries: string[], stores: string[] = []): Promise<{
             query,
             search_depth: 'advanced',
             include_answer: false,
+            include_raw_content: true,
             max_results: 8,
           }),
           signal: AbortSignal.timeout(15000),
         })
         if (r.ok) {
-          const d = await r.json() as { results?: { title?: string; url?: string; content?: string }[] }
+          const d = await r.json() as { results?: { title?: string; url?: string; content?: string; raw_content?: string }[] }
           providerResults.push(...(d.results || []).map(result => ({
             title: result.title || '',
             url: result.url || '',
-            content: (result.content || '').slice(0, 800),
+            content: [result.content || '', result.raw_content || ''].filter(Boolean).join('\n').slice(0, 5000),
           })))
         }
       } catch { /* use the second provider when available */ }
