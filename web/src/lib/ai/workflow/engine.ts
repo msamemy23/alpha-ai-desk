@@ -105,8 +105,17 @@ function validateDecisionShape(decision: JsonObject): string[] {
   }
   if (decision.proofs !== undefined) {
     if (!object(decision.proofs) || Object.keys(decision.proofs).length > 100) errors.push('proofs must be a small object')
-    else for (const [path, proof] of Object.entries(decision.proofs)) {
-      if (!/^[A-Za-z][A-Za-z0-9]*(?:\.(?:[A-Za-z][A-Za-z0-9]*|\d+))*$/.test(path) || !object(proof) || typeof proof.ref !== 'string' || proof.ref.length > 160 || (proof.path !== undefined && typeof proof.path !== 'string') || (proof.quote !== undefined && (typeof proof.quote !== 'string' || proof.quote.length > 2000))) errors.push(`Invalid proof: ${path}`)
+    else for (const path of Object.keys(decision.proofs)) {
+      if (!/^[A-Za-z][A-Za-z0-9_-]*(?:\.(?:[A-Za-z][A-Za-z0-9_-]*|\d+))*$/.test(path)) {
+        errors.push(`Invalid proof path: ${path}`)
+        continue
+      }
+      // Proofs are evidence metadata, never authority. Models sometimes put
+      // control flags such as `apply_tax: false` in this map. Ignore malformed
+      // metadata here; mergeTask only retains a proof with a string ref, and
+      // evidenceErrors still blocks every non-zero monetary operand that lacks
+      // usable evidence. A malformed proof must not strand an otherwise valid
+      // no-tax/no-contact draft.
     }
   }
   if (kind === 'read') {
@@ -201,7 +210,7 @@ function quoteHasOperandContext(task: Task, path: string, quote: string, contain
   if (laborMatch && object(target)) {
     const targetTokens = contextTokens(target.operation)
     if (targetTokens.some(token => quoteText.includes(token))) return true
-    return /\b(?:labor|labou?r|hour|hr|install|replace|repair|flat)\b/i.test(quoteText)
+    return /\b(?:labor|labou?r|hours?|hrs?|install|replace|repair|flat)\b/i.test(quoteText)
   }
   const operand = path.split('.').at(-1) || ''
   const terms: Record<string, RegExp> = {

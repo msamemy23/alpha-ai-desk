@@ -298,6 +298,34 @@ test('empty database default materializes as a new workflow session', () => {
   assert.deepEqual(engine.restoreState({}), engine.initialState())
 })
 
+test('malformed control-flag proofs do not strand a valid no-tax invoice draft', async () => {
+  const h = harness([{
+    kind: 'propose',
+    task: task({
+      type: 'Invoice',
+      customer_name: 'QA',
+      parts: [
+        { name: 'Front left lower control arm', qty: 1, unitPrice: 99.99 },
+        { name: 'Front right lower control arm', qty: 1, unitPrice: 79.99 },
+      ],
+      labors: [{ operation: 'Replace both front lower control arms', hours: 3, rate: 120 }],
+      apply_tax: false,
+    }),
+    proofs: {
+      'parts.0.unitPrice': proof('u', 'left arm $99.99'),
+      'parts.1.unitPrice': proof('u', 'right arm $79.99'),
+      'labors.0.hours': proof('u', '3 hours at $120'),
+      'labors.0.rate': proof('u', '3 hours at $120'),
+      tax_rate: false,
+      apply_tax: false,
+    },
+  }])
+  const reply = await h.run('Prepare an invoice for QA: left arm $99.99, right arm $79.99, 3 hours at $120. No tax.', 'u')
+  assert.equal(reply.status, 'approval')
+  assert.equal(reply.approval.total, 539.98)
+  assert.equal(h.calls.length, 0)
+})
+
 for (const failure of [false, true]) test(`inventory answers require actual read evidence, outage=${failure}`, async () => {
   const h = harness([
     { kind: 'answer', message: '0 inventory items returned.' },
