@@ -451,7 +451,7 @@ test('researchable price questions are corrected instead of being shown to the u
   }
   const reply = await h.run('Make an invoice for Jake Paul: 2005 Honda Accord all four brakes from AutoZone. Look it up.', 'research')
   assert.equal(reply.status, 'blocked')
-  assert.match(reply.reply, /lookupParts|research/i)
+  assert.match(reply.reply, /complete compatible set|retry/i)
   assert.equal(h.calls.filter(call => call.action === 'lookupParts').length, 1)
 })
 
@@ -481,6 +481,31 @@ test('one user turn cannot fan out repeated parts lookups after partial evidence
   assert.match(reply.reply, /complete compatible set|No invoice was created/i)
   assert.equal(h.calls.filter(call => call.action === 'lookupParts').length, 1)
   assert.equal(h.contexts.length, 1, 'partial evidence stops the model before it can spend the turn on more searches')
+})
+
+test('research questions are blocked from the message text as well as the field list', async () => {
+  const h = harness([{
+    kind: 'ask',
+    fields: ['vehicle_trim'],
+    message: 'Can you provide the exact AutoZone part numbers and prices for every brake component?',
+  }])
+  h.deps.execute = async (action, payload, key) => {
+    h.calls.push({ action, payload, key })
+    if (action === 'lookupParts') return {
+      ok: true,
+      data: {
+        vehicle: '2005 Honda Accord',
+        options: [{ parts: [{ name: 'AutoZone Front Brake Rotor', position: 'Front', store: 'AutoZone', price: 65, quantity: 2 }] }],
+        laborGuidance: { operation: 'Brake service', hours: 3, basis: 'standard_estimate' },
+      },
+    }
+    return { ok: true, data: { id: 'saved-record', doc_number: 'INV-TEST', type: 'Invoice', ...payload } }
+  }
+  const reply = await h.run('Make an invoice for Text QA: 2005 Honda Accord, all four brakes and rotors from AutoZone, 5555550167. Look it up.', 'ask-text')
+  assert.equal(reply.status, 'blocked')
+  assert.match(reply.reply, /complete compatible set/i)
+  assert.doesNotMatch(reply.reply, /part numbers/i)
+  assert.equal(h.calls.filter(call => call.action === 'lookupParts').length, 1)
 })
 
 test('all-four brake drafts cannot silently omit an axle or brake component', async () => {

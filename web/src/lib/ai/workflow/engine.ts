@@ -633,8 +633,12 @@ function partsLookupLimitMessage(intent: ResearchIntent | null, state: WorkflowS
   return 'I ran one vehicle-and-retailer lookup, but it did not return enough reliable evidence to price this request. I will not repeat variant searches in the same turn or invent a price. Retry the saved lookup to continue; no invoice was created.'
 }
 
-function researchQuestion(fields: unknown): boolean {
-  return Array.isArray(fields) && fields.some(field => typeof field === 'string' && /(?:price|cost|unitprice|amount|labor|labou?r|hour|rate|part(?:s)?_?choice|option)/i.test(field))
+function researchQuestion(fields: unknown, message = ''): boolean {
+  const source = [
+    ...(Array.isArray(fields) ? fields.filter(field => typeof field === 'string') : []),
+    message,
+  ].join(' ')
+  return /(?:price|cost|unitprice|amount|labor|labou?r|hour|rate|part(?:s)?(?:\s+number|_?choice)?|option)/i.test(source)
 }
 
 function estimatedLaborEvidence(value: unknown): boolean {
@@ -857,7 +861,7 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
       }
       if (decision.kind === 'ask') {
         if (typeof decision.message !== 'string' || !decision.message.trim() || !Array.isArray(decision.fields) || !decision.fields.length) throw new Error('Ask must identify a genuinely missing field')
-        if (researchIntent && hasVehicleContext && researchQuestion(decision.fields)) throw new Error('Do not ask the user for prices, part choices, labor hours or labor rates. Run lookupParts and use the returned research, selecting the best complete option for the requested service.')
+        if (researchIntent && hasVehicleContext && researchQuestion(decision.fields, decision.message)) return respond(partsLookupLimitMessage(researchIntent, state), 'blocked')
         if (state.task) {
           for (const field of decision.fields) {
             if (typeof field !== 'string') throw new Error('Invalid question field')
