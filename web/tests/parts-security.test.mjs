@@ -25,6 +25,9 @@ test('parts lookup strips unverified prices instead of inventing them', () => {
   assert.match(route, /balancedBrakeQueries/)
   assert.match(route, /amazon: 'amazon\.com'/)
   assert.match(route, /urlMatchesStores/)
+  assert.match(route, /SERPER_API_KEY/)
+  assert.match(route, /google\.serper\.dev\/search/)
+  assert.match(route, /canonicalUrl/)
   assert.match(route, /laborGuidance/)
 })
 

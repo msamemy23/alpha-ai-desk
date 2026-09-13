@@ -13,6 +13,7 @@ import type { OpenAIOAuthTransport } from '@openai-oauth/core'
 export const dynamic = 'force-dynamic'
 
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY || ''
+const SERPER_API_KEY = process.env.SERPER_API_KEY || ''
 
 interface PartResult {
   position: string
@@ -100,6 +101,17 @@ function urlMatchesStores(url: string, stores: string[]) {
   }
 }
 
+function canonicalUrl(value: string) {
+  try {
+    const url = new URL(value)
+    url.hash = ''
+    url.search = ''
+    return `${url.origin}${url.pathname}`.replace(/\/$/, '').toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
 function standardLaborGuidance(query: string, partType: string, positions: string[]) {
   const text = `${query} ${partType}`.toLowerCase()
   const allFour = positions.length >= 4 || /(?:all\s+four|four|4)\s+(?:wheel\s+)?brakes?/i.test(text)
@@ -155,12 +167,19 @@ function priceAppearsInEvidence(price: unknown, evidence: string) {
 }
 
 function sanitizeParsedParts(parsed: { options?: PartOption[]; kits?: KitOption[] }, rawResults: { title: string; url: string; content: string }[], stores: string[] = []) {
-  const evidenceByUrl = new Map(rawResults.map(result => [result.url, `${result.title}\n${result.content}`]))
-  const warnings: string[] = ['Search snippets are preliminary leads. Exact product price, side/vehicle fitment and availability have not been independently verified. Labor hours require a supplied or verified source.']
+  const evidenceByUrl = new Map<string, string>()
+  for (const result of rawResults) {
+    const evidence = `${result.title}\n${result.content}`
+    evidenceByUrl.set(result.url, evidence)
+    const canonical = canonicalUrl(result.url)
+    if (canonical) evidenceByUrl.set(canonical, evidence)
+  }
+  const evidenceForUrl = (url: string) => evidenceByUrl.get(url) || evidenceByUrl.get(canonicalUrl(url))
+  const warnings: string[] = ['Search snippets are preliminary leads. Exact product price, side/vehicle fitment and availability have not been independently verified. Labor hours use Alpha\'s labeled standard estimate unless a supplied or verified source is present.']
 
   const options = (parsed.options || []).map(option => {
     const parts = (option.parts || []).flatMap(part => {
-      const evidence = evidenceByUrl.get(part.url)
+      const evidence = evidenceForUrl(part.url)
       if (!part.url || !urlMatchesStores(part.url, stores) || !evidence) {
         warnings.push(`Dropped ${part.name || 'part'} because its source URL was not in the search results.`)
         return []
@@ -188,7 +207,7 @@ function sanitizeParsedParts(parsed: { options?: PartOption[]; kits?: KitOption[
   }).filter(option => option.parts.length > 0).slice(0, 3)
 
   const kits = (parsed.kits || []).flatMap(kit => {
-    const evidence = evidenceByUrl.get(kit.url)
+    const evidence = evidenceForUrl(kit.url)
     if (!kit.url || !urlMatchesStores(kit.url, stores) || !evidence) {
       warnings.push(`Dropped ${kit.name || 'kit'} because its source URL was not in the search results.`)
       return []
@@ -320,29 +339,50 @@ async function searchParts(queries: string[], stores: string[] = []): Promise<{t
   // Keep every requested category when a retailer was specified. The old
   // six-query cap dropped the rear pad/rotor searches for four-wheel jobs.
   const searchPromises = expandedQueries.slice(0, domains.length ? Math.max(queries.length, 4) : 12).map(async (query) => {
-    try {
-      const r = await fetch('https://api.tavily.com/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          api_key: TAVILY_API_KEY,
-          query,
-          search_depth: 'advanced',
-          include_answer: false,
-          max_results: 8,
-        }),
-        signal: AbortSignal.timeout(15000),
-      })
-      if (!r.ok) return []
-      const d = await r.json()
-      return (d.results || []).map((r: {title: string; url: string; content: string}) => ({
-        title: r.title || '',
-        url: r.url || '',
-        content: (r.content || '').slice(0, 800)
-      }))
-    } catch {
-      return []
+    const providerResults: {title: string; url: string; content: string}[] = []
+    if (TAVILY_API_KEY) {
+      try {
+        const r = await fetch('https://api.tavily.com/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            api_key: TAVILY_API_KEY,
+            query,
+            search_depth: 'advanced',
+            include_answer: false,
+            max_results: 8,
+          }),
+          signal: AbortSignal.timeout(15000),
+        })
+        if (r.ok) {
+          const d = await r.json() as { results?: { title?: string; url?: string; content?: string }[] }
+          providerResults.push(...(d.results || []).map(result => ({
+            title: result.title || '',
+            url: result.url || '',
+            content: (result.content || '').slice(0, 800),
+          })))
+        }
+      } catch { /* use the second provider when available */ }
     }
+    if (SERPER_API_KEY) {
+      try {
+        const r = await fetch('https://google.serper.dev/search', {
+          method: 'POST',
+          headers: { 'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ q: query, num: 8 }),
+          signal: AbortSignal.timeout(15000),
+        })
+        if (r.ok) {
+          const d = await r.json() as { organic?: { title?: string; link?: string; snippet?: string }[] }
+          providerResults.push(...(d.organic || []).map(result => ({
+            title: result.title || '',
+            url: result.link || '',
+            content: (result.snippet || '').slice(0, 800),
+          })))
+        }
+      } catch { /* both providers are best-effort; sanitize what was returned */ }
+    }
+    return providerResults.filter(result => result.url && urlMatchesStores(result.url, domains))
   })
   
   const results = await Promise.allSettled(searchPromises)
