@@ -63,3 +63,32 @@ test('AutoZone and all-four brake wording are retained without inventing a price
   assert.doesNotMatch(result?.query || '', /\$\d/)
 })
 
+test('current retailer and vehicle override stale conversational context', () => {
+  const result = inferResearchIntent({
+    message: 'Look up the new prices from O\'Reilly for my 2018 Honda Civic.',
+    task: {
+      action: 'createInvoice',
+      payload: { vehicle_year: '2018', vehicle_make: 'Honda', vehicle_model: 'Civic', notes: 'Replace front brake pads' },
+    },
+    conversation: [
+      { role: 'user', text: 'Price AutoZone parts for my 2005 Honda Accord.' },
+      { role: 'assistant', text: 'AutoZone prices were unavailable.' },
+    ],
+  })
+  assert.equal(result?.stores.join(','), "O'Reilly")
+  assert.equal(result?.vehicle?.year, '2018')
+  assert.equal(result?.vehicle?.make, 'Honda')
+  assert.equal(result?.vehicle?.model, 'Civic')
+  assert.match(result?.query || '', /2018 Honda Civic/i)
+  assert.doesNotMatch(result?.query || '', /2005 Honda Accord/i)
+})
+
+test('remembered retailer remains active when a follow-up omits the store name', () => {
+  const result = inferResearchIntent({
+    message: 'Get the prices and add them to the invoice.',
+    facts: { retailer: "O'Reilly" },
+    task: { action: 'createInvoice', payload: { vehicle_year: '2018', vehicle_make: 'Honda', vehicle_model: 'Civic', notes: 'Replace front brake pads' } },
+  })
+  assert.equal(result?.stores.join(','), "O'Reilly")
+})
+

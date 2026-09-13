@@ -14,6 +14,7 @@ export const dynamic = 'force-dynamic'
 
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY || ''
 const SERPER_API_KEY = process.env.SERPER_API_KEY || ''
+const PARTS_AI_TIMEOUT_MS = 45_000
 
 interface PartResult {
   position: string
@@ -25,6 +26,7 @@ interface PartResult {
   inStock: boolean | null
   storeLocation: string | null
   quantity: number
+  evidenceQuote?: string
   sourceConfidence: 'verified_exact_product_page' | 'search_result_only'
 }
 
@@ -43,6 +45,7 @@ interface KitOption {
   store: string
   includes: string
   positions: string
+  evidenceQuote?: string
   sourceConfidence: 'verified_exact_product_page' | 'search_result_only'
 }
 
@@ -168,6 +171,67 @@ function priceAppearsInEvidence(price: unknown, evidence: string) {
     .some(match => Number(`${match[1]}${match[2] ? `.${match[2]}` : ''}`) === value)
 }
 
+function normalizedEvidence(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[’`*_]/g, "'")
+    .replace(/[^a-z0-9$.'%]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function evidenceQuoteAppearsInSource(quote: unknown, evidence: string) {
+  if (typeof quote !== 'string' || !quote.trim()) return false
+  const normalizedQuote = normalizedEvidence(quote)
+  return normalizedQuote.length >= 8 && normalizedEvidence(evidence).includes(normalizedQuote)
+}
+
+function evidenceQuoteHasOnePrice(price: unknown, quote: unknown) {
+  if (typeof quote !== 'string' || !quote.trim()) return false
+  const normalized = quote.replace(/,/g, '')
+  const matches = [...normalized.matchAll(/(?:\$\s*|USD\s+)(\d+)(?:[.\s](\d{2}))?(?![\d.])/gi)]
+  if (matches.length !== 1) return false
+  const quotedPrice = Number(`${matches[0][1]}${matches[0][2] ? `.${matches[0][2]}` : ''}`)
+  const expectedPrice = typeof price === 'number' ? price : Number(price)
+  return Number.isFinite(expectedPrice) && quotedPrice === expectedPrice
+}
+
+function priceAppearsNearIdentity(price: unknown, identity: { name?: unknown; brand?: unknown; partNumber?: unknown; position?: unknown; includes?: unknown }, evidence: string) {
+  if (typeof identity.name !== 'string' || identity.name.trim().length < 3) return false
+  if (!priceAppearsInEvidence(price, evidence)) return false
+  const normalized = evidence.replace(/,/g, '')
+  const value = Number(price)
+  const priceMatches = [...normalized.matchAll(/(?:\$\s*|USD\s+)(\d+)(?:[.\s](\d{2}))?(?![\d.])/gi)]
+    .filter(match => Number(`${match[1]}${match[2] ? `.${match[2]}` : ''}`) === value)
+  const lower = normalized.toLowerCase()
+  const exactAnchors = [identity.partNumber, identity.name, [identity.brand, identity.name].filter(Boolean).join(' ')]
+    .filter((item): item is string => typeof item === 'string' && item.trim().length >= 3)
+    .map(item => item.trim().toLowerCase())
+  const position = typeof identity.position === 'string' ? identity.position.toLowerCase().match(/\b(front|rear|left|right)\b/g) || [] : []
+  if (priceMatches.some(match => exactAnchors.some(anchor => {
+    const index = lower.indexOf(anchor)
+    const start = Math.max(0, (match.index || 0) - 600)
+    const end = Math.min(lower.length, (match.index || 0) + 600)
+    const window = lower.slice(start, end)
+    return index >= 0 && Math.abs(index - (match.index || 0)) <= 600 && position.every(token => window.includes(token))
+  }))) return true
+
+  // Category pages frequently change punctuation or insert badges between a
+  // title and its price. Require several identity tokens in the same bounded
+  // window instead of accepting a price from an unrelated product row.
+  const ignored = new Set(['the', 'and', 'for', 'with', 'front', 'rear', 'left', 'right', 'brake', 'brakes', 'pad', 'pads', 'rotor', 'rotors', 'disc', 'discs', 'kit', 'set', 'pair'])
+  const identityTokens = [...new Set(exactAnchors.flatMap(anchor => anchor.split(/[^a-z0-9]+/).filter(token => token.length >= 3 && !ignored.has(token))))]
+  if (identityTokens.length < 2) return false
+  return priceMatches.some(match => {
+    const start = Math.max(0, (match.index || 0) - 600)
+    const end = Math.min(lower.length, (match.index || 0) + 600)
+    const window = lower.slice(start, end)
+    const tokenMatches = identityTokens.filter(token => window.includes(token)).length
+    const positionMatches = position.length === 0 || position.some(token => window.includes(token))
+    return tokenMatches >= 2 && positionMatches
+  })
+}
+
 function sanitizeParsedParts(parsed: { options?: PartOption[]; kits?: KitOption[] }, rawResults: { title: string; url: string; content: string }[], stores: string[] = []) {
   const evidenceByUrl = new Map<string, string>()
   for (const result of rawResults) {
@@ -188,6 +252,14 @@ function sanitizeParsedParts(parsed: { options?: PartOption[]; kits?: KitOption[
       }
       if (!priceAppearsInEvidence(part.price, evidence)) {
         warnings.push(`Dropped ${part.name || 'part'} because its price was not visible in the source result.`)
+        return []
+      }
+      if (!priceAppearsNearIdentity(part.price, part, evidence)) {
+        warnings.push(`Dropped ${part.name || 'part'} because its price was not bound to the same product evidence.`)
+        return []
+      }
+      if (!evidenceQuoteAppearsInSource(part.evidenceQuote, evidence) || !evidenceQuoteHasOnePrice(part.price, part.evidenceQuote) || !priceAppearsNearIdentity(part.price, part, String(part.evidenceQuote))) {
+        warnings.push(`Dropped ${part.name || 'part'} because the source did not provide an exact product-and-price evidence quote.`)
         return []
       }
       const price = Number(part.price)
@@ -218,6 +290,14 @@ function sanitizeParsedParts(parsed: { options?: PartOption[]; kits?: KitOption[
       warnings.push(`Dropped ${kit.name || 'kit'} because its price was not visible in the source result.`)
       return []
     }
+    if (!priceAppearsNearIdentity(kit.price, kit, evidence)) {
+      warnings.push(`Dropped ${kit.name || 'kit'} because its price was not bound to the same product evidence.`)
+      return []
+    }
+    if (!evidenceQuoteAppearsInSource(kit.evidenceQuote, evidence) || !evidenceQuoteHasOnePrice(kit.price, kit.evidenceQuote) || !priceAppearsNearIdentity(kit.price, kit, String(kit.evidenceQuote))) {
+      warnings.push(`Dropped ${kit.name || 'kit'} because the source did not provide an exact product-and-price evidence quote.`)
+      return []
+    }
     const sourceConfidence: KitOption['sourceConfidence'] = 'search_result_only'
     return [{
       ...kit,
@@ -246,12 +326,13 @@ type PartsAiConfig = {
 }
 
 async function callPartsAi(config: PartsAiConfig, messages: PartsAiMessage[], maxTokens: number) {
+  const signal = AbortSignal.timeout(PARTS_AI_TIMEOUT_MS)
   if (config.oauthTransport) {
     const completion = await fetchOpenAIChatCompletion(config.oauthTransport, {
       model: chatGptModel(config.model),
       messages,
       max_tokens: maxTokens,
-    }, AbortSignal.timeout(120000))
+    }, signal)
     if (!completion.ok) {
       const message = completion.data && typeof completion.data === 'object' && 'error' in completion.data
         ? String((completion.data as { error?: { message?: unknown } }).error?.message || 'ChatGPT request failed')
@@ -265,7 +346,7 @@ async function callPartsAi(config: PartsAiConfig, messages: PartsAiMessage[], ma
     method: 'POST',
     headers: { 'Authorization': `Bearer ${config.key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: config.model, messages, max_tokens: maxTokens, temperature: 0.1 }),
-    signal: AbortSignal.timeout(120000),
+    signal,
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(typeof data?.error?.message === 'string' ? data.error.message : `AI provider returned ${res.status}`)
@@ -324,11 +405,163 @@ Rules:
 }
 
 // Search Tavily for parts across multiple stores
-async function searchParts(queries: string[], stores: string[] = []): Promise<{
+type VehicleFitment = { year: string; make: string; model: string }
+type SearchResult = { title: string; url: string; content: string }
+const MAX_TAVILY_EXTRACT_URLS = 20
+const MAX_TAVILY_EXTRACT_BYTES = 1_000_000
+const MAX_DIRECT_PAGE_BYTES = 2_000_000
+
+function autoZonePathSegment(value: string) {
+  const segment = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  return segment.length > 0 && segment.length <= 48 ? segment : ''
+}
+
+function autoZoneCategoryUrls(vehicle: VehicleFitment, partType: string, queries: string[], stores: string[]) {
+  if (!stores.includes('autozone.com') || !/^\d{4}$/.test(vehicle.year)) return []
+  const make = autoZonePathSegment(vehicle.make)
+  const model = autoZonePathSegment(vehicle.model)
+  if (!make || !model) return []
+
+  const requested = `${partType} ${queries.join(' ')}`.toLowerCase()
+  const isBrakeRequest = /brake|rotor|pad|disc/.test(requested)
+  if (!isBrakeRequest) return []
+  const needsPads = /pad/.test(requested) || (!/rotor|disc/.test(requested) && /brake/.test(requested))
+  const needsRotors = /rotor|disc/.test(requested) || (!/pad/.test(requested) && /brake/.test(requested))
+  const categories = [
+    ...(needsPads ? ['brake-pads'] : []),
+    ...(needsRotors ? ['brake-rotor'] : []),
+  ]
+  return categories.map(category => `https://www.autozone.com/brakes-and-traction-control/${category}/${make}/${model}/${vehicle.year}`)
+}
+
+function isStrictAutoZoneCategoryUrl(value: string) {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:'
+      && url.hostname.toLowerCase() === 'www.autozone.com'
+      && !url.search
+      && !url.hash
+      && /^\/brakes-and-traction-control\/(?:brake-pads|brake-rotor)\/[a-z0-9-]+\/[a-z0-9-]+\/\d{4}\/?$/i.test(url.pathname)
+  } catch {
+    return false
+  }
+}
+
+function visibleHtmlEvidence(html: string) {
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&(nbsp|#160);/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 18_000)
+}
+
+async function readBoundedResponseText(response: Response, maxBytes: number) {
+  const declaredLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) throw new Error('Extract response exceeds size limit')
+  if (!response.body) return ''
+
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let totalBytes = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      totalBytes += value.byteLength
+      if (totalBytes > maxBytes) {
+        await reader.cancel()
+        throw new Error('Extract response exceeds size limit')
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const bytes = new Uint8Array(totalBytes)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
+}
+
+async function fetchAutoZoneCategoryEvidence(urls: string[]): Promise<SearchResult[]> {
+  const fetched = await Promise.allSettled(urls.map(async (url) => {
+    const response = await fetch(url, {
+      headers: {
+        'Accept': 'text/html,application/xhtml+xml',
+        // AutoZone serves a client page for non-browser-looking requests.
+        'User-Agent': 'Mozilla/5.0 (compatible; AlphaAIDeskPartsLookup/1.0)',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(12_000),
+    })
+    const expected = canonicalUrl(url)
+    const received = canonicalUrl(response.url)
+    const contentType = response.headers.get('content-type') || ''
+    if (!response.ok || expected !== received || !contentType.toLowerCase().includes('text/html')) return null
+    const evidence = visibleHtmlEvidence(await readBoundedResponseText(response, MAX_DIRECT_PAGE_BYTES))
+    // A category page is useful only when it contains a directly visible price.
+    // Do not turn a fitment landing page without prices into synthetic evidence.
+    if (!/(?:\$\s*|USD\s+)\d/i.test(evidence)) return null
+    return { title: 'AutoZone fitment category', url, content: evidence }
+  }))
+  return fetched.flatMap(result => result.status === 'fulfilled' && result.value ? [result.value] : [])
+}
+
+async function extractAutoZoneCategoryEvidence(urls: string[]): Promise<SearchResult[]> {
+  const requestedUrls = urls.filter(isStrictAutoZoneCategoryUrl).slice(0, MAX_TAVILY_EXTRACT_URLS)
+  if (!TAVILY_API_KEY || !requestedUrls.length) return []
+
+  try {
+    const response = await fetch('https://api.tavily.com/extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: TAVILY_API_KEY,
+        urls: requestedUrls,
+        extract_depth: 'advanced',
+        query: 'vehicle-specific brake product names part numbers front rear pad rotor prices',
+        chunks_per_source: 8,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!response.ok) return []
+
+    const payload = JSON.parse(await readBoundedResponseText(response, MAX_TAVILY_EXTRACT_BYTES)) as {
+      results?: { url?: string; raw_content?: string; content?: string }[]
+    }
+    const requestedByCanonicalUrl = new Map(requestedUrls.map(url => [canonicalUrl(url), url]))
+    return (payload.results || []).flatMap(result => {
+      if (typeof result.url !== 'string' || !isStrictAutoZoneCategoryUrl(result.url)) return []
+      const expectedUrl = requestedByCanonicalUrl.get(canonicalUrl(result.url))
+      if (!expectedUrl) return []
+      const rawContent = typeof result.raw_content === 'string'
+        ? result.raw_content
+        : typeof result.content === 'string' ? result.content : ''
+      const evidence = visibleHtmlEvidence(rawContent)
+      if (!/(?:\$\s*|USD\s+)\d/i.test(evidence)) return []
+      return [{ title: 'AutoZone fitment category (Tavily extract)', url: expectedUrl, content: evidence }]
+    })
+  } catch {
+    // Extract is a bounded fallback. Normal search and the direct fetch remain usable.
+    return []
+  }
+}
+
+async function searchParts(queries: string[], stores: string[] = [], vehicle: VehicleFitment = { year: '', make: '', model: '' }, partType = ''): Promise<{
   results: {title: string; url: string; content: string}[]
-  diagnostics: { requestedQueries: number; completedQueries: number; providerResults: number; retailerResults: number; shoppingCandidates: number; shoppingResults: number; shoppingCompletedQueries: number; providers: string[] }
+  diagnostics: { requestedQueries: number; completedQueries: number; providerResults: number; retailerResults: number; shoppingCandidates: number; shoppingResults: number; shoppingCompletedQueries: number; directPageCandidates: number; directPagesFetched: number; tavilyExtractCandidates: number; tavilyExtractFetched: number; providers: string[] }
 }> {
-  const allResults: {title: string; url: string; content: string}[] = []
+  const allResults: SearchResult[] = []
   let shoppingCandidates = 0
   let shoppingResults = 0
   let shoppingCompletedQueries = 0
@@ -448,13 +681,33 @@ async function searchParts(queries: string[], stores: string[] = []): Promise<{
     }
   }
 
-  // Dedupe by URL
-  const seen = new Set<string>()
-  const filteredResults = allResults.filter(r => {
-    if (seen.has(r.url)) return false
-    seen.add(r.url)
-    return !!r.url && urlMatchesStores(r.url, domains)
-  })
+  // Search snippets and shopping feeds often omit prices for AutoZone even
+  // though AutoZone's canonical vehicle-fitment category pages show them.
+  // Fetch only deterministic, generated AutoZone category URLs; never follow
+  // a URL supplied by the model or by untrusted request content.
+  const directPageUrls = autoZoneCategoryUrls(vehicle, partType, queries, domains)
+  const directEvidence = await fetchAutoZoneCategoryEvidence(directPageUrls)
+  allResults.push(...directEvidence)
+  const directEvidenceUrls = new Set(directEvidence.map(result => canonicalUrl(result.url)))
+  const extractFallbackUrls = directPageUrls.filter(url => !directEvidenceUrls.has(canonicalUrl(url)))
+  const tavilyExtractEvidence = await extractAutoZoneCategoryEvidence(extractFallbackUrls)
+  allResults.push(...tavilyExtractEvidence)
+
+  // Dedupe by canonical URL while keeping the richest evidence. Direct
+  // category extraction is intentionally appended after provider results; a
+  // first-result-wins map would let a price-less snippet hide that evidence.
+  const evidenceScore = (result: SearchResult) => {
+    const priceCount = [...`${result.title}\n${result.content}`.matchAll(/(?:\$\s*|USD\s+)\d/gi)].length
+    return priceCount * 100_000 + Math.min(result.content.length, 20_000)
+  }
+  const mergedResults = new Map<string, SearchResult>()
+  for (const result of allResults) {
+    if (!result.url || !urlMatchesStores(result.url, domains)) continue
+    const key = canonicalUrl(result.url) || result.url.toLowerCase()
+    const current = mergedResults.get(key)
+    if (!current || evidenceScore(result) > evidenceScore(current)) mergedResults.set(key, result)
+  }
+  const filteredResults = [...mergedResults.values()]
   const hasVisiblePrice = (result: { title: string; content: string }) => /(?:\$\s*|USD\s+)\d/i.test(`${result.title}\n${result.content}`)
   filteredResults.sort((left, right) => Number(hasVisiblePrice(right)) - Number(hasVisiblePrice(left)))
   return {
@@ -467,6 +720,10 @@ async function searchParts(queries: string[], stores: string[] = []): Promise<{
       shoppingCandidates,
       shoppingResults,
       shoppingCompletedQueries,
+      directPageCandidates: directPageUrls.length,
+      directPagesFetched: directEvidence.length,
+      tavilyExtractCandidates: extractFallbackUrls.length,
+      tavilyExtractFetched: tavilyExtractEvidence.length,
       providers,
     },
   }
@@ -506,6 +763,7 @@ Return ONLY valid JSON:
           "price": 54.99,
           "url": "exact-url-from-results",
           "store": "AutoZone",
+          "evidenceQuote": "Duralast Gold Brake Rotor 31275DL $54.99",
           "inStock": true,
           "storeLocation": "Houston TX",
           "quantity": 1
@@ -521,6 +779,7 @@ Return ONLY valid JSON:
       "price": 256.99,
       "url": "exact-url-from-results",
       "store": "Amazon",
+      "evidenceQuote": "PowerStop Front+Rear Brake Kit ... $256.99",
       "includes": "4 rotors + 4 pads + hardware",
       "positions": "Front + Rear"
     }
@@ -530,7 +789,11 @@ Return ONLY valid JSON:
 Rules:
 - Show MAX 3 tiers: budget, mid, premium
 - ONLY use prices and URLs that ACTUALLY appear in the search results. NEVER invent prices or URLs.
-- If a part appears for multiple positions (e.g. front left/right use same part), list each position separately with same price
+- Every part or kit must include an evidenceQuote copied from one contiguous product/result entry. The quote must contain the selected product identity (name or part number), package/position wording when present, and exactly one currency price—the selected price. If you cannot copy such a quote, omit the item; never quote adjacent product rows or multiple price options.
+- A result labelled "AutoZone fitment category" is a vehicle-specific category page. It may contain several products; use its exact category URL only when the product name and price are present in that page's text.
+- Do not claim a front/rear position unless that product row or kit description identifies it. For an all-four brake request, include both front and rear pads and rotors, or a kit whose source text explicitly includes both.
+- Bind each extracted product name, part number, package quantity and price to the same product row or result entry; never pair a page-wide price with a different product.
+- If an individually sold part covers multiple positions (e.g. a rotor), list each required side separately with the same source-backed unit price. If the source explicitly sells an axle set or pair (e.g. brake pads), list one line for that axle, keep the package wording in the name, and do not duplicate it as left and right.
 - partsTotal = sum of all parts in that tier (price * quantity for each)
 - Include part numbers ONLY if found in results
 - For kits, extract bundle deals that cover multiple positions
@@ -586,7 +849,7 @@ export async function POST(req: NextRequest) {
     let searchQueries = balancedBrakeQueries(query, vehicle, decomposed.partType, decomposed.positions || [], decomposed.searchQueries || [query])
 
     // Step 3: Search for parts across stores
-    const search = await searchParts(searchQueries, stores)
+    const search = await searchParts(searchQueries, stores, decomposed.vehicle, decomposed.partType)
     const rawResults = search.results
 
     // Step 4: Parse results with AI

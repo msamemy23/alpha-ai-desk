@@ -363,11 +363,12 @@ test('document requests automatically research missing AutoZone brake prices and
     if (action === 'lookupParts') return {
       ok: true,
       data: {
+        vehicle: '2005 Honda Accord',
         options: [{ parts: [
-          { name: 'AutoZone Front Brake Pad Set', position: 'Front', brand: 'Duralast', price: 80, quantity: 1 },
-          { name: 'AutoZone Front Brake Rotor', position: 'Front', brand: 'Duralast', price: 65, quantity: 2 },
-          { name: 'AutoZone Rear Brake Pad Set', position: 'Rear', brand: 'Duralast', price: 70, quantity: 1 },
-          { name: 'AutoZone Rear Brake Rotor', position: 'Rear', brand: 'Duralast', price: 55, quantity: 2 },
+          { name: 'AutoZone Front Brake Pad Set', position: 'Front', brand: 'Duralast', store: 'AutoZone', price: 80, quantity: 1 },
+          { name: 'AutoZone Front Brake Rotor', position: 'Front', brand: 'Duralast', store: 'AutoZone', price: 65, quantity: 2 },
+          { name: 'AutoZone Rear Brake Pad Set', position: 'Rear', brand: 'Duralast', store: 'AutoZone', price: 70, quantity: 1 },
+          { name: 'AutoZone Rear Brake Rotor', position: 'Rear', brand: 'Duralast', store: 'AutoZone', price: 55, quantity: 2 },
         ] }],
         laborGuidance: { operation: 'Replace brake pads and rotors on all four wheels', hours: 3, basis: 'standard_estimate' },
       },
@@ -403,6 +404,68 @@ test('all-four brake drafts cannot silently omit an axle or brake component', as
   assert.equal(reply.status, 'blocked')
   assert.match(reply.reply, /all-four brake request is incomplete/i)
   assert.equal(h.calls.filter(call => call.key).length, 0)
+})
+
+test('a prior lookup for another vehicle or retailer cannot satisfy a new research request', async () => {
+  const h = harness([])
+  h.state.task = { action: 'createInvoice', payload: { type: 'Invoice', customer_name: 'QA', vehicle_year: '2018', vehicle_make: 'Honda', vehicle_model: 'Civic', notes: 'All four brakes and rotors' }, proofs: {}, instructions: [] }
+  h.state.evidence.push({
+    id: 'old-lookup',
+    tool: 'lookupParts',
+    input: { query: '2005 Honda Accord all four brakes from AutoZone', stores: ['AutoZone'] },
+    data: {
+      vehicle: '2005 Honda Accord', query: '2005 Honda Accord front brakes', positions: ['Front Left', 'Front Right'],
+      options: [{ parts: [{ name: 'AutoZone front brake pads', position: 'Front', price: 80, url: 'https://www.autozone.com/old', store: 'AutoZone' }] }],
+      kits: [], laborGuidance: { hours: 1.5 },
+    },
+    at: new Date().toISOString(),
+  })
+  const reply = await h.run("Look up new prices from O'Reilly for all four brakes on my 2018 Honda Civic.", 'new-research')
+  assert.equal(reply.status, 'blocked')
+  const lookup = h.calls.find(call => call.action === 'lookupParts')
+  assert.ok(lookup)
+  assert.match(lookup.payload.query, /2018 Honda Civic/i)
+  assert.equal(lookup.payload.stores[0], "O'Reilly")
+})
+
+test('a stale lookup cannot prove a changed vehicle at proposal time', () => {
+  const state = engine.initialState()
+  state.turns.push({ id: 'current', role: 'user', text: 'Use the AutoZone price for my 2018 Honda Civic.' })
+  state.evidence.push({
+    id: 'old-lookup', tool: 'lookupParts', input: { query: '2005 Honda Accord AutoZone', stores: ['AutoZone'] },
+    data: { vehicle: '2005 Honda Accord', options: [{ parts: [{ name: 'AutoZone Brake Rotor', position: 'Front', store: 'AutoZone', price: 80 }] }], kits: [] }, at: new Date().toISOString(),
+  })
+  const invoice = { action: 'createInvoice', payload: { type: 'Invoice', customer_name: 'QA', vehicle_year: '2018', vehicle_make: 'Honda', vehicle_model: 'Civic', parts: [{ name: 'AutoZone Brake Rotor', position: 'Front', store: 'AutoZone', qty: 1, unitPrice: 80 }], apply_tax: false }, proofs: { 'parts.0.unitPrice': { ref: 'old-lookup', path: 'options.0.parts.0.price' } }, instructions: [] }
+  assert.equal(engine.evidenceErrors(invoice, state, {}).length, 1)
+})
+
+test('an explicit retailer change takes precedence over old priced lines', () => {
+  const state = engine.initialState()
+  state.turns.push({ id: 'current', role: 'user', text: "Use O'Reilly instead for this invoice." })
+  state.evidence.push({
+    id: 'old-lookup', tool: 'lookupParts', input: { query: '2018 Honda Civic AutoZone', stores: ['AutoZone'] },
+    data: { vehicle: '2018 Honda Civic', options: [{ parts: [{ name: 'AutoZone Brake Rotor', position: 'Front', store: 'AutoZone', price: 80 }] }], kits: [] }, at: new Date().toISOString(),
+  })
+  const invoice = { action: 'createInvoice', payload: { type: 'Invoice', customer_name: 'QA', vehicle_year: '2018', vehicle_make: 'Honda', vehicle_model: 'Civic', parts: [{ name: 'Brake Rotor', position: 'Front', store: 'AutoZone', qty: 1, unitPrice: 80 }], apply_tax: false }, proofs: { 'parts.0.unitPrice': { ref: 'old-lookup', path: 'options.0.parts.0.price' } }, instructions: [] }
+  assert.equal(engine.evidenceErrors(invoice, state, {}, "Use O'Reilly instead for this invoice.").length, 1)
+})
+
+test('all-four scope cannot combine unrelated axle lines into a complete kit', () => {
+  const state = engine.initialState()
+  state.turns.push({ id: 'u', role: 'user', text: 'Make an invoice for all four brakes and rotors.' })
+  const invoice = {
+    action: 'createInvoice',
+    payload: {
+      type: 'Invoice', customer_name: 'QA', apply_tax: false,
+      parts: [
+        { name: 'Front brake pad kit', position: 'Front', qty: 1, unitPrice: 80 },
+        { name: 'Rear brake rotor', position: 'Rear', qty: 2, unitPrice: 60 },
+      ],
+      labors: [{ operation: 'Replace brakes', hours: 1.5, rate: 120 }],
+    },
+    proofs: {}, instructions: [],
+  }
+  assert.ok(engine.evidenceErrors(invoice, state, {}).some(error => /all-four brake request is incomplete/i.test(error)))
 })
 
 test('same-brand evidence for a different brake component cannot prove a line', () => {

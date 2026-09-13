@@ -2,6 +2,7 @@ export type ResearchIntentInput = {
   message: string
   task?: { action?: unknown; payload?: unknown; instructions?: unknown } | null
   conversation?: Array<{ role?: unknown; text?: unknown }>
+  facts?: { retailer?: unknown } | null
 }
 
 export type ResearchIntent = {
@@ -9,6 +10,7 @@ export type ResearchIntent = {
   stores: string[]
   wantsParts: boolean
   wantsLabor: boolean
+  vehicle?: { year: string; make: string; model: string }
 }
 
 const MAX_SOURCE_CHARS = 4_000
@@ -94,6 +96,21 @@ function missingPricedLines(payload: unknown): boolean {
   return !pricedPart && !pricedLabor
 }
 
+function extractVehicle(value: unknown): { year: string; make: string; model: string } | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const source = value as Record<string, unknown>
+  const year = typeof source.vehicle_year === 'string' ? source.vehicle_year.trim() : ''
+  const make = typeof source.vehicle_make === 'string' ? source.vehicle_make.trim() : ''
+  const model = typeof source.vehicle_model === 'string' ? source.vehicle_model.trim() : ''
+  if (/^(?:19|20)\d{2}$/.test(year) && make && model) return { year, make, model }
+  return undefined
+}
+
+function vehicleFromText(source: string): { year: string; make: string; model: string } | undefined {
+  const match = source.match(/\b((?:19|20)\d{2})\s+([A-Za-z][A-Za-z-]+)\s+([A-Za-z0-9][A-Za-z0-9-]*)\b/i)
+  return match ? { year: match[1], make: match[2], model: match[3] } : undefined
+}
+
 function compactQuery(values: string[]): string {
   const query = unique(values).join('; ').replace(/\s+/g, ' ').trim()
   return query.length <= MAX_QUERY_CHARS ? query : query.slice(0, MAX_QUERY_CHARS).replace(/\s+\S*$/, '').trim()
@@ -126,9 +143,22 @@ export function inferResearchIntent(input: ResearchIntentInput): ResearchIntent 
 
   if (!isService || (!explicitResearch && !implicitResearch)) return null
 
-  const stores = RETAILERS.filter(([, pattern]) => pattern.test(source)).map(([store]) => store)
-  const query = compactQuery([...priorUserTurns, current, ...taskValues])
+  const currentStores = RETAILERS.filter(([, pattern]) => pattern.test(current)).map(([store]) => store)
+  const rememberedStore = typeof input.facts?.retailer === 'string' && input.facts.retailer.trim() ? [input.facts.retailer.trim()] : []
+  const stores = (currentStores.length ? currentStores : rememberedStore.length ? rememberedStore : RETAILERS.filter(([, pattern]) => pattern.test(source)).map(([store]) => store))
+  const vehicle = extractVehicle(input.task?.payload) || vehicleFromText(current) || vehicleFromText(userSource)
+  const relevantPriorTurns = priorUserTurns
+    .filter(turn => turn !== current)
+    .filter(turn => !vehicle || !vehicleFromText(turn))
+    .filter(turn => SERVICE_TERMS.test(turn) || PART_TERMS.test(turn) || RESEARCH_TERMS.test(turn) || RETAILERS.some(([, pattern]) => pattern.test(turn)))
+    .slice(-6)
+  const query = compactQuery([
+    vehicle ? `${vehicle.year} ${vehicle.make} ${vehicle.model}` : '',
+    ...relevantPriorTurns,
+    ...taskValues,
+    current,
+  ])
   if (!query) return null
-  return { query, stores, wantsParts, wantsLabor }
+  return { query, stores, wantsParts, wantsLabor, ...(vehicle ? { vehicle } : {}) }
 }
 

@@ -7,7 +7,7 @@ export type Evidence = { id: string; tool: string; input: JsonObject; data: unkn
 export type Proof = { ref: string; path?: string; quote?: string }
 export type Task = { action: string; payload: JsonObject; proofs: Record<string, Proof>; instructions: string[] }
 export type Approval = { id: string; action: string; payload: JsonObject; warnings: string[]; sources?: { label: string; url: string }[]; total?: number; status: 'pending' | 'executing' | 'uncertain' }
-export type UserFacts = { phone?: string | null; email?: string | null; vehicle?: { year: string; make: string; model: string }; noTax?: boolean; noAlignment?: boolean; exclusions: string[] }
+export type UserFacts = { phone?: string | null; email?: string | null; vehicle?: { year: string; make: string; model: string }; retailer?: string; noTax?: boolean; noAlignment?: boolean; exclusions: string[] }
 export type WorkflowReply = { reply: string; status: 'answer' | 'needs_input' | 'approval' | 'complete' | 'blocked' | 'cancelled'; approval?: Approval; result?: { action: string; data: unknown }; turnId: string }
 export type WorkflowState = {
   version: 1
@@ -61,7 +61,7 @@ export function restoreState(value: unknown): WorkflowState {
     throw new Error('Saved workflow approval is invalid')
   }
   if (state.pending && (!state.task || state.pending.action !== state.task.action)) throw new Error('Saved workflow approval does not match its task')
-  if (!Array.isArray(state.facts.exclusions) || state.facts.exclusions.some(item => typeof item !== 'string')) throw new Error('Saved workflow facts are invalid')
+  if (!Array.isArray(state.facts.exclusions) || state.facts.exclusions.some(item => typeof item !== 'string') || (state.facts.retailer !== undefined && typeof state.facts.retailer !== 'string')) throw new Error('Saved workflow facts are invalid')
   const turnIds = new Set<string>()
   for (const turn of state.turns) {
     if (!object(turn) || !validWorkflowId(turn.id) || typeof turn.text !== 'string' || (turn.role !== undefined && turn.role !== 'user' && turn.role !== 'assistant') || turnIds.has(turn.id)) throw new Error('Saved workflow turn is invalid')
@@ -263,6 +263,18 @@ function collectSourceUrls(value: unknown, found: Map<string, string>, label = '
   }
 }
 
+function retailerFromText(text: string): string | undefined {
+  if (/\bauto\s*zone\b/i.test(text)) return 'AutoZone'
+  if (/\bo['’]?reilly(?:\s+auto\s+parts)?\b/i.test(text)) return "O'Reilly"
+  if (/\bnapa(?:\s+auto\s+parts)?\b/i.test(text)) return 'NAPA'
+  if (/\brock\s*auto\b/i.test(text)) return 'RockAuto'
+  if (/\badvance\s+auto(?:\s+parts)?\b/i.test(text)) return 'Advance Auto'
+  if (/\bpep\s*boys\b/i.test(text)) return 'Pep Boys'
+  if (/\bamazon\b/i.test(text)) return 'Amazon'
+  if (/\be\s*bay\b/i.test(text)) return 'eBay'
+  return undefined
+}
+
 function captureUserFacts(facts: UserFacts, text: string) {
   const email = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]
   if (email) facts.email = email
@@ -274,6 +286,8 @@ function captureUserFacts(facts: UserFacts, text: string) {
 
   const vehicle = text.match(/\b((?:19|20)\d{2})\s+([A-Za-z][A-Za-z-]+)\s+([A-Za-z0-9][A-Za-z0-9-]*)\b/i)
   if (vehicle) facts.vehicle = { year: vehicle[1], make: vehicle[2], model: vehicle[3] }
+  const retailer = retailerFromText(text)
+  if (retailer) facts.retailer = retailer
   if (/\b(?:no|without|skip|don't include|do not include|leave out)\s+(?:the\s+)?alignment\b/i.test(text)) {
     facts.noAlignment = true
     if (!facts.exclusions.some(item => /alignment/i.test(item))) facts.exclusions.push('No alignment requested.')
@@ -296,9 +310,11 @@ function applyUserFacts(state: WorkflowState) {
     if (state.facts.email !== undefined) payload[emailField] = state.facts.email
   }
   if (state.facts.vehicle && ['createInvoice', 'createJob', 'createAppointment'].includes(task.action)) {
-    payload.vehicle_year ??= state.facts.vehicle.year
-    payload.vehicle_make ??= state.facts.vehicle.make
-    payload.vehicle_model ??= state.facts.vehicle.model
+    // A newly supplied vehicle replaces the previous fitment context. Keeping
+    // the old values here would let a later parts lookup prove the wrong car.
+    payload.vehicle_year = state.facts.vehicle.year
+    payload.vehicle_make = state.facts.vehicle.make
+    payload.vehicle_model = state.facts.vehicle.model
   }
   if (task.action === 'createInvoice' && state.facts.noTax) {
     payload.apply_tax = false
@@ -314,7 +330,52 @@ function applyUserFacts(state: WorkflowState) {
   }
 }
 
-export function evidenceErrors(task: Task, state: WorkflowState, shop: JsonObject): string[] {
+function lookupDataCoversAllFour(value: unknown): boolean {
+  if (!object(value)) return false
+  const returned = normalizedResearchText(JSON.stringify(value.options || []) + JSON.stringify(value.kits || []))
+  return returned.includes('front') && returned.includes('rear') && returned.includes('pad') && returned.includes('rotor')
+}
+
+function lookupEvidenceMatchesTask(evidence: Evidence, task: Task, state: WorkflowState, currentMessage = ''): boolean {
+  if (evidence.tool !== 'lookupParts' || !object(evidence.data)) return true
+  const data = evidence.data
+  const expectedVehicle = [task.payload.vehicle_year, task.payload.vehicle_make, task.payload.vehicle_model]
+  if (expectedVehicle.every(value => value !== undefined && value !== null && String(value).trim())) {
+    const returnedVehicle = normalizedResearchText(data.vehicle)
+    if (!returnedVehicle || expectedVehicle.some(value => !returnedVehicle.includes(normalizedResearchText(value)))) return false
+  }
+  const currentStoreText = currentMessage.toLowerCase()
+  const requestedStore = retailerFromText(currentMessage) || state.facts.retailer || ''
+  const selectedStores = requestedStore ? [] : (Array.isArray(task.payload.parts) ? task.payload.parts.filter(object).map(line => String(line.store || '')) : []).filter(Boolean)
+  const expectedStoreText = normalizedResearchText([requestedStore, ...selectedStores].join(' '))
+  if (expectedStoreText) {
+    const sourceStores = [
+      ...(Array.isArray(data.options) ? data.options.flatMap(option => object(option) && Array.isArray(option.parts) ? option.parts.filter(object).map(part => String(part.store || '')) : []) : []),
+      ...(Array.isArray(data.kits) ? data.kits.filter(object).map(kit => String(kit.store || '')) : []),
+    ]
+    const sourceStoreText = normalizedResearchText(sourceStores.join(' '))
+    const aliases: Record<string, string[]> = {
+      autozone: ['autozone', 'auto zone'],
+      oreilly: ['oreilly', "o'reilly"],
+      napa: ['napa'],
+      rockauto: ['rockauto', 'rock auto'],
+      advanceauto: ['advance auto', 'advanceautoparts'],
+      pepboys: ['pep boys', 'pepboys'],
+      amazon: ['amazon'],
+      ebay: ['ebay', 'e bay'],
+    }
+    const storeMatched = Object.values(aliases).some(values => values.some(alias => {
+      const normalizedAlias = normalizedResearchText(alias)
+      return expectedStoreText.includes(normalizedAlias) && sourceStoreText.includes(normalizedAlias)
+    }))
+    if (!storeMatched) return false
+  }
+  const scopeText = normalizedResearchText(`${currentMessage} ${task.instructions.join(' ')} ${JSON.stringify(task.payload)}`)
+  const allFour = /\b(?:all four|four|4) (?:wheel )?brakes?\b/.test(scopeText) || /\b4 brakes? and rotors?\b/.test(scopeText)
+  return !allFour || lookupDataCoversAllFour(data)
+}
+
+export function evidenceErrors(task: Task, state: WorkflowState, shop: JsonObject, currentMessage = ''): string[] {
   const errors: string[] = []
   for (const [path, value] of numericFields(task.payload)) {
     // Omitted/zero fees are not invented charges; a zero part/labor still needs a source.
@@ -331,7 +392,7 @@ export function evidenceErrors(task: Task, state: WorkflowState, shop: JsonObjec
       const evidence = state.evidence.find(item => item.id === proof.ref)
       if (evidence && proof.path) {
         const source = valueAt(evidence.data, proof.path)
-        valid = typeof source === 'number' && source === value && evidenceMatchesLine(task, path, evidence.data, proof.path)
+        valid = typeof source === 'number' && source === value && evidenceMatchesLine(task, path, evidence.data, proof.path) && lookupEvidenceMatchesTask(evidence, task, state, currentMessage)
       }
     }
     if (!Number.isFinite(value) || value < 0 || !valid) errors.push(`Need evidence for ${path}; do not invent ${value}. Ask for it or retrieve it.`)
@@ -343,24 +404,54 @@ export function evidenceErrors(task: Task, state: WorkflowState, shop: JsonObjec
     const observed = state.evidence.some(item => containsExact(item.data, String(id))) || state.turns.some(turn => turn.role !== 'assistant' && new RegExp(`(?:^|\\s|[(:])${escapedId}(?:$|\\s|[),.;])`).test(turn.text))
     if (!observed) errors.push(`${field} must come from an actual lookup or explicit user ID`)
   }
-  errors.push(...scopeErrors(task, state))
+  errors.push(...scopeErrors(task, state, currentMessage))
   return errors
 }
 
-function scopeErrors(task: Task, state: WorkflowState): string[] {
+function scopeErrors(task: Task, state: WorkflowState, currentMessage = ''): string[] {
   if (task.action !== 'createInvoice') return []
-  const userText = state.turns.filter(turn => turn.role !== 'assistant').map(turn => turn.text).join(' ')
-  const scopeText = `${userText} ${task.instructions.join(' ')} ${JSON.stringify(task.payload)}`
-  const allFourBrakes = /\b(?:all\s+four|four|4)\s+(?:wheel\s+)?brakes?\b/i.test(scopeText) || /\b4\s+brakes?\s+and\s+rotors?\b/i.test(scopeText)
+  const latestUserText = currentMessage || state.turns.filter(turn => turn.role !== 'assistant').at(-1)?.text || ''
+  const taskText = `${task.instructions.join(' ')} ${JSON.stringify(task.payload)}`
+  const narrowsToFrontOnly = /\b(?:front\s+only|only\s+front|just\s+front|front\s+brakes?\s+only|front\s+axle)\b/i.test(latestUserText) && !/\b(?:all\s+four|front\s+and\s+rear|rear)\b/i.test(latestUserText)
+  const scopeText = `${taskText} ${latestUserText}`
+  const allFourBrakes = !narrowsToFrontOnly && (/\b(?:all\s+four|four|4)\s+(?:wheel\s+)?brakes?\b/i.test(scopeText) || /\b4\s+brakes?\s+and\s+rotors?\b/i.test(scopeText))
   if (!allFourBrakes) return []
-  const lines = Array.isArray(task.payload.parts) ? task.payload.parts.filter(object).map(line => [line.name, line.position, line.brand, line.includes].join(' ')) : []
-  const combined = lines.join(' ')
-  const completeKit = /kit/i.test(combined) && /front/i.test(combined) && /rear/i.test(combined) && /pad/i.test(combined) && /rotor/i.test(combined)
+  const partLines = Array.isArray(task.payload.parts) ? task.payload.parts.filter(object) : []
+  const completeKit = partLines.some(line => {
+    const lineText = [line.name, line.position, line.brand, line.includes].join(' ')
+    return /\bkit\b/i.test(lineText) && /front/i.test(lineText) && /rear/i.test(lineText) && /pad/i.test(lineText) && /rotor/i.test(lineText)
+  })
   const missing: string[] = []
-  if (!completeKit && !lines.some(line => /front/i.test(line) && /pad/i.test(line))) missing.push('front brake pads')
-  if (!completeKit && !lines.some(line => /rear/i.test(line) && /pad/i.test(line))) missing.push('rear brake pads')
-  if (!completeKit && !lines.some(line => /front/i.test(line) && /rotor/i.test(line))) missing.push('front brake rotors')
-  if (!completeKit && !lines.some(line => /rear/i.test(line) && /rotor/i.test(line))) missing.push('rear brake rotors')
+  const packageCoversAxle = (line: JsonObject, axle: 'front' | 'rear', kind: 'pad' | 'rotor') => {
+    const text = [line.name, line.position, line.includes].join(' ').toLowerCase()
+    if (!new RegExp(`\\b${axle}\\b`).test(text) || !new RegExp(`\\b${kind}s?\\b`).test(text)) return false
+    const quantity = Number(line.qty)
+    return quantity >= 2 || /\b(?:pair|set|axle\s+set|two|2)\b/i.test(text)
+  }
+  const hasAxleCoverage = (axle: 'front' | 'rear', kind: 'pad' | 'rotor') => {
+    if (partLines.some(line => packageCoversAxle(line, axle, kind))) return true
+    const sides = new Set(partLines.flatMap(line => {
+      const text = [line.name, line.position, line.includes].join(' ').toLowerCase()
+      if (!new RegExp(`\\b${axle}\\b`).test(text) || !new RegExp(`\\b${kind}s?\\b`).test(text)) return []
+      const side = text.match(/\b(left|right)\b/)?.[1]
+      return side ? [side] : []
+    }))
+    return sides.has('left') && sides.has('right')
+  }
+  if (!completeKit && !hasAxleCoverage('front', 'pad')) missing.push('front brake pads (an axle set or left/right coverage)')
+  if (!completeKit && !hasAxleCoverage('rear', 'pad')) missing.push('rear brake pads (an axle set or left/right coverage)')
+  if (!completeKit && !hasAxleCoverage('front', 'rotor')) missing.push('front brake rotors (a pair or left/right coverage)')
+  if (!completeKit && !hasAxleCoverage('rear', 'rotor')) missing.push('rear brake rotors (a pair or left/right coverage)')
+  const duplicateAxleSets = partLines.some((line, index) => partLines.slice(index + 1).some(other => {
+    const left = [line.name, line.position, line.partNumber].join(' ').toLowerCase()
+    const right = [other.name, other.position, other.partNumber].join(' ').toLowerCase()
+    const axle = ['front', 'rear'].find(side => left.includes(side) && right.includes(side))
+    const sameItem = line.partNumber && other.partNumber
+      ? String(line.partNumber).toLowerCase() === String(other.partNumber).toLowerCase()
+      : String(line.name || '').trim().toLowerCase() === String(other.name || '').trim().toLowerCase()
+    return Boolean(axle) && sameItem && /\b(?:pad|pads)\b/.test(left) && /\b(?:pad|pads)\b/.test(right) && /\b(?:set|pair|axle)\b/.test(`${left} ${right}`) && /\b(left|right)\b/.test(left) && /\b(left|right)\b/.test(right)
+  }))
+  if (duplicateAxleSets) missing.push('one front/rear pad-set line per axle instead of charging the same axle set twice')
   const labors = Array.isArray(task.payload.labors) ? task.payload.labors.filter(object) : []
   if (!labors.some(line => /brake|rotor|pad/i.test(String(line.operation || line.description || '')))) missing.push('combined brake labor')
   return missing.length ? [`The all-four brake request is incomplete; add ${missing.join(', ')} from one compatible research result.`] : []
@@ -461,6 +552,55 @@ function hasUsableResearchData(value: unknown, intent?: { wantsParts?: boolean; 
   const labor = object(value.laborGuidance) && typeof value.laborGuidance.hours === 'number' && Number.isFinite(value.laborGuidance.hours)
   const hasParts = options || kits
   return (!intent?.wantsParts || hasParts) && (!intent?.wantsLabor || labor || hasParts)
+}
+
+function normalizedResearchText(value: unknown): string {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function lookupMatchesResearchIntent(evidence: Evidence, intent: { query: string; stores: string[]; wantsParts?: boolean; wantsLabor?: boolean; vehicle?: { year: string; make: string; model: string } }): boolean {
+  if (evidence.tool !== 'lookupParts' || !object(evidence.data)) return false
+  if (!hasUsableResearchData(evidence.data, intent)) return false
+  const data = evidence.data
+  if (intent.vehicle) {
+    const returnedVehicle = normalizedResearchText(data.vehicle)
+    if (!returnedVehicle) return false
+    for (const value of [intent.vehicle.year, intent.vehicle.make, intent.vehicle.model]) {
+      const token = normalizedResearchText(value)
+      if (token && !returnedVehicle.includes(token)) return false
+    }
+  }
+  if (intent.stores.length) {
+    const aliases: Record<string, string[]> = {
+      autozone: ['autozone', 'auto zone'],
+      oreilly: ['oreilly', "o'reilly"],
+      napa: ['napa'],
+      rockauto: ['rockauto', 'rock auto'],
+      advanceauto: ['advance auto', 'advanceautoparts'],
+      pepboys: ['pep boys', 'pepboys'],
+      amazon: ['amazon'],
+      ebay: ['ebay', 'e bay'],
+    }
+    const resultStores = [
+      ...(Array.isArray(data.options) ? data.options.flatMap(option => object(option) && Array.isArray(option.parts) ? option.parts.filter(object).map(part => String(part.store || '')) : []) : []),
+      ...(Array.isArray(data.kits) ? data.kits.filter(object).map(kit => String(kit.store || '')) : []),
+    ]
+    const resultStoreText = normalizedResearchText(resultStores.join(' '))
+    if (!resultStoreText) return false
+    const storeMatched = intent.stores.some(store => {
+      const key = normalizedResearchText(store).replace(/ /g, '')
+      return (aliases[key] || [store]).some(alias => resultStoreText.includes(normalizedResearchText(alias)))
+    })
+    if (!storeMatched) return false
+  }
+  const requested = normalizedResearchText(intent.query)
+  const allFour = /\b(?:all four|four|4) (?:wheel )?brakes?\b/.test(requested) || /\b4 brakes? and rotors?\b/.test(requested)
+  if (allFour) {
+    const returned = normalizedResearchText(JSON.stringify(data.options || []) + JSON.stringify(data.kits || []))
+    const complete = returned.includes('front') && returned.includes('rear') && returned.includes('pad') && returned.includes('rotor')
+    if (!complete) return false
+  }
+  return true
 }
 
 function researchQuestion(fields: unknown): boolean {
@@ -578,7 +718,7 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
   // live shop state must trigger a fresh read in this turn.
   const successfulReads = new Set<string>()
   applyUserFacts(state)
-  const researchIntent = inferResearchIntent({ message: input.message, task: state.task, conversation: state.turns })
+  const researchIntent = inferResearchIntent({ message: input.message, task: state.task, conversation: state.turns, facts: state.facts })
   const hasVehicleContext = Boolean(
     state.facts.vehicle ||
     (state.task?.payload.vehicle_year && state.task?.payload.vehicle_make && state.task?.payload.vehicle_model) ||
@@ -587,7 +727,7 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
   const currentSuppliesPricing = /(?:\$|\bUSD\s*)\s*\d|\b\d+(?:\.\d+)?\s*(?:hours?|hrs?|hr)\b/i.test(input.message)
   if (researchIntent && hasVehicleContext && !currentSuppliesPricing && (researchIntent.wantsParts || researchIntent.wantsLabor)) {
     const priorLookups = state.evidence.filter(item => item.tool === 'lookupParts')
-    const hasUsablePriorLookup = priorLookups.some(item => hasUsableResearchData(item.data, researchIntent))
+    const hasUsablePriorLookup = priorLookups.some(item => lookupMatchesResearchIntent(item, researchIntent))
     const explicitlyRetryingLookup = /\b(?:retry|again|refresh|new prices?|search again|look (?:it )?up again)\b/i.test(input.message)
     if (!hasUsablePriorLookup || explicitlyRetryingLookup) {
       const lookupInput: JsonObject = { query: researchIntent.query }
@@ -659,7 +799,7 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
       if (decision.kind === 'propose') {
         if (!state.task) throw new Error('Proposal requires an active task')
         applyUserFacts(state)
-        const validation = [...validateInput(state.task.action, state.task.payload), ...evidenceErrors(state.task, state, deps.shop)]
+        const validation = [...validateInput(state.task.action, state.task.payload), ...evidenceErrors(state.task, state, deps.shop, input.message)]
         if (validation.length) throw new Error(validation.join('; '))
         state.pending = makeApproval(state, deps)
         return respond('Review the details below. Confirm executes this exact action; it has not been saved or sent yet.', 'approval', { approval: state.pending })
@@ -670,7 +810,7 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
         if (state.task) {
           for (const field of decision.fields) {
             if (typeof field !== 'string') throw new Error('Invalid question field')
-            const unverified = evidenceErrors(state.task, state, deps.shop).some(error => error.startsWith(`Need evidence for ${field};`))
+            const unverified = evidenceErrors(state.task, state, deps.shop, input.message).some(error => error.startsWith(`Need evidence for ${field};`))
             if (valueAt(state.task.payload, field) !== undefined && !unverified) throw new Error(`${field} was already supplied or explicitly declined. Use retained state, not another question.`)
             if (['createInvoice', 'createCustomer', 'createJob'].includes(state.task.action) && /^(?:customer_)?(?:email|phone|id)$/.test(field)) throw new Error(`${field} is optional. Do not block this task on contact details or a customer record.`)
           }
