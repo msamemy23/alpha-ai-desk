@@ -174,11 +174,16 @@ export function inferResearchIntent(input: ResearchIntentInput): ResearchIntent 
     })
     .filter(turn => SERVICE_TERMS.test(turn) || PART_TERMS.test(turn) || RESEARCH_TERMS.test(turn) || RETAILERS.some(([, pattern]) => pattern.test(turn)))
     .slice(-6)
+  // Query priority is deliberate. The current user message is the latest
+  // correction/scope, followed by the newest same-vehicle service turns. Old
+  // task instructions are only a fallback. Putting the accumulated task
+  // history first lets a long retry query truncate the current request and
+  // silently repeat stale research.
   const query = compactQuery([
     vehicle ? `${vehicle.year} ${vehicle.make} ${vehicle.model}` : '',
-    ...relevantPriorTurns,
-    ...taskValues,
     current,
+    ...relevantPriorTurns.slice(-6).reverse(),
+    ...taskValues,
   ])
   if (!query) return null
   return { query, stores, wantsParts, wantsLabor, documentType, ...(vehicle ? { vehicle } : {}) }

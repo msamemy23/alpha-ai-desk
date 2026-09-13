@@ -108,3 +108,24 @@ test('retry keeps same-vehicle service and retailer scope after a failed lookup'
   assert.match(result?.query || '', /2005 Honda Accord/i)
 })
 
+test('current scope stays ahead of accumulated task instructions', () => {
+  const result = inferResearchIntent({
+    message: 'Make an invoice for the new brake job: 2005 Honda Accord, all four brakes and rotors from AutoZone. Look it up and prepare it for review.',
+    facts: { retailer: 'AutoZone' },
+    task: {
+      action: 'createInvoice',
+      payload: { type: 'Invoice', vehicle_year: '2005', vehicle_make: 'Honda', vehicle_model: 'Accord' },
+      instructions: [
+        'Research requested before drafting: 2005 Honda Accord; an old customer request with unrelated notes '.repeat(8),
+        'A second stale research attempt with old pricing context '.repeat(8),
+      ],
+    },
+    conversation: [
+      { role: 'user', text: 'Retry the old lookup to continue.' },
+    ],
+  })
+  assert.match(result?.query || '', /new brake job/i)
+  assert.match(result?.query || '', /all four brakes and rotors/i)
+  assert.ok((result?.query || '').indexOf('new brake job') < (result?.query || '').indexOf('old customer request'))
+})
+
