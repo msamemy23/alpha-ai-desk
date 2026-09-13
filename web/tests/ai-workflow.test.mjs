@@ -550,6 +550,33 @@ test('a model fitment question is suppressed when the user already supplied that
   assert.equal(h.calls.filter(call => call.action === 'lookupParts').length, 1)
 })
 
+test('complete research is converted into a review when the model loops instead of drafting', async () => {
+  const h = harness([{ kind: 'ask', fields: ['vehicle_trim'], message: 'What engine/trim is this 2005 Accord?' }])
+  h.deps.execute = async (action, payload, key) => {
+    h.calls.push({ action, payload, key })
+    if (action === 'lookupParts') return {
+      ok: true,
+      data: {
+        vehicle: '2005 Honda Accord',
+        options: [{ parts: [
+          { name: 'AutoZone Front Brake Pad Set', position: 'Front', store: 'AutoZone', price: 80, quantity: 1 },
+          { name: 'AutoZone Front Brake Rotor', position: 'Front', store: 'AutoZone', price: 65, quantity: 2 },
+          { name: 'AutoZone Rear Brake Pad Set', position: 'Rear', store: 'AutoZone', price: 70, quantity: 1 },
+          { name: 'AutoZone Rear Brake Rotor', position: 'Rear', store: 'AutoZone', price: 55, quantity: 2 },
+        ] }],
+        laborGuidance: { operation: 'Replace brake pads and rotors on all four wheels', hours: 3, basis: 'standard_estimate' },
+      },
+    }
+    return { ok: true, data: { id: 'saved-record', doc_number: 'INV-TEST', type: 'Invoice', ...payload } }
+  }
+  const reply = await h.run('Make an invoice for Fallback QA: 2005 Honda Accord, all four brakes and rotors from AutoZone. It has rear disc brakes. Look it up.', 'fallback')
+  assert.equal(reply.status, 'approval')
+  assert.equal(reply.approval.payload.customer_name, 'Fallback QA')
+  assert.equal(reply.approval.payload.parts.length, 4)
+  assert.equal(reply.approval.payload.labors[0].hours, 3)
+  assert.equal(h.calls.filter(call => call.action === 'lookupParts').length, 1)
+})
+
 test('all-four brake drafts cannot silently omit an axle or brake component', async () => {
   const frontOnly = { kind: 'propose', task: task({ type: 'Invoice', customer_name: 'Jake Paul', vehicle_year: '2005', vehicle_make: 'Honda', vehicle_model: 'Accord', parts: [{ name: 'Front Brake Rotor', position: 'Front', qty: 2, unitPrice: 80 }], labors: [{ operation: 'Front brake replacement', hours: 1.5, rate: 120 }] }), proofs: { 'parts.0.unitPrice': proof('u', 'front rotor $80'), 'labors.0.hours': proof('u', 'front brake 1.5 hours'), 'labors.0.rate': { ref: 'shop', path: 'labor_rate' } } }
   const h = harness(Array.from({ length: 5 }, () => frontOnly))
