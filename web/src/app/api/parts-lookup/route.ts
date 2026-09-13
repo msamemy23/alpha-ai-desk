@@ -324,9 +324,10 @@ Rules:
 // Search Tavily for parts across multiple stores
 async function searchParts(queries: string[], stores: string[] = []): Promise<{
   results: {title: string; url: string; content: string}[]
-  diagnostics: { requestedQueries: number; completedQueries: number; providerResults: number; retailerResults: number; providers: string[] }
+  diagnostics: { requestedQueries: number; completedQueries: number; providerResults: number; retailerResults: number; shoppingResults: number; providers: string[] }
 }> {
   const allResults: {title: string; url: string; content: string}[] = []
+  let shoppingResults = 0
 
   const domains = normalizeStoreFilter(stores)
   const expandedQueries: string[] = []
@@ -378,12 +379,22 @@ async function searchParts(queries: string[], stores: string[] = []): Promise<{
           signal: AbortSignal.timeout(15000),
         })
         if (r.ok) {
-          const d = await r.json() as { organic?: { title?: string; link?: string; snippet?: string }[] }
+          const d = await r.json() as {
+            organic?: { title?: string; link?: string; snippet?: string }[]
+            shopping?: { title?: string; link?: string; price?: string; source?: string; delivery?: string }[]
+          }
           providerResults.push(...(d.organic || []).map(result => ({
             title: result.title || '',
             url: result.link || '',
             content: (result.snippet || '').slice(0, 800),
           })))
+          const shopping = (d.shopping || []).map(result => ({
+            title: [result.title, result.source].filter(Boolean).join(' — '),
+            url: result.link || '',
+            content: [result.price ? `Price: ${result.price}` : '', result.delivery || ''].filter(Boolean).join('\n').slice(0, 800),
+          }))
+          shoppingResults += shopping.length
+          providerResults.push(...shopping)
         }
       } catch { /* both providers are best-effort; sanitize what was returned */ }
     }
@@ -409,6 +420,7 @@ async function searchParts(queries: string[], stores: string[] = []): Promise<{
       completedQueries: results.filter(result => result.status === 'fulfilled').length,
       providerResults: allResults.length,
       retailerResults: filteredResults.length,
+      shoppingResults,
       providers,
     },
   }
