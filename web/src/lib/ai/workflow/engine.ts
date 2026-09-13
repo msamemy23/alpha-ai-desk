@@ -635,7 +635,7 @@ function partsLookupLimitMessage(intent: ResearchIntent | null, state: WorkflowS
   const allFour = /\b(?:all four|four|4) (?:wheel )?brakes?\b|\b4 brakes? and rotors?\b/i.test(scope)
   const latestLookup = [...state.evidence].reverse().find(item => item.tool === 'lookupParts')
   const complete = Boolean(intent && latestLookup && lookupMatchesResearchIntent(latestLookup, intent))
-  if (complete) return 'The vehicle and retailer lookup already returned usable evidence. I will use that result for the review instead of running another search.'
+  if (complete) return 'The retailer returned usable source data, but I could not safely assemble a complete invoice line set from it without mixing products. I will not invent or silently omit parts. Retry the saved lookup later; no invoice was created.'
   if (allFour) {
     const conversation = [currentMessage, ...state.turns.filter(turn => turn.role === 'user').map(turn => turn.text)].join(' ')
     const fitmentKnown = fitmentFactsSupplied(state, conversation)
@@ -680,6 +680,101 @@ function repeatedFitmentQuestion(state: WorkflowState, fields: unknown, message:
   if (!fitmentQuestion(fields, message)) return false
   const conversation = [currentMessage, ...state.turns.filter(turn => turn.role === 'user').map(turn => turn.text)].join(' ')
   return fitmentFactsSupplied(state, conversation)
+}
+
+function inferredCustomerName(state: WorkflowState, currentMessage: string): string | undefined {
+  const messages = [currentMessage, ...state.turns.filter(turn => turn.role === 'user').map(turn => turn.text)]
+  for (const message of messages) {
+    const match = message.match(/\b(?:invoice|estimate)\s+for\s+(.+?)(?=\s*(?:[:,.]|$)|\s+(?:on|for)\s+(?=(?:19|20)\d{2}))/i)
+    const name = match?.[1]?.replace(/\s+/g, ' ').trim().replace(/[,:.]+$/, '')
+    if (name && name.length >= 2 && name.length <= 120 && !/^(?:the\s+)?customer$/i.test(name)) return name
+  }
+  return undefined
+}
+
+function promoteResearchEvidenceToTask(state: WorkflowState, intent: ResearchIntent, shop: JsonObject, currentMessage: string): boolean {
+  const task = state.task
+  if (!task || task.action !== 'createInvoice') return false
+  const existingParts = Array.isArray(task.payload.parts) ? task.payload.parts.filter(object) : []
+  const existingLabors = Array.isArray(task.payload.labors) ? task.payload.labors.filter(object) : []
+  const alreadyPriced = existingParts.some(line => typeof line.unitPrice === 'number' && Number.isFinite(line.unitPrice))
+    || existingLabors.some(line => typeof line.amount === 'number' && Number.isFinite(line.amount) || (typeof line.hours === 'number' && Number.isFinite(line.hours) && typeof line.rate === 'number' && Number.isFinite(line.rate)))
+  if (alreadyPriced) return false
+
+  const evidence = [...state.evidence].reverse().find(item => item.tool === 'lookupParts' && lookupMatchesResearchIntent(item, intent))
+  if (!evidence || !object(evidence.data)) return false
+  const data = evidence.data
+  const laborGuidance = object(data.laborGuidance) && typeof data.laborGuidance.hours === 'number' && Number.isFinite(data.laborGuidance.hours)
+    && typeof data.laborGuidance.operation === 'string' && data.laborGuidance.operation.trim()
+    ? data.laborGuidance
+    : null
+  const laborRate = Number(shop.labor_rate)
+  if (intent.wantsLabor && (!laborGuidance || !Number.isFinite(laborRate) || laborRate < 0)) return false
+
+  const basePayload: JsonObject = { ...task.payload }
+  if (!basePayload.customer_name) {
+    const name = inferredCustomerName(state, currentMessage)
+    if (name) basePayload.customer_name = name
+  }
+  const baseProofs = { ...task.proofs }
+  const laborPatch = intent.wantsLabor && laborGuidance
+    ? {
+        labors: [{ operation: String(laborGuidance.operation), hours: Number(laborGuidance.hours), rate: laborRate }],
+        proofs: {
+          'labors.0.hours': { ref: evidence.id, path: 'laborGuidance.hours' } as Proof,
+          'labors.0.rate': { ref: 'shop', path: 'labor_rate' } as Proof,
+        },
+      }
+    : { labors: undefined, proofs: {} as Record<string, Proof> }
+
+  const toPartLine = (part: unknown): JsonObject | null => {
+    if (!object(part) || typeof part.name !== 'string' || typeof part.price !== 'number' || !Number.isFinite(part.price) || part.price < 0) return null
+    const line: JsonObject = { name: part.name, qty: typeof part.quantity === 'number' && Number.isFinite(part.quantity) && part.quantity > 0 ? part.quantity : 1, unitPrice: part.price }
+    for (const key of ['position', 'partNumber', 'store', 'brand', 'url', 'sourceConfidence']) if (typeof part[key] === 'string' && part[key].trim()) line[key] = part[key]
+    return line
+  }
+
+  const candidates: { parts: JsonObject[]; proofs: Record<string, Proof> }[] = []
+  if (Array.isArray(data.kits)) for (const [index, kit] of data.kits.entries()) {
+    if (!object(kit) || typeof kit.name !== 'string' || typeof kit.price !== 'number' || !Number.isFinite(kit.price) || typeof kit.url !== 'string') continue
+    const kitText = `${kit.name} ${kit.includes || ''} ${kit.positions || ''}`
+    if (!/front/i.test(kitText) || !/rear/i.test(kitText) || !/pad/i.test(kitText) || !/rotor/i.test(kitText)) continue
+    const name = `${kit.name}${kit.includes ? ` (${kit.includes})` : ''}`.slice(0, 12_000)
+    const line: JsonObject = { name, qty: 1, unitPrice: kit.price }
+    for (const key of ['positions', 'store', 'brand', 'url', 'sourceConfidence']) if (typeof kit[key] === 'string' && kit[key].trim()) line[key === 'positions' ? 'position' : key] = kit[key]
+    candidates.push({ parts: [line], proofs: { 'parts.0.unitPrice': { ref: evidence.id, path: `kits.${index}.price` } } })
+  }
+  if (Array.isArray(data.options)) for (const [optionIndex, option] of data.options.entries()) {
+    if (!object(option) || !Array.isArray(option.parts)) continue
+    const parts: JsonObject[] = []
+    const proofs: Record<string, Proof> = {}
+    for (const [partIndex, part] of option.parts.entries()) {
+      const line = toPartLine(part)
+      if (!line) continue
+      const lineIndex = parts.push(line) - 1
+      proofs[`parts.${lineIndex}.unitPrice`] = { ref: evidence.id, path: `options.${optionIndex}.parts.${partIndex}.price` }
+    }
+    if (parts.length) candidates.push({ parts, proofs })
+  }
+
+  for (const candidate of candidates) {
+    const candidateTask: Task = {
+      ...task,
+      payload: {
+        ...basePayload,
+        parts: candidate.parts,
+        ...(laborPatch.labors ? { labors: laborPatch.labors } : {}),
+      },
+      proofs: { ...baseProofs, ...candidate.proofs, ...laborPatch.proofs },
+      instructions: [...new Set([...task.instructions, 'Selected a complete retailer result automatically for review; change it before confirming if needed.'])].slice(0, 30),
+    }
+    const candidateState = { ...state, task: candidateTask }
+    const validation = [...validateInput(candidateTask.action, candidateTask.payload), ...evidenceErrors(candidateTask, candidateState, shop, currentMessage)]
+    if (validation.length) continue
+    state.task = candidateTask
+    return true
+  }
+  return false
 }
 
 function estimatedLaborEvidence(value: unknown): boolean {
@@ -869,6 +964,10 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
         const validation = validateInput(tool, payload)
         if (validation.length) throw new Error(validation.join('; '))
         if (tool === 'lookupParts' && partsLookupAttempts >= 1) {
+          if (researchIntent && promoteResearchEvidenceToTask(state, researchIntent, deps.shop, input.message)) {
+            state.pending = makeApproval(state, deps)
+            return respond('Review the researched parts and labor below. Confirm executes this exact action; it has not been saved or sent yet.', 'approval', { approval: state.pending })
+          }
           if (!rejectedRepeatedPartsLookup && researchIntent && state.evidence.some(item => lookupMatchesResearchIntent(item, researchIntent))) {
             rejectedRepeatedPartsLookup = true
             errors.push('A complete parts lookup already succeeded in this turn. Use its evidence to prepare the review; do not run another lookupParts query.')
@@ -902,7 +1001,13 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
       }
       if (decision.kind === 'ask') {
         if (typeof decision.message !== 'string' || !decision.message.trim() || !Array.isArray(decision.fields) || !decision.fields.length) throw new Error('Ask must identify a genuinely missing field')
-        if (researchIntent && hasVehicleContext && (researchQuestion(decision.fields, decision.message) || repeatedFitmentQuestion(state, decision.fields, decision.message, input.message))) return respond(partsLookupLimitMessage(researchIntent, state, input.message), 'blocked')
+        if (researchIntent && hasVehicleContext && (researchQuestion(decision.fields, decision.message) || repeatedFitmentQuestion(state, decision.fields, decision.message, input.message))) {
+          if (promoteResearchEvidenceToTask(state, researchIntent, deps.shop, input.message)) {
+            state.pending = makeApproval(state, deps)
+            return respond('Review the researched parts and labor below. Confirm executes this exact action; it has not been saved or sent yet.', 'approval', { approval: state.pending })
+          }
+          return respond(partsLookupLimitMessage(researchIntent, state, input.message), 'blocked')
+        }
         if (state.task) {
           for (const field of decision.fields) {
             if (typeof field !== 'string') throw new Error('Invalid question field')
