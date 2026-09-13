@@ -1,21 +1,22 @@
 /**
- * /api/ai-chat
- * Mobile app AI chat endpoint.
- * Accepts { message, sessionId, history? } from the Android APK.
- * Reads the OpenRouter API key from Supabase settings,
- * runs the full Alpha AI agent loop (with shop tools), and returns { reply }.
+ * Compatibility endpoint for older Android clients.
+ *
+ * New clients must send sessionId + turnId and are forwarded to the durable
+ * workflow. The legacy branch intentionally has no write capability: it can
+ * only perform a small, verified set of tenant-scoped reads.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { getAuthedShop, hasInternalApiSecret } from '@/lib/api-auth'
+import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, isOpenRouterBaseUrl, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 import { chatGptModel, fetchOpenAIChatCompletion } from '@/lib/openai-oauth-server'
 import { getUserChatGptTransport } from '@/lib/chatgpt-connection'
 import { verifyReadClaims, unverifiedReadMessage } from '@/lib/ai/read-verification'
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://alpha-ai-desk.vercel.app'
-const INTERNAL_SECRET = process.env.CRON_SECRET || process.env.INTERNAL_API_SECRET || ''
+export const dynamic = 'force-dynamic'
+export const maxDuration = 300
+
 const READ_ONLY_ACTIONS = new Set([
   'searchCustomers',
   'getShopStats',
@@ -26,311 +27,204 @@ const READ_ONLY_ACTIONS = new Set([
   'searchWeb',
 ])
 
-const SYSTEM_PROMPT = `You are Alpha AI, the intelligent assistant for the configured auto repair shop.
+const ID = /^[a-zA-Z0-9._:-]{1,120}$/
 
-SHOP INFO:
-The exact shop name, address, phone, labor rate, tax rate, payment methods, and technicians are provided at request time. Treat that context as the only source of truth. If a value is missing, say it is not configured instead of inventing a value.
-
-PERSONALITY: Confident, direct, knowledgeable. Short sentences. You know cars inside and out. Be conversational and natural — you're talking to a mechanic who's busy, be efficient.
-
-TOOLS (respond with JSON when using a tool):
-{ "tool": "dbAction", "action": "<actionName>", "payload": { ... } }
-
-Available actions:
-- searchCustomers: { query: string }
-- getShopStats: {}
-- getCustomerHistory: { customer_id?: string, customer_name?: string }
-- createCustomer: { name, phone?, email?, address?, notes? }
-- createJob: { customer_name, vehicle_year?, vehicle_make?, vehicle_model?, status?, notes? }
-- updateJobStatus: { id, status }
-- scheduleFollowUp: { customer_name, channel: "sms"|"email", scheduled_for, message_body }
-- listStaff: {}
-- getInventory: { query?: string } (up to 50 matching items; report the returned count)
-- getTimeclockReport: { startDate?: string, endDate?: string }
-- searchWeb: { query: string }
-
-RULES:
-- Keep responses SHORT. Max 3-5 sentences.
-- When you need data, call a tool. When you have the data, answer.
-- Never make up customer info. Always search first.
-- Format currency as $X.XX`
-
-type AiChatSettings = {
+type Settings = {
   ai_api_key?: string | null
   ai_model?: string | null
   ai_base_url?: string | null
   shop_name?: string | null
-  shop_address?: string | null
-  shop_phone?: string | null
   labor_rate?: number | string | null
   tax_rate?: number | string | null
-  payment_methods?: string | string[] | null
 }
 
-function buildSystemPrompt(settings: AiChatSettings) {
-  const paymentMethods = Array.isArray(settings.payment_methods)
-    ? settings.payment_methods.join(', ')
-    : String(settings.payment_methods || 'not configured')
-  return `${SYSTEM_PROMPT}
+type ChatMessage = { role: 'user' | 'assistant'; content: string }
 
-LIVE SHOP CONTEXT:
-- Name: ${String(settings.shop_name || 'your shop')}
-- Address: ${String(settings.shop_address || 'not configured')}
-- Phone: ${String(settings.shop_phone || 'not configured')}
-- Labor rate: ${Number.isFinite(Number(settings.labor_rate)) ? `$${Number(settings.labor_rate)}/hr` : 'not configured'}
-- Tax rate: ${Number.isFinite(Number(settings.tax_rate)) ? `${Number(settings.tax_rate)}%` : 'not configured'}
-- Payment methods: ${paymentMethods}`
+const LEGACY_SYSTEM = `You are Alpha AI's read-only compatibility assistant for an auto repair shop.
+You can only retrieve information. To retrieve information, return exactly JSON:
+{"tool":"dbAction","action":"searchCustomers|getShopStats|getCustomerHistory|listStaff|getInventory|getTimeclockReport|searchWeb","payload":{}}
+Never claim a lookup ran unless a tool result was provided. Never create, update, send, delete, schedule, or save anything. If the customer asks to change shop data, tell them that this client must send sessionId and turnId so the durable workflow can prepare a review.`
+
+function validId(value: unknown): value is string {
+  return typeof value === 'string' && ID.test(value)
 }
 
-export const dynamic = 'force-dynamic'
-
-async function getSettings(shopId: string): Promise<AiChatSettings> {
-  const db = getServiceClient()
-  const { data, error } = await db
-    .from('settings')
-    .select('ai_api_key,ai_model,ai_base_url,shop_name,shop_address,shop_phone,labor_rate,tax_rate,payment_methods')
-    .eq('shop_id', shopId)
-    .order('updated_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
-  if (error) {
-    console.error('[ai-chat] settings lookup failed:', error.message)
-    throw new Error('Unable to load shop AI settings')
-  }
-  return (data || {}) as AiChatSettings
+function sessionRequiredReply() {
+  return 'This action needs the current chat client. Send a sessionId and turnId so Alpha can prepare a durable review; nothing was changed.'
 }
 
-async function callDbAction(
-  action: string,
-  payload: Record<string, unknown>,
-  shopId: string,
-  requestHeaders: { authorization?: string; cookie?: string },
-) {
+function likelyMutation(message: string) {
+  return /\b(?:create|make|build|save|send|delete|remove|void|convert|schedule|add|open)\b[\s\S]{0,80}\b(?:invoice|estimate|receipt|customer|job|appointment|follow[- ]?up|staff|message|email|text|inventory)\b/i.test(message)
+    || /\b(?:update|change)\b[\s\S]{0,80}\b(?:customer|job|invoice|estimate|appointment|inventory|staff|status)\b/i.test(message)
+}
+
+function requiredReads(message: string) {
+  const required = new Set<string>()
+  if (/\b(?:inventory|stock)\b/i.test(message) && /\b(?:how many|count|check|show|list|look up|search|find|on hand|in stock|have|returned|available)\b/i.test(message)) required.add('getInventory')
+  if (/\b(?:staff|technicians?|employees?|team)\b/i.test(message) && /\b(?:who|list|show|find|check|how many|available)\b/i.test(message)) required.add('listStaff')
+  if (/\b(?:shop stats?|revenue|sales|dashboard)\b/i.test(message) && /\b(?:show|check|what|how|stats?|revenue|sales)\b/i.test(message)) required.add('getShopStats')
+  if (/\b(?:time ?clock|clocked|hours worked)\b/i.test(message)) required.add('getTimeclockReport')
+  if (/\b(?:customer history|service history|repair history)\b/i.test(message)) required.add('getCustomerHistory')
+  if (/\b(?:find|search|look up)\b/i.test(message) && /\b(?:customer|client)\b/i.test(message)) required.add('searchCustomers')
+  if (/\b(?:search|look up|find)\b/i.test(message) && /\b(?:web|online|internet)\b/i.test(message)) required.add('searchWeb')
+  if (/\b(?:find|search|look up|show|list|check)\b/i.test(message) && /\b(?:customer|client|job|invoice|estimate|document|record)\b/i.test(message)) required.add('searchCustomers')
+  if (/\b(?:price|pricing|part number|availability)\b/i.test(message) && /\b(?:online|web|internet|store|retailer)\b/i.test(message)) required.add('searchWeb')
+  return required
+}
+
+function parseTool(raw: string): { action: string; payload: Record<string, unknown> } | null {
+  const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
+  let parsed: unknown
+  try { parsed = JSON.parse(cleaned) } catch { return null }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const value = parsed as Record<string, unknown>
+  if (value.tool !== 'dbAction' || typeof value.action !== 'string') return null
+  const payload = value.payload && typeof value.payload === 'object' && !Array.isArray(value.payload)
+    ? value.payload as Record<string, unknown>
+    : {}
+  return { action: value.action, payload }
+}
+
+async function getSettings(shopId: string): Promise<Settings> {
+  const { data, error } = await getServiceClient().from('settings')
+    .select('ai_api_key,ai_model,ai_base_url,shop_name,labor_rate,tax_rate')
+    .eq('shop_id', shopId).order('updated_at', { ascending: false }).limit(1).maybeSingle()
+  if (error) throw new Error('Unable to load shop AI settings')
+  return (data || {}) as Settings
+}
+
+function legacyPrompt(settings: Settings) {
+  return `${LEGACY_SYSTEM}\nSHOP: ${String(settings.shop_name || 'your shop')}\nLabor rate: ${Number.isFinite(Number(settings.labor_rate)) ? `$${Number(settings.labor_rate)}/hr` : 'not configured'}\nTax rate: ${Number.isFinite(Number(settings.tax_rate)) ? `${Number(settings.tax_rate)}%` : 'not configured'}`
+}
+
+function legacyHistory(value: unknown): ChatMessage[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is ChatMessage => Boolean(item) && typeof item === 'object'
+    && ((item as ChatMessage).role === 'user' || (item as ChatMessage).role === 'assistant')
+    && typeof (item as ChatMessage).content === 'string')
+    .slice(-10).map(item => ({ role: item.role, content: item.content.slice(0, 4000) }))
+}
+
+async function callReadAction(req: NextRequest, action: string, payload: Record<string, unknown>) {
+  const headers = new Headers({ 'Content-Type': 'application/json' })
+  const authorization = req.headers.get('authorization')
+  const cookie = req.headers.get('cookie')
+  if (authorization) headers.set('authorization', authorization)
+  if (cookie) headers.set('cookie', cookie)
   try {
-    const res = await fetch(`${APP_URL}/api/ai-action`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(INTERNAL_SECRET
-          ? { Authorization: `Bearer ${INTERNAL_SECRET}` }
-          : requestHeaders.authorization
-            ? { Authorization: requestHeaders.authorization }
-            : {}),
-        ...(requestHeaders.cookie ? { Cookie: requestHeaders.cookie } : {}),
-      },
-      body: JSON.stringify({ action, payload, shopId }),
+    const response = await fetch(new URL('/api/ai-action', req.url), {
+      method: 'POST', headers, body: JSON.stringify({ action, payload }),
     })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok || data?.ok !== true) {
-      return { error: data?.error || `Action failed with HTTP ${res.status}`, approvalRequired: data?.approvalRequired }
-    }
-    return data?.data ?? data
-  } catch (e) {
-    return { error: (e as Error).message }
+    const data = await response.json().catch(() => ({}))
+    return { ok: response.ok && data?.ok === true, data: data?.data, error: data?.error || `Action failed with HTTP ${response.status}` }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : 'Read action failed' }
   }
 }
 
-type PersistedChatMessage = { role: 'user' | 'assistant'; content: string }
-
-async function saveChatHistory(
-  shopId: string,
-  userId: string,
-  sessionId: string | undefined,
-  history: PersistedChatMessage[],
-  message: string,
-  reply: string,
-): Promise<boolean> {
-  if (!sessionId) return true
-  const db = getServiceClient()
-  const { error } = await db.rpc('replace_ai_chat_history', {
-    p_shop_id: shopId,
-    p_user_id: userId,
-    p_session_id: sessionId,
-    p_messages: [...history, { role: 'user', content: message }, { role: 'assistant', content: reply }].slice(-60),
-  })
-  if (error) {
-    console.error('[ai-chat] history save failed:', error.message)
-    return false
+async function delegateWorkflow(req: NextRequest, body: Record<string, unknown>) {
+  const headers = new Headers({ 'Content-Type': 'application/json' })
+  const authorization = req.headers.get('authorization')
+  const cookie = req.headers.get('cookie')
+  if (authorization) headers.set('authorization', authorization)
+  if (cookie) headers.set('cookie', cookie)
+  try {
+    const response = await fetch(new URL('/api/ai-workflow', req.url), {
+      method: 'POST', headers,
+      body: JSON.stringify({ sessionId: body.sessionId, turnId: body.turnId, message: body.message, confirmation: body.confirmation, history: body.history }),
+    })
+    const data = await response.json().catch(() => ({}))
+    return NextResponse.json({ ...data, reply: data?.reply || data?.error, sessionId: body.sessionId, turnId: body.turnId, ...(data?.approval ? { pendingAction: { action: data.approval.action, payload: data.approval.payload } } : {}) }, {
+      status: response.status,
+      headers: { 'Cache-Control': 'no-store' },
+    })
+  } catch {
+    return NextResponse.json({ error: 'Workflow is temporarily unavailable. No action was started.', reply: 'Workflow is temporarily unavailable. No action was started.', sessionId: body.sessionId, turnId: body.turnId }, { status: 503 })
   }
-  return true
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await getAuthedShop()
+  if (!auth) return unauthorized()
+  const body: unknown = await req.json().catch(() => null)
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'A request body is required' }, { status: 400 })
+  const request = body as Record<string, unknown>
+
+  // A session identifies the durable protocol. Modern clients provide their
+  // own turn ID for replay-safe retries; older mobile clients get a bounded
+  // server-generated ID and can still use the durable approval contract.
+  if (request.sessionId !== undefined) {
+    if (!validId(request.sessionId)) return NextResponse.json({ error: 'A valid sessionId is required' }, { status: 400 })
+    if (request.turnId !== undefined && !validId(request.turnId)) return NextResponse.json({ error: 'A valid turnId is required' }, { status: 400 })
+    request.turnId = validId(request.turnId) ? request.turnId : `legacy-${crypto.randomUUID()}`
+    return delegateWorkflow(req, request)
+  }
+  if (request.turnId !== undefined || request.confirmation !== undefined) {
+    return NextResponse.json({ error: 'sessionId is required with turnId or confirmation', reply: sessionRequiredReply() }, { status: 400 })
+  }
+
+  const message = typeof request.message === 'string' ? request.message.trim() : ''
+  if (!message) return NextResponse.json({ error: 'message is required' }, { status: 400 })
+  if (message.length > 4000) return NextResponse.json({ error: 'message is too long' }, { status: 413 })
+  if (likelyMutation(message)) return NextResponse.json({ error: 'sessionId required for mutations', reply: sessionRequiredReply() }, { status: 400 })
+
   try {
-    const body = await req.json().catch(() => null) as {
-      message?: unknown
-      sessionId?: unknown
-      history?: unknown
-      shopId?: unknown
-    } | null
-    const sessionAuth = await getAuthedShop()
-    const internal = hasInternalApiSecret(req)
-    let caller = sessionAuth
-
-    // Internal callers (for example the Android bridge) must name a shop and
-    // the server validates that shop before reading settings or data.
-    if (!caller && internal) {
-      const requestedShopId = typeof body?.shopId === 'string' ? body.shopId : ''
-      if (!requestedShopId) return NextResponse.json({ error: 'shopId is required for internal calls' }, { status: 400 })
-      const { data: profile } = await getServiceClient()
-        .from('shop_profiles')
-        .select('id,user_id')
-        .eq('id', requestedShopId)
-        .maybeSingle()
-      if (!profile) return NextResponse.json({ error: 'Shop not found' }, { status: 404 })
-      caller = { shopId: String(profile.id), userId: String(profile.user_id), role: 'service' }
-    }
-    if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-    const message = typeof body?.message === 'string' ? body.message.trim() : ''
-    if (!message) return NextResponse.json({ error: 'message is required' }, { status: 400 })
-    if (message.length > 4000) return NextResponse.json({ error: 'message is too long' }, { status: 413 })
-
-    const sessionId = typeof body?.sessionId === 'string' && body.sessionId.length <= 128 ? body.sessionId : undefined
-    const history = Array.isArray(body?.history)
-      ? body.history
-          .filter((item): item is { role: string; content: string } => {
-            const value = item as Record<string, unknown>
-            return (value.role === 'user' || value.role === 'assistant') && typeof value.content === 'string'
-          })
-          .slice(-10)
-          .map((item) => ({ role: item.role as 'user' | 'assistant', content: item.content.slice(0, 4000) }))
-      : []
-
-    const respond = async (reply: string, extra: Record<string, unknown> = {}, responseStatus = 200) => {
-      const historySaved = await saveChatHistory(caller!.shopId, caller!.userId, sessionId, history, message, reply)
-      return NextResponse.json({
-        reply,
-        ...extra,
-        sessionId,
-        ...(sessionId && !historySaved ? { history_saved: false } : {}),
-      }, { status: sessionId && !historySaved ? 502 : responseStatus })
-    }
-
-    const settings = await getSettings(caller.shopId)
-    const chatGptTransport = await getUserChatGptTransport(caller)
+    const settings = await getSettings(auth.shopId)
+    const transport = await getUserChatGptTransport(auth)
     const apiKey = typeof settings.ai_api_key === 'string' ? settings.ai_api_key.trim() : ''
     const baseUrl = normalizeAiBaseUrl(settings.ai_base_url || AI_BASE_URLS.OPENROUTER)
-    const model = chatGptTransport ? chatGptModel(settings.ai_model) : normalizeAiModel(settings.ai_model, baseUrl)
+    const model = transport ? chatGptModel(settings.ai_model) : normalizeAiModel(settings.ai_model, baseUrl)
+    if (!transport && !apiKey) return NextResponse.json({ reply: 'AI is not configured yet. Add this shop AI API key in Settings.' }, { status: 503 })
 
-    if (!apiKey && !chatGptTransport) {
-      const reply = 'AI is not configured yet. Please add this shop AI API key in Settings on the web dashboard.'
-      return respond(reply)
-    }
-
-    const agentMessages: Array<{ role: string; content: string }> = [
-      ...history,
-      { role: 'user', content: message },
-    ]
-
+    const messages: ChatMessage[] = [...legacyHistory(request.history), { role: 'user', content: message }]
     const successfulReads = new Set<string>()
-    let readVerificationRetried = false
-    // Agent loop — up to 5 steps to handle read-only tool calls.
+    const required = requiredReads(message)
+    let retried = false
+
     for (let step = 0; step < 5; step++) {
-      const completion = chatGptTransport
-        ? await fetchOpenAIChatCompletion(chatGptTransport, {
-            model,
-            messages: [{ role: 'system', content: buildSystemPrompt(settings as Record<string, unknown>) }, ...agentMessages],
-            max_tokens: 600,
-          }, AbortSignal.timeout(120000))
+      const completion = transport
+        ? await fetchOpenAIChatCompletion(transport, { model, messages: [{ role: 'system', content: legacyPrompt(settings) }, ...messages], max_tokens: 600 }, AbortSignal.timeout(120000))
         : await (async () => {
-            const res = await fetch(`${baseUrl}/chat/completions`, {
+            const response = await fetch(`${baseUrl}/chat/completions`, {
               method: 'POST',
-              headers: {
-                Authorization: `Bearer ${apiKey}`,
-                'Content-Type': 'application/json',
-                ...(isOpenRouterBaseUrl(baseUrl) ? {
-                  'HTTP-Referer': 'https://alpha-ai-desk.vercel.app',
-                  'X-Title': 'Alpha AI Desk',
-                } : {}),
-              },
-              body: JSON.stringify({
-                model,
-                messages: [{ role: 'system', content: buildSystemPrompt(settings as Record<string, unknown>) }, ...agentMessages],
-                max_tokens: 600,
-                temperature: 0.3,
-              }),
+              headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', ...(isOpenRouterBaseUrl(baseUrl) ? { 'HTTP-Referer': 'https://alpha-ai-desk.vercel.app', 'X-Title': 'Alpha AI Desk' } : {}) },
+              body: JSON.stringify({ model, messages: [{ role: 'system', content: legacyPrompt(settings) }, ...messages], max_tokens: 600, temperature: 0.2 }),
               signal: AbortSignal.timeout(120000),
             })
-            return { ok: res.ok, status: res.status, data: await res.json().catch(() => ({})) }
+            return { ok: response.ok, status: response.status, data: await response.json().catch(() => ({})) }
           })()
+      if (!completion.ok || completion.data?.error) return NextResponse.json({ reply: `AI error: ${completion.data?.error?.message || `provider returned HTTP ${completion.status}`}` }, { status: 502 })
+      const raw = completion.data?.choices?.[0]?.message?.content?.trim()
+      if (!raw) return NextResponse.json({ reply: 'The AI provider returned an empty response.' }, { status: 502 })
+      messages.push({ role: 'assistant', content: raw })
 
-      const data = completion.data
-      if (!completion.ok || data.error) {
-        const detail = data.error?.message || `provider returned HTTP ${completion.status}`
-        const reply = `AI error: ${detail}`
-        return respond(reply, {}, 502)
-      }
-
-      const raw = data.choices?.[0]?.message?.content?.trim() || ''
-      if (!raw) {
-        const reply = 'The AI provider returned an empty response. Please try again.'
-        return respond(reply, {}, 502)
-      }
-      agentMessages.push({ role: 'assistant', content: raw })
-
-      let parsed: Record<string, unknown> | null = null
-      try {
-        const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
-        try { parsed = JSON.parse(cleaned) } catch {
-          const match = cleaned.match(/\{[\s\S]*"tool"[\s\S]*\}/)
-          if (match) { try { parsed = JSON.parse(match[0]) } catch { parsed = null } }
-        }
-        if (parsed && !parsed.tool) parsed = null
-      } catch { parsed = null }
-
-      if (!parsed) {
-        const verification = verifyReadClaims(message, raw, successfulReads, readVerificationRetried)
-        if (verification.decision === 'retry') {
-          readVerificationRetried = true
-          agentMessages.push({ role: 'user', content: `Execution check: ${verification.missing.join(', ')} has NOT successfully run. Return a JSON dbAction call for the requested lookup; do not invent a result or reuse an old answer.` })
+      const tool = parseTool(raw)
+      if (!tool) {
+        const verified = verifyReadClaims(message, raw, successfulReads, retried)
+        for (const action of required) if (!successfulReads.has(action) && !verified.missing.includes(action)) verified.missing.push(action)
+        const missing = verified.missing
+        if (missing.length) {
+          if (retried) return NextResponse.json({ reply: unverifiedReadMessage(missing) }, { status: 502 })
+          retried = true
+          messages.push({ role: 'user', content: `Execution check: ${missing.join(', ')} has not successfully run. Return the corresponding JSON dbAction now; do not claim a result.` })
           continue
         }
-        if (verification.decision === 'block') return respond(unverifiedReadMessage(verification.missing), {}, 502)
-        return respond(raw)
+        return NextResponse.json({ reply: raw, legacy: true }, { headers: { 'Cache-Control': 'no-store' } })
       }
 
-      const toolName = parsed.tool as string
-      if (toolName !== 'dbAction') {
-        const reply = 'The AI requested an unsupported tool, so I stopped safely.'
-        return respond(reply, {}, 502)
-      }
-
-      const action = typeof parsed.action === 'string' ? parsed.action : ''
-      const payload = parsed.payload && typeof parsed.payload === 'object' && !Array.isArray(parsed.payload)
-        ? parsed.payload as Record<string, unknown>
-        : {}
-      if (!action) {
-        const reply = 'The AI returned an incomplete action, so I stopped safely.'
-        return respond(reply, {}, 502)
-      }
-
-      // The model may propose a write, but it is never allowed to claim or
-      // perform the write. A separate explicit confirmation is required.
-      if (!READ_ONLY_ACTIONS.has(action)) {
-        const reply = `I can prepare “${action}”, but I need your confirmation before changing shop data or sending anything. Nothing was changed.`
-        return respond(reply, { pendingAction: { action, payload } })
-      }
-
-      const result = await callDbAction(action, payload, caller.shopId, {
-        authorization: req.headers.get('authorization') || undefined,
-        cookie: req.headers.get('cookie') || undefined,
-      })
-      if (!result?.error && !result?.approvalRequired) successfulReads.add(action)
-      agentMessages.push({
-        role: 'user',
-        content: `Tool result for ${action}:\n${JSON.stringify(result, null, 2)}`,
-      })
+      if (!READ_ONLY_ACTIONS.has(tool.action)) return NextResponse.json({ error: 'sessionId required for mutations', reply: sessionRequiredReply() }, { status: 400 })
+      const result = await callReadAction(req, tool.action, tool.payload)
+      if (result.ok) successfulReads.add(tool.action)
+      messages.push({ role: 'user', content: `Tool result for ${tool.action}:\n${JSON.stringify(result.ok ? result.data : { error: result.error })}` })
     }
-
-    return respond('I reached the safe tool limit before finishing. The overall request has not been marked completed.', {}, 502)
-  } catch (err) {
-    console.error('[ai-chat] error:', err)
-    return NextResponse.json({ reply: 'Something went wrong. Please try again.' }, { status: 500 })
+    return NextResponse.json({ reply: 'I could not verify the requested lookup before the safe tool limit. No result has been marked as verified.' }, { status: 502 })
+  } catch (error) {
+    console.error('[ai-chat] legacy compatibility error:', error)
+    return NextResponse.json({ reply: 'Something went wrong. No action was taken.' }, { status: 500 })
   }
 }
+
 export async function GET() {
-  const auth = await getAuthedShop()
-  if (!auth) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  return NextResponse.json({ ok: true, route: 'ai-chat' })
+  if (!await getAuthedShop()) return unauthorized()
+  return NextResponse.json({ ok: true, route: 'ai-chat', protocol: 'durable-workflow-v1', legacy: 'read-only' })
 }

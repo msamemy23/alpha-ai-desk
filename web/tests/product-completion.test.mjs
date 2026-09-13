@@ -7,13 +7,13 @@ import ts from 'typescript'
 
 const read = path => readFileSync(new URL(path, import.meta.url), 'utf8')
 function load(path, imports = {}, globals = {}) {
-  const module = { exports: {} }
+  const moduleRecord = { exports: {} }
   vm.runInNewContext(ts.transpileModule(read(path), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, {
-    module, exports: module.exports, Buffer, URL, Response, Headers, AbortSignal, console, atob, TextDecoder,
+    module: moduleRecord, exports: moduleRecord.exports, Buffer, URL, Response, Headers, AbortSignal, console, atob, TextDecoder,
     process: { env: { ALPHA_CONNECTION_ENCRYPTION_KEY: 'test-only-key-not-a-production-secret-123456789' } },
     require: name => { if (name in imports) return imports[name]; throw new Error(`Unexpected import: ${name}`) }, ...globals,
   })
-  return module.exports
+  return moduleRecord.exports
 }
 const sealed = load('../src/lib/private-state.ts', { 'node:crypto': crypto })
 const modelMessages = load('../src/lib/ai/model-messages.ts')

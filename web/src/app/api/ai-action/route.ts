@@ -28,9 +28,15 @@ function pickFields(payload: Record<string, unknown>, allowed: readonly string[]
 
 export async function POST(req: NextRequest) {
   let failureMessage: string | null = null
-  const fail = (error: string, status = 400) => {
+  let isMutation = false
+  let mutationCommitted = false
+  const fail = (error: string, status = 400, operationStatus?: 'failed' | 'unknown') => {
     failureMessage = error
-    return NextResponse.json({ ok: false, error }, { status })
+    return NextResponse.json({
+      ok: false,
+      error,
+      ...(isMutation ? { operationStatus: operationStatus || (mutationCommitted ? 'unknown' : 'failed') } : {}),
+    }, { status })
   }
   const sb = getServiceClient()
   const body = await req.json().catch(() => null) as { action?: unknown; payload?: unknown; shopId?: unknown } | null
@@ -60,7 +66,7 @@ export async function POST(req: NextRequest) {
   const safePayload = payload
   if (JSON.stringify(safePayload).length > 20000) return fail('Action payload is too large', 413)
   const payloadHash = createHash('sha256').update(JSON.stringify(safePayload)).digest('hex')
-  const isMutation = mutatingActions.has(action)
+  isMutation = mutatingActions.has(action)
   if (isMutation && caller.role === 'viewer') return forbidden()
   // A caller-provided key makes retries safe. A request without one gets a
   // fresh operation identity so two intentional, identical actions do not
@@ -71,7 +77,6 @@ export async function POST(req: NextRequest) {
   const idempotencyKey = `${shopId}:${requestedKey}`.slice(0, 160)
   let operationId: string | null = null
   let operationFinalized = false
-  let mutationCommitted = false
   let readAuditAttempted = false
   // Reads need a new audit entry on each execution, not one per payload hash.
   const readAuditKey = `${shopId}:read:${randomUUID()}`
@@ -94,7 +99,7 @@ export async function POST(req: NextRequest) {
     })
     if (claimError) {
       console.error('[ai-action] durable operation claim failed:', claimError.message)
-      return fail('AI action could not be safely started', 503)
+      return fail('AI action could not be safely started', 503, 'unknown')
     }
     const claim = (claimData || {}) as {
       claimed?: boolean
@@ -128,21 +133,21 @@ export async function POST(req: NextRequest) {
           idempotencyKey,
           metadata: claim.audit_metadata || { payload: safePayload },
         })
-        if (!auditResult.ok) return fail('The previous action completed, but its audit record still needs repair', 502)
+        if (!auditResult.ok) return fail('The previous action completed, but its audit record still needs repair', 502, 'unknown')
         const { error: auditStateError } = await sb.from('ai_action_operations').update({
           audit_status: auditResult.pending ? 'queued' : 'delivered',
           audit_error: null,
           updated_at: new Date().toISOString(),
         }).eq('id', operationId).eq('shop_id', shopId).eq('status', 'succeeded')
-        if (auditStateError) return fail('The previous action completed, but its audit state could not be updated', 502)
+        if (auditStateError) return fail('The previous action completed, but its audit state could not be updated', 502, 'unknown')
         if (auditResult.pending) return NextResponse.json({ ok: true, data: claim.result, auditPending: true })
       }
       return ok(claim.result)
     }
-    if (claim.status === 'failed') return fail(claim.error || 'This AI action already failed and will not be replayed', 409)
-    if (claim.status === 'unknown') return fail(claim.error || 'The previous AI action outcome is uncertain; reconcile it before retrying', 409)
+    if (claim.status === 'failed') return fail(claim.error || 'This AI action failed before a mutation was committed', 409, 'failed')
+    if (claim.status === 'unknown') return fail(claim.error || 'The previous AI action outcome is uncertain; reconcile it before retrying', 409, 'unknown')
     if (claim.claimed !== true || claim.status !== 'running' || !operationId) {
-      return fail('This AI action is already in progress', 409)
+      return fail('This AI action is already in progress', 409, 'unknown')
     }
   }
 
@@ -562,6 +567,10 @@ export async function POST(req: NextRequest) {
         if (!fromEmail) return fail('Shop email sender is not configured')
 
         try {
+          // The provider call is an external side effect. Mark the operation
+          // as committed before entering it so a timeout or lost response
+          // cannot be retried as a second email.
+          mutationCommitted = true
           await sendEmail({
             to: toEmail,
             subject: `${doc.type} #${doc.doc_number} from ${shopName}`,

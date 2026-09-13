@@ -6,6 +6,9 @@ import { apiFail, apiOk, optionalStringArray, readJsonObject, requireString, get
 import { writeAuditLog } from '@/lib/audit-log'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
 import { normalizePartsQuery as normalizePartsLookupQuery } from '@/lib/ai/desktop-actions'
+import { getUserChatGptTransport } from '@/lib/chatgpt-connection'
+import { chatGptModel, fetchOpenAIChatCompletion } from '@/lib/openai-oauth-server'
+import type { OpenAIOAuthTransport } from '@openai-oauth/core'
 
 export const dynamic = 'force-dynamic'
 
@@ -48,9 +51,9 @@ interface PartsLookupResult {
   positions: string[]
   options: PartOption[]
   kits: KitOption[]
-  taxRate: number
+  taxRate: number | null
   laborHours: number | null
-  laborRate: number
+  laborRate: number | null
   searchUrls: { store: string; url: string }[]
   sourceConfidence: 'verified_exact_product_page' | 'search_result_only' | 'price_unavailable'
   warnings: string[]
@@ -80,24 +83,15 @@ function normalizeStoreFilter(stores?: string[]) {
 function priceAppearsInEvidence(price: unknown, evidence: string) {
   const value = typeof price === 'number' ? price : Number(price)
   if (!Number.isFinite(value) || value <= 0) return false
-  const fixed = value.toFixed(2)
-  const withoutCents = fixed.endsWith('.00') ? fixed.slice(0, -3) : fixed
   const normalized = evidence.replace(/,/g, '')
-  return [
-    `$${fixed}`,
-    `$${withoutCents}`,
-    fixed,
-    withoutCents,
-  ].some(candidate => normalized.includes(candidate))
-}
-
-function isExactProductUrl(url: string) {
-  return /\/(p|product|products|parts|item|detail|catalog|dp)\b/i.test(url)
+  // A model number, SKU, year, or substring of a larger price is not a quote.
+  return [...normalized.matchAll(/(?:\$\s*|USD\s+)(\d+(?:\.\d{1,2})?)(?![\d.])/gi)]
+    .some(match => Number(match[1]) === value)
 }
 
 function sanitizeParsedParts(parsed: { options?: PartOption[]; kits?: KitOption[] }, rawResults: { title: string; url: string; content: string }[]) {
   const evidenceByUrl = new Map(rawResults.map(result => [result.url, `${result.title}\n${result.content}`]))
-  const warnings: string[] = []
+  const warnings: string[] = ['Search snippets are preliminary leads. Exact product price, side/vehicle fitment and availability have not been independently verified. Labor hours require a supplied or verified source.']
 
   const options = (parsed.options || []).map(option => {
     const parts = (option.parts || []).flatMap(part => {
@@ -111,11 +105,13 @@ function sanitizeParsedParts(parsed: { options?: PartOption[]; kits?: KitOption[
         return []
       }
       const price = Number(part.price)
-      const sourceConfidence: PartResult['sourceConfidence'] = isExactProductUrl(part.url) ? 'verified_exact_product_page' : 'search_result_only'
+      const sourceConfidence: PartResult['sourceConfidence'] = 'search_result_only'
       return [{
         ...part,
         price,
         quantity: Number(part.quantity || 1),
+        inStock: null,
+        storeLocation: null,
         sourceConfidence,
       }]
     })
@@ -136,7 +132,7 @@ function sanitizeParsedParts(parsed: { options?: PartOption[]; kits?: KitOption[
       warnings.push(`Dropped ${kit.name || 'kit'} because its price was not visible in the source result.`)
       return []
     }
-    const sourceConfidence: KitOption['sourceConfidence'] = isExactProductUrl(kit.url) ? 'verified_exact_product_page' : 'search_result_only'
+    const sourceConfidence: KitOption['sourceConfidence'] = 'search_result_only'
     return [{
       ...kit,
       price: Number(kit.price),
@@ -144,33 +140,61 @@ function sanitizeParsedParts(parsed: { options?: PartOption[]; kits?: KitOption[
     }]
   }).slice(0, 3)
 
-  const hasExactProduct = options.some(option => option.parts.some(part => part.sourceConfidence === 'verified_exact_product_page')) ||
-    kits.some(kit => kit.sourceConfidence === 'verified_exact_product_page')
-
   return {
     options,
     kits,
     warnings: warnings.slice(0, 8),
     sourceConfidence: options.length || kits.length
-      ? hasExactProduct ? 'verified_exact_product_page' as const : 'search_result_only' as const
+      ? 'search_result_only' as const
       : 'price_unavailable' as const,
   }
 }
 
+type PartsAiMessage = { role: 'system' | 'user'; content: string }
+
+type PartsAiConfig = {
+  key: string
+  base: string
+  model: string
+  oauthTransport: OpenAIOAuthTransport | null
+}
+
+async function callPartsAi(config: PartsAiConfig, messages: PartsAiMessage[], maxTokens: number) {
+  if (config.oauthTransport) {
+    const completion = await fetchOpenAIChatCompletion(config.oauthTransport, {
+      model: chatGptModel(config.model),
+      messages,
+      max_tokens: maxTokens,
+    }, AbortSignal.timeout(120000))
+    if (!completion.ok) {
+      const message = completion.data && typeof completion.data === 'object' && 'error' in completion.data
+        ? String((completion.data as { error?: { message?: unknown } }).error?.message || 'ChatGPT request failed')
+        : 'ChatGPT request failed'
+      throw new Error(message)
+    }
+    return completion.data
+  }
+
+  const res = await fetch(`${config.base}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${config.key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: config.model, messages, max_tokens: maxTokens, temperature: 0.1 }),
+    signal: AbortSignal.timeout(120000),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(typeof data?.error?.message === 'string' ? data.error.message : `AI provider returned ${res.status}`)
+  return data
+}
+
 // Use DeepSeek to decompose a parts request into structured search queries
-async function decomposeRequest(query: string, aiKey: string, aiBase: string, aiModel: string): Promise<{
+async function decomposeRequest(query: string, config: PartsAiConfig): Promise<{
   vehicle: { year: string; make: string; model: string };
   partType: string;
   positions: string[];
   searchQueries: string[];
   laborHours: number | null;
 }> {
-  const res = await fetch(`${aiBase}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${aiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: aiModel,
-      messages: [
+  const data = await callPartsAi(config, [
         { role: 'system', content: `You are an auto parts expert. Given a parts request, decompose it into structured data.
 Return ONLY valid JSON with this exact structure:
 {
@@ -181,7 +205,7 @@ Return ONLY valid JSON with this exact structure:
     "2006 Honda Accord front brake rotors",
     "2006 Honda Accord rear brake rotors"
   ],
-  "laborHours": 2.5
+  "laborHours": null
 }
 
 Rules:
@@ -192,17 +216,12 @@ Rules:
 - For "front brakes" = front rotors + pads, positions: FL, FR
 - For "lower control arms" both front = positions: Front Left, Front Right
 - For "front ones both sides" = Front Left and Front Right
-- Include labor hours estimate (brake job per axle=1.5, all 4=2.5-3, control arm=1.5/side, etc)
+- Always return laborHours:null. A generated estimate is not verified labor-book evidence.
 - searchQueries should be specific enough to find exact parts with prices on auto parts stores
 - Generate 2-4 search queries covering different stores/angles
 - ALWAYS include the vehicle year make model in each search query` },
         { role: 'user', content: query }
-      ],
-      max_tokens: 500,
-      temperature: 0.1
-    })
-  })
-  const data = await res.json()
+      ], 500)
   const raw = data.choices?.[0]?.message?.content || '{}'
   try {
     const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
@@ -275,20 +294,13 @@ async function parseResults(
   vehicle: string,
   partType: string,
   positions: string[],
-  aiKey: string,
-  aiBase: string,
-  aiModel: string
+  config: PartsAiConfig
 ): Promise<{ options: PartOption[]; kits: KitOption[] }> {
   const resultsText = rawResults.slice(0, 20).map((r, i) => 
     `[${i+1}] ${r.title}\nURL: ${r.url}\n${r.content}`
   ).join('\n\n')
   
-  const res = await fetch(`${aiBase}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${aiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: aiModel,
-      messages: [
+  const data = await callPartsAi(config, [
         { role: 'system', content: `You are an auto parts pricing analyst. Parse search results into structured parts data.
 
 Vehicle: ${vehicle}
@@ -341,12 +353,7 @@ Rules:
 - Store names: O'Reilly, Advance Auto, PepBoys, Amazon, eBay, RockAuto, AutoZone, NAPA
 - If you cannot find real data for a tier, omit it. Do NOT make up prices.` },
         { role: 'user', content: `Search results to parse:\n\n${resultsText}` }
-      ],
-      max_tokens: 2000,
-      temperature: 0.1
-    })
-  })
-  const data = await res.json()
+      ], 2000)
   const raw = data.choices?.[0]?.message?.content || '{}'
   try {
     const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
@@ -378,14 +385,16 @@ export async function POST(req: NextRequest) {
 
     // Get AI settings
     const sb = getServiceClient()
-    const { data: settings } = await sb.from('settings').select('ai_api_key,ai_model,ai_base_url').eq('shop_id', auth.shopId).limit(1).single()
-    const aiKey = settings?.ai_api_key
-    if (!aiKey) return apiFail('No AI API key configured', 400, 'BAD_REQUEST')
+    const { data: settings } = await sb.from('settings').select('ai_api_key,ai_model,ai_base_url,labor_rate,tax_rate').eq('shop_id', auth.shopId).limit(1).single()
+    const oauthTransport = await getUserChatGptTransport(auth)
+    const aiKey = typeof settings?.ai_api_key === 'string' ? settings.ai_api_key.trim() : ''
+    if (!oauthTransport && !aiKey) return apiFail('No AI provider is connected. Connect ChatGPT in Settings or add the shop AI key.', 400, 'BAD_REQUEST')
     const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
-    const aiModel = normalizeAiModel(settings?.ai_model, aiBase)
+    const aiModel = oauthTransport ? chatGptModel(settings?.ai_model) : normalizeAiModel(settings?.ai_model, aiBase)
+    const aiConfig: PartsAiConfig = { key: aiKey, base: aiBase, model: aiModel, oauthTransport }
 
     // Step 1: Decompose the request
-    const decomposed = await decomposeRequest(query, aiKey, aiBase, aiModel)
+    const decomposed = await decomposeRequest(query, aiConfig)
     const vehicle = `${decomposed.vehicle.year} ${decomposed.vehicle.make} ${decomposed.vehicle.model}`.trim()
 
     // Step 2: Build search queries (add store filters if specified)
@@ -404,7 +413,7 @@ export async function POST(req: NextRequest) {
       vehicle,
       decomposed.partType,
       decomposed.positions,
-      aiKey, aiBase, aiModel
+      aiConfig
     )
     const sanitized = sanitizeParsedParts(parsed, rawResults)
 
@@ -423,9 +432,9 @@ export async function POST(req: NextRequest) {
       positions: decomposed.positions,
       options: sanitized.options,
       kits: sanitized.kits,
-      taxRate: 8.25,
-      laborHours: decomposed.laborHours,
-      laborRate: 120,
+      taxRate: settings?.tax_rate == null ? null : Number(settings.tax_rate),
+      laborHours: null,
+      laborRate: settings?.labor_rate == null ? null : Number(settings.labor_rate),
       searchUrls,
       sourceConfidence: sanitized.sourceConfidence,
       warnings: sanitized.warnings,

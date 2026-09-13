@@ -243,6 +243,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
   const [docs, setDocs] = useState<Doc[]>([])
   const [customers, setCustomers] = useState<Customer[]>([])
   const [editing, setEditing] = useState<string | null | 'new'>(null)
+  const [openedFromLink, setOpenedFromLink] = useState(false)
   const [form, setForm] = useState<Partial<Doc>>({})
   const [search, setSearch] = useState('')
   const [sendModal, setSendModal] = useState<Doc | null>(null)
@@ -316,7 +317,17 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     ])
     setDocs((d || []) as Doc[]); setCustomers((c || []) as Customer[])
     setShopSettings((settings || {}) as Record<string, string>)
-  }, [type])
+    const requestedDocument = new URLSearchParams(window.location.search).get('document')
+    if (!openedFromLink && requestedDocument) {
+      const selected = (d || []).find(document => document.id === requestedDocument)
+      if (selected) {
+        setOpenedFromLink(true)
+        setForm(selected as Partial<Doc>)
+        setEditing(selected.id)
+        setSignatureImg(null)
+      }
+    }
+  }, [type, openedFromLink])
   useEffect(() => {
     load()
     const ch = supabase.channel(`docs_${type}`).on('postgres_changes', { event: '*', schema: 'public', table: 'documents' }, load).subscribe()

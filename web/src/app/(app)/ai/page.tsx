@@ -7,6 +7,8 @@ import { observedLinkClick } from '@/lib/ai/browser-interaction'
 import { AGENTS, SKILLS } from '@/lib/ai/capabilities'
 import { classifyRequest, type RouteDecision } from '@/lib/ai/router'
 import { normalizeDocumentDraft } from '@/lib/ai/document-draft'
+import { WorkflowReview } from '@/components/ai/WorkflowReview'
+import type { Approval, WorkflowReply } from '@/lib/ai/workflow/engine'
 import { verifyReadClaims, unverifiedReadMessage } from '@/lib/ai/read-verification'
 import { calculateDocumentTotals, getLaborFlatAmount, laborLineTotal, partLineTotal } from '@/lib/document-money'
 import type { RepairSearchResult } from '@/lib/repair/sources'
@@ -969,6 +971,9 @@ export default function AIPage() {
 const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:string;subject?:string;customerId?:string;customerName?:string;idempotencyKey:string}|null>(null)
   const [pendingAction, setPendingAction] = useState<{ action: string; payload: Record<string, unknown>; kind?: 'connector' | 'automation' | 'browser'; endpoint?: string; idempotencyKey?: string } | null>(null)
   const [confirmingAction, setConfirmingAction] = useState(false)
+  const [workflowApproval, setWorkflowApproval] = useState<Approval | null>(null)
+  const workflowRequestRef = useRef<{ sessionId: string; message: string; turnId: string } | null>(null)
+  const workflowActiveRef = useRef(false)
   const chatSessionIdRef = useRef(`chat-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   const historyWriteRef = useRef<Promise<void>>(Promise.resolve())
   const [voiceCall, setVoiceCall] = useState<VoiceCallState | null>(null)
@@ -2016,7 +2021,48 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     reader.readAsDataURL(file)
   }
 
+  const acceptWorkflowReply = (result: WorkflowReply) => {
+    workflowActiveRef.current = ['needs_input', 'approval', 'blocked'].includes(result.status)
+    setWorkflowApproval(result.approval || null)
+    setMessages(prev => [...prev, { role: 'assistant', content: result.reply }])
+  }
+
+  const confirmWorkflow = async (decision: 'confirm' | 'cancel') => {
+    if (!workflowApproval || confirmingAction || loading) return
+    setConfirmingAction(true)
+    try {
+      const response = await fetch('/api/ai-workflow', {
+        method: 'POST', headers: await getAuthJsonHeaders(),
+        body: JSON.stringify({ sessionId: chatSessionIdRef.current, turnId: crypto.randomUUID(), confirmation: { id: workflowApproval.id, decision } }),
+      })
+      const result = await response.json()
+      if (!response.ok) throw new Error(getAIErrorMessage(result))
+      acceptWorkflowReply(result)
+    } catch (error) {
+      setMessages(prev => [...prev, { role: 'assistant', content: `No confirmed result was received. The review is retained; retry checks the same operation. ${error instanceof Error ? error.message : ''}` }])
+    } finally { setConfirmingAction(false) }
+  }
+
     const agentLoop = async (history: ChatMessage[], featureFlags?: { search: boolean;  socialMedia: boolean; thinking: boolean }, routeOverride?: RouteDecision) => {
+    const latestText = [...history].reverse().find(message => message.role === 'user')?.content || ''
+    // Local/browser/social integrations keep their dedicated adapters. All shop
+    // workflows and ordinary conversation use the same durable server executor.
+    const specializedRequest = /\b(?:browse|browser|click|navigate|facebook|instagram|post to|ai call|call .* (?:ask|order))\b|https?:\/\//i.test(latestText)
+    const immediateCommunication = /\b(?:send|text|sms|email|call|dial)\b/i.test(latestText) && !/\b(?:invoice|estimate|follow.?up|schedule|customer)\b/i.test(latestText)
+    const shopWorkflowRequest = /\b(?:invoice|estimate|receipt|customer|appointment|inventory|job|staff|follow.?up)\b/i.test(latestText)
+    if (workflowActiveRef.current || shopWorkflowRequest || (!specializedRequest && !immediateCommunication)) {
+      setStatus('Working with your saved task…')
+      const sessionId = chatSessionIdRef.current
+      const previous = workflowRequestRef.current
+      const request = previous?.sessionId === sessionId && previous.message === latestText ? previous : { sessionId, message: latestText, turnId: crypto.randomUUID() }
+      workflowRequestRef.current = request
+      const response = await fetch('/api/ai-workflow', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify(request) })
+      const result = await response.json()
+      if (!response.ok) throw new Error(getAIErrorMessage(result))
+      workflowRequestRef.current = null
+      acceptWorkflowReply(result)
+      return
+    }
         const activeFeatures = featureFlags || { search: true, socialMedia: true, thinking: false }
 
     const accumulated: string[] = []
@@ -3426,6 +3472,27 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
   const loadConversation = (entry: HistoryEntry) => {
     if (loading || confirmingAction || sendingSms) return
     chatSessionIdRef.current = entry.id
+    if (typeof setWorkflowApproval !== 'undefined') setWorkflowApproval(null)
+    if (typeof workflowRequestRef !== 'undefined') workflowRequestRef.current = null
+    if (typeof workflowActiveRef !== 'undefined') workflowActiveRef.current = false
+    if (typeof window !== 'undefined' && typeof fetch !== 'undefined') {
+      void (async () => {
+        try {
+          const response = await fetch(`/api/ai-workflow?sessionId=${encodeURIComponent(entry.id)}`, { headers: await getAuthJsonHeaders() })
+          const result = await response.json()
+          if (response.ok && chatSessionIdRef.current === entry.id) {
+            setWorkflowApproval(result.approval || null)
+            workflowActiveRef.current = Boolean(result.active)
+            const restoredReply = result.lastReply?.reply
+            if (typeof restoredReply === 'string' && restoredReply.trim()) {
+              setMessages(prev => prev.some(message => message.role === 'assistant' && message.content === restoredReply)
+                ? prev
+                : [...prev, { role: 'assistant', content: restoredReply }])
+            }
+          }
+        } catch { if (typeof showToast !== 'undefined') showToast('Saved task could not be restored. Retry opening this conversation.') }
+      })()
+    }
     setPendingAction(null)
     setPendingSms(null)
     setToolTimeline([])
@@ -3774,6 +3841,8 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             </div>
           </div>
         ))}
+
+        {workflowApproval && <WorkflowReview approval={workflowApproval} busy={loading || confirmingAction} onDecision={confirmWorkflow} />}
 
         {/* Live AI Voice Call Panel */}
         {voiceCall && voiceCall.status !== 'ended' && (
