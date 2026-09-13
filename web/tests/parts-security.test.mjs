@@ -52,6 +52,8 @@ test('AutoZone category evidence is deterministic, fitment-bound, and price-back
   assert.match(route, /evidenceQuote/)
   assert.match(route, /price was not bound to the same product evidence/)
   assert.match(route, /function fetchAutoZoneCategoryEvidence/)
+  assert.match(route, /function autoZoneCategoryUrlMatchesVehicle/)
+  assert.match(route, /const vehicleBoundResults = rawResults\.filter/)
   assert.match(route, /function extractAutoZoneCategoryEvidence/)
   assert.match(route, /https:\/\/api\.tavily\.com\/extract/)
   assert.match(tavilyExtract, /'Authorization': `Bearer \$\{TAVILY_API_KEY\}`/)
@@ -103,3 +105,4 @@ test('financial and SMS safeguards are durable and tenant-bound', () => {
   assert.match(smsConsent, /shop_id/)
   assert.match(saveDocument, /Paid or partially paid documents are financially immutable/)
 })
+

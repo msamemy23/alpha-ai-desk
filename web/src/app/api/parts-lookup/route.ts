@@ -435,6 +435,19 @@ function isStrictAutoZoneCategoryUrl(value: string) {
   }
 }
 
+function autoZoneCategoryUrlMatchesVehicle(value: string, vehicle: VehicleFitment) {
+  if (!isStrictAutoZoneCategoryUrl(value)) return false
+  try {
+    const url = new URL(value)
+    const segments = url.pathname.split('/').filter(Boolean)
+    return segments.at(-1) === vehicle.year.trim().toLowerCase()
+      && segments.at(-2) === autoZonePathSegment(vehicle.model)
+      && segments.at(-3) === autoZonePathSegment(vehicle.make)
+  } catch {
+    return false
+  }
+}
+
 function visibleHtmlEvidence(html: string) {
   return html
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
@@ -921,22 +934,28 @@ export async function POST(req: NextRequest) {
     // Step 3: Search for parts across stores
     const search = await searchParts(searchQueries, stores, decomposed.vehicle, decomposed.partType)
     const rawResults = search.results
+    // Search providers frequently return nearby vehicle years/models for the
+    // same category. Keep those leads for diagnostics, but never give them to
+    // the parser or evidence sanitizer for the requested vehicle.
+    const vehicleBoundResults = rawResults.filter(result =>
+      !isStrictAutoZoneCategoryUrl(result.url) || autoZoneCategoryUrlMatchesVehicle(result.url, decomposed.vehicle)
+    )
 
     // Step 4: Parse results with AI
     const parsed = await parseResults(
-      rawResults,
+      vehicleBoundResults,
       vehicle,
       decomposed.partType,
       decomposed.positions,
       aiConfig
     )
-    const sanitized = sanitizeParsedParts(parsed, rawResults, stores)
+    const sanitized = sanitizeParsedParts(parsed, vehicleBoundResults, stores)
     const laborGuidance = standardLaborGuidance(query, decomposed.partType, decomposed.positions || [])
     const warnings = [...sanitized.warnings]
     if (laborGuidance) warnings.push(laborGuidance.note)
 
     // Build search URLs for reference
-    const searchUrls = rawResults
+    const searchUrls = vehicleBoundResults
       .filter(r => r.url.includes('oreilly') || r.url.includes('advance') || r.url.includes('pepboys') || r.url.includes('amazon') || r.url.includes('ebay') || r.url.includes('rockauto') || r.url.includes('autozone') || r.url.includes('napa'))
       .slice(0, 10)
       .map(r => ({

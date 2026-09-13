@@ -12,6 +12,27 @@ function priceRepresentationKind(raw) {
   return 'unknown'
 }
 
+function collapsedCurrencyValue(raw) {
+  if (!/^\s*\$\s*\d{4,}\s*$/i.test(raw)) return null
+  const digits = raw.replace(/\D/g, '')
+  if (digits.length < 4) return null
+  return priceValue(digits.slice(0, -2), digits.slice(-2))
+}
+
+function normalizeCollapsedCurrencyRenderings(matches) {
+  return matches.map(match => {
+    if (priceRepresentationKind(match.raw) !== 'currency') return match
+    const collapsedValue = collapsedCurrencyValue(match.raw)
+    if (collapsedValue === null) return match
+    const adjacentWorded = matches.find(other =>
+      priceRepresentationKind(other.raw) === 'worded'
+      && other.value === collapsedValue
+      && Math.abs(match.index - other.index) <= 96
+    )
+    return adjacentWorded ? { ...match, value: collapsedValue } : match
+  })
+}
+
 function deduplicateEquivalentRenderings(matches) {
   const deduplicated = []
   for (const match of matches) {
@@ -42,7 +63,8 @@ function visiblePriceMatches(value) {
     const price = priceValue(match[1], match[2])
     if (price !== null) matches.push({ value: price, index: match.index || 0, raw: match[0] })
   }
-  return deduplicateEquivalentRenderings(matches.sort((left, right) => left.index - right.index))
+  const sorted = matches.sort((left, right) => left.index - right.index)
+  return deduplicateEquivalentRenderings(normalizeCollapsedCurrencyRenderings(sorted))
 }
 
 function hasVisiblePrice(value) {

@@ -21,6 +21,10 @@ test('deduplicates adjacent worded and accessibility renderings of the same pric
   assert.deepEqual(visiblePriceMatches(evidence).map(match => match.value), [52.99])
   assert.equal(hasExactlyOneVisiblePrice(52.99, evidence), true)
 
+  const collapsedEvidence = 'The price of this item is: 66 dollars and 99 cents$6699'
+  assert.deepEqual(visiblePriceMatches(collapsedEvidence).map(match => match.value), [66.99])
+  assert.equal(hasExactlyOneVisiblePrice(66.99, collapsedEvidence), true)
+
   const differentPrices = 'The price of this item is: 52 dollars and 99 cents\nThe price of this item is: 53 dollars and 99 cents'
   assert.deepEqual(visiblePriceMatches(differentPrices).map(match => match.value), [52.99, 53.99])
   assert.equal(hasExactlyOneVisiblePrice(52.99, differentPrices), false)

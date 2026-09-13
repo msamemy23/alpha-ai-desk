@@ -33,6 +33,32 @@ test('uses the next explicit product identity as a boundary when blank lines are
   assert.equal(parsed.options[0].parts[1].position, 'Rear')
 })
 
+test('keeps a price-first AutoZone product attached to the product that follows it', () => {
+  const parsed = parseAutoZoneCategoryEvidence([{
+    title: 'AutoZone fitment category',
+    url: categoryUrl,
+    content: `Disc Brake Rotor
+The price of this item is: 66 dollars and 99 cents$6699
+Configurable SKU IconCustomize
+R1 Concepts Disc Brake Rotor RRE-59043 for Honda Accord
+## R1 Concepts Disc Brake Rotor RRE-59043
++ Part # RRE-59043
++ SKU # 1561722
+Disc Brake Rotor
+The price of this item is: 74 dollars and 49 cents$7449
+Configurable SKU IconCustomize
+R1 Concepts Disc Brake Rotor ERE-59034 for Honda Accord
+## R1 Concepts Disc Brake Rotor ERE-59034
++ Part # ERE-59034
++ SKU # 1561400`,
+  }], allowed)
+
+  assert.deepEqual(parsed.options[0].parts.map(part => [part.name, part.partNumber, part.price]), [
+    ['R1 Concepts Disc Brake Rotor RRE-59043 for Honda Accord', 'RRE-59043', 66.99],
+    ['R1 Concepts Disc Brake Rotor ERE-59034 for Honda Accord', 'ERE-59034', 74.49],
+  ])
+})
+
 test('rejects ambiguous, flattened, and non-category blocks without inventing positions', () => {
   const parsed = parseAutoZoneCategoryEvidence([
     {
@@ -57,3 +83,4 @@ test('rejects ambiguous, flattened, and non-category blocks without inventing po
   assert.equal(parsed.options[0].parts[0].position, '')
   assert.equal(parsed.options[0].parts[0].name, 'Duralast Brake Rotor')
 })
+
