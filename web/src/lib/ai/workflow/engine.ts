@@ -625,13 +625,20 @@ function lookupMatchesResearchIntent(evidence: Evidence, intent: { query: string
 }
 
 function partsLookupLimitMessage(intent: ResearchIntent | null, state: WorkflowState, currentMessage = ''): string {
-  const allFour = Boolean(intent && /\b(?:all four|four|4) (?:wheel )?brakes?\b|\b4 brakes? and rotors?\b/i.test(intent.query))
+  const scope = [
+    intent?.query || '',
+    currentMessage,
+    ...state.turns.filter(turn => turn.role === 'user').map(turn => turn.text),
+    ...(state.task ? state.task.instructions : []),
+    JSON.stringify(state.task?.payload || {}),
+  ].join(' ')
+  const allFour = /\b(?:all four|four|4) (?:wheel )?brakes?\b|\b4 brakes? and rotors?\b/i.test(scope)
   const latestLookup = [...state.evidence].reverse().find(item => item.tool === 'lookupParts')
   const complete = Boolean(intent && latestLookup && lookupMatchesResearchIntent(latestLookup, intent))
   if (complete) return 'The vehicle and retailer lookup already returned usable evidence. I will use that result for the review instead of running another search.'
   if (allFour) {
     const conversation = [currentMessage, ...state.turns.filter(turn => turn.role === 'user').map(turn => turn.text)].join(' ')
-    const fitmentKnown = /\b(?:rear\s+(?:disc|drum)|(?:disc|drum)\s+rear)\b/i.test(conversation) || /\b(?:trim|engine)\b/i.test(conversation)
+    const fitmentKnown = fitmentFactsSupplied(state, conversation)
     const nextStep = fitmentKnown
       ? 'No additional fitment detail is needed; retry the saved lookup later.'
       : 'Confirm the trim or rear brake type if that is still unknown, or retry the saved lookup later.'
@@ -646,6 +653,33 @@ function researchQuestion(fields: unknown, message = ''): boolean {
     message,
   ].join(' ')
   return /(?:price|cost|unitprice|amount|labor|labou?r|hour|rate|part(?:s)?(?:\s+number|_?choice)?|option)/i.test(source)
+}
+
+function fitmentFactsSupplied(state: WorkflowState, conversation: string): boolean {
+  const payload = state.task?.payload || {}
+  const savedFitment = ['vehicle_trim', 'vehicle_engine', 'trim', 'engine', 'brake_type', 'rear_brake_type']
+    .some(key => typeof payload[key] === 'string' && String(payload[key]).trim().length > 0)
+  if (savedFitment) return true
+  if (/\b(?:rear\s+(?:disc|drum)|(?:disc|drum)\s+rear)(?:\s+brakes?)?\b/i.test(conversation)) return true
+  // Keep this deliberately limited to common explicit fitment statements;
+  // ordinary model names and customer names must not count as vehicle data.
+  return /\b(?:trim|engine)\s*(?:is|:|=)\s*[A-Za-z0-9][A-Za-z0-9 .-]{0,30}\b/i.test(conversation)
+    || /\b(?:v6|v8|i4|l4|4[- ]?cylinder|6[- ]?cylinder|2\.4\s*l|3\.0\s*l)\b/i.test(conversation)
+    || /\b(?:lx|ex|dx|se|sport|touring|hybrid)\s+(?:trim|model)?\b/i.test(conversation)
+}
+
+function fitmentQuestion(fields: unknown, message = ''): boolean {
+  const source = [
+    ...(Array.isArray(fields) ? fields.filter(field => typeof field === 'string') : []),
+    message,
+  ].join(' ')
+  return /(?:vehicle_(?:trim|engine)|rear_?brake_?type|\b(?:trim|engine|fitment|brake\s+type|disc|drum)\b)/i.test(source)
+}
+
+function repeatedFitmentQuestion(state: WorkflowState, fields: unknown, message: string, currentMessage: string): boolean {
+  if (!fitmentQuestion(fields, message)) return false
+  const conversation = [currentMessage, ...state.turns.filter(turn => turn.role === 'user').map(turn => turn.text)].join(' ')
+  return fitmentFactsSupplied(state, conversation)
 }
 
 function estimatedLaborEvidence(value: unknown): boolean {
@@ -868,7 +902,7 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
       }
       if (decision.kind === 'ask') {
         if (typeof decision.message !== 'string' || !decision.message.trim() || !Array.isArray(decision.fields) || !decision.fields.length) throw new Error('Ask must identify a genuinely missing field')
-        if (researchIntent && hasVehicleContext && researchQuestion(decision.fields, decision.message)) return respond(partsLookupLimitMessage(researchIntent, state, input.message), 'blocked')
+        if (researchIntent && hasVehicleContext && (researchQuestion(decision.fields, decision.message) || repeatedFitmentQuestion(state, decision.fields, decision.message, input.message))) return respond(partsLookupLimitMessage(researchIntent, state, input.message), 'blocked')
         if (state.task) {
           for (const field of decision.fields) {
             if (typeof field !== 'string') throw new Error('Invalid question field')
