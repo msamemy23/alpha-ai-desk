@@ -294,6 +294,10 @@ test('invalid persisted workflow state is rejected instead of reset', () => {
   assert.throws(() => engine.restoreState({ version: 1, turns: [], evidence: [], receipts: {}, facts: {}, task: { action: 'runSQL', payload: {}, proofs: {}, instructions: [] }, pending: null }), /invalid/i)
 })
 
+test('empty database default materializes as a new workflow session', () => {
+  assert.deepEqual(engine.restoreState({}), engine.initialState())
+})
+
 for (const failure of [false, true]) test(`inventory answers require actual read evidence, outage=${failure}`, async () => {
   const h = harness([
     { kind: 'answer', message: '0 inventory items returned.' },

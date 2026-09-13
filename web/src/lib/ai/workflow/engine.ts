@@ -42,6 +42,11 @@ function validWorkflowId(value: unknown): value is string {
  * runnable again.
  */
 export function restoreState(value: unknown): WorkflowState {
+  // The database row is created lazily with the migration's `{}` default.
+  // That is an empty, not damaged, session. Materialize it once here so the
+  // first request can checkpoint the full invariant-bearing state. Non-empty
+  // malformed objects still fail closed below instead of being reset.
+  if (object(value) && Object.keys(value).length === 0) return initialState()
   if (!object(value) || value.version !== 1 || !Array.isArray(value.turns) || !Array.isArray(value.evidence) || !object(value.receipts) || !object(value.facts)) {
     throw new Error('Saved workflow state is invalid')
   }
