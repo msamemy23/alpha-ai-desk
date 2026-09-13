@@ -324,10 +324,12 @@ Rules:
 // Search Tavily for parts across multiple stores
 async function searchParts(queries: string[], stores: string[] = []): Promise<{
   results: {title: string; url: string; content: string}[]
-  diagnostics: { requestedQueries: number; completedQueries: number; providerResults: number; retailerResults: number; shoppingResults: number; providers: string[] }
+  diagnostics: { requestedQueries: number; completedQueries: number; providerResults: number; retailerResults: number; shoppingCandidates: number; shoppingResults: number; shoppingCompletedQueries: number; providers: string[] }
 }> {
   const allResults: {title: string; url: string; content: string}[] = []
+  let shoppingCandidates = 0
   let shoppingResults = 0
+  let shoppingCompletedQueries = 0
 
   const domains = normalizeStoreFilter(stores)
   const expandedQueries: string[] = []
@@ -388,6 +390,7 @@ async function searchParts(queries: string[], stores: string[] = []): Promise<{
             url: result.link || '',
             content: (result.snippet || '').slice(0, 800),
           })))
+          shoppingCandidates += (d.shopping || []).length
           const shopping = (d.shopping || []).slice(0, 4).map(result => ({
             title: [result.title, result.source].filter(Boolean).join(' — '),
             url: result.link || '',
@@ -411,14 +414,21 @@ async function searchParts(queries: string[], stores: string[] = []): Promise<{
   // source-backed instead of forcing the language model to guess them.
   if (SERPER_API_KEY) {
     const shoppingSearches = await Promise.allSettled(selectedQueries.slice(0, 4).map(async (query) => {
+      const cleanQuery = query
+        .replace(/\s+site:[^\s]+/gi, '')
+        .replace(/\s+OR\s+/gi, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .trim()
+      const shoppingQuery = `${cleanQuery} ${domains.map(domain => domain.split('.')[0]).join(' ')}`.trim()
       const r = await fetch('https://google.serper.dev/shopping', {
         method: 'POST',
         headers: { 'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ q: query, num: 8 }),
+        body: JSON.stringify({ q: shoppingQuery, num: 8 }),
         signal: AbortSignal.timeout(15000),
       })
       if (!r.ok) return []
       const d = await r.json() as { shopping?: { title?: string; link?: string; price?: string; source?: string; delivery?: string }[] }
+      shoppingCandidates += (d.shopping || []).length
       return (d.shopping || []).slice(0, 4).map(result => ({
         title: [result.title, result.source].filter(Boolean).join(' — '),
         url: result.link || '',
@@ -427,6 +437,7 @@ async function searchParts(queries: string[], stores: string[] = []): Promise<{
     }))
     for (const result of shoppingSearches) {
       if (result.status === 'fulfilled') {
+        shoppingCompletedQueries += 1
         const retailerShopping = result.value.filter(item => item.url && urlMatchesStores(item.url, domains))
         shoppingResults += retailerShopping.length
         allResults.push(...retailerShopping)
@@ -450,7 +461,9 @@ async function searchParts(queries: string[], stores: string[] = []): Promise<{
       completedQueries: results.filter(result => result.status === 'fulfilled').length,
       providerResults: allResults.length,
       retailerResults: filteredResults.length,
+      shoppingCandidates,
       shoppingResults,
+      shoppingCompletedQueries,
       providers,
     },
   }
