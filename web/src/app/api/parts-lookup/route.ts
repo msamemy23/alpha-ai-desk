@@ -388,7 +388,7 @@ async function searchParts(queries: string[], stores: string[] = []): Promise<{
             url: result.link || '',
             content: (result.snippet || '').slice(0, 800),
           })))
-          const shopping = (d.shopping || []).map(result => ({
+          const shopping = (d.shopping || []).slice(0, 4).map(result => ({
             title: [result.title, result.source].filter(Boolean).join(' — '),
             url: result.link || '',
             content: [result.price ? `Price: ${result.price}` : '', result.delivery || ''].filter(Boolean).join('\n').slice(0, 800),
@@ -405,7 +405,35 @@ async function searchParts(queries: string[], stores: string[] = []): Promise<{
   for (const r of results) {
     if (r.status === 'fulfilled') allResults.push(...r.value)
   }
-  
+
+  // Organic snippets often omit prices even when Google has a merchant offer.
+  // Pull the shopping feed for the requested categories so prices remain
+  // source-backed instead of forcing the language model to guess them.
+  if (SERPER_API_KEY) {
+    const shoppingSearches = await Promise.allSettled(selectedQueries.slice(0, 4).map(async (query) => {
+      const r = await fetch('https://google.serper.dev/shopping', {
+        method: 'POST',
+        headers: { 'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ q: query, num: 8 }),
+        signal: AbortSignal.timeout(15000),
+      })
+      if (!r.ok) return []
+      const d = await r.json() as { shopping?: { title?: string; link?: string; price?: string; source?: string; delivery?: string }[] }
+      return (d.shopping || []).slice(0, 4).map(result => ({
+        title: [result.title, result.source].filter(Boolean).join(' — '),
+        url: result.link || '',
+        content: [result.price ? `Price: ${result.price}` : '', result.delivery || ''].filter(Boolean).join('\n').slice(0, 800),
+      }))
+    }))
+    for (const result of shoppingSearches) {
+      if (result.status === 'fulfilled') {
+        const retailerShopping = result.value.filter(item => item.url && urlMatchesStores(item.url, domains))
+        shoppingResults += retailerShopping.length
+        allResults.push(...retailerShopping)
+      }
+    }
+  }
+
   // Dedupe by URL
   const seen = new Set<string>()
   const filteredResults = allResults.filter(r => {
@@ -413,6 +441,8 @@ async function searchParts(queries: string[], stores: string[] = []): Promise<{
     seen.add(r.url)
     return !!r.url && urlMatchesStores(r.url, domains)
   })
+  const hasVisiblePrice = (result: { title: string; content: string }) => /(?:\$\s*|USD\s+)\d/i.test(`${result.title}\n${result.content}`)
+  filteredResults.sort((left, right) => Number(hasVisiblePrice(right)) - Number(hasVisiblePrice(left)))
   return {
     results: filteredResults,
     diagnostics: {
