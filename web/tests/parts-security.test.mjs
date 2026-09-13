@@ -8,6 +8,10 @@ const sendSms = readFileSync(new URL('../src/app/api/send-sms/route.ts', import.
 const aiAction = readFileSync(new URL('../src/app/api/ai-action/route.ts', import.meta.url), 'utf8')
 const saveDocument = readFileSync(new URL('../src/app/api/save-document/route.ts', import.meta.url), 'utf8')
 const smsConsent = readFileSync(new URL('../src/lib/sms-consent.ts', import.meta.url), 'utf8')
+const tavilyExtract = route.slice(
+  route.indexOf('async function extractAutoZoneCategoryEvidence'),
+  route.indexOf('async function searchParts')
+)
 
 test('parts lookup is authenticated, shop scoped, rate limited, and audited', () => {
   assert.match(route, /getAuthedShop/)
@@ -45,8 +49,15 @@ test('AutoZone category evidence is deterministic, fitment-bound, and price-back
   assert.match(route, /function fetchAutoZoneCategoryEvidence/)
   assert.match(route, /function extractAutoZoneCategoryEvidence/)
   assert.match(route, /https:\/\/api\.tavily\.com\/extract/)
-  assert.match(route, /urls: requestedUrls/)
-  assert.match(route, /extract_depth: 'advanced'/)
+  assert.match(tavilyExtract, /'Authorization': `Bearer \$\{TAVILY_API_KEY\}`/)
+  assert.match(tavilyExtract, /urls: requestedUrls/)
+  assert.match(tavilyExtract, /extract_depth: 'advanced'/)
+  assert.match(tavilyExtract, /format: 'text'/)
+  assert.match(tavilyExtract, /timeout: TAVILY_EXTRACT_TIMEOUT_SECONDS/)
+  assert.match(tavilyExtract, /contentType\.toLowerCase\(\)\.includes\('application\/json'\)/)
+  assert.match(tavilyExtract, /results\?: \{ url\?: string; raw_content\?: string \}/)
+  assert.doesNotMatch(tavilyExtract, /api_key:/)
+  assert.doesNotMatch(tavilyExtract, /chunks_per_source/)
   assert.match(route, /MAX_TAVILY_EXTRACT_URLS = 20/)
   assert.match(route, /MAX_TAVILY_EXTRACT_BYTES = 1_000_000/)
   assert.match(route, /MAX_DIRECT_PAGE_BYTES = 2_000_000/)

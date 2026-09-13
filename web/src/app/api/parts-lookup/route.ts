@@ -409,6 +409,7 @@ type VehicleFitment = { year: string; make: string; model: string }
 type SearchResult = { title: string; url: string; content: string }
 const MAX_TAVILY_EXTRACT_URLS = 20
 const MAX_TAVILY_EXTRACT_BYTES = 1_000_000
+const TAVILY_EXTRACT_TIMEOUT_SECONDS = 12
 const MAX_DIRECT_PAGE_BYTES = 2_000_000
 
 function autoZonePathSegment(value: string) {
@@ -524,29 +525,32 @@ async function extractAutoZoneCategoryEvidence(urls: string[]): Promise<SearchRe
   try {
     const response = await fetch('https://api.tavily.com/extract', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Authorization': `Bearer ${TAVILY_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify({
-        api_key: TAVILY_API_KEY,
         urls: requestedUrls,
+        // AutoZone renders product/price content client-side, so use Tavily's
+        // richer extraction mode only for this small deterministic fallback.
         extract_depth: 'advanced',
-        query: 'vehicle-specific brake product names part numbers front rear pad rotor prices',
-        chunks_per_source: 8,
+        format: 'text',
+        timeout: TAVILY_EXTRACT_TIMEOUT_SECONDS,
       }),
       signal: AbortSignal.timeout(15_000),
     })
-    if (!response.ok) return []
+    const contentType = response.headers.get('content-type') || ''
+    if (!response.ok || !contentType.toLowerCase().includes('application/json')) return []
 
     const payload = JSON.parse(await readBoundedResponseText(response, MAX_TAVILY_EXTRACT_BYTES)) as {
-      results?: { url?: string; raw_content?: string; content?: string }[]
+      results?: { url?: string; raw_content?: string }[]
     }
     const requestedByCanonicalUrl = new Map(requestedUrls.map(url => [canonicalUrl(url), url]))
     return (payload.results || []).flatMap(result => {
       if (typeof result.url !== 'string' || !isStrictAutoZoneCategoryUrl(result.url)) return []
       const expectedUrl = requestedByCanonicalUrl.get(canonicalUrl(result.url))
       if (!expectedUrl) return []
-      const rawContent = typeof result.raw_content === 'string'
-        ? result.raw_content
-        : typeof result.content === 'string' ? result.content : ''
+      const rawContent = typeof result.raw_content === 'string' ? result.raw_content : ''
       const evidence = visibleHtmlEvidence(rawContent)
       if (!/(?:\$\s*|USD\s+)\d/i.test(evidence)) return []
       return [{ title: 'AutoZone fitment category (Tavily extract)', url: expectedUrl, content: evidence }]
