@@ -322,7 +322,10 @@ Rules:
 }
 
 // Search Tavily for parts across multiple stores
-async function searchParts(queries: string[], stores: string[] = []): Promise<{title: string; url: string; content: string}[]> {
+async function searchParts(queries: string[], stores: string[] = []): Promise<{
+  results: {title: string; url: string; content: string}[]
+  diagnostics: { requestedQueries: number; completedQueries: number; providerResults: number; retailerResults: number; providers: string[] }
+}> {
   const allResults: {title: string; url: string; content: string}[] = []
 
   const domains = normalizeStoreFilter(stores)
@@ -338,7 +341,9 @@ async function searchParts(queries: string[], stores: string[] = []): Promise<{t
 
   // Keep every requested category when a retailer was specified. The old
   // six-query cap dropped the rear pad/rotor searches for four-wheel jobs.
-  const searchPromises = expandedQueries.slice(0, domains.length ? Math.max(queries.length, 4) : 12).map(async (query) => {
+  const selectedQueries = expandedQueries.slice(0, domains.length ? Math.max(queries.length, 4) : 12)
+  const providers = [TAVILY_API_KEY ? 'tavily' : '', SERPER_API_KEY ? 'serper' : ''].filter(Boolean)
+  const searchPromises = selectedQueries.map(async (query) => {
     const providerResults: {title: string; url: string; content: string}[] = []
     if (TAVILY_API_KEY) {
       try {
@@ -392,11 +397,21 @@ async function searchParts(queries: string[], stores: string[] = []): Promise<{t
   
   // Dedupe by URL
   const seen = new Set<string>()
-  return allResults.filter(r => {
+  const filteredResults = allResults.filter(r => {
     if (seen.has(r.url)) return false
     seen.add(r.url)
     return !!r.url && urlMatchesStores(r.url, domains)
   })
+  return {
+    results: filteredResults,
+    diagnostics: {
+      requestedQueries: selectedQueries.length,
+      completedQueries: results.filter(result => result.status === 'fulfilled').length,
+      providerResults: allResults.length,
+      retailerResults: filteredResults.length,
+      providers,
+    },
+  }
 }
 
 // Use DeepSeek to parse raw search results into structured parts data
@@ -513,7 +528,8 @@ export async function POST(req: NextRequest) {
     let searchQueries = balancedBrakeQueries(query, vehicle, decomposed.partType, decomposed.positions || [], decomposed.searchQueries || [query])
 
     // Step 3: Search for parts across stores
-    const rawResults = await searchParts(searchQueries, stores)
+    const search = await searchParts(searchQueries, stores)
+    const rawResults = search.results
 
     // Step 4: Parse results with AI
     const parsed = await parseResults(
@@ -563,6 +579,17 @@ export async function POST(req: NextRequest) {
       metadata: {
         query,
         stores,
+        search: search.diagnostics,
+        parsed: {
+          options: parsed.options?.length || 0,
+          parts: parsed.options?.reduce((count, option) => count + (option.parts?.length || 0), 0) || 0,
+          kits: parsed.kits?.length || 0,
+        },
+        sanitized: {
+          options: sanitized.options.length,
+          parts: sanitized.options.reduce((count, option) => count + option.parts.length, 0),
+          kits: sanitized.kits.length,
+        },
         sourceConfidence: result.sourceConfidence,
         verifiedItems: result.options.reduce((count, option) => count + option.parts.length, 0) + result.kits.length,
       },
