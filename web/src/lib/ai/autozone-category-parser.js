@@ -1,12 +1,11 @@
-const PRICE_PATTERN = /(?:\$\s*|USD\s+)(\d+)(?:[.\s](\d{2}))?(?![\d.])/gi
+const { visiblePriceMatches } = require('./price-evidence.js')
 const PRODUCT_PATTERN = /\b(?:brake\s+(?:pads?|rotors?)|pads?|rotors?)\b/i
 const DESCRIPTOR_PATTERN = /(?:\b(?:part|sku)\s*(?:#|number|no\.)?\s*[A-Z0-9-]{3,}\b|\b(?:front|rear|left|right)\b|\b(?:set|pair|pack|includes?|hardware)\b)/i
 
 function parsePrice(block) {
-  const matches = [...block.replace(/,/g, '').matchAll(PRICE_PATTERN)]
+  const matches = visiblePriceMatches(block)
   if (matches.length !== 1) return null
-  const price = Number(`${matches[0][1]}${matches[0][2] ? `.${matches[0][2]}` : ''}`)
-  return Number.isFinite(price) && price > 0 ? price : null
+  return matches[0].value
 }
 
 function productNameFromBlock(block) {

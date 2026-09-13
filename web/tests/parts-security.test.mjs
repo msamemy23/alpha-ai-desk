@@ -8,6 +8,7 @@ const sendSms = readFileSync(new URL('../src/app/api/send-sms/route.ts', import.
 const aiAction = readFileSync(new URL('../src/app/api/ai-action/route.ts', import.meta.url), 'utf8')
 const saveDocument = readFileSync(new URL('../src/app/api/save-document/route.ts', import.meta.url), 'utf8')
 const smsConsent = readFileSync(new URL('../src/lib/sms-consent.ts', import.meta.url), 'utf8')
+const priceEvidence = readFileSync(new URL('../src/lib/ai/price-evidence.js', import.meta.url), 'utf8')
 const tavilyExtract = route.slice(
   route.indexOf('async function extractAutoZoneCategoryEvidence'),
   route.indexOf('async function searchParts')
@@ -23,6 +24,8 @@ test('parts lookup is authenticated, shop scoped, rate limited, and audited', ()
 test('parts lookup strips unverified prices instead of inventing them', () => {
   assert.match(route, /sanitizeParsedParts/)
   assert.match(route, /priceAppearsInEvidence/)
+  assert.match(route, /hasVisiblePrice/)
+  assert.match(route, /visiblePriceMatches/)
   assert.match(route, /sourceConfidence/)
   assert.doesNotMatch(partsPage, /AI-estimated|realistic pricing/i)
   assert.match(partsPage, /Prices only show when they are visible/)
@@ -70,7 +73,9 @@ test('AutoZone category evidence is deterministic, fitment-bound, and price-back
   assert.match(route, /function readBoundedResponseText/)
   assert.match(route, /expected !== received/)
   assert.match(route, /contentType\.toLowerCase\(\)\.includes\('text\/html'\)/)
-  assert.match(route, /\(\?:\\\$\\s\*\|USD\\s\+\)\\d/)
+  assert.match(priceEvidence, /DOLLARS_PRICE_PATTERN/)
+  assert.match(priceEvidence, /dollars\?\(\?:\\s\+and\\s\+/)
+  assert.match(route, /hasVisiblePrice\(evidence\)/)
   assert.match(route, /directPageCandidates/)
   assert.match(route, /directPagesFetched/)
   assert.match(route, /tavilyExtractCandidates/)

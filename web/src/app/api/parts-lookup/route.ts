@@ -9,6 +9,7 @@ import { normalizePartsQuery as normalizePartsLookupQuery } from '@/lib/ai/deskt
 import { getUserChatGptTransport } from '@/lib/chatgpt-connection'
 import { chatGptModel, fetchOpenAIChatCompletion } from '@/lib/openai-oauth-server'
 import { parseAutoZoneCategoryEvidence } from '@/lib/ai/autozone-category-parser'
+import { hasExactlyOneVisiblePrice, hasVisiblePrice, priceAppearsInEvidence, visiblePriceMatches } from '@/lib/ai/price-evidence'
 import type { OpenAIOAuthTransport } from '@openai-oauth/core'
 
 export const dynamic = 'force-dynamic'
@@ -161,17 +162,6 @@ function balancedBrakeQueries(query: string, vehicle: string, partType: string, 
   ])).slice(0, 8)
 }
 
-function priceAppearsInEvidence(price: unknown, evidence: string) {
-  const value = typeof price === 'number' ? price : Number(price)
-  if (!Number.isFinite(value) || value <= 0) return false
-  const normalized = evidence.replace(/,/g, '')
-  // A model number, SKU, year, or substring of a larger price is not a quote.
-  // Some retailer pages render cents as "$52 99", so normalize both that
-  // presentation and the usual "$52.99" / "USD 52.99" forms.
-  return [...normalized.matchAll(/(?:\$\s*|USD\s+)(\d+)(?:[.\s](\d{2}))?(?![\d.])/gi)]
-    .some(match => Number(`${match[1]}${match[2] ? `.${match[2]}` : ''}`) === value)
-}
-
 function normalizedEvidence(value: string) {
   return value
     .toLowerCase()
@@ -189,12 +179,7 @@ function evidenceQuoteAppearsInSource(quote: unknown, evidence: string) {
 
 function evidenceQuoteHasOnePrice(price: unknown, quote: unknown) {
   if (typeof quote !== 'string' || !quote.trim()) return false
-  const normalized = quote.replace(/,/g, '')
-  const matches = [...normalized.matchAll(/(?:\$\s*|USD\s+)(\d+)(?:[.\s](\d{2}))?(?![\d.])/gi)]
-  if (matches.length !== 1) return false
-  const quotedPrice = Number(`${matches[0][1]}${matches[0][2] ? `.${matches[0][2]}` : ''}`)
-  const expectedPrice = typeof price === 'number' ? price : Number(price)
-  return Number.isFinite(expectedPrice) && quotedPrice === expectedPrice
+  return hasExactlyOneVisiblePrice(price, quote)
 }
 
 function priceAppearsNearIdentity(price: unknown, identity: { name?: unknown; brand?: unknown; partNumber?: unknown; position?: unknown; includes?: unknown }, evidence: string) {
@@ -202,8 +187,7 @@ function priceAppearsNearIdentity(price: unknown, identity: { name?: unknown; br
   if (!priceAppearsInEvidence(price, evidence)) return false
   const normalized = evidence.replace(/,/g, '')
   const value = Number(price)
-  const priceMatches = [...normalized.matchAll(/(?:\$\s*|USD\s+)(\d+)(?:[.\s](\d{2}))?(?![\d.])/gi)]
-    .filter(match => Number(`${match[1]}${match[2] ? `.${match[2]}` : ''}`) === value)
+  const priceMatches = visiblePriceMatches(evidence).filter(match => match.value === value)
   const lower = normalized.toLowerCase()
   const exactAnchors = [identity.partNumber, identity.name, [identity.brand, identity.name].filter(Boolean).join(' ')]
     .filter((item): item is string => typeof item === 'string' && item.trim().length >= 3)
@@ -518,7 +502,7 @@ async function fetchAutoZoneCategoryEvidence(urls: string[]): Promise<SearchResu
     const evidence = visibleHtmlEvidence(await readBoundedResponseText(response, MAX_DIRECT_PAGE_BYTES))
     // A category page is useful only when it contains a directly visible price.
     // Do not turn a fitment landing page without prices into synthetic evidence.
-    if (!/(?:\$\s*|USD\s+)\d/i.test(evidence)) return null
+    if (!hasVisiblePrice(evidence)) return null
     return { title: 'AutoZone fitment category', url, content: evidence }
   }))
   return fetched.flatMap(result => result.status === 'fulfilled' && result.value ? [result.value] : [])
@@ -558,7 +542,7 @@ async function extractAutoZoneCategoryEvidence(urls: string[]): Promise<SearchRe
       if (!expectedUrl) return []
       const rawContent = typeof result.raw_content === 'string' ? result.raw_content : ''
       const evidence = visibleHtmlEvidence(rawContent)
-      if (!/(?:\$\s*|USD\s+)\d/i.test(evidence)) return []
+      if (!hasVisiblePrice(evidence)) return []
       return [{ title: 'AutoZone fitment category (Tavily extract)', url: expectedUrl, content: evidence }]
     })
   } catch {
@@ -707,7 +691,7 @@ async function searchParts(queries: string[], stores: string[] = [], vehicle: Ve
   // category extraction is intentionally appended after provider results; a
   // first-result-wins map would let a price-less snippet hide that evidence.
   const evidenceScore = (result: SearchResult) => {
-    const priceCount = [...`${result.title}\n${result.content}`.matchAll(/(?:\$\s*|USD\s+)\d/gi)].length
+    const priceCount = visiblePriceMatches(`${result.title}\n${result.content}`).length
     return priceCount * 100_000 + Math.min(result.content.length, 20_000)
   }
   const mergedResults = new Map<string, SearchResult>()
@@ -731,7 +715,7 @@ async function searchParts(queries: string[], stores: string[] = [], vehicle: Ve
     mergedResults.set(key, { ...richer, content })
   }
   const filteredResults = [...mergedResults.values()]
-  const hasVisiblePrice = (result: { title: string; content: string }) => /(?:\$\s*|USD\s+)\d/i.test(`${result.title}\n${result.content}`)
+  const resultHasVisiblePrice = (result: { title: string; content: string }) => hasVisiblePrice(`${result.title}\n${result.content}`)
   // The parser has a bounded result window. A successful deterministic
   // category extract is richer and vehicle-bound, so it must not be crowded
   // out by a large number of lower-context shopping snippets that also list a
@@ -742,7 +726,7 @@ async function searchParts(queries: string[], stores: string[] = [], vehicle: Ve
     : result.title === 'AutoZone fitment category' ? 1 : 0
   filteredResults.sort((left, right) =>
     parserPriority(right) - parserPriority(left)
-    || Number(hasVisiblePrice(right)) - Number(hasVisiblePrice(left))
+    || Number(resultHasVisiblePrice(right)) - Number(resultHasVisiblePrice(left))
     || evidenceScore(right) - evidenceScore(left)
   )
   return {
