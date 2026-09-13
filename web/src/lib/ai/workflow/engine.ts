@@ -1,7 +1,7 @@
 import { CATALOG, object, validateInput, type JsonObject } from './catalog'
 import { calculateDocumentTotals } from '@/lib/document-money'
 import { verifyReadClaims } from '@/lib/ai/read-verification'
-import { inferResearchIntent } from './research-intent'
+import { inferResearchIntent, type ResearchIntent } from './research-intent'
 
 export type Evidence = { id: string; tool: string; input: JsonObject; data: unknown; at: string }
 export type Proof = { ref: string; path?: string; quote?: string }
@@ -328,6 +328,27 @@ function applyUserFacts(state: WorkflowState) {
     }
     if (!task.instructions.includes(exclusion)) task.instructions.push(exclusion)
   }
+}
+
+function ensureResearchTask(state: WorkflowState, intent: ResearchIntent) {
+  if (state.task) return false
+  const payload: JsonObject = { type: intent.documentType }
+  if (intent.vehicle) {
+    payload.vehicle_year = intent.vehicle.year
+    payload.vehicle_make = intent.vehicle.make
+    payload.vehicle_model = intent.vehicle.model
+  }
+  if (state.facts.phone !== undefined) payload.customer_phone = state.facts.phone
+  if (state.facts.email !== undefined) payload.customer_email = state.facts.email
+  state.task = {
+    // Alpha stores estimates and invoices through the same createInvoice
+    // catalog action; the document type distinguishes the saved draft.
+    action: 'createInvoice',
+    payload,
+    proofs: {},
+    instructions: [`Research requested before drafting: ${intent.query}`],
+  }
+  return true
 }
 
 function lookupDataCoversAllFour(value: unknown): boolean {
@@ -719,6 +740,15 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
   const successfulReads = new Set<string>()
   applyUserFacts(state)
   const researchIntent = inferResearchIntent({ message: input.message, task: state.task, conversation: state.turns, facts: state.facts })
+  // Persist a minimal document task before the automatic lookup. If the
+  // retailer or a provider fails, the next "retry" must retain the vehicle,
+  // service scope, contact facts and evidence instead of starting from a
+  // taskless conversation.
+  if (researchIntent && !state.task && (researchIntent.wantsParts || researchIntent.wantsLabor)) {
+    ensureResearchTask(state, researchIntent)
+    applyUserFacts(state)
+    await deps.checkpoint(state)
+  }
   const hasVehicleContext = Boolean(
     state.facts.vehicle ||
     (state.task?.payload.vehicle_year && state.task?.payload.vehicle_make && state.task?.payload.vehicle_model) ||

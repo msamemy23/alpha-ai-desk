@@ -383,6 +383,65 @@ test('document requests automatically research missing AutoZone brake prices and
   assert.match(reply.approval.payload.parts[2].name, /Rear/i)
 })
 
+test('failed automatic research persists the task and retry keeps the original scope', async () => {
+  const h = harness([{
+    kind: 'propose',
+    task: task({
+      type: 'Invoice',
+      customer_name: 'QA Retry',
+      parts: [{
+        name: 'AutoZone all four brake pads and rotors kit',
+        position: 'Front and Rear',
+        store: 'AutoZone',
+        qty: 1,
+        unitPrice: 250,
+      }],
+      labors: [{ operation: 'Replace brake pads and rotors on all four wheels', hours: 3, rate: 120 }],
+      apply_tax: false,
+    }),
+    proofs: {
+      'parts.0.unitPrice': { ref: 'id-2', path: 'kits.0.price' },
+      'labors.0.hours': { ref: 'id-2', path: 'laborGuidance.hours' },
+      'labors.0.rate': { ref: 'shop', path: 'labor_rate' },
+    },
+  }])
+  const first = await h.run('Make an invoice for QA Retry: 2005 Honda Accord, all four brakes and rotors from AutoZone, 5555550123. Look it up and prepare it for review.', 'first')
+  assert.equal(first.status, 'blocked')
+  assert.equal(h.state.task?.action, 'createInvoice')
+  assert.equal(h.state.facts.vehicle?.year, '2005')
+  assert.equal(h.state.facts.retailer, 'AutoZone')
+  assert.equal(h.state.facts.phone, '5555550123')
+
+  h.deps.execute = async (action, payload, key) => {
+    h.calls.push({ action, payload, key })
+    if (action === 'lookupParts') return {
+      ok: true,
+      data: {
+        vehicle: '2005 Honda Accord',
+        options: [],
+        kits: [{
+          name: 'AutoZone all four brake pads and rotors kit',
+          store: 'AutoZone',
+          includes: 'Front and rear brake pads and rotors',
+          positions: 'Front and Rear',
+          url: 'https://www.autozone.com/brakes-and-traction-control/brake-pads/honda/accord/2005',
+          price: 250,
+        }],
+        laborGuidance: { operation: 'Replace brake pads and rotors on all four wheels', hours: 3, basis: 'standard_estimate' },
+      },
+    }
+    return { ok: true, data: { id: 'saved-record', doc_number: 'INV-TEST', type: 'Invoice', ...payload } }
+  }
+  const retry = await h.run('Retry the lookup to continue.', 'retry')
+  const lookup = h.calls.filter(call => call.action === 'lookupParts').at(-1)
+  assert.ok(lookup)
+  assert.match(lookup.payload.query, /all four brakes and rotors/i)
+  assert.equal(lookup.payload.stores.join(','), 'AutoZone')
+  assert.equal(retry.status, 'approval')
+  assert.equal(retry.approval.payload.customer_phone, '5555550123')
+  assert.equal(retry.approval.payload.parts[0].unitPrice, 250)
+})
+
 test('researchable price questions are corrected instead of being shown to the user', async () => {
   const h = harness(Array.from({ length: 5 }, () => ({ kind: 'ask', fields: ['parts_choice', 'labor_hours'], message: 'Send me the exact part prices and labor hours.' })))
   h.deps.execute = async (action, payload, key) => {

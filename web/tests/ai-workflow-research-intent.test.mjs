@@ -92,3 +92,19 @@ test('remembered retailer remains active when a follow-up omits the store name',
   assert.equal(result?.stores.join(','), "O'Reilly")
 })
 
+test('retry keeps same-vehicle service and retailer scope after a failed lookup', () => {
+  const result = inferResearchIntent({
+    message: 'Retry the lookup to continue.',
+    facts: { retailer: 'AutoZone' },
+    task: { action: 'createInvoice', payload: { type: 'Invoice', vehicle_year: '2005', vehicle_make: 'Honda', vehicle_model: 'Accord' } },
+    conversation: [
+      { role: 'user', text: 'Make an invoice for QA: 2005 Honda Accord, all four brakes and rotors from AutoZone. Look it up and prepare it for review.' },
+      { role: 'assistant', text: 'The retailer lookup did not return usable prices. Retry to continue.' },
+    ],
+  })
+  assert.equal(result?.stores.join(','), 'AutoZone')
+  assert.match(result?.query || '', /all four brakes and rotors/i)
+  assert.match(result?.query || '', /AutoZone/i)
+  assert.match(result?.query || '', /2005 Honda Accord/i)
+})
+

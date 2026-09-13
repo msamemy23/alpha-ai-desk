@@ -10,6 +10,7 @@ export type ResearchIntent = {
   stores: string[]
   wantsParts: boolean
   wantsLabor: boolean
+  documentType: 'Invoice' | 'Estimate'
   vehicle?: { year: string; make: string; model: string }
 }
 
@@ -111,6 +112,12 @@ function vehicleFromText(source: string): { year: string; make: string; model: s
   return match ? { year: match[1], make: match[2], model: match[3] } : undefined
 }
 
+function sameVehicle(left: { year: string; make: string; model: string }, right: { year: string; make: string; model: string }) {
+  return left.year === right.year
+    && left.make.toLowerCase() === right.make.toLowerCase()
+    && left.model.toLowerCase() === right.model.toLowerCase()
+}
+
 function compactQuery(values: string[]): string {
   const query = unique(values).join('; ').replace(/\s+/g, ' ').trim()
   return query.length <= MAX_QUERY_CHARS ? query : query.slice(0, MAX_QUERY_CHARS).replace(/\s+\S*$/, '').trim()
@@ -134,6 +141,9 @@ export function inferResearchIntent(input: ResearchIntentInput): ResearchIntent 
   const wantsParts = PART_TERMS.test(source)
   const isService = SERVICE_TERMS.test(source) || wantsParts
   const wantsLabor = /\blabo(?:r|ur)\b/i.test(source) || (documentTask && isService)
+  const documentType: 'Invoice' | 'Estimate' = input.task?.action === 'createInvoice'
+    ? String((input.task?.payload as Record<string, unknown> | undefined)?.type || '').toLowerCase() === 'estimate' ? 'Estimate' : 'Invoice'
+    : /\binvoice\b/i.test(current) || /\binvoice\b/i.test(userSource) ? 'Invoice' : 'Estimate'
   const currentHasServiceScope = SERVICE_TERMS.test(current) || PART_TERMS.test(current)
   const explicitResearch = RESEARCH_TERMS.test(current) || PRICING_TERMS.test(current) || RETAILERS.some(([, pattern]) => pattern.test(current))
   // Do not restart a retailer lookup on every follow-up in a long chat. An
@@ -149,7 +159,19 @@ export function inferResearchIntent(input: ResearchIntentInput): ResearchIntent 
   const vehicle = extractVehicle(input.task?.payload) || vehicleFromText(current) || vehicleFromText(userSource)
   const relevantPriorTurns = priorUserTurns
     .filter(turn => turn !== current)
-    .filter(turn => !vehicle || !vehicleFromText(turn))
+    // Keep the earlier service turn when it describes the active vehicle. A
+    // retry often contains only "look it up again"; filtering every prior
+    // vehicle mention would erase the brake/part scope and produce a useless
+    // vehicle-only query. Conflicting vehicles remain excluded.
+    .filter(turn => {
+      const priorVehicle = vehicleFromText(turn)
+      return !priorVehicle || !vehicle || sameVehicle(priorVehicle, vehicle)
+    })
+    .filter(turn => {
+      if (!currentStores.length) return true
+      const priorStores = RETAILERS.filter(([, pattern]) => pattern.test(turn)).map(([store]) => store)
+      return !priorStores.length || priorStores.some(store => currentStores.includes(store))
+    })
     .filter(turn => SERVICE_TERMS.test(turn) || PART_TERMS.test(turn) || RESEARCH_TERMS.test(turn) || RETAILERS.some(([, pattern]) => pattern.test(turn)))
     .slice(-6)
   const query = compactQuery([
@@ -159,6 +181,6 @@ export function inferResearchIntent(input: ResearchIntentInput): ResearchIntent 
     current,
   ])
   if (!query) return null
-  return { query, stores, wantsParts, wantsLabor, ...(vehicle ? { vehicle } : {}) }
+  return { query, stores, wantsParts, wantsLabor, documentType, ...(vehicle ? { vehicle } : {}) }
 }
 
