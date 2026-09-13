@@ -316,13 +316,37 @@ export function evidenceErrors(task: Task, state: WorkflowState, shop: JsonObjec
   return errors
 }
 
+const MODEL_NUMERIC_KEYS = new Set(['amount', 'core', 'cost', 'deposit', 'duration', 'hours', 'qty', 'qty_on_hand', 'qty_on_order', 'qty_reorder', 'rate', 'retail_price', 'shop_supplies', 'sublet', 'tax_rate', 'unitPrice', 'vehicle_mileage'])
+const MODEL_STRING_KEYS = new Set(['customer_email', 'customer_id', 'customer_name', 'customer_phone', 'email', 'id', 'name', 'operation', 'phone', 'partNumber', 'position', 'sourceConfidence', 'store', 'type', 'vehicle_make', 'vehicle_model', 'vehicle_year'])
+const MODEL_BOOLEAN_KEYS = new Set(['apply_tax', 'taxable'])
+
+function normalizeModelValue(key: string, value: unknown): unknown {
+  if (value === null) return value
+  if (Array.isArray(value)) return value.map(item => object(item) ? normalizeModelObject(item) : item)
+  if (object(value)) return normalizeModelObject(value)
+  if (MODEL_NUMERIC_KEYS.has(key) && typeof value === 'string') {
+    const raw = value.trim().replace(/^\$/, '').replace(/,/g, '')
+    if (/^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(raw)) return Number(raw)
+  }
+  if (MODEL_STRING_KEYS.has(key) && typeof value === 'number' && Number.isFinite(value)) return String(value)
+  if (MODEL_BOOLEAN_KEYS.has(key) && typeof value === 'string') {
+    if (value.trim().toLowerCase() === 'true') return true
+    if (value.trim().toLowerCase() === 'false') return false
+  }
+  return value
+}
+
+function normalizeModelObject(value: JsonObject): JsonObject {
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, normalizeModelValue(key, child)]))
+}
+
 function mergeTask(state: WorkflowState, decision: JsonObject) {
   if (!object(decision.task)) return
   const action = String(decision.task.action || state.task?.action || '')
   if (!CATALOG[action]?.write) throw new Error('Task must name a supported write action')
   if (state.task && state.task.action !== action && decision.newTask !== true) throw new Error('Do not replace the active task; explicitly identify a new user-requested task')
   const previous = state.task?.action === action && decision.newTask !== true ? state.task : { action, payload: {}, proofs: {}, instructions: [] }
-  const patch = object(decision.task.patch) ? decision.task.patch : {}
+  const patch = object(decision.task.patch) ? normalizeModelObject(decision.task.patch) : {}
   const errors = validateInput(action, patch, true).filter(error => !error.startsWith('Missing'))
   if (errors.length) throw new Error(errors.join('; '))
   const proofs = { ...previous.proofs }

@@ -304,6 +304,9 @@ test('malformed control-flag proofs do not strand a valid no-tax invoice draft',
     task: task({
       type: 'Invoice',
       customer_name: 'QA',
+      vehicle_year: 2005,
+      vehicle_make: 'Honda',
+      vehicle_model: 'Accord',
       parts: [
         { name: 'Front left lower control arm', qty: 1, unitPrice: 99.99 },
         { name: 'Front right lower control arm', qty: 1, unitPrice: 79.99 },
@@ -323,6 +326,7 @@ test('malformed control-flag proofs do not strand a valid no-tax invoice draft',
   const reply = await h.run('Prepare an invoice for QA: left arm $99.99, right arm $79.99, 3 hours at $120. No tax.', 'u')
   assert.equal(reply.status, 'approval')
   assert.equal(reply.approval.total, 539.98)
+  assert.equal(reply.approval.payload.vehicle_year, '2005')
   assert.equal(h.calls.length, 0)
 })
 
