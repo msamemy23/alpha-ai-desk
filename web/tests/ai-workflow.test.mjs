@@ -14,7 +14,8 @@ function load(path, imports = {}, globals = {}) {
 const money = load('../src/lib/document-money.ts')
 const catalog = load('../src/lib/ai/workflow/catalog.ts')
 const reads = load('../src/lib/ai/read-verification.ts')
-const engine = load('../src/lib/ai/workflow/engine.ts', { './catalog': catalog, '@/lib/document-money': money, '@/lib/ai/read-verification': reads })
+const researchIntent = load('../src/lib/ai/workflow/research-intent.ts')
+const engine = load('../src/lib/ai/workflow/engine.ts', { './catalog': catalog, '@/lib/document-money': money, '@/lib/ai/read-verification': reads, './research-intent': researchIntent })
 
 function harness(outputs = []) {
   let next = 0
@@ -330,6 +331,88 @@ test('malformed control-flag proofs do not strand a valid no-tax invoice draft',
   assert.equal(h.calls.length, 0)
 })
 
+test('document requests automatically research missing AutoZone brake prices and labor before asking', async () => {
+  const h = harness([{
+    kind: 'propose',
+    task: task({
+      type: 'Invoice',
+      customer_name: 'Jake Paul',
+      customer_phone: '2819005556',
+      vehicle_year: '2005',
+      vehicle_make: 'Honda',
+      vehicle_model: 'Accord',
+      parts: [
+        { name: 'AutoZone Front Brake Pad Set', position: 'Front', brand: 'Duralast', qty: 1, unitPrice: 80 },
+        { name: 'AutoZone Front Brake Rotor', position: 'Front', brand: 'Duralast', qty: 2, unitPrice: 65 },
+        { name: 'AutoZone Rear Brake Pad Set', position: 'Rear', brand: 'Duralast', qty: 1, unitPrice: 70 },
+        { name: 'AutoZone Rear Brake Rotor', position: 'Rear', brand: 'Duralast', qty: 2, unitPrice: 55 },
+      ],
+      labors: [{ operation: 'Replace brake pads and rotors on all four wheels', hours: 3, rate: 120 }],
+    }),
+    proofs: {
+      'parts.0.unitPrice': { ref: 'id-1', path: 'options.0.parts.0.price' },
+      'parts.1.unitPrice': { ref: 'id-1', path: 'options.0.parts.1.price' },
+      'parts.2.unitPrice': { ref: 'id-1', path: 'options.0.parts.2.price' },
+      'parts.3.unitPrice': { ref: 'id-1', path: 'options.0.parts.3.price' },
+      'labors.0.hours': { ref: 'id-1', path: 'laborGuidance.hours' },
+      'labors.0.rate': { ref: 'shop', path: 'labor_rate' },
+    },
+  }])
+  h.deps.execute = async (action, payload, key) => {
+    h.calls.push({ action, payload, key })
+    if (action === 'lookupParts') return {
+      ok: true,
+      data: {
+        options: [{ parts: [
+          { name: 'AutoZone Front Brake Pad Set', position: 'Front', brand: 'Duralast', price: 80, quantity: 1 },
+          { name: 'AutoZone Front Brake Rotor', position: 'Front', brand: 'Duralast', price: 65, quantity: 2 },
+          { name: 'AutoZone Rear Brake Pad Set', position: 'Rear', brand: 'Duralast', price: 70, quantity: 1 },
+          { name: 'AutoZone Rear Brake Rotor', position: 'Rear', brand: 'Duralast', price: 55, quantity: 2 },
+        ] }],
+        laborGuidance: { operation: 'Replace brake pads and rotors on all four wheels', hours: 3, basis: 'standard_estimate' },
+      },
+    }
+    return { ok: true, data: { id: 'saved-record', doc_number: 'INV-TEST', type: 'Invoice', ...payload } }
+  }
+  const reply = await h.run('Make an invoice for Jake Paul: 2005 Honda Accord, all four brakes and rotors from AutoZone, 2819005556. Look it up and make the invoice.', 'jake')
+  assert.equal(reply.status, 'approval')
+  assert.equal(h.calls[0].action, 'lookupParts')
+  assert.equal(h.calls[0].payload.stores.join(','), 'AutoZone')
+  assert.match(reply.approval.warnings.join(' '), /standard service estimate/i)
+  assert.match(reply.approval.payload.parts[2].name, /Rear/i)
+})
+
+test('researchable price questions are corrected instead of being shown to the user', async () => {
+  const h = harness(Array.from({ length: 5 }, () => ({ kind: 'ask', fields: ['parts_choice', 'labor_hours'], message: 'Send me the exact part prices and labor hours.' })))
+  h.deps.execute = async (action, payload, key) => {
+    h.calls.push({ action, payload, key })
+    if (action === 'lookupParts') return { ok: true, data: { options: [{ parts: [{ name: 'Front Brake Pad Set', position: 'Front', brand: 'Duralast', price: 80, quantity: 1 }] }], laborGuidance: { operation: 'Brake service', hours: 3, basis: 'standard_estimate' } } }
+    return { ok: true, data: { id: 'saved-record', doc_number: 'INV-TEST', type: 'Invoice', ...payload } }
+  }
+  const reply = await h.run('Make an invoice for Jake Paul: 2005 Honda Accord all four brakes from AutoZone. Look it up.', 'research')
+  assert.equal(reply.status, 'blocked')
+  assert.match(reply.reply, /lookupParts|research/i)
+  assert.equal(h.calls.filter(call => call.action === 'lookupParts').length, 1)
+})
+
+test('all-four brake drafts cannot silently omit an axle or brake component', async () => {
+  const frontOnly = { kind: 'propose', task: task({ type: 'Invoice', customer_name: 'Jake Paul', vehicle_year: '2005', vehicle_make: 'Honda', vehicle_model: 'Accord', parts: [{ name: 'Front Brake Rotor', position: 'Front', qty: 2, unitPrice: 80 }], labors: [{ operation: 'Front brake replacement', hours: 1.5, rate: 120 }] }), proofs: { 'parts.0.unitPrice': proof('u', 'front rotor $80'), 'labors.0.hours': proof('u', 'front brake 1.5 hours'), 'labors.0.rate': { ref: 'shop', path: 'labor_rate' } } }
+  const h = harness(Array.from({ length: 5 }, () => frontOnly))
+  h.deps.execute = async (action, payload, key) => action === 'lookupParts' ? { ok: true, data: { options: [{ parts: [{ name: 'Front Brake Rotor', position: 'Front', price: 80, quantity: 2 }] }], laborGuidance: { operation: 'Brake service', hours: 3, basis: 'standard_estimate' } } } : { ok: true, data: { id: 'saved-record', doc_number: 'INV-TEST', type: 'Invoice', ...payload } }
+  const reply = await h.run('Make an invoice for Jake Paul: 2005 Honda Accord all four brakes and rotors. Look it up.', 'u')
+  assert.equal(reply.status, 'blocked')
+  assert.match(reply.reply, /all-four brake request is incomplete/i)
+  assert.equal(h.calls.filter(call => call.key).length, 0)
+})
+
+test('same-brand evidence for a different brake component cannot prove a line', () => {
+  const state = engine.initialState()
+  state.turns.push({ id: 'u', role: 'user', text: 'Use the rear brake pad.' })
+  state.evidence.push({ id: 'search', tool: 'lookupParts', input: { query: 'brakes' }, data: { options: [{ parts: [{ name: 'Duralast Front Brake Rotor', position: 'Front', brand: 'Duralast', price: 80 }] }] }, at: new Date().toISOString() })
+  const action = { action: 'createInvoice', payload: { type: 'Invoice', customer_name: 'QA', parts: [{ name: 'Duralast Rear Brake Pad', position: 'Rear', brand: 'Duralast', qty: 1, unitPrice: 80 }], apply_tax: false }, proofs: { 'parts.0.unitPrice': { ref: 'search', path: 'options.0.parts.0.price' } }, instructions: [] }
+  assert.equal(engine.evidenceErrors(action, state, {}).length, 1)
+})
+
 for (const failure of [false, true]) test(`inventory answers require actual read evidence, outage=${failure}`, async () => {
   const h = harness([
     { kind: 'answer', message: '0 inventory items returned.' },
@@ -353,12 +436,17 @@ test('draft survives serialization and approval works after another server insta
 
 test('workflow schema and endpoint fail closed on tenant and lease boundaries', () => {
   const sql = readFileSync(new URL('../supabase/migrations/20260913000439_durable_ai_workflows.sql', import.meta.url), 'utf8')
+  const leaseSql = readFileSync(new URL('../supabase/migrations/20260913000510_harden_ai_workflow_leases.sql', import.meta.url), 'utf8')
   const route = readFileSync(new URL('../src/app/api/ai-workflow/route.ts', import.meta.url), 'utf8')
   assert.match(sql, /enable row level security/i)
   assert.match(sql, /revoke all.*authenticated/i)
   assert.match(sql, /primary key \(shop_id, user_id, session_id\)/)
   assert.match(sql, /for update/i)
   assert.match(sql, /lease_id=p_lease_id and lease_until>now\(\)/)
+  assert.match(leaseSql, /renew_ai_workflow/)
+  assert.match(leaseSql, /interval '10 minutes'/)
+  assert.match(route, /setInterval\(renewLease, 30_000\)/)
   assert.match(route, /p_shop_id: auth.shopId, p_user_id: auth.userId/)
   assert.doesNotMatch(route, /hasInternalApiSecret|CRON_SECRET|INTERNAL_API_SECRET/)
 })
+

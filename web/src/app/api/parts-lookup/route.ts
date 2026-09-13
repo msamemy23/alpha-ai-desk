@@ -54,6 +54,13 @@ interface PartsLookupResult {
   taxRate: number | null
   laborHours: number | null
   laborRate: number | null
+  laborGuidance?: {
+    operation: string
+    hours: number
+    basis: 'standard_estimate'
+    sourceConfidence: 'estimated'
+    note: string
+  }
   searchUrls: { store: string; url: string }[]
   sourceConfidence: 'verified_exact_product_page' | 'search_result_only' | 'price_unavailable'
   warnings: string[]
@@ -70,6 +77,9 @@ const STORE_DOMAINS: Record<string, string> = {
   'advance auto': 'advanceautoparts.com',
   pepboys: 'pepboys.com',
   'pep boys': 'pepboys.com',
+  amazon: 'amazon.com',
+  ebay: 'ebay.com',
+  'e bay': 'ebay.com',
 }
 
 function normalizeStoreFilter(stores?: string[]) {
@@ -78,6 +88,61 @@ function normalizeStoreFilter(stores?: string[]) {
     .filter(Boolean)
     .filter(store => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(store))
   return Array.from(new Set(domains)).slice(0, 6)
+}
+
+function urlMatchesStores(url: string, stores: string[]) {
+  if (!stores.length) return true
+  try {
+    const hostname = new URL(url).hostname.toLowerCase().replace(/^www\./, '')
+    return stores.some(store => hostname === store || hostname.endsWith(`.${store}`))
+  } catch {
+    return false
+  }
+}
+
+function standardLaborGuidance(query: string, partType: string, positions: string[]) {
+  const text = `${query} ${partType}`.toLowerCase()
+  const allFour = positions.length >= 4 || /(?:all\s+four|four|4)\s+(?:wheel\s+)?brakes?/i.test(text)
+  let hours: number | null = null
+  let operation = ''
+  if (/brake|rotor|pad|caliper/.test(text)) {
+    hours = allFour || (text.includes('front') && text.includes('rear')) ? 3 : 1.5
+    operation = allFour ? 'Replace brake pads and rotors on all four wheels' : 'Replace brake pads and rotors on one axle'
+  } else if (/lower\s*control\s*arm/.test(text)) {
+    const pair = positions.length >= 2 || /both|left\s+and\s+right|front\s+(?:left|right).*front\s+(?:left|right)/.test(text)
+    hours = pair ? 3 : 1.5
+    operation = pair ? 'Replace both lower control arms' : 'Replace lower control arm'
+  } else if (/strut|shock/.test(text)) {
+    hours = /both|pair|axle|front\s+and\s+rear/.test(text) ? 3 : 1.5
+    operation = /both|pair|axle/.test(text) ? 'Replace struts or shocks on one axle' : 'Replace strut or shock'
+  } else if (/oil\s+change/.test(text)) { hours = 0.5; operation = 'Oil change' }
+  else if (/alternator/.test(text)) { hours = 2; operation = 'Replace alternator' }
+  else if (/starter/.test(text)) { hours = 1.5; operation = 'Replace starter' }
+  else if (/water\s+pump/.test(text)) { hours = 2.5; operation = 'Replace water pump' }
+  else if (/timing\s+belt/.test(text)) { hours = 3.5; operation = 'Replace timing belt' }
+  else if (/head\s+gasket/.test(text)) { hours = 10; operation = 'Replace head gasket' }
+  else if (/(?:a\s*\/\s*c|ac|air\s+condition).*(?:compressor)/.test(text)) { hours = 2.5; operation = 'Replace A/C compressor' }
+  else if (/radiator/.test(text)) { hours = 2; operation = 'Replace radiator' }
+  else if (/battery/.test(text)) { hours = 0.5; operation = 'Replace battery' }
+  else if (/tie\s*rod/.test(text)) { hours = 1.5; operation = 'Replace tie rod' }
+  else if (/wheel\s+bearing|hub/.test(text)) { hours = 2.5; operation = 'Replace wheel bearing or hub' }
+  else if (/axle|cv\s*joint/.test(text)) { hours = 1.5; operation = 'Replace axle or CV joint' }
+  if (hours === null) return null
+  return { operation, hours, basis: 'standard_estimate' as const, sourceConfidence: 'estimated' as const, note: 'Generic shop baseline; verify the labor time before treating the invoice as final.' }
+}
+
+function balancedBrakeQueries(query: string, vehicle: string, partType: string, positions: string[], queries: string[]) {
+  const text = `${query} ${partType}`.toLowerCase()
+  const allFour = positions.length >= 4 || /(?:all\s+four|four|4)\s+(?:wheel\s+)?brakes?/i.test(text)
+  if (!allFour || !/brake|rotor|pad/.test(text)) return Array.from(new Set(queries)).slice(0, 8)
+  const base = vehicle.trim() || query.trim()
+  return Array.from(new Set([
+    `${base} front brake pads`,
+    `${base} front brake rotors`,
+    `${base} rear brake pads`,
+    `${base} rear brake rotors`,
+    ...queries,
+  ])).slice(0, 8)
 }
 
 function priceAppearsInEvidence(price: unknown, evidence: string) {
@@ -89,14 +154,14 @@ function priceAppearsInEvidence(price: unknown, evidence: string) {
     .some(match => Number(match[1]) === value)
 }
 
-function sanitizeParsedParts(parsed: { options?: PartOption[]; kits?: KitOption[] }, rawResults: { title: string; url: string; content: string }[]) {
+function sanitizeParsedParts(parsed: { options?: PartOption[]; kits?: KitOption[] }, rawResults: { title: string; url: string; content: string }[], stores: string[] = []) {
   const evidenceByUrl = new Map(rawResults.map(result => [result.url, `${result.title}\n${result.content}`]))
   const warnings: string[] = ['Search snippets are preliminary leads. Exact product price, side/vehicle fitment and availability have not been independently verified. Labor hours require a supplied or verified source.']
 
   const options = (parsed.options || []).map(option => {
     const parts = (option.parts || []).flatMap(part => {
       const evidence = evidenceByUrl.get(part.url)
-      if (!part.url || !evidence) {
+      if (!part.url || !urlMatchesStores(part.url, stores) || !evidence) {
         warnings.push(`Dropped ${part.name || 'part'} because its source URL was not in the search results.`)
         return []
       }
@@ -124,7 +189,7 @@ function sanitizeParsedParts(parsed: { options?: PartOption[]; kits?: KitOption[
 
   const kits = (parsed.kits || []).flatMap(kit => {
     const evidence = evidenceByUrl.get(kit.url)
-    if (!kit.url || !evidence) {
+    if (!kit.url || !urlMatchesStores(kit.url, stores) || !evidence) {
       warnings.push(`Dropped ${kit.name || 'kit'} because its source URL was not in the search results.`)
       return []
     }
@@ -238,18 +303,23 @@ Rules:
 }
 
 // Search Tavily for parts across multiple stores
-async function searchParts(queries: string[]): Promise<{title: string; url: string; content: string}[]> {
+async function searchParts(queries: string[], stores: string[] = []): Promise<{title: string; url: string; content: string}[]> {
   const allResults: {title: string; url: string; content: string}[] = []
-  
-  // Add store-specific queries
+
+  const domains = normalizeStoreFilter(stores)
   const expandedQueries: string[] = []
   for (const q of queries) {
-    expandedQueries.push(q + ' site:oreilly.com OR site:advanceautoparts.com OR site:pepboys.com')
-    expandedQueries.push(q + ' site:amazon.com OR site:ebay.com OR site:rockauto.com')
-    expandedQueries.push(q + ' price part number')
+    if (domains.length) expandedQueries.push(`${q} ${domains.map(domain => `site:${domain}`).join(' OR ')}`)
+    else {
+      expandedQueries.push(q)
+      expandedQueries.push(q + ' site:oreilly.com OR site:advanceautoparts.com OR site:pepboys.com')
+      expandedQueries.push(q + ' site:amazon.com OR site:ebay.com OR site:rockauto.com')
+    }
   }
-  
-  const searchPromises = expandedQueries.slice(0, 6).map(async (query) => {
+
+  // Keep every requested category when a retailer was specified. The old
+  // six-query cap dropped the rear pad/rotor searches for four-wheel jobs.
+  const searchPromises = expandedQueries.slice(0, domains.length ? Math.max(queries.length, 4) : 12).map(async (query) => {
     try {
       const r = await fetch('https://api.tavily.com/search', {
         method: 'POST',
@@ -263,6 +333,7 @@ async function searchParts(queries: string[]): Promise<{title: string; url: stri
         }),
         signal: AbortSignal.timeout(15000),
       })
+      if (!r.ok) return []
       const d = await r.json()
       return (d.results || []).map((r: {title: string; url: string; content: string}) => ({
         title: r.title || '',
@@ -284,7 +355,7 @@ async function searchParts(queries: string[]): Promise<{title: string; url: stri
   return allResults.filter(r => {
     if (seen.has(r.url)) return false
     seen.add(r.url)
-    return true
+    return !!r.url && urlMatchesStores(r.url, domains)
   })
 }
 
@@ -397,15 +468,12 @@ export async function POST(req: NextRequest) {
     const decomposed = await decomposeRequest(query, aiConfig)
     const vehicle = `${decomposed.vehicle.year} ${decomposed.vehicle.make} ${decomposed.vehicle.model}`.trim()
 
-    // Step 2: Build search queries (add store filters if specified)
-    let searchQueries = decomposed.searchQueries || [query]
-    if (stores.length > 0) {
-      const storeFilter = stores.map(s => `site:${s}`).join(' OR ')
-      searchQueries = searchQueries.map(q => `${q} ${storeFilter}`)
-    }
+    // Step 2: Build balanced search queries. searchParts applies the retailer
+    // domain filter once, so every requested brake category is retained.
+    let searchQueries = balancedBrakeQueries(query, vehicle, decomposed.partType, decomposed.positions || [], decomposed.searchQueries || [query])
 
     // Step 3: Search for parts across stores
-    const rawResults = await searchParts(searchQueries)
+    const rawResults = await searchParts(searchQueries, stores)
 
     // Step 4: Parse results with AI
     const parsed = await parseResults(
@@ -415,7 +483,10 @@ export async function POST(req: NextRequest) {
       decomposed.positions,
       aiConfig
     )
-    const sanitized = sanitizeParsedParts(parsed, rawResults)
+    const sanitized = sanitizeParsedParts(parsed, rawResults, stores)
+    const laborGuidance = standardLaborGuidance(query, decomposed.partType, decomposed.positions || [])
+    const warnings = [...sanitized.warnings]
+    if (laborGuidance) warnings.push(laborGuidance.note)
 
     // Build search URLs for reference
     const searchUrls = rawResults
@@ -433,11 +504,12 @@ export async function POST(req: NextRequest) {
       options: sanitized.options,
       kits: sanitized.kits,
       taxRate: settings?.tax_rate == null ? null : Number(settings.tax_rate),
-      laborHours: null,
+      laborHours: laborGuidance?.hours ?? null,
       laborRate: settings?.labor_rate == null ? null : Number(settings.labor_rate),
+      ...(laborGuidance ? { laborGuidance } : {}),
       searchUrls,
       sourceConfidence: sanitized.sourceConfidence,
-      warnings: sanitized.warnings,
+      warnings: warnings.slice(0, 8),
     }
 
     await writeAuditLog({
@@ -462,3 +534,4 @@ export async function POST(req: NextRequest) {
     return apiFail(message, 500, 'INTERNAL_ERROR')
   }
 }
+

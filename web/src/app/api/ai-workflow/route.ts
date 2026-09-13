@@ -59,8 +59,37 @@ export async function POST(req: NextRequest) {
   }
   const checkpoint = async (current: WorkflowState, release = false) => {
     const { data, error } = await db.rpc('checkpoint_ai_workflow', { ...scope, p_state: current, p_release: release })
-    if (error || data !== true) throw new Error('Task checkpoint failed or its processing lease expired. Retry this request to reconcile its result.')
+    if (error) throw new Error('Workflow state could not be saved. No new action was started; retry to continue from the saved task.')
+    if (data !== true) throw new Error('Workflow ownership expired before progress could be saved. Retry to reconcile the saved task safely.')
   }
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  let heartbeatInFlight: Promise<void> | null = null
+  let heartbeatLeaseLost = false
+  const renewLease = () => {
+    if (heartbeatInFlight || heartbeatLeaseLost) return
+    heartbeatInFlight = (async () => {
+      const renewal = (async () => {
+        try { return await db.rpc('renew_ai_workflow', scope) }
+        catch { return { data: null, error: new Error('renewal request failed') } }
+      })()
+      const timeout = new Promise<{ data: null; error: Error }>(resolve => setTimeout(() => resolve({ data: null, error: new Error('renewal request timed out') }), 5_000))
+      const { data, error } = await Promise.race([renewal, timeout])
+      if (!error && data === true) return
+      // A transient network/provider error is retried on the next tick. A
+      // definitive false means another request owns the session or the lease
+      // has expired; continuing could make the in-memory result unsafe.
+      if (!error && data !== true) heartbeatLeaseLost = true
+    })().finally(() => { heartbeatInFlight = null })
+  }
+  const stopHeartbeat = async () => {
+    if (heartbeatTimer) clearInterval(heartbeatTimer)
+    heartbeatTimer = null
+    if (heartbeatInFlight) {
+      await Promise.race([heartbeatInFlight, new Promise(resolve => setTimeout(resolve, 5_000))])
+      heartbeatInFlight = null
+    }
+  }
+  heartbeatTimer = setInterval(renewLease, 30_000)
   // Internal dispatch uses only fixed, imported routes and the actual request's
   // authentication context. Never forward a model-selected endpoint or service secret.
   const dispatch = async (handler: (request: NextRequest) => Promise<Response>, path: string, payload: JsonObject, approvalKey?: string) => {
@@ -121,12 +150,16 @@ export async function POST(req: NextRequest) {
         return { ok: response.ok && data.ok === true, data: safeToolData(data.data), error: data.error || `Service returned HTTP ${response.status}`, outcome }
       },
     })
+    await stopHeartbeat()
+    if (heartbeatLeaseLost) throw new Error('Workflow ownership expired before progress could be saved. Retry to reconcile the saved task safely.')
     await checkpoint(state, true)
     return NextResponse.json(result, { headers: { 'Cache-Control': 'no-store' } })
   } catch (error) {
     // A failure here never authorizes another write. Persisted approval and
     // operation IDs allow the next request to reconcile a partially finished turn.
+    await stopHeartbeat()
     await checkpoint(state, true).catch(() => {})
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Workflow unavailable' }, { status: 503 })
   }
 }
+

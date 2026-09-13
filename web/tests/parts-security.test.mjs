@@ -22,6 +22,10 @@ test('parts lookup strips unverified prices instead of inventing them', () => {
   assert.match(route, /sourceConfidence/)
   assert.doesNotMatch(partsPage, /AI-estimated|realistic pricing/i)
   assert.match(partsPage, /Prices only show when they are visible/)
+  assert.match(route, /balancedBrakeQueries/)
+  assert.match(route, /amazon: 'amazon\.com'/)
+  assert.match(route, /urlMatchesStores/)
+  assert.match(route, /laborGuidance/)
 })
 
 test('SMS and AI shop actions have rate limit, audit, and idempotency safeguards', () => {
@@ -39,3 +43,4 @@ test('financial and SMS safeguards are durable and tenant-bound', () => {
   assert.match(smsConsent, /shop_id/)
   assert.match(saveDocument, /Paid or partially paid documents are financially immutable/)
 })
+
