@@ -8,6 +8,7 @@ import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
 import { normalizePartsQuery as normalizePartsLookupQuery } from '@/lib/ai/desktop-actions'
 import { getUserChatGptTransport } from '@/lib/chatgpt-connection'
 import { chatGptModel, fetchOpenAIChatCompletion } from '@/lib/openai-oauth-server'
+import { parseAutoZoneCategoryEvidence } from '@/lib/ai/autozone-category-parser'
 import type { OpenAIOAuthTransport } from '@openai-oauth/core'
 
 export const dynamic = 'force-dynamic'
@@ -771,6 +772,10 @@ async function parseResults(
   positions: string[],
   config: PartsAiConfig
 ): Promise<{ options: PartOption[]; kits: KitOption[] }> {
+  const deterministic = parseAutoZoneCategoryEvidence(rawResults, isStrictAutoZoneCategoryUrl) as unknown as {
+    options: PartOption[]
+    kits: KitOption[]
+  }
   const resultsText = rawResults.slice(0, 20).map((r, i) => 
     `[${i+1}] ${r.title}\nURL: ${r.url}\n${r.content}`
   ).join('\n\n')
@@ -839,7 +844,11 @@ Rules:
   try {
     const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
     try {
-      return JSON.parse(cleaned)
+      const modelParsed = JSON.parse(cleaned) as { options?: PartOption[]; kits?: KitOption[] }
+      return {
+        options: [...deterministic.options, ...(modelParsed.options || [])],
+        kits: [...deterministic.kits, ...(modelParsed.kits || [])],
+      }
     } catch {
       // Recover a single object when a model adds a short explanation around
       // otherwise valid JSON. This changes parsing tolerance only; all prices
@@ -847,10 +856,14 @@ Rules:
       const start = cleaned.indexOf('{')
       const end = cleaned.lastIndexOf('}')
       if (start < 0 || end <= start) throw new Error('No JSON object')
-      return JSON.parse(cleaned.slice(start, end + 1))
+      const modelParsed = JSON.parse(cleaned.slice(start, end + 1)) as { options?: PartOption[]; kits?: KitOption[] }
+      return {
+        options: [...deterministic.options, ...(modelParsed.options || [])],
+        kits: [...deterministic.kits, ...(modelParsed.kits || [])],
+      }
     }
   } catch {
-    return { options: [], kits: [] }
+    return deterministic
   }
 }
 
@@ -966,4 +979,3 @@ export async function POST(req: NextRequest) {
     return apiFail(message, 500, 'INTERNAL_ERROR')
   }
 }
-

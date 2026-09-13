@@ -44,6 +44,8 @@ test('AutoZone category evidence is deterministic, fitment-bound, and price-back
   assert.match(route, /function priceAppearsNearIdentity/)
   assert.match(route, /function evidenceQuoteAppearsInSource/)
   assert.match(route, /function evidenceQuoteHasOnePrice/)
+  assert.match(route, /parseAutoZoneCategoryEvidence/)
+  assert.match(route, /const deterministic = parseAutoZoneCategoryEvidence/)
   assert.match(route, /evidenceQuote/)
   assert.match(route, /price was not bound to the same product evidence/)
   assert.match(route, /function fetchAutoZoneCategoryEvidence/)
@@ -96,4 +98,3 @@ test('financial and SMS safeguards are durable and tenant-bound', () => {
   assert.match(smsConsent, /shop_id/)
   assert.match(saveDocument, /Paid or partially paid documents are financially immutable/)
 })
-
