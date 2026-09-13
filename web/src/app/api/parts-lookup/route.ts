@@ -455,7 +455,9 @@ function visibleHtmlEvidence(html: string) {
 
 function autoZoneEvidenceDiagnostics(results: SearchResult[]) {
   return results
-    .filter(result => result.title === 'AutoZone fitment category' || result.title === 'AutoZone fitment category (Tavily extract)')
+    .filter(result => result.title === 'AutoZone fitment category'
+      || result.title === 'AutoZone fitment category (Tavily extract)'
+      || isStrictAutoZoneCategoryUrl(result.url))
     .slice(0, 6)
     .map(result => {
       const content = result.content || ''
