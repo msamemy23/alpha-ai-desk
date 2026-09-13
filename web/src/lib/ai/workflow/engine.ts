@@ -624,12 +624,19 @@ function lookupMatchesResearchIntent(evidence: Evidence, intent: { query: string
   return true
 }
 
-function partsLookupLimitMessage(intent: ResearchIntent | null, state: WorkflowState): string {
+function partsLookupLimitMessage(intent: ResearchIntent | null, state: WorkflowState, currentMessage = ''): string {
   const allFour = Boolean(intent && /\b(?:all four|four|4) (?:wheel )?brakes?\b|\b4 brakes? and rotors?\b/i.test(intent.query))
   const latestLookup = [...state.evidence].reverse().find(item => item.tool === 'lookupParts')
   const complete = Boolean(intent && latestLookup && lookupMatchesResearchIntent(latestLookup, intent))
   if (complete) return 'The vehicle and retailer lookup already returned usable evidence. I will use that result for the review instead of running another search.'
-  if (allFour) return 'I ran one vehicle-and-retailer lookup, but it did not return a complete compatible set of front and rear brake pads and rotors. I will not mix unverified axle prices or invent the missing parts. Confirm the trim or rear brake type if that is still unknown, or retry the saved lookup later. No invoice was created.'
+  if (allFour) {
+    const conversation = [currentMessage, ...state.turns.filter(turn => turn.role === 'user').map(turn => turn.text)].join(' ')
+    const fitmentKnown = /\b(?:rear\s+(?:disc|drum)|(?:disc|drum)\s+rear)\b/i.test(conversation) || /\b(?:trim|engine)\b/i.test(conversation)
+    const nextStep = fitmentKnown
+      ? 'No additional fitment detail is needed; retry the saved lookup later.'
+      : 'Confirm the trim or rear brake type if that is still unknown, or retry the saved lookup later.'
+    return `I ran one vehicle-and-retailer lookup, but it did not return a complete compatible set of front and rear brake pads and rotors. I will not mix unverified axle prices or invent the missing parts. ${nextStep} No invoice was created.`
+  }
   return 'I ran one vehicle-and-retailer lookup, but it did not return enough reliable evidence to price this request. I will not repeat variant searches in the same turn or invent a price. Retry the saved lookup to continue; no invoice was created.'
 }
 
@@ -833,7 +840,7 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
             errors.push('A complete parts lookup already succeeded in this turn. Use its evidence to prepare the review; do not run another lookupParts query.')
             continue
           }
-          return respond(partsLookupLimitMessage(researchIntent, state), 'blocked')
+          return respond(partsLookupLimitMessage(researchIntent, state, input.message), 'blocked')
         }
         const key = `${tool}:${JSON.stringify(payload)}`
         if (reads.has(key)) throw new Error('This exact read already ran. Use its result or report its failure; do not loop.')
@@ -861,7 +868,7 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
       }
       if (decision.kind === 'ask') {
         if (typeof decision.message !== 'string' || !decision.message.trim() || !Array.isArray(decision.fields) || !decision.fields.length) throw new Error('Ask must identify a genuinely missing field')
-        if (researchIntent && hasVehicleContext && researchQuestion(decision.fields, decision.message)) return respond(partsLookupLimitMessage(researchIntent, state), 'blocked')
+        if (researchIntent && hasVehicleContext && researchQuestion(decision.fields, decision.message)) return respond(partsLookupLimitMessage(researchIntent, state, input.message), 'blocked')
         if (state.task) {
           for (const field of decision.fields) {
             if (typeof field !== 'string') throw new Error('Invalid question field')
