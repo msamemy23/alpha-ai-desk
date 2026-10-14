@@ -11,12 +11,13 @@ Flow:
 
 import asyncio
 import base64
+import hmac
 import json
 import logging
 import os
 import time
 import aiohttp
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 import uvicorn
 
@@ -24,8 +25,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 TELNYX_API_KEY     = os.environ.get("TELNYX_API_KEY", "")
-TELNYX_PHONE       = os.environ.get("TELNYX_PHONE", "+17136636979")
-TELNYX_CONN_ID     = os.environ.get("TELNYX_CONN_ID", "2912878759822493204")
+# No built-in defaults: a missing number or connection must stop the call, never
+# silently dial from some other account's line.
+TELNYX_PHONE       = os.environ.get("TELNYX_PHONE", "")
+TELNYX_CONN_ID     = os.environ.get("TELNYX_CONN_ID", "")
+# Shared secret callers must send as "Authorization: Bearer <secret>". Unset means
+# the protected endpoints refuse every request (fail closed).
+VOICE_AGENT_SECRET = os.environ.get("VOICE_AGENT_SECRET", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 AI_MODEL           = os.environ.get("AI_MODEL", "deepseek/deepseek-chat-v3-0324")
 PUBLIC_URL         = os.environ.get("PUBLIC_URL", "")
@@ -38,6 +44,21 @@ active_calls: dict = {}
 app = FastAPI(title="Alpha Voice Agent")
 
 
+def require_secret(request: Request) -> None:
+    """Reject callers that do not present the shared secret.
+
+    /api/ai-voice-call places real phone calls billed to the Telnyx account and
+    /api/call-summary returns call transcripts, so neither may be open to anyone
+    who can reach this server.
+    """
+    if not VOICE_AGENT_SECRET:
+        raise HTTPException(status_code=503, detail="VOICE_AGENT_SECRET is not configured")
+    supplied = request.headers.get("authorization", "")
+    expected = f"Bearer {VOICE_AGENT_SECRET}"
+    if not hmac.compare_digest(supplied.encode(), expected.encode()):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 # ─── HEALTH ────────────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
@@ -45,8 +66,10 @@ async def health():
 
 
 # ─── INITIATE AI VOICE CALL ────────────────────────────────────────────────────
-@app.post("/api/ai-voice-call")
+@app.post("/api/ai-voice-call", dependencies=[Depends(require_secret)])
 async def initiate_voice_call(request: Request):
+    if not TELNYX_PHONE or not TELNYX_CONN_ID:
+        return JSONResponse({"ok": False, "error": "TELNYX_PHONE and TELNYX_CONN_ID must be configured"}, status_code=503)
     body = await request.json()
     to_number = body.get("to", "")
     task      = body.get("task", "Have a helpful conversation")
@@ -112,7 +135,7 @@ async def initiate_voice_call(request: Request):
 
 
 # ─── CALL SUMMARY ──────────────────────────────────────────────────────────────
-@app.get("/api/call-summary/{call_id}")
+@app.get("/api/call-summary/{call_id}", dependencies=[Depends(require_secret)])
 async def get_call_summary(call_id: str):
     state = active_calls.get(call_id)
     if not state:

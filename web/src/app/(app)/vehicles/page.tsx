@@ -1,24 +1,39 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { getShopId, supabase } from '@/lib/supabase'
 
 export default function VehiclesPage() {
   const [customers, setCustomers] = useState<any[]>([])
   const [jobs, setJobs] = useState<any[]>([])
   const [search, setSearch] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
-  useEffect(() => {
-    getShopId().then(shopId => {
-      if (!shopId) return
-      Promise.all([
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const shopId = await getShopId()
+      if (!shopId) { setLoadError('We could not find your shop. Try refreshing, or sign out and back in.'); return }
+      const [customersResult, jobsResult] = await Promise.all([
         supabase.from('customers').select('*').eq('shop_id', shopId),
         supabase.from('jobs').select('*').eq('shop_id', shopId),
-      ]).then(([customersResult, jobsResult]) => {
-        setCustomers(customersResult.data || [])
-        setJobs(jobsResult.data || [])
-      })
-    })
+      ])
+      if (customersResult.error || jobsResult.error) {
+        // Keep whatever is already on screen so a failed refresh never looks like "no vehicles".
+        setLoadError('Your vehicles could not be loaded. Check your connection and try again.')
+        return
+      }
+      setLoadError(null)
+      setCustomers(customersResult.data || [])
+      setJobs(jobsResult.data || [])
+    } catch {
+      setLoadError('Your vehicles could not be loaded. Check your connection and try again.')
+    } finally {
+      setLoading(false)
+    }
   }, [])
+
+  useEffect(() => { load() }, [load])
 
   const vehicleMap: Record<string, any> = {}
   customers.forEach(c => {
@@ -49,14 +64,23 @@ export default function VehiclesPage() {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-6">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-text-primary">Vehicles Registry</h1>
-          <p className="text-text-muted text-sm mt-0.5">{all.length} vehicle{all.length !== 1 ? 's' : ''} on file</p>
+          <p className="text-text-muted text-sm mt-0.5">{loading && customers.length === 0 && jobs.length === 0 ? 'Loading vehicles…' : `${all.length} vehicle${all.length !== 1 ? 's' : ''} on file`}</p>
         </div>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search vehicles..." className="form-input w-full sm:w-64" />
       </div>
 
-      {all.length === 0 ? (
+      {loading && customers.length === 0 && jobs.length === 0 ? (
+        <div className="space-y-2" aria-hidden="true">
+          {[1,2,3,4,5].map(i => <div key={i} className="h-12 rounded-lg bg-bg-hover animate-pulse" />)}
+        </div>
+      ) : loadError ? (
+        <div className="text-center py-16" role="alert">
+          <h3 className="font-semibold text-text-primary">{loadError}</h3>
+          <button className="btn btn-secondary mt-4" onClick={() => load()}>Try again</button>
+        </div>
+      ) : all.length === 0 ? (
         <div className="text-center py-16">
-          <div className="text-4xl mb-3">\uD83D\uDE97</div>
+          <svg className="mx-auto mb-3 text-text-muted" width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 17h14M3 13l2-6a2 2 0 0 1 1.9-1.4h10.2A2 2 0 0 1 19 7l2 6v4a1 1 0 0 1-1 1h-1.5a1 1 0 0 1-1-1v-1h-11v1a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-4Z"/><circle cx="7.5" cy="14" r="1"/><circle cx="16.5" cy="14" r="1"/></svg>
           <h3 className="font-semibold text-text-primary">{search ? 'No results' : 'No vehicles yet'}</h3>
           <p className="text-text-muted text-sm mt-1">{search ? 'Try a different search' : 'Vehicles appear here when you add customers or jobs with vehicle info'}</p>
         </div>
