@@ -241,6 +241,8 @@ function getStatuses(type: string) {
 
 export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Receipt' }) {
   const [docs, setDocs] = useState<Doc[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [customers, setCustomers] = useState<Customer[]>([])
   const [editing, setEditing] = useState<string | null | 'new'>(null)
   const [openedFromLink, setOpenedFromLink] = useState(false)
@@ -308,14 +310,24 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     .replace(/\(713\) 663-6979/g, shopPhone)
 
   const load = useCallback(async () => {
-    const shopId = await getShopId()
-    if (!shopId) { setDocs([]); setCustomers([]); return }
-    const [{ data: d }, { data: c }, { data: settings }] = await Promise.all([
+    let shopId: string | null = null
+    try { shopId = await getShopId() } catch { shopId = null }
+    if (!shopId) { setDocs([]); setCustomers([]); setLoadError('We could not find your shop. Try refreshing, or sign out and back in.'); setLoading(false); return }
+    const [{ data: d, error: docsError }, { data: c }, { data: settings }] = await Promise.all([
       supabase.from('documents').select('*').eq('shop_id', shopId).in('type', type === 'Invoice' ? ['Invoice', 'Receipt'] : [type]).order('created_at', { ascending: false }),
       supabase.from('customers').select('id,name,phone,email,vehicle_year,vehicle_make,vehicle_model,vehicle_vin,vehicle_plate,vehicle_mileage').eq('shop_id', shopId).order('name'),
       supabase.from('settings').select('shop_name,shop_address,shop_phone,shop_email').eq('shop_id', shopId).maybeSingle()
     ])
+    if (docsError) {
+      // Keep whatever is already on screen; only show the error banner so a
+      // failed refresh never looks like "you have no documents".
+      setLoadError(`Your ${type.toLowerCase()}s could not be loaded. Check your connection and try again.`)
+      setLoading(false)
+      return
+    }
+    setLoadError(null)
     setDocs((d || []) as Doc[]); setCustomers((c || []) as Customer[])
+    setLoading(false)
     setShopSettings((settings || {}) as Record<string, string>)
     const requestedDocument = new URLSearchParams(window.location.search).get('document')
     if (!openedFromLink && requestedDocument) {
@@ -1079,7 +1091,20 @@ tr, td, th, thead, table { break-inside: avoid; }
           </div>
           {/* Phone: stacked cards — no sideways scrolling */}
           <div className="space-y-2 sm:hidden">
-            {filtered.length === 0 && <div className="card p-8 text-center text-text-muted">No {type.toLowerCase()}s yet</div>}
+            {loading && docs.length === 0 && [1,2,3,4].map(i => (
+              <div key={i} className="card p-4 animate-pulse" aria-hidden="true">
+                <div className="h-5 w-40 bg-bg-hover rounded mb-3" />
+                <div className="h-3 w-28 bg-bg-hover rounded mb-2" />
+                <div className="h-3 w-20 bg-bg-hover rounded" />
+              </div>
+            ))}
+            {loadError && (
+              <div className="card p-4 text-center" role="alert">
+                <div className="text-sm text-text-muted mb-3">{loadError}</div>
+                <button className="btn btn-secondary btn-sm" onClick={() => { setLoading(true); load() }}>Try again</button>
+              </div>
+            )}
+            {!loading && !loadError && filtered.length === 0 && <div className="card p-8 text-center text-text-muted">{docs.length === 0 ? `No ${type.toLowerCase()}s yet` : `No ${type.toLowerCase()}s match your search`}</div>}
             {filtered.map(d => {
               const t = calcTotals(d as unknown as Record<string,unknown>)
               return (
@@ -1105,7 +1130,9 @@ tr, td, th, thead, table { break-inside: avoid; }
             <table className="data-table w-full min-w-[640px]">
               <thead><tr><th>Doc #</th><th>Customer</th><th>Vehicle</th><th>Date</th><th>Status</th><th>Total</th><th>Actions</th></tr></thead>
               <tbody>
-                {filtered.length === 0 && <tr><td colSpan={7} className="text-center text-text-muted py-8">No {type.toLowerCase()}s yet</td></tr>}
+                {loading && docs.length === 0 && <tr><td colSpan={7} className="text-center text-text-muted py-8">Loading {type.toLowerCase()}s…</td></tr>}
+                {loadError && <tr><td colSpan={7} className="text-center text-text-muted py-8" role="alert">{loadError} <button className="btn btn-secondary btn-sm ml-2" onClick={() => { setLoading(true); load() }}>Try again</button></td></tr>}
+                {!loading && !loadError && filtered.length === 0 && <tr><td colSpan={7} className="text-center text-text-muted py-8">{docs.length === 0 ? `No ${type.toLowerCase()}s yet` : `No ${type.toLowerCase()}s match your search`}</td></tr>}
                 {filtered.map(d => {
                   const t = calcTotals(d as unknown as Record<string,unknown>)
                   return (

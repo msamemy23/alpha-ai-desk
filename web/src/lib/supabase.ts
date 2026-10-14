@@ -70,18 +70,46 @@ export async function getShopProfile() {
 }
 
 // Returns the current user's shop_profiles.id for filtering data tables.
+//
+// Every page and helper calls this before its first query, and it used to cost
+// two sequential network round trips each time (auth.getUser() hits the auth
+// server, then a memberships lookup). The result only changes when the signed-in
+// user changes, so it is cached per user and shared by concurrent callers. The
+// session is read locally (getSession) because authorization is enforced by
+// middleware and row-level security, not by this client-side scoping value.
+let shopIdCache: { userId: string; promise: Promise<string | null> } | null = null
+let shopIdListenerAttached = false
+
+function attachShopIdListener() {
+  if (shopIdListenerAttached || typeof window === 'undefined') return
+  shopIdListenerAttached = true
+  supabase.auth.onAuthStateChange((event, session) => {
+    // Drop the cache on sign-out, and whenever a different user signs in.
+    if (event === 'SIGNED_OUT' || (shopIdCache && session?.user?.id !== shopIdCache.userId)) shopIdCache = null
+  })
+}
+
 export async function getShopId(): Promise<string | null> {
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return null
-  const { data: membership, error } = await supabase
-    .from('shop_memberships')
-    .select('shop_id')
-    .eq('user_id', user.id)
-    .eq('status', 'active')
-    .order('created_at', { ascending: true })
-    .limit(1)
-    .maybeSingle()
-  return error ? null : membership?.shop_id ?? null
+  attachShopIdListener()
+  const { data: { session } } = await supabase.auth.getSession()
+  const userId = session?.user?.id
+  if (!userId) { shopIdCache = null; return null }
+  if (shopIdCache?.userId === userId) return shopIdCache.promise
+  const promise = (async () => {
+    const { data: membership, error } = await supabase
+      .from('shop_memberships')
+      .select('shop_id')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle()
+    return error ? null : membership?.shop_id ?? null
+  })()
+  shopIdCache = { userId, promise }
+  // Never cache a failed or empty lookup: the next call should retry.
+  promise.then(id => { if (!id && shopIdCache?.promise === promise) shopIdCache = null }, () => { if (shopIdCache?.promise === promise) shopIdCache = null })
+  return promise
 }
 
 export async function getSettings() {

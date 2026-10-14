@@ -326,7 +326,7 @@ export default function MessagesPage() {
       )}
 
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-6">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold">Communications</h1>
           <span className="flex items-center gap-1.5 text-xs text-green-400 bg-green-500/10 border border-green-500/20 px-2 py-1 rounded-full">
@@ -334,10 +334,10 @@ export default function MessagesPage() {
             Live
           </span>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+          <input className="form-input flex-1 min-w-0 sm:flex-none sm:w-48" placeholder="Phone number..." aria-label="Phone number to call" value={dialerNum} onChange={e => setDialerNum(e.target.value)} />
           <button className="btn btn-secondary" onClick={() => makeCall(dialerNum)}>Call</button>
-          <input className="form-input w-48" placeholder="Phone number..." value={dialerNum} onChange={e => setDialerNum(e.target.value)} />
-          <button className="btn btn-primary" onClick={() => setCompose(true)}>+ New Message</button>
+          <button className="btn btn-primary w-full sm:w-auto" onClick={() => setCompose(true)}>+ New Message</button>
         </div>
       </div>
 
@@ -521,7 +521,7 @@ export default function MessagesPage() {
                 <div className="mb-5">
                   <div className="text-sm font-semibold mb-2">Transcript</div>
                   <div className="bg-black/30 rounded-lg p-4 text-sm text-gray-500 italic">
-                    {selectedCall.transcript === '[transcription_failed]' ? 'Recording expired â€” transcription unavailable' : 'Pending transcription...'}
+                    {selectedCall.transcript === '[transcription_failed]' ? 'Recording expired. Transcription unavailable.' : 'Pending transcription...'}
                   </div>
                 </div>
               )}

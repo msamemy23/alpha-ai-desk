@@ -132,11 +132,11 @@ export default function SettingsPage() {
     } finally { setReviewLoading(false) }
   }
   const TABS = [
-    { id: 'shop', label: '🏪 Shop Info' },
-    { id: 'ai', label: '🤖 AI Config' },
-    { id: 'comms', label: '📡 Communications' },
-    { id: 'outreach', label: '📣 AI Outreach' },
-    { id: 'reviews', label: '⭐ Reviews' },
+    { id: 'shop', label: 'Shop Info' },
+    { id: 'ai', label: 'AI Config' },
+    { id: 'comms', label: 'Communications' },
+    { id: 'outreach', label: 'AI Outreach' },
+    { id: 'reviews', label: 'Reviews' },
   ] as const
 
   return (
@@ -235,7 +235,7 @@ export default function SettingsPage() {
       {tab === 'comms' && (
         <div className="space-y-4">
           <div className="card space-y-4">
-            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">📱 SMS via Telnyx</div>
+            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">SMS via Telnyx</div>
             <div className="bg-amber/10 border border-amber/30 rounded-lg p-3 text-sm text-amber">
               After purchasing a Telnyx number, paste your credentials here. Webhook URL: <code className="bg-black/30 px-1 rounded">{typeof window !== 'undefined' ? window.location.origin : 'https://your-app.vercel.app'}/api/sms</code>
             </div>
@@ -246,7 +246,7 @@ export default function SettingsPage() {
             <div><label className="form-label">Messaging Profile ID (optional)</label><input className="form-input font-mono" value={settings.telnyx_messaging_profile_id as string||''} onChange={sf('telnyx_messaging_profile_id')} /></div>
           </div>
           <div className="card space-y-4">
-            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">📧 Email via Resend</div>
+            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Email via Resend</div>
             <div className="bg-blue/10 border border-blue/30 rounded-lg p-3 text-sm text-blue">
               Get a free key at <strong>resend.com</strong> — 100 emails/day free. Add your domain there too.
             </div>
@@ -258,7 +258,7 @@ export default function SettingsPage() {
 
       {tab === 'outreach' && (
         <div className="card space-y-5">
-          <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">📣 AI Customer Outreach</div>
+          <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">AI Customer Outreach</div>
           <p className="text-sm text-text-muted">Automatically contact customers who haven't been in recently. AI personalizes each message.</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
@@ -285,22 +285,22 @@ export default function SettingsPage() {
             <p className="text-xs text-text-muted mt-1">Use: {'{name}'}, {'{shopName}'}, {'{phone}'}</p>
           </div>
           <button className="btn btn-primary w-full" onClick={launchOutreach} disabled={launching}>
-            {launching ? 'Sending outreach…' : '🚀 Launch Outreach Campaign'}
+            {launching ? 'Sending outreach…' : 'Launch Outreach Campaign'}
           </button>
           {launchResult && (
             <div className="bg-green/10 border border-green/30 rounded-lg p-4 text-sm text-green">
-              ✅ Sent <strong>{launchResult.sent}</strong> messages out of <strong>{launchResult.total}</strong> eligible customers.
+              Sent <strong>{launchResult.sent}</strong> messages out of <strong>{launchResult.total}</strong> eligible customers.
             </div>
           )}
           <div className="bg-red/10 border border-red/30 rounded-lg p-3 text-xs text-red/80">
-            ⚠️ Only launch campaigns if Telnyx/Resend are configured. Test with a small batch first.
+            Note: only launch campaigns if Telnyx/Resend are configured. Test with a small batch first.
           </div>
         </div>
       )}
 
       {tab === 'reviews' && (
         <div className="card space-y-5">
-          <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">⭐ Google Review Response Drafts</div>
+          <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Google Review Response Drafts</div>
           <p className="text-sm text-text-muted">Paste a Google review and get an AI-drafted response. Copy and paste the result into your Google Business reply.</p>
           <div>
             <label className="form-label">Star Rating</label>
@@ -317,14 +317,14 @@ export default function SettingsPage() {
             <textarea className="form-textarea" rows={4} value={reviewText} onChange={e => setReviewText(e.target.value)} placeholder="Paste the customer's review here..." />
           </div>
           <button className="btn btn-primary w-full" onClick={draftReviewResponse} disabled={reviewLoading || !reviewText.trim()}>
-            {reviewLoading ? 'Drafting response…' : '✍️ Draft Response'}
+            {reviewLoading ? 'Drafting response…' : 'Draft Response'}
           </button>
           {reviewDraft && (
             <div className="space-y-3">
               <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Draft Response</div>
               <div className="bg-bg-hover border border-border rounded-lg p-4 text-sm whitespace-pre-wrap">{reviewDraft}</div>
               <button className="btn btn-sm btn-secondary" onClick={() => { navigator.clipboard.writeText(reviewDraft) }}>
-                📋 Copy to Clipboard
+                Copy to Clipboard
               </button>
             </div>
           )}

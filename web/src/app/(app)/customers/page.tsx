@@ -16,6 +16,7 @@ function toTitleCase(str: string) {
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string|null>(null)
   const [editing, setEditing] = useState<string|null|'new'>(null)
   const [form, setForm] = useState<Partial<Customer>>({})
   const [vinDecoding, setVinDecoding] = useState(false)
@@ -32,11 +33,21 @@ export default function CustomersPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const shopId = await getShopId()
-      if (!shopId) { setCustomers([]); setJobCounts({}); return }
-      const { data } = await supabase.from('customers').select('*').eq('shop_id', shopId).order('name')
+      let shopId: string | null = null
+      try { shopId = await getShopId() } catch { shopId = null }
+      if (!shopId) { setCustomers([]); setJobCounts({}); setLoadError('We could not find your shop. Try refreshing, or sign out and back in.'); return }
+      // Customers and job counts are independent, so fetch them together.
+      const [{ data, error }, { data: jobs }] = await Promise.all([
+        supabase.from('customers').select('*').eq('shop_id', shopId).order('name'),
+        supabase.from('jobs').select('customer_id').eq('shop_id', shopId)
+      ])
+      if (error) {
+        // Keep the current list on screen; a failed refresh must not look like "no customers".
+        setLoadError('Your customers could not be loaded. Check your connection and try again.')
+        return
+      }
+      setLoadError(null)
       setCustomers((data || []) as Customer[])
-      const { data: jobs } = await supabase.from('jobs').select('customer_id').eq('shop_id', shopId)
       const counts: Record<string,number> = {}
       ;(jobs || []).forEach((j: Record<string,string>) => { counts[j.customer_id] = (counts[j.customer_id]||0) + 1 })
       setJobCounts(counts)
@@ -165,7 +176,7 @@ export default function CustomersPage() {
           <div className="flex items-center justify-between mb-6">
             <div>
               <h1 className="text-2xl font-bold">{editing === 'new' ? 'New Customer' : form.name || 'Edit Customer'}</h1>
-              {editing !== 'new' && <div className="text-sm text-text-muted mt-0.5">{jobCounts[editing]||0} jobs · Added {fmtDate((customers.find(c=>c.id===editing)?.created_at)||'')}</div>}
+              {editing !== 'new' && <div className="text-sm text-text-muted mt-0.5">{jobCounts[editing] ? `${jobCounts[editing]} job${jobCounts[editing]===1?'':'s'} · ` : ''}Added {fmtDate((customers.find(c=>c.id===editing)?.created_at)||'')}</div>}
             </div>
             <div className="flex gap-2">
               <button className="btn btn-secondary btn-sm" onClick={() => { setEditing(null); setForm({}); setActiveTab('info') }}>← Back</button>
@@ -337,8 +348,14 @@ export default function CustomersPage() {
             ))}
           </div>
 
+          {loadError && (
+            <div className="card p-4 mb-4 flex items-center justify-between gap-3" role="alert">
+              <span className="text-sm text-text-muted">{loadError}</span>
+              <button className="btn btn-secondary btn-sm whitespace-nowrap" onClick={() => load()}>Try again</button>
+            </div>
+          )}
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {filtered.length === 0 && (
+            {filtered.length === 0 && !loadError && (
               <div className="col-span-3 text-center py-16 text-text-muted">
                 <div className="text-5xl mb-4">👤</div>
                 <div className="text-lg font-semibold mb-2">{customers.length === 0 ? 'No customers yet' : 'No customers match your search'}</div>
@@ -365,7 +382,7 @@ export default function CustomersPage() {
                   <div className="text-sm text-text-secondary mb-3">{[c.vehicle_year,c.vehicle_make,c.vehicle_model].filter(Boolean).join(' ')}</div>
                 )}
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-text-muted">{jobCounts[c.id]||0} jobs · Added {fmtDate(c.created_at)}</span>
+                  <span className="text-xs text-text-muted">{jobCounts[c.id] ? `${jobCounts[c.id]} job${jobCounts[c.id]===1?'':'s'} · ` : ''}Added {fmtDate(c.created_at)}</span>
                   <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
                     {c.phone && <button className="btn btn-sm btn-secondary" aria-label={`Call ${c.name}`} title={`Call ${c.name}`} onClick={async e => { e.stopPropagation(); if (!confirm(`Call ${c.name} at ${c.phone}?`)) return; try {
                         const response = await fetch('/api/make-call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:c.phone,name:c.name})})
