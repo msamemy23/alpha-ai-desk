@@ -167,7 +167,20 @@ export async function GET(req: NextRequest) {
   }
   // Normalize so the sign page sees line_items + total, not $0.00.
   const normalized = normalizeDocForSigning(doc)
-  return NextResponse.json({ doc: normalized, signature_id: sig.id })
+  // The page shows the shop that sent the document. Return only the public
+  // business details (the same ones that already appear in the signing email),
+  // never the whole settings row, which also holds provider configuration.
+  const { data: shopSettings } = await db
+    .from('settings')
+    .select('shop_name,shop_address,shop_phone')
+    .eq('shop_id', sig.shop_id)
+    .maybeSingle()
+  const shop = {
+    name: typeof shopSettings?.shop_name === 'string' ? shopSettings.shop_name.trim() : '',
+    address: typeof shopSettings?.shop_address === 'string' ? shopSettings.shop_address.trim() : '',
+    phone: typeof shopSettings?.shop_phone === 'string' ? shopSettings.shop_phone.trim() : '',
+  }
+  return NextResponse.json({ doc: normalized, signature_id: sig.id, shop })
 }
 
 export async function POST(req: NextRequest) {

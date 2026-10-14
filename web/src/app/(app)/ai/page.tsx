@@ -347,7 +347,7 @@ You can also pass customer_name or customer_id if you don't have the doc_number:
 {"tool":"action","action":"sendEstimateEmail","payload":{"customer_name":"John Doe","email":"john@example.com"}}
 
 SEND SMS TO CUSTOMER - Text an estimate or message to a customer. Use when user says "text it", "text the estimate", "send a text":
-{"tool":"message","to":"+15551234567","channel":"sms","body":"Hi John, your estimate from Alpha International is ready. Total: $450.00"}
+{"tool":"message","to":"+15551234567","channel":"sms","body":"Hi John, your estimate from our shop is ready. Total: $450.00"}
 
 SCHEDULE FOLLOW-UP:
 {"tool":"action","action":"scheduleFollowUp","payload":{"customer_name":"John Doe","channel":"sms","scheduled_for":"2025-01-15T10:00:00Z","message_body":"Hi John, just checking in..."}}
@@ -409,7 +409,7 @@ SOCIAL MEDIA & CONNECTORS:
 - When asked to find customers on social media - search Facebook messages and comments
 - Always confirm before posting publicly (show draft first, say "Here's the draft - want me to post this?")
 - For Instagram posts, an image URL is required
-- If a connector returns an error containing 'pending approval' or 'case 2-5894000040376', tell the user: 'Google Business API access is pending approval from Google - you submitted the request today and should hear back within 5 business days via msamemy23@gmail.com.'
+- If a connector returns an error containing 'pending approval', tell the user: 'Google Business API access is still pending approval from Google. You will get an email when it is approved.'
 
 CONNECTOR TOOL CALLS - respond with ONLY a raw JSON object:
 
@@ -980,7 +980,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   const [voiceActive, setVoiceActive] = useState(false)
   const [voiceSpeaking, setVoiceSpeaking] = useState(false)
   const [voiceStatus, setVoiceStatus] = useState<'idle'|'listening'|'thinking'|'speaking'>('idle')
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   const voiceRecRef = useRef<any>(null)
   const voiceSynthRef = useRef<SpeechSynthesisUtterance | null>(null)
   const bestVoiceRef = useRef<SpeechSynthesisVoice | null>(null)
@@ -1063,7 +1063,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   const voiceStartListening = useCallback(() => {
     if (typeof window === 'undefined') return
     if (!voiceActiveRef.current) return
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
     if (!SR) return
     try {
@@ -1075,7 +1075,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       rec.onstart = () => setVoiceStatus('listening')
       rec.onend = () => { voiceRecRef.current = null }
       rec.onerror = () => { voiceRecRef.current = null; if (voiceActiveRef.current) setVoiceStatus('idle') }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       rec.onresult = (e: any) => {
         const last = e.results[e.results.length - 1]
         if (last.isFinal) {
@@ -1266,7 +1266,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   // Feature toggles
     const [features, setFeatures] = useState({ search: true, socialMedia: true, thinking: false, desktopTools: true })
   // Desktop mode detection
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   const isDesktop = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron
   const toggleFeature = (key: keyof typeof features) => setFeatures(prev => ({ ...prev, [key]: !prev[key] }))
   const toggleRepairMode = () => {
@@ -1349,7 +1349,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       const reader = new FileReader()
       reader.onload = async () => {
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           
           const pdfjsLib = (window as any).pdfjsLib
           if (pdfjsLib) {
             const arrayBuffer = reader.result as ArrayBuffer
@@ -1486,7 +1486,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
             const imgQuery = [vehicleForAnswer !== 'Vehicle not fully identified' ? vehicleForAnswer : '', lookupQuery, 'diagram'].filter(Boolean).join(' ')
             const ir = await fetch(`/api/ai-search?q=${encodeURIComponent(imgQuery)}`, { headers: await getAuthJsonHeaders(), signal: AbortSignal.timeout(20000) })
             const idata = await ir.json().catch(() => ({}))
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+             
             const imgs: any[] = Array.isArray(idata?.images) ? idata.images : Array.isArray(idata?.data?.images) ? idata.data.images : []
             webImages = imgs
               .filter(img => typeof img?.url === 'string' && /^https?:\/\//.test(img.url))
@@ -1505,7 +1505,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
           try {
             const wr = await fetch(`/api/ai-search?q=${encodeURIComponent(lookupQuery)}`, { headers: await getAuthJsonHeaders(), signal: AbortSignal.timeout(20000) })
             const wd = await wr.json().catch(() => ({}))
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+             
             const results: any[] = Array.isArray(wd?.results) ? wd.results : Array.isArray(wd?.data?.results) ? wd.data.results : []
             webText = results.slice(0, 5).map((r, i) => `${i + 1}. ${r.title || r.url || ''}\n${String(r.content || r.snippet || r.description || '').slice(0, 300)}\n${r.url || ''}`).join('\n\n')
           } catch { /* web is optional — manual still wins */ }
@@ -1569,7 +1569,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
 
   const runDirectDesktopCommand = useCallback(async (text: string, userMsg: ChatMessage) => {
     if (!features.desktopTools || !isDesktop || typeof window === 'undefined') return false
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const desktopApi = (window as any).electronAPI
     if (!desktopApi) return false
     const route = classifyRequest(text)
@@ -2088,7 +2088,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       if (/send|message|email|sms/.test(name)) markVerifiedClaims('sent')
       if (/call/.test(name)) markVerifiedClaims('called')
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     let lastSearchMedia: {images: any[], videos: any[]} | null = null
     const agentMessages: {role: string; content: string}[] = toModelMessages(history)
 
@@ -2735,7 +2735,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       }
 
       // -- DESKTOP TOOLS (Electron only) --------------------------------------
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       const isElectronEnv = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron
 
       if (parsed.tool === 'desktopOpenApp') {
@@ -2746,7 +2746,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         }
         setStatus('Opening app...')
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           
           const result = await (window as any).electronAPI.system.openApp((parsed.app || parsed.appName || 'chrome') as string, (parsed.url as string) || '')
           accumulated.push(`[Desktop open app]: ${JSON.stringify(result)}`)
           const appName = String(parsed.app || parsed.appName || 'chrome').toLowerCase().includes('comet') ? 'comet' : 'chrome'
@@ -2774,7 +2774,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         }
         setStatus('Downloading image...')
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           
           const result = await (window as any).electronAPI.files.downloadImage({
             url: (parsed.url as string) || '',
             query: (parsed.query as string) || (parsed.search as string) || '',
@@ -2809,7 +2809,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         }
         setStatus('Opening file...')
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           
           const result = await (window as any).electronAPI.files.openApproved((parsed.path || parsed.filePath) as string)
           accumulated.push(`[Desktop open file]: ${JSON.stringify(result)}`)
           const verifiedOpen = result?.ok && result.verified === true && result.opened === true
@@ -2839,7 +2839,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         }
         setStatus('Opening Kapture setup...')
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           
           const result = await (window as any).electronAPI.kapture.openSetup()
           accumulated.push(`[Kapture setup]: ${JSON.stringify(result)}`)
           agentMessages.push({ role: 'assistant', content: raw })
@@ -2858,7 +2858,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           agentMessages.push({ role: 'user', content: 'Desktop notifications only work in the desktop app, not the browser. Let the user know.' })
           continue
         }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         const notifResult = await (window as any).electronAPI.notify(
           (parsed.title as string) || 'Alpha AI Desk',
           (parsed.body  as string) || ''
@@ -2876,7 +2876,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           continue
         }
         setStatus('Desktop browser...')
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         const dea = (window as any).electronAPI
         let dBrowseResult = ''
         let dScreenBase64 = ''
@@ -2908,7 +2908,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           agentMessages.push({ role: 'user', content: 'Desktop print only works in the desktop app. Let the user know.' })
           continue
         }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         const printResult = await (window as any).electronAPI.print.page()
         const printMsg: ChatMessage = { role: 'assistant', content: printResult.ok ? 'Print dialog opened.' : `Print failed: ${printResult.error}` }
         setMessages(prev => [...prev, printMsg])
@@ -2922,7 +2922,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           agentMessages.push({ role: 'user', content: 'Desktop PDF export only works in the desktop app. Let the user know.' })
           continue
         }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         const pdfResult = await (window as any).electronAPI.print.pdf((parsed.filename as string) || 'alpha-ai-desk.pdf')
         if (pdfResult?.ok && pdfResult.path) lastDesktopFileRef.current = String(pdfResult.path)
         const pdfMsg: ChatMessage = { role: 'assistant', content: pdfResult.ok ? `PDF saved to: ${pdfResult.path}` : `PDF save failed: ${pdfResult.error}` }
@@ -2937,7 +2937,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           agentMessages.push({ role: 'user', content: 'Desktop file save only works in the desktop app. Let the user know.' })
           continue
         }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         const saveResult = await (window as any).electronAPI.files.save(
           (parsed.content as string) || '',
           (parsed.filename as string) || 'document.txt',
@@ -2956,7 +2956,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           agentMessages.push({ role: 'user', content: 'Desktop screenshot only works in the desktop app. Let the user know.' })
           continue
         }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         const ssResult = await (window as any).electronAPI.system.screenshot()
         if (ssResult.ok && ssResult.base64) {
           const ssMsg: ChatMessage = { role: 'assistant', content: 'Screenshot taken:', imageUrl: `data:image/png;base64,${ssResult.base64}` }
@@ -2982,7 +2982,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           agentMessages.push({ role: 'user', content: 'System info only works in the desktop app. Let the user know.' })
           continue
         }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         const si = await (window as any).electronAPI.system.info()
         const siText = `Platform: ${si.platform} ${si.release} | CPU: ${si.cpus} cores | RAM: ${Math.round(si.memory?.free/1024/1024/1024)}GB free / ${Math.round(si.memory?.total/1024/1024/1024)}GB total`
         accumulated.push(`[SystemInfo]: ${siText}`)
@@ -2999,7 +2999,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         }
         setStatus('Discovering MCP tools...')
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           
           const desktopApi = (window as any).electronAPI
           const mcpResult = await desktopApi.mcp.tools()
           const serverIds = Array.isArray(mcpResult?.servers)
@@ -3046,7 +3046,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         }
         setStatus(`MCP: ${server}.${name}...`)
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           
           const mcpCallResult = await (window as any).electronAPI.mcp.callTool(server, name, args, parsed.approved === true)
           const mcpCallText = JSON.stringify(mcpCallResult, null, 2).slice(0, 14000)
           accumulated.push(`[Desktop MCP ${server}.${name}]: ${mcpCallText}`)
@@ -3450,7 +3450,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
     }
     try {
       await navigator.mediaDevices.getUserMedia({ audio: true })
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
       if (!SR) { alert('Voice input not supported. Please use Chrome or Edge.'); return }
       const recognition = new SR()

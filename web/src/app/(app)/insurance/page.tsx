@@ -35,7 +35,7 @@ const fmtDate = (d: string) => d ? new Date(d + 'T00:00:00').toLocaleDateString(
 
 interface ClaimMsg { role: 'user' | 'assistant'; content: string }
 interface NoteEntry { id: string; date: string; type: string; text: string }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 type Job = Record<string, any>
 
 export default function InsurancePage() {

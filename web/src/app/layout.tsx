@@ -3,7 +3,7 @@ import './globals.css'
 
 export const metadata: Metadata = {
   title: 'Alpha AI Desk',
-  description: 'Alpha International Auto Center shop management',
+  description: 'Shop management, phones, estimates and AI for independent auto repair shops',
 }
 
 export const viewport: Viewport = {

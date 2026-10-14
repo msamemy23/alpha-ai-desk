@@ -53,12 +53,12 @@ const CATEGORIES = [
 ]
 
 const PRESETS = [
-  { label: '☀️ Morning Post', schedule: '8:00am', prompt: 'Post to Facebook: Good morning Houston! Alpha International Auto Center is open and ready. Expert repairs, fair prices. Call (713) 663-6979' },
+  { label: '☀️ Morning Post', schedule: '8:00am', prompt: 'Post to Facebook: a short, friendly good-morning post saying our shop is open and ready, with our shop name and phone number.' },
   { label: '📊 Weekly Stats', schedule: 'mon 9:00am', prompt: 'Get last week shop stats: revenue, jobs completed, top services. Give me a brief summary.' },
   { label: '🔔 Job Alerts', schedule: '9:00am', prompt: 'List all open jobs pending more than 3 days and flag them for follow-up.' },
   { label: '💰 Revenue Check', schedule: 'fri 5:00pm', prompt: 'Summarize this week revenue vs last week. What were the top 3 services?' },
   { label: '📱 Evening Reminder', schedule: '6:00pm', prompt: 'Check all jobs with status "ready" and text those customers their car is ready for pickup.' },
-  { label: '🌐 Lead Scan', schedule: '7:00am', prompt: 'Scan for new leads in Houston and add them to the growth pipeline.' },
+  { label: '🌐 Lead Scan', schedule: '7:00am', prompt: 'Scan for new leads near our shop and add them to the growth pipeline.' },
 ]
 
 // ── Main Component ─────────────────────────────────────────────────────────
@@ -290,7 +290,7 @@ export default function AutomationsPage() {
             <textarea
               className="form-input w-full"
               rows={3}
-              placeholder="Post to Facebook: Good morning Houston! Alpha International is open today. Expert repairs at fair prices. Call (713) 663-6979"
+              placeholder="Post to Facebook: a short good-morning post saying we are open today, with our shop name and phone number"
               value={newPrompt}
               onChange={e => setNewPrompt(e.target.value)}
             />

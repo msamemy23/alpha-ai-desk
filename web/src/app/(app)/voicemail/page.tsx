@@ -55,13 +55,14 @@ function isInbound(call: AiCall): boolean {
 }
 
 function getCallerDisplay(call: AiCall): string {
-  if (call.caller && call.caller !== 'unknown' && !call.caller.includes('663-6979') && !call.caller.includes('6636979')) {
-    return formatPhone(call.caller)
-  }
+  // For inbound calls the caller's number is recorded in the task text
+  // ("Inbound call from <number>"); the caller column is often 'unknown' or the
+  // shop's own line. Prefer the task number so this works for any shop.
   const match = (call.task || '').match(/Inbound call from ([^\s.]+)/)
-  if (match && match[1] && match[1] !== 'unknown' && !match[1].includes('6636979')) {
+  if (match && match[1] && match[1] !== 'unknown') {
     return formatPhone(match[1])
   }
+  if (call.caller && call.caller !== 'unknown') return formatPhone(call.caller)
   if (call.caller) return formatPhone(call.caller)
   return 'Unknown Caller'
 }

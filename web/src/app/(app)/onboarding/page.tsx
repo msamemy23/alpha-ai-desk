@@ -105,7 +105,7 @@ export default function OnboardingPage() {
                 className="form-input"
                 value={shopName}
                 onChange={e => setShopName(e.target.value)}
-                placeholder="e.g. Alpha International Auto Center"
+                placeholder="e.g. Main Street Auto Repair"
               />
             </div>
             <div>
@@ -123,7 +123,7 @@ export default function OnboardingPage() {
                 className="form-input"
                 value={address}
                 onChange={e => setAddress(e.target.value)}
-                placeholder="10710 S Main St"
+                placeholder="123 Main St"
               />
             </div>
             <div>

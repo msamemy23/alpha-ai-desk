@@ -130,7 +130,7 @@ async function searchVideos(query: string): Promise<VideoResult[]> {
       const res = await fetch(`${instance}/search?${params}`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) })
       if (!res.ok) continue
       const data = await res.json()
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       return (data.results || []).slice(0, 6).map((v: any) => {
         const yt = (v.url || '').match(/(?:watch\?v=|youtu\.be\/)([\w-]{11})/)
         return {
@@ -155,7 +155,7 @@ async function searchImages(query: string): Promise<ImageResult[]> {
       const res = await fetch(`${instance}/search?${params}`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) })
       if (!res.ok) continue
       const data = await res.json()
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       return (data.results || []).slice(0, 10).map((img: any) => ({
         url: img.img_src || img.url || '',
         thumbnail: img.thumbnail_src || img.thumbnail || img.img_src || '',
@@ -240,7 +240,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   const results: SearchResult[] = (tavilyData?.results || []).map((r: any) => {
     // Auto-categorize results
     let category = 'web'
@@ -262,7 +262,7 @@ export async function GET(req: NextRequest) {
   })
 
   // Merge images from Tavily and SearXNG
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   const rawTavilyImages = (tavilyData?.images || []).slice(0, 5)
     // Tavily images can be strings OR objects {url, title, description} when inc. search
   const tavilyImageUrls: string[] = rawTavilyImages.map((img: any) => {

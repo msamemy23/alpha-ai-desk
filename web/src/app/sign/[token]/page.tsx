@@ -39,6 +39,7 @@ export default function SignPage() {
 
   const [state, setState] = useState<'loading'|'ready'|'already_signed'|'expired'|'error'|'signing'|'done'>('loading')
   const [doc, setDoc] = useState<Doc | null>(null)
+  const [shop, setShop] = useState<{ name: string; address: string; phone: string }>({ name: '', address: '', phone: '' })
   const [signerName, setSignerName] = useState('')
   const [agreed, setAgreed] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
@@ -61,6 +62,7 @@ export default function SignPage() {
           setSignedAt(data.signed_at)
         } else {
           setDoc(data.doc)
+          if (data.shop && typeof data.shop === 'object') setShop({ name: String(data.shop.name || ''), address: String(data.shop.address || ''), phone: String(data.shop.phone || '') })
           setState('ready')
         }
       })
@@ -197,9 +199,9 @@ export default function SignPage() {
       <div style={{maxWidth:640,margin:'0 auto'}}>
         {/* Header with logo */}
         <div style={{textAlign:'center',marginBottom:16}}>
-          <img src={LOGO_URL} alt="Alpha International Auto Center" style={{width:56,height:56,borderRadius:'50%',margin:'0 auto 8px',display:'block',objectFit:'cover',border:'2px solid #e5e7eb'}} />
-          <h1 style={{fontSize:16,fontWeight:700,color:'#1a1a2e',margin:'0 0 2px'}}>Alpha International Auto Center</h1>
-          <p style={{fontSize:10,color:'#9ca3af',margin:0}}>10710 S Main St, Houston TX 77025 &middot; (713) 663-6979</p>
+          <img src={LOGO_URL} alt={shop.name || 'Shop logo'} style={{width:56,height:56,borderRadius:'50%',margin:'0 auto 8px',display:'block',objectFit:'cover',border:'2px solid #e5e7eb'}} />
+          <h1 style={{fontSize:16,fontWeight:700,color:'#1a1a2e',margin:'0 0 2px'}}>{shop.name || 'Your auto shop'}</h1>
+          {(shop.address || shop.phone) && <p style={{fontSize:10,color:'#9ca3af',margin:0}}>{[shop.address, shop.phone].filter(Boolean).join(' \u00b7 ')}</p>}
           <p style={{fontSize:10,color:'#6b7280',margin:'4px 0 0',fontWeight:600}}>Electronic Signature Request</p>
         </div>
 
@@ -317,7 +319,7 @@ export default function SignPage() {
 
         {/* Footer */}
         <div style={{textAlign:'center',fontSize:10,color:'#9ca3af',padding:'8px 0 20px'}}>
-          Alpha International Auto Center &middot; Houston, TX &middot; Official Electronic Document
+          {shop.name ? `${shop.name} \u00b7 ` : ''}Official Electronic Document
         </div>
       </div>
     </div>

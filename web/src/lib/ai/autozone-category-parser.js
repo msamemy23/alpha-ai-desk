@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- CommonJS module also loaded directly by node --test */
 const { visiblePriceMatches } = require('./price-evidence.js')
 const PRODUCT_PATTERN = /\b(?:brake\s+(?:pads?|rotors?)|pads?|rotors?)\b/i
 const DESCRIPTOR_PATTERN = /(?:\b(?:part|sku)\s*(?:#|number|no\.)?\s*[A-Z0-9-]{3,}\b|\b(?:front|rear|left|right)\b|\b(?:set|pair|pack|includes?|hardware)\b)/i

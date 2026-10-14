@@ -821,7 +821,7 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                   // Load html2pdf.js from CDN if not already loaded then download
                   const el = document.getElementById('doc-preview-panel')
                   if (!el) return
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                   
                   const doDownload = (h2p: any) => {
                     h2p(el).set({
                       margin: [8, 8, 8, 8],
@@ -832,15 +832,15 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
                       pagebreak: { mode: ['avoid-all', 'css'] }
                     }).save()
                   }
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                   
                   if ((window as any).html2pdf) {
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                     
                     doDownload((window as any).html2pdf)
                   } else {
                     const script = document.createElement('script')
                     script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js'
                     script.onload = () => {
-                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                       
                       doDownload((window as any).html2pdf)
                     }
                     document.head.appendChild(script)

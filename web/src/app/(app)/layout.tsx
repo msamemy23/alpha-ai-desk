@@ -211,7 +211,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   }
 
   const shopName = shopProfile?.shop_name || 'My Shop'
-  const shopPhone = shopProfile?.phone || '(713) 663-6979'
+  const shopPhone = shopProfile?.phone || ''
 
   return (
     <div className="flex h-dvh overflow-hidden bg-bg-base text-text-primary">

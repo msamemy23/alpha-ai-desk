@@ -198,7 +198,7 @@ export async function POST(req: NextRequest) {
         }
         if (!summary) return fail('summary required')
         if (!fullLocationPath) {
-          if (pendingApproval) return fail('Google Business API access is pending approval from Google (case 2-5894000040376). Expected within 5 business days.', 503)
+          if (pendingApproval) return fail('Google Business API access is still pending approval from Google. Google emails the account owner when it is approved.', 503)
           return fail('Google Business location not found — make sure your business is verified on Google', 400)
         }
         const blocked = await beginSocialOperation('post')
@@ -227,7 +227,7 @@ export async function POST(req: NextRequest) {
       // ── Get reviews ──────────────────────────────────────────────
       case 'get_reviews': {
         if (!fullLocationPath) {
-          if (pendingApproval) return fail('Google Business API access is pending approval from Google (support case 2-5894000040376, submitted today). Google typically approves within 5 business days — check msamemy23@gmail.com for the approval email.', 503)
+          if (pendingApproval) return fail('Google Business API access is still pending approval from Google. Google emails the account owner when it is approved.', 503)
           return fail('Google Business location not found — make sure your business is verified on Google', 400)
         }
 
