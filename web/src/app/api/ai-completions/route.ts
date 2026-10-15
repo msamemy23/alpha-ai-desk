@@ -40,6 +40,9 @@ export async function POST(req: NextRequest) {
   const limited = checkRateLimit(rateLimitKey('ai-completions', auth.userId, auth.shopId, ip), 60, 60_000)
   if (!limited.ok) return error('Too many AI requests. Wait a minute and try again.', 429)
 
+  // Stop in the browser (or a closed tab) ends the provider call too, so no work or cost carries on unseen.
+  const stopOrTimeout = (ms: number) => AbortSignal.any([req.signal, AbortSignal.timeout(ms)])
+
   try {
     const body = await req.json()
     if (!Array.isArray(body?.messages) || body.messages.length === 0) {
@@ -58,7 +61,7 @@ export async function POST(req: NextRequest) {
         model: chatGptModel(body.model),
         messages: body.messages,
         max_tokens: typeof body.max_tokens === 'number' ? body.max_tokens : undefined,
-      }, AbortSignal.timeout(120000))
+      }, stopOrTimeout(120000))
       return NextResponse.json(completion.data, { status: completion.status })
     }
 
@@ -92,7 +95,7 @@ export async function POST(req: NextRequest) {
         ...body,
         model,
       }),
-      signal: AbortSignal.timeout(120000),
+      signal: stopOrTimeout(120000),
     })
 
     const data = await upstream.json().catch(() => ({}))

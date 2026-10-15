@@ -2,13 +2,17 @@
 import Icon from '@/components/Icon'
 import { dayKey, entriesFor, fmtDuration, minutesOnDay, roleLabel, statusOf } from '@/lib/timeclock'
 import type { ClockEntry, Person } from '@/lib/timeclock'
+import { runningSegment, segmentMinutes } from '@/lib/jobtime'
+import type { JobSegment } from '@/lib/jobtime'
 import type { ClockAction } from './PersonSheet'
 import { Avatar, StatusLine } from './parts'
 
 /** Who is in right now. Clock people in and out here without opening anything. */
-export default function TodayView({ people, entries, nowMs, breaks, busyId, onClock, onOpen, onAdd }: {
+export default function TodayView({ people, entries, segments, nowMs, breaks, busyId, onClock, onOpen, onAdd }: {
   people: Person[]
   entries: ClockEntry[]
+  /** Time on repair orders, so a running job shows beside the person. */
+  segments: JobSegment[]
   nowMs: number
   breaks: boolean
   /** Person being clocked right now, so only their buttons wait. */
@@ -22,7 +26,7 @@ export default function TodayView({ people, entries, nowMs, breaks, busyId, onCl
     .filter(p => p.active)
     .map(p => {
       const mine = entriesFor(entries, p)
-      return { p, status: statusOf(mine, p, nowMs), today: minutesOnDay(mine, todayKey, nowMs) }
+      return { p, status: statusOf(mine, p, nowMs), today: minutesOnDay(mine, todayKey, nowMs), job: runningSegment(segments, p) }
     })
     // People on the clock first, then everyone else, each group by name.
     .sort((a, b) => (a.status.entry ? 0 : 1) - (b.status.entry ? 0 : 1) || a.p.name.localeCompare(b.p.name))
@@ -40,7 +44,7 @@ export default function TodayView({ people, entries, nowMs, breaks, busyId, onCl
 
   return (
     <ul className="ledger" aria-label="Team clock">
-      {rows.map(({ p, status, today }) => {
+      {rows.map(({ p, status, today, job }) => {
         const waiting = busyId === p.id
         return (
           <li key={p.id}>
@@ -56,7 +60,10 @@ export default function TodayView({ people, entries, nowMs, breaks, busyId, onCl
                 <span className="block font-bold">{fmtDuration(today)}</span>
                 <span className="block text-[0.8125rem] text-text-secondary">today</span>
               </span>
-              <StatusLine status={status} todayKey={todayKey} className="col-span-2 text-[0.9375rem] text-text-secondary sm:order-2 sm:col-span-1" />
+              <div className="col-span-2 min-w-0 sm:order-2 sm:col-span-1">
+                <StatusLine status={status} todayKey={todayKey} className="text-[0.9375rem] text-text-secondary" />
+                {job && status.state === 'in' && <span className="num mt-0.5 block truncate text-[0.875rem]">On {job.job_label || 'a repair order'} · {fmtDuration(segmentMinutes(job, nowMs))}</span>}
+              </div>
               <div className="col-span-2 flex gap-2 sm:order-4 sm:col-span-1">
                 {status.overlong ? (
                   <button type="button" className="btn btn-secondary flex-1 sm:flex-none" onClick={() => onOpen(p)} aria-label={`Fix the time for ${p.name}`}>

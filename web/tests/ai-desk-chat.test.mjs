@@ -81,7 +81,7 @@ test('Ask Alpha can be stopped, keeps drafts, and locks double sends', () => {
   const page = readFileSync(new URL('../src/app/(app)/ai/page.tsx', import.meta.url), 'utf8')
   // Stop button wired to one controller per turn, and passed to the workflow request.
   assert.match(page, /aria-label=\{stopping \? 'Stopping' : 'Stop'\}/)
-  assert.match(page, /body: JSON\.stringify\(request\), signal: runSignal\(\)/)
+  assert.match(page, /streamWorkflow\(request, \{[\s\S]*?signal: runSignal\(\)/)
   assert.match(page, /const STOP_NOTICE = 'Stopped by you\. Nothing was sent or changed\.'/)
   // A half-typed message survives a refresh.
   assert.match(page, /localStorage\.setItem\('alpha_ask_draft', input\)/)

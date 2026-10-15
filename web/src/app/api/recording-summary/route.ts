@@ -66,7 +66,7 @@ export async function POST(req: NextRequest) {
       headers: {
         Authorization: `Bearer ${aiKey}`,
         'Content-Type': 'application/json',
-        ...(aiBaseUrl.includes('openrouter.ai') ? { 'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'https://alpha-ai-desk.vercel.app' } : {}),
+        ...(aiBaseUrl.includes('openrouter.ai') && process.env.NEXT_PUBLIC_APP_URL ? { 'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL } : {}),
       },
       body: JSON.stringify({
         model: aiModel,

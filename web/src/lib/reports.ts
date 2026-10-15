@@ -104,14 +104,45 @@ export interface ReportDoc {
   /** Labor lines: what was done and what it cost. */
   ops: { name: string; amount: number }[]
   /** Part lines: what was sold, and what the shop paid for it when that was written down (0 when it was not). */
-  items: { name: string; qty: number; amount: number; cost?: number }[]
+  items: { name: string; qty: number; amount: number; cost?: number; taxable?: boolean }[]
   /** Labor lines that name a technician. */
   hours: { tech: string; hours: number; amount: number }[]
+
+  /*
+   * Everything below is optional so documents read before these fields existed (and older test fixtures) still work.
+   * Reports that need a field say plainly what they could not work out when it is missing.
+   */
+  /** Every labor line, named or not, with the hours on it when it is priced by the hour. */
+  lines?: ReportLine[]
+  /** Who wrote the paperwork (the "cashier" column), when someone filled it in. */
+  advisor?: string
+  /** "2017 Toyota Camry". */
+  vehicle?: string
+  /** VIN, plate, or year make model for this customer: the same car always gets the same key. Empty when no car is named. */
+  vehicleKey?: string
+  /** The amount sales tax was charged on. */
+  taxable?: number
+  /** The tax rate charged, in percent (8.25). 0 when no tax was charged. */
+  taxRate?: number
+  /** Shop supplies. `fees` is supplies + sublet + core. */
+  supplies?: number
+  sublet?: number
+  core?: number
+  jobId?: string | null
+  dueDate?: string
+  phone?: string
+  email?: string
+  /** Day the paperwork was sent for online approval, and the day the customer approved it. */
+  signatureRequestedAt?: string
+  signedAt?: string
 }
+
+/** One labor line. `flat` lines are priced as a whole, so they have no hours to divide by. */
+export interface ReportLine { name: string; hours: number; amount: number; tech: string; flat: boolean }
 
 export interface ReportPayment { id: string; docId: string | null; amount: number; method: string; date: string; customer: string }
 export interface ReportJob { id: string; status: string; tech: string; date: string; customer: string }
-export interface ReportCall { id: string; direction: string; seconds: number; start: string }
+export interface ReportCall { id: string; direction: string; seconds: number; start: string; /** The phone company's id for the call, used to match it to the AI assistant's log. */ callId?: string; status?: string }
 
 export const money = (n: number): string => `$${Math.round(n).toLocaleString('en-US')}`
 export const money2 = (n: number): string => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -510,4 +541,4 @@ export function paymentsCsv(payments: ReportPayment[], docs: ReportDoc[], range:
   return lines.join('\r\n') + '\r\n'
 }
 
-export { round2, num, normName as normTech }
+export { round2, num, normName as normTech, textKey, display as displayText, parse as parseDay, monthStart }

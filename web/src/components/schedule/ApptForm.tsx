@@ -1,14 +1,17 @@
 'use client'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import Icon from '@/components/Icon'
+import { KIND_HELP, KIND_WORD, bookingWarnings, hoursText, minutesFor } from '@/lib/schedule-capacity'
+import type { CapacitySettings, ShopNow } from '@/lib/schedule-capacity'
 import { phonePretty } from '@/lib/today'
 import { DURATIONS, TIMES, byTime, fmtTime, hhmm, overlaps, parseYmd, dayShort, isClosed } from './types'
 import type { Appointment, ApptCustomer } from './types'
+import { useDeclined } from './useDeclined'
 
 const field = 'form-label'
 
 export default function ApptForm({
-  form, setForm, isNew, customers, techs, serviceIdeas, appts, saving, error, onSave, onCancel, onDelete,
+  form, setForm, isNew, customers, techs, serviceIdeas, canned, cap, now, hasKind, appts, saving, error, onSave, onCancel, onDelete,
 }: {
   form: Partial<Appointment>
   setForm: React.Dispatch<React.SetStateAction<Partial<Appointment>>>
@@ -17,6 +20,12 @@ export default function ApptForm({
   techs: string[]
   /** Canned job names offered as one tap service choices. */
   serviceIdeas: string[]
+  /** Canned jobs with their labor hours, so a service fills in how long it takes. */
+  canned: { name: string; labor_hours: number | null }[]
+  cap: CapacitySettings
+  now: ShopNow
+  /** False until the database update that adds drop-off or wait and the bay: the choice is hidden rather than failing to save. */
+  hasKind: boolean
   appts: Appointment[]
   saving: boolean
   error: string
@@ -44,6 +53,16 @@ export default function ApptForm({
   }
 
   const set = <K extends keyof Appointment>(k: K, v: Appointment[K]) => setForm(f => ({ ...f, [k]: v }))
+  // How long the job takes comes from the service the person types, until they pick a length themselves.
+  const durationTouched = useRef(!isNew)
+  const [fits, setFits] = useState('')
+  const setService = (text: string) => {
+    const hit = durationTouched.current ? null : minutesFor(text, cap, canned)
+    if (hit) setFits(`Takes about ${hoursText(hit.minutes)}, from your ${hit.from === 'canned job' ? 'canned job' : 'service times'}.`)
+    else if (!text.trim()) setFits('')
+    setForm(f => ({ ...f, service: text, ...(hit ? { duration: hit.minutes } : {}), ...(hit && hit.kind && hasKind && !f.kind ? { kind: hit.kind } : {}) }))
+  }
+  const open = useDeclined(form.customer_id, form.customer_name)
   const time = hhmm(form.time)
   const times = time && !TIMES.includes(time) ? [time, ...TIMES].sort() : TIMES
 
@@ -56,6 +75,12 @@ export default function ApptForm({
     const sameTech = form.tech && form.tech !== 'Unassigned' ? hits.find(a => a.tech === form.tech) : undefined
     return { sameTech, hits: hits.sort(byTime) }
   }, [form, appts])
+
+  // What is tight about this time, in plain words. Warns, never blocks.
+  const warnings = useMemo(() => {
+    if (!form.date || !form.time) return []
+    return bookingWarnings(cap, appts, { id: form.id, date: form.date, time: hhmm(form.time), duration: Number(form.duration) || 60, status: form.status, tech: form.tech, kind: form.kind ?? null, bay: form.bay ?? null }, { now })
+  }, [cap, appts, form, now])
 
   return (
     <form onSubmit={e => { e.preventDefault(); onSave() }} className="space-y-5" noValidate>
@@ -115,12 +140,26 @@ export default function ApptForm({
         <legend className="section-title mb-2">The visit</legend>
         <div>
           <label htmlFor="ap-service" className={field}>Service</label>
-          <input id="ap-service" className="form-input" autoComplete="off" value={form.service || ''} onChange={e => set('service', e.target.value)} placeholder="Oil change, brakes, diagnosis" />
+          <input id="ap-service" className="form-input" autoComplete="off" value={form.service || ''} onChange={e => setService(e.target.value)} placeholder="Oil change, brakes, diagnosis" />
           {serviceIdeas.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-2" role="group" aria-label="Quick service choices">
               {serviceIdeas.slice(0, 6).map(s => (
-                <button key={s} type="button" className="inline-flex min-h-[36px] items-center rounded-full border border-line bg-bg-card px-3 text-[0.875rem] font-bold hover:bg-bg-hover" onClick={() => set('service', s)}>{s}</button>
+                <button key={s} type="button" className="inline-flex min-h-[36px] items-center rounded-full border border-line bg-bg-card px-3 text-[0.875rem] font-bold hover:bg-bg-hover" onClick={() => setService(s)}>{s}</button>
               ))}
+            </div>
+          )}
+          {fits && <p className="mt-1.5 text-[0.8125rem] text-text-secondary" aria-live="polite">{fits}</p>}
+          {open.length > 0 && (
+            <div className="mt-3 rounded-md border border-border bg-bg-base px-3 py-2.5">
+              <p className="text-[0.875rem] font-bold">Still open from an earlier inspection</p>
+              <div className="mt-1.5 flex flex-wrap gap-2" role="group" aria-label="Add work from an earlier inspection">
+                {open.map(w => (
+                  <button key={w.name} type="button" className="inline-flex min-h-[36px] items-center gap-1.5 rounded-full border border-line bg-bg-card px-3 text-[0.875rem] font-bold hover:bg-bg-hover"
+                    onClick={() => setService(form.service?.trim() ? (form.service.toLowerCase().includes(w.name.toLowerCase()) ? form.service : `${form.service.trim()}, ${w.name}`) : w.name)}>
+                    <Icon name="plus" className="h-4 w-4" />{w.name}<span className="font-normal text-text-secondary">{w.why === 'declined' ? 'said no' : 'not answered'}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -138,7 +177,7 @@ export default function ApptForm({
           </div>
           <div>
             <label htmlFor="ap-dur" className={field}>How long</label>
-            <select id="ap-dur" className="form-select" value={Number(form.duration) || 60} onChange={e => set('duration', Number(e.target.value))}>
+            <select id="ap-dur" className="form-select" value={Number(form.duration) || 60} onChange={e => { durationTouched.current = true; setFits(''); set('duration', Number(e.target.value)) }}>
               {DURATIONS.map(d => <option key={d.m} value={d.m}>{d.label}</option>)}
               {!DURATIONS.some(d => d.m === (Number(form.duration) || 60)) && <option value={Number(form.duration)}>{form.duration} minutes</option>}
             </select>
@@ -155,7 +194,40 @@ export default function ApptForm({
             )}
           </div>
         </div>
-        {clash && (
+        {hasKind && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <fieldset>
+              <legend className={field}>How they bring it</legend>
+              <div className="grid grid-cols-2 gap-2">
+                {(['dropoff', 'wait'] as const).map(k => (
+                  <button key={k} type="button" aria-pressed={form.kind === k} onClick={() => set('kind', form.kind === k ? null : k)}
+                    className={`min-h-[44px] rounded-md border px-3 text-[0.9375rem] font-bold ${form.kind === k ? 'border-blue bg-blue/10 text-blue' : 'border-[rgb(var(--c-line))] bg-bg-card hover:bg-bg-hover'}`}>{KIND_WORD[k]}</button>
+                ))}
+              </div>
+              <p className="mt-1 text-[0.8125rem] text-text-secondary">{form.kind ? KIND_HELP[form.kind] + '.' : 'Not chosen. Choose one so limits on drop-offs and waiting customers can warn you.'}</p>
+            </fieldset>
+            {cap.bays > 0 && (
+              <div>
+                <label htmlFor="ap-bay" className={field}>Bay</label>
+                <select id="ap-bay" className="form-select" value={form.bay || ''} onChange={e => set('bay', e.target.value || null)}>
+                  <option value="">Not assigned</option>
+                  {Array.from({ length: cap.bays }, (_, i) => `Bay ${i + 1}`).map(b => <option key={b} value={b}>{b}</option>)}
+                  {form.bay && !/^Bay \d+$/.test(form.bay) && <option value={form.bay}>{form.bay}</option>}
+                </select>
+              </div>
+            )}
+          </div>
+        )}
+        {warnings.length > 0 && (
+          <div role="status" className="flex items-start gap-2.5 rounded-md border border-amber/50 bg-amber/[0.1] px-3 py-2.5 text-[0.9375rem]">
+            <Icon name="alert" className="mt-0.5 h-5 w-5 shrink-0 text-amber" />
+            <div className="min-w-0">
+              <ul className="space-y-0.5">{warnings.map(w => <li key={w.code}>{w.text}</li>)}</ul>
+              <p className="mt-1 text-text-secondary">You can still save it.</p>
+            </div>
+          </div>
+        )}
+        {clash && !warnings.some(w => w.code === 'tech' || w.code === 'bay') && (
           <div role="status" className="flex items-start gap-2.5 rounded-md border border-amber/50 bg-amber/[0.1] px-3 py-2.5 text-[0.9375rem]">
             <Icon name="alert" className="mt-0.5 h-5 w-5 shrink-0 text-amber" />
             <p>
@@ -170,12 +242,14 @@ export default function ApptForm({
           <div>
             <label htmlFor="ap-status" className={field}>Status</label>
             <select id="ap-status" className="form-select" value={form.status || 'Scheduled'} onChange={e => set('status', e.target.value)}>
+              {form.status === 'Requested' && <option value="Requested">Requested</option>}
               <option value="Scheduled">Scheduled</option>
               <option value="Confirmed">Confirmed</option>
               <option value="In Progress">In the shop</option>
               <option value="Completed">Done</option>
               <option value="No Show">No show</option>
               <option value="Cancelled">Cancelled</option>
+              {form.status === 'Declined' && <option value="Declined">Declined</option>}
             </select>
           </div>
         )}

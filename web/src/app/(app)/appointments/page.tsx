@@ -10,14 +10,25 @@ import type { TimelineColumn } from '@/components/schedule/Timeline'
 import ApptForm from '@/components/schedule/ApptForm'
 import ApptDetail from '@/components/schedule/ApptDetail'
 import ApptRows from '@/components/schedule/ApptRows'
+import CapacityBar from '@/components/schedule/CapacityBar'
+import LateStrip from '@/components/schedule/LateStrip'
+import MonthGrid from '@/components/schedule/MonthGrid'
+import RemindersSheet from '@/components/schedule/RemindersSheet'
+import RequestsPanel from '@/components/schedule/RequestsPanel'
+import SettingsSheet from '@/components/schedule/SettingsSheet'
+import type { TextStart } from '@/components/schedule/ApptDetail'
+import { useScheduleSettings } from '@/components/schedule/useScheduleSettings'
+import { addDaysYmd, isOverdueArrival, missRate, nowIn } from '@/lib/schedule-capacity'
+import { alternativeTimes } from '@/lib/schedule-texts'
+import { missingSchema } from '@/lib/schema-missing'
 import {
   addDays, byTime, dayLong, dayShort, fromMin, hhmm, isClosed, parseYmd, startOfWeek, weekRange, ymd,
 } from '@/components/schedule/types'
 import type { Appointment } from '@/components/schedule/types'
-import { plainError, textProblem } from '@/components/appointments/errors'
+import { phoneTail, plainError, textProblem } from '@/components/appointments/errors'
 import { useLookups } from '@/components/appointments/useLookups'
 
-type View = 'day' | 'week' | 'list'
+type View = 'day' | 'week' | 'month' | 'list'
 const newKey = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`)
 
 export default function SchedulePage() {
@@ -28,13 +39,21 @@ export default function SchedulePage() {
   const [picked, setPicked] = useState<Date | null>(null)
 
   const [appts, setAppts] = useState<Appointment[]>([])
-  const { customers, customersError, reloadCustomers, serviceIdeas, shop, isStopped } = useLookups()
+  const { customers, customersError, reloadCustomers, serviceIdeas, canned, shop, isStopped } = useLookups()
+  const sched = useScheduleSettings()
+  const cap = sched.settings.capacity
+  const [clock, setClock] = useState(0)
+  // Does this database have the drop-off or wait and bay columns yet (migration 050)? null until the first look.
+  const [hasKind, setHasKind] = useState<boolean | null>(null)
   const [techs, setTechs] = useState<string[]>(['Unassigned'])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [notice, setNotice] = useState('')
 
-  const [sheet, setSheet] = useState<null | 'form' | 'detail' | 'delete'>(null)
+  const [sheet, setSheet] = useState<null | 'form' | 'detail' | 'delete' | 'settings' | 'reminders'>(null)
+  const [textStart, setTextStart] = useState<TextStart | null>(null)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [month, setMonth] = useState<Date | null>(null)
   const [openId, setOpenId] = useState<string | null>(null)
   const [form, setForm] = useState<Partial<Appointment>>({})
   const [saving, setSaving] = useState(false)
@@ -52,11 +71,18 @@ export default function SchedulePage() {
     const t = new Date()
     setToday(new Date(t.getFullYear(), t.getMonth(), t.getDate()))
     setPicked(new Date(t.getFullYear(), t.getMonth(), t.getDate()))
+    setMonth(new Date(t.getFullYear(), t.getMonth(), 1))
     const mq = window.matchMedia('(min-width: 1024px)')
     const apply = () => { setDesktop(mq.matches); if (mq.matches) setView(v => (v === 'day' ? 'week' : v)) }
     apply()
     mq.addEventListener('change', apply)
     return () => mq.removeEventListener('change', apply)
+  }, [])
+
+  // The late-arrival flag and the "that time has passed" warning follow the clock.
+  useEffect(() => {
+    const id = window.setInterval(() => setClock(c => c + 1), 60_000)
+    return () => window.clearInterval(id)
   }, [])
 
   // A schedule left open on a shop screen overnight moves to the new day by itself.
@@ -79,7 +105,13 @@ export default function SchedulePage() {
       const since = new Date(); since.setDate(since.getDate() - 120)
       const { data, error } = await supabase.from('appointments').select('*').eq('shop_id', shopId).gte('date', ymd(since)).order('date').order('time')
       if (error) throw error
-      setAppts(((data || []) as Appointment[]).map(a => ({ ...a, time: hhmm(a.time) })))
+      const rows = (data || []) as Appointment[]
+      setAppts(rows.map(a => ({ ...a, time: hhmm(a.time) })))
+      if (rows.length > 0) setHasKind('kind' in rows[0])
+      else {
+        const probe = await supabase.from('appointments').select('kind').eq('shop_id', shopId).limit(1)
+        setHasKind(!probe.error)
+      }
       setLoadError('')
     } catch (e) {
       setLoadError(`The schedule did not load. ${plainError(e, 'Check your connection and try again.')}`)
@@ -97,11 +129,11 @@ export default function SchedulePage() {
 
   /* ---------- opening the booking form ---------- */
   const openNew = useCallback((date?: string, time?: string, tech?: string, customerId?: string) => {
-    const base: Partial<Appointment> = { status: 'Scheduled', duration: 60, date: date || ymd(picked || new Date()), time: time || '09:00', tech: tech || 'Unassigned' }
+    const base: Partial<Appointment> = { status: 'Scheduled', duration: 60, date: date || ymd(picked || new Date()), time: time || '09:00', tech: tech || 'Unassigned', ...(hasKind ? { kind: null, bay: null } : {}) }
     const c = customerId ? customers.find(x => x.id === customerId) : undefined
     if (c) Object.assign(base, { customer_id: c.id, customer_name: c.name, phone: c.phone || '', vehicle: [c.vehicle_year, c.vehicle_make, c.vehicle_model].filter(Boolean).join(' ') })
     setForm(base); setFormError(''); setOpenId(null); setSheet('form')
-  }, [picked, customers])
+  }, [picked, customers, hasKind])
 
   // Links from other screens: /appointments?new=1 and ?new=1&customer=<id>.
   const [linkDone, setLinkDone] = useState(false)
@@ -117,8 +149,8 @@ export default function SchedulePage() {
     } else setLinkDone(true)
   }, [linkDone, today, loading, customers, openNew])
 
-  const openAppt = (a: Appointment) => { setOpenId(a.id); setDetailError(''); setTextSent(''); setSheet('detail') }
-  const closeSheet = () => { setSheet(null); setFormError(''); setDetailError('') }
+  const openAppt = (a: Appointment) => { setOpenId(a.id); setDetailError(''); setTextSent(''); setTextStart(null); setSheet('detail') }
+  const closeSheet = () => { setSheet(null); setFormError(''); setDetailError(''); setTextStart(null) }
   const current = appts.find(a => a.id === openId) || null
 
   /* ---------- saving ---------- */
@@ -135,13 +167,14 @@ export default function SchedulePage() {
       const data: Record<string, unknown> = { ...form, shop_id: shopId, updated_at: new Date().toISOString() }
       // A new day needs a new reminder, so the one already sent for the old day is cleared.
       if (openId && current && current.date !== form.date) data.reminder_sent_at = null
-      if (!openId) {
-        const r = await supabase.from('appointments').insert({ ...data, status: data.status || 'Scheduled', created_at: new Date().toISOString() })
-        if (r.error) throw new Error(r.error.message)
-      } else {
-        const r = await supabase.from('appointments').update(data).eq('id', openId).eq('shop_id', shopId)
-        if (r.error) throw new Error(r.error.message)
-      }
+      // Until the database has the drop-off and bay columns, they are left out so saving still works.
+      const withoutExtras = (d: Record<string, unknown>) => { const { kind: _k, bay: _b, source: _s, ...rest } = d; void _k; void _b; void _s; return rest }
+      const write = (d: Record<string, unknown>) => (!openId
+        ? supabase.from('appointments').insert({ ...d, status: d.status || 'Scheduled', created_at: new Date().toISOString() })
+        : supabase.from('appointments').update(d).eq('id', openId).eq('shop_id', shopId))
+      let r = await write(hasKind === false ? withoutExtras(data) : data)
+      if (r.error && hasKind !== false && missingSchema(r.error)) { setHasKind(false); r = await write(withoutExtras(data)) }
+      if (r.error) throw new Error(r.error.message)
       const when = form.date ? parseYmd(form.date) : null
       if (when) setPicked(when)
       setSheet(null)
@@ -166,6 +199,56 @@ export default function SchedulePage() {
     } catch (e) { setDetailError(`Status not changed. ${plainError(e, 'Try again.')}`) }
     finally { working.current = false; setBusy(false) }
   }
+
+  /* ---------- requests, late cars and no-shows ---------- */
+  const [actionError, setActionError] = useState('')
+  const nowShop = useMemo(() => nowIn(sched.settings.timezone), [sched.settings.timezone, clock]) // eslint-disable-line react-hooks/exhaustive-deps
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  const bookUrl = sched.settings.online.enabled && sched.settings.online.slug ? `${origin}/book/${sched.settings.online.slug}` : null
+
+  /** Changes one booking's status. `only` makes it conditional, so an answer someone else already gave is never overwritten. */
+  const changeStatus = async (a: Appointment, status: string, only?: string): Promise<boolean> => {
+    if (working.current) return false
+    working.current = true
+    setBusyId(a.id); setActionError('')
+    try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      let q = supabase.from('appointments').update({ status, updated_at: new Date().toISOString() }).eq('id', a.id).eq('shop_id', shopId)
+      if (only) q = q.eq('status', only)
+      const { data, error } = await q.select('id')
+      if (error) throw new Error(error.message)
+      await load()
+      if (!data || data.length === 0) { setNotice(`${a.customer_name} was already answered by someone else.`); return false }
+      return true
+    } catch (e) {
+      setActionError(`Not changed. ${plainError(e, 'Check your connection and try again.')}`)
+      return false
+    } finally { working.current = false; setBusyId(null) }
+  }
+
+  const askToText = (a: Appointment, start: TextStart) => { setOpenId(a.id); setDetailError(''); setTextSent(''); setTextStart(start); setSheet('detail') }
+
+  const acceptRequest = async (a: Appointment) => {
+    if (await changeStatus(a, 'Scheduled', 'Requested')) { setNotice(`${a.customer_name} is booked. Text them to confirm.`); if (a.phone) askToText(a, 'accept') }
+  }
+  const declineRequest = async (a: Appointment) => {
+    if (await changeStatus(a, 'Declined', 'Requested')) { setNotice(`Request from ${a.customer_name} declined. They have not been told yet.`); if (a.phone) askToText(a, 'decline') }
+  }
+  const markNoShow = async (a: Appointment) => {
+    if (await changeStatus(a, 'No Show')) { setNotice(`${a.customer_name} marked as a no show.`); if (a.phone) askToText(a, 'noshow') }
+  }
+
+  const requests = useMemo(() => appts.filter(a => a.status === 'Requested').sort(byTime).slice(0, 20), [appts])
+  const late = useMemo(
+    () => appts.filter(a => a.date >= addDaysYmd(nowShop.ymd, -3) && isOverdueArrival(a, nowShop, cap.noShowGraceMinutes)).sort(byTime),
+    [appts, nowShop, cap.noShowGraceMinutes],
+  )
+  const alternatives = useMemo(() => {
+    if (!current) return []
+    return alternativeTimes(cap, appts.filter(x => x.id !== current.id), { date: current.date, minutes: Number(current.duration) || 60, kind: current.kind || 'dropoff', now: nowShop, leadMinutes: 60, step: sched.settings.online.stepMinutes }).map(x => x.words)
+  }, [current, appts, cap, nowShop, sched.settings.online.stepMinutes])
+  const missed = useMemo(() => (current && phoneTail(current.phone) ? missRate(appts.filter(x => x.id !== current.id && phoneTail(x.phone) === phoneTail(current.phone))) : undefined), [current, appts])
 
   const sendText = async (raw: string) => {
     if (!current || working.current) return
@@ -269,15 +352,30 @@ export default function SchedulePage() {
           <h1 className="page-title">Schedule</h1>
           <p className="page-subtitle num" aria-live="polite">{subtitle}</p>
         </div>
-        <button type="button" className="btn btn-primary w-full sm:w-auto" onClick={() => openNew()} disabled={!ready}>
-          <Icon name="plus" className="h-5 w-5" />New appointment
-        </button>
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+          <button type="button" className="btn btn-primary min-w-0 flex-1 sm:flex-none" onClick={() => openNew()} disabled={!ready}>
+            <Icon name="plus" className="h-5 w-5" />New appointment
+          </button>
+          <button type="button" className="btn btn-secondary" onClick={() => { setActionError(''); setSheet('reminders') }} disabled={!ready || loading}>
+            <Icon name="bell" className="h-5 w-5" />Reminders
+          </button>
+          <button type="button" className="btn btn-secondary btn-icon" onClick={() => { setActionError(''); setSheet('settings') }} aria-label="Scheduling settings">
+            <Icon name="settings" className="h-5 w-5" />
+          </button>
+        </div>
       </header>
 
       {notice && (
         <div role="status" className="mb-4 flex items-center justify-between gap-3 rounded-md border border-green/40 bg-bg-card px-4 py-2.5 text-[0.9375rem]">
           <span className="flex min-w-0 items-center gap-2"><Icon name="check" className="h-5 w-5 shrink-0 text-green" /><span className="min-w-0 break-words">{notice}</span></span>
           <button type="button" className="btn btn-ghost btn-sm shrink-0" onClick={() => setNotice('')}>Dismiss</button>
+        </div>
+      )}
+
+      {actionError && (
+        <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-md border border-red/50 bg-red/[0.08] px-4 py-3 text-[0.9375rem]">
+          <p className="min-w-0 break-words text-red">{actionError}</p>
+          <button type="button" className="btn btn-ghost btn-sm shrink-0" onClick={() => setActionError('')}>Dismiss</button>
         </div>
       )}
 
@@ -295,9 +393,29 @@ export default function SchedulePage() {
         </div>
       ) : (
         <>
+          <RequestsPanel
+            requests={requests}
+            all={appts}
+            cap={cap}
+            now={nowShop}
+            busyId={busyId}
+            onAccept={a => void acceptRequest(a)}
+            onDecline={a => void declineRequest(a)}
+            onSuggest={a => askToText(a, 'suggest')}
+            onOpen={openAppt}
+          />
+          <LateStrip
+            items={late}
+            todayKey={nowShop.ymd}
+            graceMinutes={cap.noShowGraceMinutes}
+            busyId={busyId}
+            onText={a => askToText(a, 'late')}
+            onNoShow={a => void markNoShow(a)}
+            onOpen={openAppt}
+          />
           <div className="mb-4 flex flex-wrap items-center gap-2">
-            <button type="button" className="btn btn-secondary" onClick={() => setPicked(today)} disabled={pickedKey === todayKey && view !== 'week'}>Today</button>
-            {view !== 'list' && (
+            <button type="button" className="btn btn-secondary" onClick={() => { setPicked(today); if (view === 'month' && today) setMonth(new Date(today.getFullYear(), today.getMonth(), 1)) }} disabled={pickedKey === todayKey && view !== 'week' && view !== 'month'}>Today</button>
+            {view !== 'list' && view !== 'month' && (
               <>
                 <button type="button" className="btn-icon" onClick={() => step(-1)} aria-label={view === 'week' ? 'Previous week' : 'Previous day'}><Icon name="chevronLeft" className="h-6 w-6" /></button>
                 <button type="button" className="btn-icon" onClick={() => step(1)} aria-label={view === 'week' ? 'Next week' : 'Next day'}><Icon name="chevronRight" className="h-6 w-6" /></button>
@@ -308,16 +426,31 @@ export default function SchedulePage() {
               className={view === 'list' ? 'ml-auto' : 'w-full sm:ml-auto sm:w-auto'}
               label="Schedule view"
               value={view}
-              onChange={setView}
+              onChange={v => { setView(v); if (v === 'month' && picked) setMonth(new Date(picked.getFullYear(), picked.getMonth(), 1)) }}
               options={[
                 { value: 'day', label: 'Day' },
                 ...(desktop ? [{ value: 'week' as View, label: 'Week' }] : []),
+                { value: 'month', label: 'Month' },
                 { value: 'list', label: 'List' },
               ]}
             />
           </div>
 
-          {view !== 'list' && !desktop && (
+          {view === 'month' && month && (
+            <MonthGrid
+              month={month}
+              todayKey={todayKey}
+              pickedKey={pickedKey}
+              cap={cap}
+              appts={appts}
+              onPick={d => { setPicked(d); setView('day') }}
+              onMonth={dir => setMonth(m => (m ? new Date(m.getFullYear(), m.getMonth() + dir, 1) : m))}
+            />
+          )}
+
+          {view === 'day' && !failedEmpty && <CapacityBar cap={cap} appts={appts} ymd={pickedKey} onSettings={sched.settings.canChange && sched.settings.migrated ? () => setSheet('settings') : undefined} />}
+
+          {view !== 'list' && view !== 'month' && !desktop && (
             <div className="mb-4 grid grid-cols-7 gap-1" role="group" aria-label="Days this week">
               {weekDays.map(d => {
                 const k = ymd(d); const n = (byDate.get(k) || []).filter(a => !isClosed(a.status)).length
@@ -411,6 +544,10 @@ export default function SchedulePage() {
           customers={customers}
           techs={techs}
           serviceIdeas={serviceIdeas}
+          canned={canned}
+          cap={cap}
+          now={nowShop}
+          hasKind={hasKind === true}
           appts={appts}
           saving={saving || busy}
           error={formError}
@@ -429,10 +566,15 @@ export default function SchedulePage() {
         )}
         {current && (
           <ApptDetail
-            key={current.id}
+            key={`${current.id}-${textStart || 'none'}`}
             appt={current}
             shopName={shop.name}
             shopPhone={shop.phone}
+            todayYmd={nowShop.ymd}
+            bookUrl={bookUrl}
+            alternatives={alternatives}
+            startWith={textStart}
+            missed={missed}
             busy={busy}
             error={detailError}
             textSent={textSent}
@@ -442,6 +584,27 @@ export default function SchedulePage() {
             onSendText={sendText}
             onClose={closeSheet}
           />
+        )}
+      </Sheet>
+
+      <Sheet open={sheet === 'settings'} onClose={closeSheet} title="Scheduling settings" wide>
+        {sheet === 'settings' && (
+          !sched.loaded ? (
+            <div className="space-y-2" aria-busy="true" aria-label="Loading the settings"><div className="skeleton h-10" /><div className="skeleton h-40" /></div>
+          ) : sched.error ? (
+            <div>
+              <Notice kind="error">{sched.error}</Notice>
+              <button type="button" className="btn btn-secondary mt-4" onClick={() => void sched.reload()}>Try again</button>
+            </div>
+          ) : (
+            <SettingsSheet settings={sched.settings} save={sched.save} onSaved={m => { setNotice(m); setSheet(null) }} onClose={closeSheet} />
+          )
+        )}
+      </Sheet>
+
+      <Sheet open={sheet === 'reminders'} onClose={closeSheet} title="Send reminders" wide>
+        {sheet === 'reminders' && (
+          <RemindersSheet appts={appts} cap={cap} timezone={sched.settings.timezone} shop={shop} isStopped={isStopped} onDone={() => { void load() }} onClose={closeSheet} />
         )}
       </Sheet>
 

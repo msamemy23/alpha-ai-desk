@@ -5,18 +5,22 @@ import { EmptyBlock, ErrorCard, FilterChips, SearchField } from '@/components/Li
 import Notice from '@/components/Notice'
 import Sheet from '@/components/Sheet'
 import DviRows, { listState } from '@/components/dvi/DviRows'
+import FollowUpSheet from '@/components/dvi/FollowUpSheet'
 import Editor from '@/components/dvi/Editor'
 import StartSheet from '@/components/dvi/StartSheet'
+import TemplateManager from '@/components/dvi/TemplateManager'
 import type { StartCustomer, StartValues } from '@/components/dvi/StartSheet'
 import { loadInspection, useDviList } from '@/components/dvi/useDvi'
+import { useTemplates } from '@/components/dvi/useTemplates'
 import { START_JOB_COLUMNS, rowFrom } from '@/components/dvi/types'
 import type { DviListRow, DviRow, StartJob } from '@/components/dvi/types'
 import { localKey } from '@/components/jobs/types'
-import { counts, makeSections, overallOf } from '@/lib/dvi'
+import { counts, makeSections, overallOf, sectionsFromTemplate } from '@/lib/dvi'
+import { followUpState } from '@/lib/dvi-followup'
 import { getShopId, supabase } from '@/lib/supabase'
 import { useShopLogo } from '@/lib/shop-logo'
 
-type Filter = 'all' | 'todo' | 'waiting' | 'answered'
+type Filter = 'all' | 'todo' | 'waiting' | 'answered' | 'follow'
 
 const errText = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback)
 
@@ -28,6 +32,9 @@ export default function InspectionsPage() {
   const [filter, setFilter] = useState<Filter>('all')
   const [search, setSearch] = useState('')
   const [sheet, setSheet] = useState(false)
+  const [manage, setManage] = useState(false)
+  const [following, setFollowing] = useState<DviListRow | null>(null)
+  const manageBack = useRef(false)
   const [presetJob, setPresetJob] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState('')
@@ -39,7 +46,9 @@ export default function InspectionsPage() {
   const [shop, setShop] = useState({ name: '', phone: '', address: '' })
   const { logo } = useShopLogo()
 
-  const { rows, loading, error, migrated, reload } = useDviList(!open)
+  const { rows, loading, error, migrated, followups, reload } = useDviList(!open)
+  const templates = useTemplates()
+  const shopTemplates = useMemo(() => templates.list.filter(t => !t.archived), [templates.list])
 
   /* ---------- the people, cars and shop details the checklist needs ---------- */
   useEffect(() => {
@@ -55,9 +64,9 @@ export default function InspectionsPage() {
           customer_name: String(r.customer_name || ''), tech: String(r.tech || ''), vehicle_year: String(r.vehicle_year || ''), vehicle_make: String(r.vehicle_make || ''),
           vehicle_model: String(r.vehicle_model || ''), status: String(r.status || ''),
         }))))
-      supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).order('name').limit(1500)
+      supabase.from('customers').select('id,name,phone,email,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).order('name').limit(1500)
         .then(({ data }) => setCustomers(((data || []) as unknown as Record<string, unknown>[]).map(r => ({
-          id: String(r.id), name: String(r.name || ''), phone: String(r.phone || ''), vehicle_year: String(r.vehicle_year || ''),
+          id: String(r.id), name: String(r.name || ''), phone: String(r.phone || ''), email: String(r.email || ''), vehicle_year: String(r.vehicle_year || ''),
           vehicle_make: String(r.vehicle_make || ''), vehicle_model: String(r.vehicle_model || ''),
         }))))
       supabase.from('settings').select('shop_name,shop_phone,shop_address').eq('shop_id', shopId).maybeSingle()
@@ -116,7 +125,8 @@ export default function InspectionsPage() {
     try {
       const shopId = await getShopId()
       if (!shopId) throw new Error('We could not find your shop. Refresh, or sign out and back in.')
-      const sections = makeSections(v.template)
+      const own = shopTemplates.find(t => t.key === v.template)
+      const sections = own ? sectionsFromTemplate(own) : makeSections(v.template)
       const now = new Date().toISOString()
       const payload: Record<string, unknown> = {
         shop_id: shopId, job_id: v.job_id, customer_name: v.customer_name, vehicle: v.vehicle, tech: v.tech, sections,
@@ -133,13 +143,15 @@ export default function InspectionsPage() {
   }
 
   const openStart = () => { setPresetJob(null); setStartError(''); setSheet(true) }
+  const closeManage = () => { setManage(false); if (manageBack.current) { manageBack.current = false; setSheet(true) } }
 
   /* ---------- what to show ---------- */
   const term = search.trim().toLowerCase()
   const searched = useMemo(() => (!term ? rows : rows.filter(r => [r.customer_name, r.vehicle, r.tech].some(v => v.toLowerCase().includes(term)))), [rows, term])
   const group = (r: DviListRow): Filter => { const s = listState(r); return s === 'answered' ? 'answered' : s === 'sent' ? 'waiting' : 'todo' }
-  const countOf = (f: Filter) => (f === 'all' ? searched.length : searched.filter(r => group(r) === f).length)
-  const shown = filter === 'all' ? searched : searched.filter(r => group(r) === filter)
+  const needsFollow = (r: DviListRow) => followUpState(r)?.due === true
+  const countOf = (f: Filter) => (f === 'all' ? searched.length : f === 'follow' ? searched.filter(needsFollow).length : searched.filter(r => group(r) === f).length)
+  const shown = filter === 'all' ? searched : filter === 'follow' ? searched.filter(needsFollow) : searched.filter(r => group(r) === filter)
   const waiting = rows.filter(r => group(r) === 'waiting').length
   const answered = rows.filter(r => group(r) === 'answered').length
 
@@ -174,9 +186,14 @@ export default function InspectionsPage() {
           <h1 className="page-title">Inspections</h1>
           <p className="page-subtitle num" aria-live="polite">{subtitle}</p>
         </div>
-        <button type="button" className="btn btn-primary w-full sm:w-auto" onClick={openStart}>
-          <Icon name="plus" className="h-5 w-5" />New inspection
-        </button>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <button type="button" className="btn btn-secondary w-full sm:w-auto" onClick={() => { manageBack.current = false; setManage(true) }}>
+            <Icon name="list" className="h-5 w-5" />Your checklists
+          </button>
+          <button type="button" className="btn btn-primary w-full sm:w-auto" onClick={openStart}>
+            <Icon name="plus" className="h-5 w-5" />New inspection
+          </button>
+        </div>
       </header>
 
       {notice && (
@@ -222,22 +239,45 @@ export default function InspectionsPage() {
                 { key: 'todo', label: 'Not sent', count: countOf('todo') },
                 { key: 'waiting', label: 'Waiting on customer', count: countOf('waiting') },
                 { key: 'answered', label: 'Answered', count: countOf('answered') },
+                { key: 'follow', label: 'Follow up', count: countOf('follow') },
               ]}
             />
           </div>
           {shown.length === 0 ? (
             <EmptyBlock icon="inspect" title={term ? `Nothing matches “${search.trim()}”` : 'Nothing here'}>
-              {term ? 'Check the spelling, or search by the car or the technician.' : filter === 'waiting' ? 'Nothing is out with a customer right now.' : filter === 'answered' ? 'No customer has answered yet.' : 'Everything has been sent.'}
+              {term ? 'Check the spelling, or search by the car or the technician.' : filter === 'waiting' ? 'Nothing is out with a customer right now.' : filter === 'answered' ? 'No customer has answered yet.' : filter === 'follow' ? 'No work is waiting on a customer. Declined work and inspections nobody answered show here.' : 'Everything has been sent.'}
             </EmptyBlock>
           ) : (
-            <DviRows rows={shown} todayKey={todayKey} onOpen={r => void openById(r.id)} />
+            <DviRows rows={shown} todayKey={todayKey} onOpen={r => void openById(r.id)} onFollow={r => setFollowing(r)} />
           )}
           {loadingOpen && <p role="status" className="mt-3 text-[0.9375rem] text-text-secondary">Opening…</p>}
         </>
       )}
 
       <Sheet open={sheet} onClose={() => { if (!starting) setSheet(false) }} title="New inspection">
-        <StartSheet key={String(sheet) + (presetJob || '')} jobs={jobs} customers={customers} techs={techs} presetJobId={presetJob} busy={starting} error={startError} onStart={v => void start(v)} />
+        <StartSheet key={String(sheet) + (presetJob || '') + shopTemplates.length} jobs={jobs} customers={customers} techs={techs} presetJobId={presetJob} shopTemplates={shopTemplates} onManage={() => { manageBack.current = true; setSheet(false); setManage(true) }} busy={starting} error={startError} onStart={v => void start(v)} />
+      </Sheet>
+
+      <Sheet open={following !== null} onClose={() => setFollowing(null)} title="Follow up with the customer">
+        {following && (
+          <FollowUpSheet
+            key={following.id}
+            row={following}
+            customers={customers}
+            shop={shop}
+            canRemember={followups}
+            onClose={() => setFollowing(null)}
+            onSent={remembered => {
+              setFollowing(null)
+              setNotice(remembered || !followups ? `Follow-up texted to ${following.customer_name || 'the customer'}.${followups ? '' : ' It is not remembered until the database update is applied, so it will keep showing here.'}` : `Follow-up texted to ${following.customer_name || 'the customer'}, but it could not be marked as followed up. Do not text again.`)
+              void reload()
+            }}
+          />
+        )}
+      </Sheet>
+
+      <Sheet open={manage} onClose={closeManage} title="Your checklists" wide>
+        <TemplateManager api={templates} canEdit onClose={closeManage} />
       </Sheet>
     </div>
   )

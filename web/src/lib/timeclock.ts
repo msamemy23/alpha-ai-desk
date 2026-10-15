@@ -16,6 +16,11 @@ export interface ClockEntry {
   /** Present only once migration 035 is applied. */
   break_minutes?: number | null
   break_started_at?: string | null
+  /** Present only once migration 052 is applied: 'inside', 'outside' or 'unknown' when the shop checks location at clock-in. */
+  in_location?: string | null
+  in_distance_m?: number | null
+  /** 'app' for a punch made in Team, 'kiosk' for the shop tablet. Present only once migration 052 is applied. */
+  punch_source?: string | null
 }
 
 export interface Person {
@@ -94,10 +99,11 @@ export function dayRange(firstKey: string, lastKey: string): { from: string; to:
   return { from: parseDayKey(firstKey).toISOString(), to: parseDayKey(addDaysKey(lastKey, 1)).toISOString() }
 }
 
-/** Weeks run Monday to Sunday. */
-export function weekStartKey(d: Date = new Date()): string {
+/** The first day of the week a date falls in. Weeks run Monday to Sunday unless the shop picked another start (0 is Sunday, 1 Monday, up to 6 Saturday). */
+export function weekStartKey(d: Date = new Date(), startDay = 1): string {
   const x = new Date(d.getFullYear(), d.getMonth(), d.getDate())
-  return dayKey(new Date(x.getFullYear(), x.getMonth(), x.getDate() - ((x.getDay() + 6) % 7)))
+  const start = Number.isInteger(startDay) && startDay >= 0 && startDay <= 6 ? startDay : 1
+  return dayKey(new Date(x.getFullYear(), x.getMonth(), x.getDate() - ((x.getDay() - start + 7) % 7)))
 }
 
 export const weekKeys = (startKey: string): string[] => Array.from({ length: 7 }, (_, i) => addDaysKey(startKey, i))
@@ -209,6 +215,27 @@ export function hoursFor(clockIn: string, clockOut: string, breakMin = 0): numbe
 
 export const overtimeMinutes = (totalMin: number): number => Math.max(0, totalMin - OVERTIME_MIN)
 
+/** A clock-out can be taken back for this long. After that a manager fixes the entry instead. */
+export const UNDO_WINDOW_MS = 15 * MIN
+
+/**
+ * The punch that can still be taken back: the person's most recent closed entry, if they clocked out within the undo window
+ * and are not clocked in again. Returns null when there is nothing to undo.
+ */
+export function undoableEntry(mine: ClockEntry[], nowMs: number): ClockEntry | null {
+  if (mine.some(e => !e.clock_out)) return null
+  let best: ClockEntry | null = null
+  for (const e of mine) {
+    if (!e.clock_out) continue
+    const out = Date.parse(e.clock_out)
+    if (isNaN(out)) continue
+    if (!best || out > Date.parse(String(best.clock_out))) best = e
+  }
+  if (!best) return null
+  const age = nowMs - Date.parse(String(best.clock_out))
+  return age >= 0 && age <= UNDO_WINDOW_MS ? best : null
+}
+
 /** Rows from the API arrive with loose types; this makes them safe to do math on. */
 export function normalizeEntry(raw: Record<string, unknown>): ClockEntry {
   return {
@@ -221,6 +248,9 @@ export function normalizeEntry(raw: Record<string, unknown>): ClockEntry {
     note: raw.note == null ? null : String(raw.note),
     break_minutes: raw.break_minutes == null ? undefined : Number(raw.break_minutes),
     break_started_at: raw.break_started_at ? String(raw.break_started_at) : null,
+    in_location: raw.in_location ? String(raw.in_location) : null,
+    in_distance_m: raw.in_distance_m == null || raw.in_distance_m === '' ? null : Number(raw.in_distance_m),
+    punch_source: raw.punch_source ? String(raw.punch_source) : null,
   }
 }
 

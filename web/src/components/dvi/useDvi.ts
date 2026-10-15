@@ -1,7 +1,7 @@
 'use client'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getShopId, supabase } from '@/lib/supabase'
-import { LIST_NEW, LIST_OLD, listRowFrom, rowFrom } from './types'
+import { LIST_FOLLOW, LIST_NEW, LIST_OLD, listRowFrom, rowFrom } from './types'
 import type { DviListRow, DviRow } from './types'
 
 const errText = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback)
@@ -14,8 +14,10 @@ export function useDviList(enabled: boolean) {
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState('')
   const [migrated, setMigrated] = useState(false)
+  const [followups, setFollowups] = useState(false)
   const seq = useRef(0)
-  const migratedRef = useRef<boolean | null>(null)
+  // Which set of columns this database has: the follow-up columns (049), only the customer-link columns (036), or neither.
+  const tier = useRef<'follow' | 'new' | 'old'>('follow')
 
   const load = useCallback(async () => {
     const mine = ++seq.current
@@ -23,13 +25,15 @@ export function useDviList(enabled: boolean) {
       const shopId = await getShopId()
       if (!shopId) throw new Error('We could not find your shop. Refresh, or sign out and back in.')
       const ask = (cols: string) => supabase.from('dvi').select(cols).eq('shop_id', shopId).order('created_at', { ascending: false }).limit(300)
-      let res = await ask(migratedRef.current === false ? LIST_OLD : LIST_NEW)
-      if (res.error && noColumn(res.error) && migratedRef.current !== false) { migratedRef.current = false; res = await ask(LIST_OLD) }
-      else if (!res.error && migratedRef.current === null) migratedRef.current = true
+      const cols = { follow: LIST_FOLLOW, new: LIST_NEW, old: LIST_OLD }
+      let res = await ask(cols[tier.current])
+      if (res.error && noColumn(res.error) && tier.current === 'follow') { tier.current = 'new'; res = await ask(LIST_NEW) }
+      if (res.error && noColumn(res.error) && tier.current === 'new') { tier.current = 'old'; res = await ask(LIST_OLD) }
       if (res.error) throw res.error
       if (mine !== seq.current) return
       setRows(((res.data || []) as unknown as Record<string, unknown>[]).map(listRowFrom))
-      setMigrated(migratedRef.current === true)
+      setMigrated(tier.current !== 'old')
+      setFollowups(tier.current === 'follow')
       setError('')
     } catch (e) {
       if (mine !== seq.current) return
@@ -55,7 +59,7 @@ export function useDviList(enabled: boolean) {
     }
   }, [enabled, load])
 
-  return { rows, loading: !loaded, error, migrated, reload: load }
+  return { rows, loading: !loaded, error, migrated, followups, reload: load }
 }
 
 /** Load one whole inspection (with its photos). */

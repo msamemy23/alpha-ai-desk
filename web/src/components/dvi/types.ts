@@ -38,12 +38,17 @@ export interface DviListRow {
   customer_decided_at: string | null
   viewed_at: string | null
   summary: Partial<Counts> | null
+  /** When the shop last followed up on work the customer did not act on (migration 049). */
+  followup_sent_at: string | null
+  followup_count: number
   created_at: string
   updated_at: string
 }
 
 // The newer columns come from migration 036. Until it is applied the list asks for the older set.
+// The follow-up columns come from migration 049 and are asked for first; the list steps down when they are missing.
 export const LIST_NEW = 'id,job_id,customer_id,customer_name,vehicle,tech,overall_status,sent_to_customer,sent_at,customer_approved,customer_decisions,customer_decided_at,viewed_at,summary,created_at,updated_at'
+export const LIST_FOLLOW = LIST_NEW.replace(',created_at', ',followup_sent_at,followup_count,created_at')
 export const LIST_OLD = 'id,job_id,customer_name,vehicle,tech,overall_status,sent_to_customer,sent_at,customer_approved,created_at,updated_at'
 
 const str = (v: unknown) => (typeof v === 'string' ? v : '')
@@ -56,6 +61,7 @@ export function listRowFrom(r: Record<string, unknown>): DviListRow {
     id: String(r.id), job_id: strOrNull(r.job_id), customer_id: strOrNull(r.customer_id), customer_name: str(r.customer_name), vehicle: str(r.vehicle), tech: str(r.tech),
     overall_status: str(r.overall_status), sent_to_customer: r.sent_to_customer === true, sent_at: strOrNull(r.sent_at), customer_approved: r.customer_approved === true,
     customer_decisions: dec, customer_decided_at: strOrNull(r.customer_decided_at), viewed_at: strOrNull(r.viewed_at), summary: sum,
+    followup_sent_at: strOrNull(r.followup_sent_at), followup_count: typeof r.followup_count === 'number' ? r.followup_count : 0,
     created_at: str(r.created_at), updated_at: str(r.updated_at),
   }
 }

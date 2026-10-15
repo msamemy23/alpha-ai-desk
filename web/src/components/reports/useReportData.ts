@@ -1,91 +1,38 @@
 'use client'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getShopId, supabase } from '@/lib/supabase'
-import { calculateDocumentTotals, getLaborFlatAmount, laborLineTotal, partLineTotal, quantityFromUnknown, nonNegativeMoney } from '@/lib/document-money'
-import { balanceFor, keyOf } from '@/lib/reports'
+import type { Db } from '@/lib/db-types'
+import { dayOfStamp, docFrom } from '@/lib/report-docs'
+import { loadAiCalls, loadCalls, loadDocs, loadJobs, loadPayments } from '@/lib/report-load'
+import type { AiCall } from '@/lib/report-load'
 import type { ReportCall, ReportDoc, ReportJob, ReportPayment } from '@/lib/reports'
 
+export { dayOfStamp, docFrom }
+
 const errText = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback)
-type Row = Record<string, unknown>
-const str = (v: unknown) => (typeof v === 'string' ? v : v == null ? '' : String(v))
 
 /** One source of data (documents, payments and so on) with its own loading and error state, so one failing never hides the rest. */
 export interface Source<T> { rows: T[]; loaded: boolean; error: string }
 const empty = <T,>(): Source<T> => ({ rows: [], loaded: false, error: '' })
 
-/** A timestamp as the shop's calendar day; a plain date stays as it is. */
-export const dayOfStamp = (v: unknown): string => {
-  const s = str(v)
-  if (!s) return ''
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
-  const d = new Date(s)
-  return isNaN(d.getTime()) ? '' : keyOf(d)
-}
-
-/**
- * Every row of a shop's table, newest first. Pages are cut by the sort value and the id together, so a row added while a
- * later page is loading can neither be skipped nor come back twice.
- */
-async function allRows(table: string, select: string, shopId: string, order: string, snapshot: string, extra?: (q: ReturnType<typeof base>) => ReturnType<typeof base>, size = 1000): Promise<Row[]> {
-  const out: Row[] = []
-  let cursor: { value: string; id: string } | null = null
-  for (;;) {
-    let q = extra ? extra(base(table, select, shopId)) : base(table, select, shopId)
-    q = q.lte(order, snapshot).order(order, { ascending: false }).order('id', { ascending: false })
-    if (cursor) q = q.or(`${order}.lt.${cursor.value},and(${order}.eq.${cursor.value},id.lt.${cursor.id})`)
-    const { data, error } = await q.range(0, size - 1)
-    if (error) throw new Error(error.message)
-    const page = (data || []) as unknown as Row[]
-    out.push(...page)
-    if (page.length < size) return out
-    const last = page[page.length - 1]
-    if (last[order] == null || last.id == null) throw new Error('A report row is missing its place in the list.')
-    cursor = { value: str(last[order]), id: str(last.id) }
-  }
-}
-const base = (table: string, select: string, shopId: string) => supabase.from(table).select(select).eq('shop_id', shopId)
-
-const DOC_COLUMNS = 'id,type,doc_number,status,doc_date,created_at,customer_id,customer_name,parts,labors,shop_supplies,sublet,tax_rate,apply_tax,amount_paid,payment_method'
-
-export function docFrom(raw: Row): ReportDoc {
-  const t = calculateDocumentTotals(raw)
-  const labors = (Array.isArray(raw.labors) ? raw.labors : []).filter((l): l is Row => !!l && typeof l === 'object')
-  const parts = (Array.isArray(raw.parts) ? raw.parts : []).filter((l): l is Row => !!l && typeof l === 'object')
-  const ops = labors.map(l => ({ name: str(l.operation ?? l.description ?? l.name).trim(), amount: laborLineTotal(l) })).filter(o => o.name || o.amount > 0)
-  const hours = labors.filter(l => str(l.tech).trim()).map(l => ({
-    tech: str(l.tech).trim(),
-    // Only lines priced by the hour have hours to count. A flat-priced line still counts as money.
-    hours: getLaborFlatAmount(l) === null ? quantityFromUnknown(l.hours, 0) : 0,
-    amount: laborLineTotal(l),
-  }))
-  const items = parts.map(p => ({ name: str(p.name).trim(), qty: quantityFromUnknown(p.qty, 1), amount: partLineTotal(p), cost: Math.round(nonNegativeMoney(p.cost) * quantityFromUnknown(p.qty, 1) * 100) / 100 })).filter(i => i.name)
-  const status = str(raw.status)
-  return {
-    id: str(raw.id), type: str(raw.type), number: str(raw.doc_number).trim(), status,
-    date: dayOfStamp(raw.doc_date) || dayOfStamp(raw.created_at),
-    customerId: raw.customer_id ? str(raw.customer_id) : null, customer: str(raw.customer_name).trim(),
-    total: t.total, labor: t.laborTotal, parts: t.partsTotal, fees: Math.round((t.shopSupplies + t.sublet + t.coreTotal) * 100) / 100, tax: t.taxAmount,
-    paid: t.amountPaid, balance: balanceFor(status, t.balanceDue), method: str(raw.payment_method),
-    ops, items, hours,
-  }
-}
-
-const paymentFrom = (r: Row, names: Map<string, string>): ReportPayment => ({
-  id: str(r.id), docId: r.document_id ? str(r.document_id) : null, amount: Math.max(0, Number(r.amount) || 0),
-  method: str(r.method), date: dayOfStamp(r.paid_at) || dayOfStamp(r.created_at), customer: names.get(str(r.document_id)) || '',
-})
-const jobFrom = (r: Row): ReportJob => ({ id: str(r.id), status: str(r.status), tech: str(r.tech).trim(), date: dayOfStamp(r.created_at), customer: str(r.customer_name).trim() })
-const callFrom = (r: Row): ReportCall => ({ id: str(r.id), direction: str(r.direction).toLowerCase(), seconds: Math.max(0, Number(r.duration_secs) || 0), start: str(r.start_time) })
+/** What the reports need to know about the shop itself, read from its settings. */
+export interface ShopInfo { name: string; phone: string; postedRate: number | null; timezone: string }
+const NO_SHOP: ShopInfo = { name: '', phone: '', postedRate: null, timezone: '' }
 
 /**
  * Everything the Reports screen reads. Documents, payments, jobs and calls load side by side and each reports on its own,
- * so a calls problem never hides the money. `reload` fetches everything again.
+ * so a calls problem never hides the money. The same loaders feed the scheduled emails, so a number on the screen and in
+ * an email come from the same code. `reload` fetches everything again. Nothing here writes.
  */
 export function useReportData() {
   const [docs, setDocs] = useState<Source<ReportDoc>>(empty)
+  /** False when this database predates the advisor, car and approval columns. */
+  const [extended, setExtended] = useState(true)
   const [payments, setPayments] = useState<Source<ReportPayment>>(empty)
   const [jobs, setJobs] = useState<Source<ReportJob>>(empty)
   const [calls, setCalls] = useState<Source<ReportCall>>(empty)
+  const [aiCalls, setAiCalls] = useState<Source<AiCall>>(empty)
+  const [shop, setShop] = useState<ShopInfo>(NO_SHOP)
   const seq = useRef(0)
 
   const load = useCallback(async () => {
@@ -97,38 +44,50 @@ export function useReportData() {
       const err = 'We could not find your shop. Refresh, or sign out and back in.'
       if (fresh()) {
         setDocs({ rows: [], loaded: true, error: err }); setPayments({ rows: [], loaded: true, error: err })
-        setJobs({ rows: [], loaded: true, error: err }); setCalls({ rows: [], loaded: true, error: err })
+        setJobs({ rows: [], loaded: true, error: err }); setCalls({ rows: [], loaded: true, error: err }); setAiCalls({ rows: [], loaded: true, error: err })
       }
       return
     }
     const sid = shopId
+    const db = supabase as unknown as Db
     // One shared cutoff, so rows added while later pages load do not shift the pages.
     const snapshot = new Date().toISOString()
-    // Calls and jobs older than last year's start are never compared, so they are not downloaded.
+    // Calls older than last year's start are never compared, so they are not downloaded.
     const since = `${new Date().getFullYear() - 1}-01-01T00:00:00`
 
-    const names = new Map<string, string>()
     const guard = async <T,>(set: (s: Source<T>) => void, work: () => Promise<T[]>, fallback: string) => {
       try { const rows = await work(); if (fresh()) set({ rows, loaded: true, error: '' }) }
       catch (e) { if (fresh()) set({ rows: [], loaded: true, error: errText(e, fallback) }) }
     }
 
-    const docsDone = guard(setDocs, async () => {
-      const raw = await allRows('documents', DOC_COLUMNS, sid, 'created_at', snapshot, q => q.in('type', ['Invoice', 'Receipt']))
-      const rows = raw.map(docFrom)
-      for (const d of rows) names.set(d.id, d.customer)
-      return rows
-    }, 'Invoices did not load. Check your connection and try again.')
-    const payDone = guard(setPayments, async () => (await allRows('payments', 'id,document_id,amount,method,paid_at,created_at', sid, 'created_at', snapshot)).map(r => paymentFrom(r, names)), 'Payments did not load. Check your connection and try again.')
+    const docsDone = (async () => {
+      try {
+        const out = await loadDocs(db, sid, snapshot)
+        if (fresh()) { setDocs({ rows: out.docs, loaded: true, error: '' }); setExtended(out.extended) }
+        return out.docs
+      } catch (e) {
+        if (fresh()) setDocs({ rows: [], loaded: true, error: errText(e, 'Invoices did not load. Check your connection and try again.') })
+        return null
+      }
+    })()
+
     await Promise.all([
       docsDone,
-      payDone.then(async () => {
-        // Names come from the invoices; fill them in once both are here.
-        await docsDone
-        if (fresh()) setPayments(p => ({ ...p, rows: p.rows.map(x => (x.customer || !x.docId ? x : { ...x, customer: names.get(x.docId) || '' })) }))
-      }),
-      guard(setJobs, async () => (await allRows('jobs', 'id,status,tech,customer_name,created_at', sid, 'created_at', snapshot)).map(jobFrom), 'Jobs did not load. Check your connection and try again.'),
-      guard(setCalls, async () => (await allRows('call_history', 'id,direction,duration_secs,start_time', sid, 'start_time', snapshot, q => q.gte('start_time', since))).map(callFrom), 'Calls did not load. Check your connection and try again.'),
+      // Payments take customer names from the invoices, so they wait for them. A failed invoice load means no names, not no payments.
+      docsDone.then(rows => guard(setPayments, () => loadPayments(db, sid, snapshot, rows || []), 'Payments did not load. Check your connection and try again.')),
+      guard(setJobs, () => loadJobs(db, sid, snapshot), 'Jobs did not load. Check your connection and try again.'),
+      guard(setCalls, () => loadCalls(db, sid, snapshot, since), 'Calls did not load. Check your connection and try again.'),
+      // The AI assistant's own log is optional: without it the calls tab says who answered is unknown.
+      guard(setAiCalls, () => loadAiCalls(db, sid), 'The AI assistant call log did not load.'),
+      (async () => {
+        try {
+          let r = await supabase.from('settings').select('shop_name,shop_phone,labor_rate,timezone').eq('shop_id', sid).maybeSingle()
+          if (r.error) r = await supabase.from('settings').select('shop_name,shop_phone,labor_rate').eq('shop_id', sid).maybeSingle()
+          const d = (r.data || {}) as Record<string, unknown>
+          const rate = Number(d.labor_rate)
+          if (fresh()) setShop({ name: String(d.shop_name ?? '').trim(), phone: String(d.shop_phone ?? '').trim(), postedRate: rate > 0 ? rate : null, timezone: String(d.timezone ?? '').trim() })
+        } catch { if (fresh()) setShop(NO_SHOP) }
+      })(),
     ])
   }, [])
 
@@ -139,5 +98,5 @@ export function useReportData() {
     return stop
   }, [load])
 
-  return { docs, payments, jobs, calls, reload: load }
+  return { docs, extended, payments, jobs, calls, aiCalls, shop, reload: load }
 }

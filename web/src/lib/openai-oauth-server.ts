@@ -16,17 +16,33 @@ function messageText(content: unknown): string {
     .join('\n')
 }
 
+/** Photos on a user message (data URLs only). They are passed on, never dropped, so the model really sees them. */
+function messageImages(content: unknown): string[] {
+  if (!Array.isArray(content)) return []
+  return content.flatMap((part) => {
+    if (!part || typeof part !== 'object') return []
+    const image = (part as { type?: unknown; image_url?: unknown })
+    if (image.type !== 'image_url') return []
+    const url = typeof image.image_url === 'string' ? image.image_url : (image.image_url as { url?: unknown } | null)?.url
+    return typeof url === 'string' && /^data:image\/(?:png|jpe?g|webp|gif);base64,/.test(url) ? [url] : []
+  })
+}
+
 export function chatMessagesToResponsesInput(messages: unknown[]) {
   return messages.flatMap((value) => {
     if (!value || typeof value !== 'object') return []
     const message = value as ChatMessage
     const text = messageText(message.content)
-    if (!text) return []
     const role = message.role === 'system' ? 'developer' : message.role
     if (role !== 'user' && role !== 'assistant' && role !== 'developer') return []
+    const images = role === 'user' ? messageImages(message.content) : []
+    if (!text && !images.length) return []
     return [{
       role,
-      content: [{ type: 'input_text', text }],
+      content: [
+        ...(text ? [{ type: 'input_text', text }] : []),
+        ...images.map(image_url => ({ type: 'input_image', image_url })),
+      ],
     }]
   })
 }

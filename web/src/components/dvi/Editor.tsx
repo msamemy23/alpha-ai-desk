@@ -4,18 +4,29 @@ import Icon from '@/components/Icon'
 import Notice from '@/components/Notice'
 import Sheet from '@/components/Sheet'
 import { getShopId, supabase } from '@/lib/supabase'
-import { MAX_NAME, MAX_PHOTOS_TOTAL, counts, findings, newItem, overallOf, sectionCounts, summaryWords } from '@/lib/dvi'
+import { MAX_CLIPS_PER_ITEM, MAX_INROW_PER_ITEM, MAX_NAME, MAX_PHOTOS_PER_ITEM, MAX_PHOTOS_TOTAL, MAX_STORED_TOTAL, counts, digestOf, emailParts, findings, inRowPhotos, isStorageRef, newItem, overallOf, sectionCounts, smsText, summaryWords } from '@/lib/dvi'
 import type { DviItem, DviSection } from '@/lib/dvi'
+import { measureText, wearPlan, wearWords } from '@/lib/dvi-measure'
+import { compareVisits, visitFromSections } from '@/lib/dvi-history'
+import { missingSchema } from '@/lib/schema-missing'
 import { normName } from '@/lib/shopboard'
 import { dayKey, fmtTimeOfDay } from '@/lib/timeclock'
 import { phonePretty } from '@/lib/today'
 import Answers from './Answers'
+import HistoryPanel from './HistoryPanel'
 import ItemRow from './ItemRow'
+import type { RowTools } from './ItemRow'
 import Report from './Report'
 import SendSheet from './SendSheet'
+import type { SendChannel } from './SendSheet'
 import type { StartCustomer } from './StartSheet'
-import { photoFromFile } from './photo'
+import { postApi } from './api'
+import { photoBlobFromFile, photoFromFile } from './photo'
+import { useCanned } from './useCanned'
 import { loadAnswers } from './useDvi'
+import { useHistory } from './useHistory'
+import { useMedia } from './useMedia'
+import type { Stored } from './useMedia'
 import type { DviRow, StartJob } from './types'
 
 type SaveState = 'saved' | 'dirty' | 'saving' | 'error'
@@ -23,17 +34,6 @@ type Note = { kind: 'success' | 'warn' | 'error'; text: string } | null
 const MAX_BYTES = 3_500_000
 
 const lampOf = (r: 'red' | 'yellow' | 'green') => (r === 'red' ? 'lamp-red' : r === 'yellow' ? 'lamp-amber' : 'lamp-green')
-
-async function postApi(path: string, body: Record<string, unknown>): Promise<{ ok: boolean; error?: string; data: Record<string, unknown> }> {
-  try {
-    const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
-    if (!res.ok || data.ok === false) return { ok: false, error: typeof data.error === 'string' ? data.error : res.status === 401 ? 'You were signed out. Refresh the page and sign in again.' : 'That did not work. Try again.', data }
-    return { ok: true, data }
-  } catch {
-    return { ok: false, error: 'No connection. Check your internet and try again.', data: {} }
-  }
-}
 
 /** The checklist itself: phone first, saves as you go. */
 export default function Editor({ initial, migrated, techs, jobs, customers, shop, logo, todayKey, onBack, onDeleted }: {
@@ -54,14 +54,16 @@ export default function Editor({ initial, migrated, techs, jobs, customers, shop
   const [saveError, setSaveError] = useState('')
   const dirty = useRef(false)
   const saving = useRef(false)
+  const digestOk = useRef(true)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [openSecs, setOpenSecs] = useState<Record<number, boolean>>(() => {
     const first = initial.sections.findIndex(s => s.items.some(i => !i.status))
     return { [first < 0 ? 0 : first]: true }
   })
   const [view, setView] = useState<'edit' | 'report'>('edit')
+  const [reportPhotos, setReportPhotos] = useState(true)
+  const [reportSince, setReportSince] = useState(false)
   const [sheet, setSheet] = useState<null | 'send' | 'delete'>(null)
-  const [viewSrc, setViewSrc] = useState<string | null>(null)
   const [note, setNote] = useState<Note>(null)
   const [sendBusy, setSendBusy] = useState(false)
   const [sendError, setSendError] = useState('')
@@ -83,7 +85,10 @@ export default function Editor({ initial, migrated, techs, jobs, customers, shop
         overall_status: overallOf(r.sections), tech_notes: r.tech_notes, updated_at: new Date().toISOString(),
         ...(migrated ? { customer_id: r.customer_id, summary: c } : {}),
       }
-      const { data, error } = await supabase.from('dvi').update(payload).eq('id', r.id).eq('shop_id', shopId).select('id')
+      // The short copy that "what changed since the last visit" reads. If its column is not there yet, saving carries on without it.
+      const write = (withDigest: boolean) => supabase.from('dvi').update(withDigest ? { ...payload, digest: digestOf(r.sections) } : payload).eq('id', r.id).eq('shop_id', shopId).select('id')
+      let { data, error } = await write(digestOk.current)
+      if (error && digestOk.current && missingSchema(error)) { digestOk.current = false; ({ data, error } = await write(false)) }
       if (error) return 'That did not save. Check your connection and try again.'
       if (!data || data.length === 0) return 'This inspection could not be found. It may have been deleted.'
       return ''
@@ -146,11 +151,96 @@ export default function Editor({ initial, migrated, techs, jobs, customers, shop
   const c = useMemo(() => counts(row.sections), [row.sections])
   const list = useMemo(() => findings(row.sections), [row.sections])
 
+  /* ---------- pictures, video and voice notes ---------- */
+
+  const allRefs = useMemo(() => row.sections.flatMap(s => s.items.flatMap(i => [...i.photos, ...(i.clips ?? []).map(k => k.ref)])), [row.sections])
+  const media = useMedia(row.id, allRefs)
+  const canned = useCanned()
+  const history = useHistory({ id: row.id, jobId: row.job_id, customerId: row.customer_id, customerName: row.customer_name, vehicle: row.vehicle, createdAt: row.created_at })
+
+  const itemAt = (si: number, id: string): DviItem | undefined => rowRef.current.sections[si]?.items.find(it => it.id === id)
+  const changeItem = (si: number, id: string, fn: (it: DviItem) => DviItem) =>
+    update(r => ({ ...r, sections: r.sections.map((s, i) => (i !== si ? s : { ...s, items: s.items.map(it => (it.id === id ? fn(it) : it)) })) }))
+
+  /** A photo goes to storage when storage is set up, and stays inside the inspection when it is not (or the upload fails). */
   const addPhoto = async (si: number, id: string, file: File) => {
-    if (counts(rowRef.current.sections).photos >= MAX_PHOTOS_TOTAL) throw new Error(`An inspection holds up to ${MAX_PHOTOS_TOTAL} photos. Remove one to add another.`)
-    const src = await photoFromFile(file)
-    update(r => ({ ...r, sections: r.sections.map((s, i) => (i !== si ? s : { ...s, items: s.items.map(it => (it.id === id ? { ...it, photos: [...it.photos, src].slice(0, 4) } : it)) })) }))
+    const item = itemAt(si, id)
+    if (!item) return
+    if (item.photos.length >= MAX_PHOTOS_PER_ITEM) throw new Error(`One line holds up to ${MAX_PHOTOS_PER_ITEM} photos.`)
+    if (counts(rowRef.current.sections).photos >= MAX_STORED_TOTAL) throw new Error(`An inspection holds up to ${MAX_STORED_TOTAL} photos. Remove one to add another.`)
+    let ref: string | null = null
+    let failure = ''
+    if (media.storage !== 'no') {
+      const blob = await photoBlobFromFile(file)
+      const stored: Stored = await media.store(blob, 'image/jpeg')
+      if (stored.ok) ref = stored.ref
+      else if (stored.reason === 'failed') failure = stored.error
+    }
+    if (!ref) {
+      const inRow = item.photos.filter(p => p.startsWith('data:')).length
+      if (inRowPhotos(rowRef.current.sections) >= MAX_PHOTOS_TOTAL || inRow >= MAX_INROW_PER_ITEM) {
+        throw new Error(failure || `Photos saved inside the inspection are limited to ${MAX_PHOTOS_TOTAL} in all and ${MAX_INROW_PER_ITEM} per line.`)
+      }
+      ref = await photoFromFile(file)
+    }
+    const added = ref
+    changeItem(si, id, it => (it.photos.length >= MAX_PHOTOS_PER_ITEM ? it : { ...it, photos: [...it.photos, added] }))
   }
+
+  /** A marked-up photo replaces the one it came from. The original file stays in storage; it is never deleted automatically. */
+  const replacePhoto = async (si: number, id: string, index: number, blob: Blob) => {
+    const old = itemAt(si, id)?.photos[index]
+    if (old === undefined) return
+    let next: string | null = null
+    if (media.storage !== 'no') {
+      const stored = await media.store(blob, 'image/jpeg')
+      if (stored.ok) next = stored.ref
+      else if (stored.reason === 'failed' && isStorageRef(old)) throw new Error(stored.error)
+    }
+    if (!next) next = await photoFromFile(new File([blob], 'markup.jpg', { type: 'image/jpeg' }))
+    const photo = next
+    changeItem(si, id, it => (it.photos[index] === old ? { ...it, photos: it.photos.map((p, j) => (j === index ? photo : p)) } : it))
+  }
+
+  const addClip = async (si: number, id: string, kind: 'video' | 'audio', blob: Blob, secs: number) => {
+    const item = itemAt(si, id)
+    if (!item) return
+    if ((item.clips ?? []).length >= MAX_CLIPS_PER_ITEM) throw new Error(`One line holds up to ${MAX_CLIPS_PER_ITEM} recordings.`)
+    const stored = await media.store(blob, blob.type || (kind === 'video' ? 'video/webm' : 'audio/webm'))
+    if (!stored.ok) throw new Error(stored.reason === 'no_storage' ? 'Video and voice notes need a database update before they can be saved. Ask the person who set up Alpha Desk, or use photos for now.' : stored.error)
+    const ref = stored.ref
+    changeItem(si, id, it => ((it.clips ?? []).length >= MAX_CLIPS_PER_ITEM ? it : { ...it, clips: [...(it.clips ?? []), { ref, kind, secs: Math.max(0, Math.min(60, Math.round(secs))) }] }))
+  }
+
+  const photoRoom = (item: DviItem): boolean => {
+    if (media.storage === 'no') return c.photos < MAX_PHOTOS_TOTAL && item.photos.filter(p => p.startsWith('data:')).length < MAX_INROW_PER_ITEM
+    return c.photos < MAX_STORED_TOTAL
+  }
+
+  /** The same line on the last visit: the reading, and how fast it is wearing. */
+  const before = (item: DviItem): { text: string; wear: string } | null => {
+    if (history.status !== 'ready') return null
+    const want = normName(item.name)
+    const prior = history.priors.find(v => v.items.some(d => d.m && normName(d.n) === want))
+    const was = prior?.items.find(d => d.m && normName(d.n) === want)?.m
+    if (!prior || !was) return null
+    const date = new Date(prior.at)
+    const when = Number.isNaN(date.getTime()) ? '' : ` (${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})`
+    const now = item.measure && item.measure.kind === was.kind ? item.measure : null
+    const wear = now ? wearWords(was.kind, wearPlan(was.kind, { value: was.value, miles: prior.miles }, { value: now.value, miles: history.miles })) : ''
+    return { text: `${measureText(was)}${when}`, wear }
+  }
+
+  const toolsFor = (si: number, it: DviItem): RowTools => ({
+    photoRoom,
+    urlFor: media.urlFor,
+    clipsOk: media.storage !== 'no',
+    canned,
+    before,
+    addPhoto: f => addPhoto(si, it.id, f),
+    addClip: (kind, blob, secs) => addClip(si, it.id, kind, blob, secs),
+    replacePhoto: (index, blob) => replacePhoto(si, it.id, index, blob),
+  })
 
   const markGood = (si: number) =>
     update(r => ({ ...r, sections: r.sections.map((s, i) => (i !== si ? s : { ...s, items: s.items.map(it => (it.status ? it : { ...it, status: 'green' as const })) })) }))
@@ -202,7 +292,10 @@ export default function Editor({ initial, migrated, techs, jobs, customers, shop
     return dayKey(d) === todayKey ? `today at ${fmtTimeOfDay(iso)}` : `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} at ${fmtTimeOfDay(iso)}`
   }
 
-  const send = async (to: string) => {
+  // One key for one attempt: a second tap on a slow connection can never send the same message twice.
+  const sendKey = useRef('')
+
+  const send = async (channel: SendChannel, to: string) => {
     setSendBusy(true); setSendError('')
     try {
       if (!(await flush())) { setSendError('Save the inspection first. It did not save yet.'); return }
@@ -210,11 +303,18 @@ export default function Editor({ initial, migrated, techs, jobs, customers, shop
       if (!share.ok) { setSendError(share.error || 'The link could not be made.'); return }
       const url = typeof share.data.url === 'string' && list.length > 0 ? share.data.url : null
       const s = (share.data.shop || {}) as { name?: string; phone?: string }
-      const { smsText } = await import('@/lib/dvi')
-      const body = smsText({ customer: row.customer_name, vehicle: row.vehicle, shop: s.name || shop.name, phone: s.phone || shop.phone, url, list, goodCount: c.green })
-      const sameNumber = customerRec?.phone && customerRec.phone.replace(/\D/g, '').slice(-10) === to.replace(/\D/g, '').slice(-10)
-      const msg = await postApi('/api/send-message', { to, body, channel: 'sms', ...(sameNumber && customerRec ? { customerId: customerRec.id } : {}), ...(row.job_id ? { jobId: row.job_id } : {}) })
-      if (!msg.ok) { setSendError(msg.error || 'The text was not sent.'); return }
+      const parts = { customer: row.customer_name, vehicle: row.vehicle, shop: s.name || shop.name, phone: s.phone || shop.phone, url, list, goodCount: c.green }
+      const mail = channel === 'email' ? emailParts(parts) : null
+      const sameRecipient = channel === 'sms'
+        ? Boolean(customerRec?.phone) && (customerRec?.phone || '').replace(/\D/g, '').slice(-10) === to.replace(/\D/g, '').slice(-10)
+        : Boolean(customerRec?.email) && (customerRec?.email || '').trim().toLowerCase() === to.trim().toLowerCase()
+      if (!sendKey.current) sendKey.current = `dvi-${row.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+      const msg = await postApi('/api/send-message', {
+        to, body: mail ? mail.body : smsText(parts), channel, ...(mail ? { subject: mail.subject } : {}),
+        ...(sameRecipient && customerRec ? { customerId: customerRec.id } : {}), ...(row.job_id ? { jobId: row.job_id } : {}),
+      }, { 'Idempotency-Key': sendKey.current })
+      if (!msg.ok) { setSendError(msg.error || (channel === 'sms' ? 'The text was not sent.' : 'The email was not sent.')); return }
+      sendKey.current = ''
       const at = new Date().toISOString()
       const shopId = await getShopId()
       let marked = true
@@ -225,9 +325,10 @@ export default function Editor({ initial, migrated, techs, jobs, customers, shop
       rowRef.current = { ...rowRef.current, sent_to_customer: true, sent_at: at, has_link: url !== null || rowRef.current.has_link }
       setRowState(rowRef.current)
       setSheet(null)
+      const how = channel === 'sms' ? 'Texted' : 'Emailed'
       setNote(marked
-        ? { kind: 'success', text: `Texted to ${row.customer_name || 'the customer'} ${whenText(at)}.${url ? ' They can open their photos and answer from the link.' : ''}` }
-        : { kind: 'warn', text: 'The text was sent, but the inspection could not be marked as sent. Do not send it again.' })
+        ? { kind: 'success', text: `${how} to ${row.customer_name || 'the customer'} ${whenText(at)}.${url ? ' They can open their photos and answer from the link.' : ''}` }
+        : { kind: 'warn', text: `The ${channel === 'sms' ? 'text' : 'email'} was sent, but the inspection could not be marked as sent. Do not send it again.` })
     } finally { setSendBusy(false) }
   }
 
@@ -280,11 +381,18 @@ export default function Editor({ initial, migrated, techs, jobs, customers, shop
   const pct = c.total > 0 ? Math.round((c.rated / c.total) * 100) : 0
 
   if (view === 'report') {
+    const prior = history.status === 'ready' ? history.priors[0] : undefined
+    const lastDate = prior ? new Date(prior.at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : ''
+    const since = reportSince && prior ? { changes: compareVisits(prior, visitFromSections({ id: row.id, at: row.created_at, tech: row.tech, sections: row.sections, miles: history.status === 'ready' ? history.miles : null })), lastDate } : null
     return (
       <div>
         <div className="no-print mb-4 flex flex-wrap items-center justify-between gap-2">
           <button type="button" className="btn btn-secondary" onClick={() => setView('edit')}><Icon name="chevronLeft" className="h-5 w-5" />Back to the checklist</button>
           <button type="button" className="btn btn-primary" onClick={() => window.print()}><Icon name="print" className="h-5 w-5" />Print or save as PDF</button>
+        </div>
+        <div className="no-print mb-4 flex flex-col gap-2 sm:flex-row sm:gap-6">
+          <label className="flex min-h-[44px] items-center gap-2.5 text-[0.9375rem]"><input type="checkbox" className="h-5 w-5" checked={reportPhotos} onChange={e => setReportPhotos(e.target.checked)} />Include the photos</label>
+          {prior && <label className="flex min-h-[44px] items-center gap-2.5 text-[0.9375rem]"><input type="checkbox" className="h-5 w-5" checked={reportSince} onChange={e => setReportSince(e.target.checked)} />Include what changed since the last visit</label>}
         </div>
         <div className="rounded-lg border border-border print:border-0">
           <Report
@@ -296,6 +404,9 @@ export default function Editor({ initial, migrated, techs, jobs, customers, shop
             date={new Date(row.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
             note={row.tech_notes}
             sections={row.sections}
+            urlFor={media.urlFor}
+            showPhotos={reportPhotos}
+            since={since}
           />
         </div>
       </div>
@@ -370,6 +481,8 @@ export default function Editor({ initial, migrated, techs, jobs, customers, shop
         </div>
       </section>
 
+      <HistoryPanel state={history} sections={row.sections} id={row.id} createdAt={row.created_at} tech={row.tech} />
+
       {/* progress */}
       <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
         <p className="num text-[0.9375rem] font-bold">{c.rated} of {c.total} checked</p>
@@ -405,11 +518,9 @@ export default function Editor({ initial, migrated, techs, jobs, customers, shop
                       <ItemRow
                         key={it.id}
                         item={it}
-                        photoRoom={c.photos < MAX_PHOTOS_TOTAL}
+                        tools={toolsFor(si, it)}
                         onChange={patch => patchItem(si, it.id, patch)}
-                        onPhoto={f => addPhoto(si, it.id, f)}
                         onRemove={it.custom ? () => removeItem(si, it.id) : undefined}
-                        onView={setViewSrc}
                       />
                     ))}
                   </div>
@@ -465,12 +576,13 @@ export default function Editor({ initial, migrated, techs, jobs, customers, shop
           goodCount={c.green}
           shop={shop}
           phone={customerRec?.phone || ''}
+          email={customerRec?.email || ''}
           customerKnown={!!customerRec}
           linkAvailable={migrated}
           sentWhen={sentWhen}
           busy={sendBusy}
           error={sendError}
-          onSend={to => void send(to)}
+          onSend={(channel, to) => void send(channel, to)}
         />
       </Sheet>
 
@@ -483,12 +595,6 @@ export default function Editor({ initial, migrated, techs, jobs, customers, shop
         </div>
       </Sheet>
 
-      <Sheet open={!!viewSrc} onClose={() => setViewSrc(null)} title="Photo" wide>
-        {viewSrc && (
-          // eslint-disable-next-line @next/next/no-img-element -- a data URL, so next/image has nothing to optimize
-          <img src={viewSrc} alt="Inspection photo, full size" className="mx-auto max-h-[70vh] w-auto max-w-full rounded-md" />
-        )}
-      </Sheet>
     </div>
   )
 }

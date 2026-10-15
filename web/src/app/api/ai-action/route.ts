@@ -9,6 +9,10 @@ import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
 import { createHash, randomUUID } from 'node:crypto'
 import { isSmsOptedOut } from '@/lib/sms-consent'
 import { nonNegativeMoney } from '@/lib/document-money'
+import { loadShopRules } from '@/lib/ai/shop-rules-server'
+import { decideAction, findNeverSay } from '@/lib/ai/shop-rules'
+import { getActionInfo } from '@/lib/ai/action-risk'
+import { describeChange, subjectOf, undoForCreate, undoForCreatedDocument, undoForDelete, undoForScheduledMessage, undoForUpdate, type BuildResult, type UndoTable } from '@/lib/ai/undo'
 
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
 
@@ -68,6 +72,14 @@ export async function POST(req: NextRequest) {
   const payloadHash = createHash('sha256').update(JSON.stringify(safePayload)).digest('hex')
   isMutation = mutatingActions.has(action)
   if (isMutation && caller.role === 'viewer') return forbidden()
+  // The shop's own rules come first. They can switch off a whole kind of action or one
+  // action by name, and they apply to every caller. If the rules cannot be read, nothing runs.
+  const shopRules = await loadShopRules(sb, shopId)
+  if (shopRules.status === 'error') return fail('Your shop rules could not be checked, so nothing was done. Try again in a moment.', 503, 'failed')
+  const ruleDecision = decideAction(shopRules.rules, action)
+  if (!ruleDecision.allowed) {
+    return NextResponse.json({ ok: false, error: ruleDecision.reason, blockedByRules: true, ...(isMutation ? { operationStatus: 'failed' } : {}) }, { status: 403 })
+  }
   // A caller-provided key makes retries safe. A request without one gets a
   // fresh operation identity so two intentional, identical actions do not
   // collapse into one forever.
@@ -151,7 +163,38 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const auditedOk = async (data: unknown, targetType?: string, targetId?: string) => {
+  // What an Undo needs, and a plain description of what changed, saved next to the audit entry.
+  // The undo copy is a JSON string on purpose: the audit redactor blanks anything nested deeper.
+  type AuditExtra = { subject?: string; summary?: string; undo?: string | null; undoReason?: string }
+  const actionInfo = getActionInfo(action)
+  const snapshot = async (table: string, id: unknown): Promise<Record<string, unknown> | null> => {
+    if (typeof id !== 'string' || !id) return null
+    try {
+      const { data, error } = await sb.from(table).select('*').eq('id', id).eq('shop_id', shopId).maybeSingle()
+      return error ? null : (data as Record<string, unknown> | null)
+    } catch { return null }
+  }
+  const withUndo = (built: BuildResult, subject: string, summary: string): AuditExtra => ({
+    subject, summary, undo: built.undo, ...(built.undo ? {} : { undoReason: built.reason || 'No undo copy was saved.' }),
+  })
+  const labelFor = (subject: string) => `${actionInfo.past}${subject ? `: ${subject}` : ''}`
+  const updatedExtra = (table: UndoTable, id: unknown, fields: string[], before: Record<string, unknown> | null, after: unknown): AuditExtra => {
+    const row = (after && typeof after === 'object' ? after : null) as Record<string, unknown> | null
+    const keys = fields.filter(key => key !== 'updated_at')
+    const subject = subjectOf(table, row || before)
+    return withUndo(undoForUpdate({ table, id: String(id), fields: keys, before, after: row, label: labelFor(subject) }), subject, before && row ? describeChange(keys, before, row) : '')
+  }
+  const createdExtra = (table: UndoTable, row: unknown): AuditExtra => {
+    const data = (row && typeof row === 'object' ? row : null) as Record<string, unknown> | null
+    const subject = subjectOf(table, data)
+    return withUndo(undoForCreate({ table, row: data, label: labelFor(subject) }), subject, subject)
+  }
+  const auditedOk = async (data: unknown, targetType?: string, targetId?: string, extra: AuditExtra = {}) => {
+    const auditMetadata: Record<string, unknown> = { payload: safePayload }
+    if (extra.subject) auditMetadata.subject = extra.subject.slice(0, 200)
+    if (extra.summary) auditMetadata.summary = extra.summary.slice(0, 300)
+    if (extra.undo) auditMetadata.undo = extra.undo
+    else if (extra.undoReason) auditMetadata.undoReason = extra.undoReason.slice(0, 200)
     if (isMutation) {
       // Every mutating branch calls this only after its business write has
       // succeeded. If durable completion then fails, the operation is
@@ -168,7 +211,7 @@ export async function POST(req: NextRequest) {
         audit_target_id: targetId || null,
         audit_permission: auditPermission,
         audit_approved: true,
-        audit_metadata: { payload: safePayload },
+        audit_metadata: auditMetadata,
         updated_at: new Date().toISOString(),
       }).eq('id', operationId).eq('shop_id', shopId).eq('status', 'running').select('id').maybeSingle()
       if (operationError || !finalizedOperation) {
@@ -187,7 +230,7 @@ export async function POST(req: NextRequest) {
         permission: auditPermission,
         approved: true,
         idempotencyKey,
-        metadata: { payload: safePayload },
+        metadata: auditMetadata,
       })
       if (!auditResult.ok) return fail('Action completed, but its audit record could not be saved', 502)
       const { error: auditStateError } = await sb.from('ai_action_operations').update({
@@ -224,7 +267,7 @@ export async function POST(req: NextRequest) {
           created_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return await auditedOk(data, 'customer', data?.id)
+        return await auditedOk(data, 'customer', data?.id, createdExtra('customers', data))
       }
 
       // ── Create Job ───────────────────────────────────────────
@@ -245,7 +288,7 @@ export async function POST(req: NextRequest) {
           created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return await auditedOk(data, 'job', data?.id)
+        return await auditedOk(data, 'job', data?.id, createdExtra('jobs', data))
       }
 
       // ── Create Invoice / Estimate ────────────────────────────
@@ -276,41 +319,47 @@ export async function POST(req: NextRequest) {
           created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return await auditedOk(data, 'document', data?.id)
+        {
+          const subject = subjectOf('documents', data)
+          return await auditedOk(data, 'document', data?.id, withUndo(undoForCreatedDocument({ row: data, label: labelFor(subject) }), subject, subject))
+        }
       }
 
       // ── Update Job Status ────────────────────────────────────
       case 'updateJobStatus': {
         const { id, status: newStatus } = payload
         if (!id || !newStatus) return fail('id and status are required')
+        const before = await snapshot('jobs', id)
         const { data, error } = await sb.from('jobs').update({
           status: newStatus, updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return await auditedOk(data, 'job', String(id))
+        return await auditedOk(data, 'job', String(id), updatedExtra('jobs', id, ['status'], before, data))
       }
 
       // ── Update Customer ──────────────────────────────────────
       case 'updateCustomer': {
          const { id } = payload
          if (!id) return fail('Customer id is required')
+         const before = await snapshot('customers', id)
          const updates = pickFields(payload, ['name','phone','email','address','preferred_contact','vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage','notes','tags','sentiment','last_contact','review_requested','vehicle_color','vehicle_engine','sms_opted_out'])
          const { data, error } = await sb.from('customers').update({
            ...updates, updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return await auditedOk(data, 'customer', String(id))
+        return await auditedOk(data, 'customer', String(id), updatedExtra('customers', id, Object.keys(updates), before, data))
       }
 
       // ── Void Document ────────────────────────────────────────
       case 'voidDocument': {
         const { id } = payload
         if (!id) return fail('Document id is required')
+        const before = await snapshot('documents', id)
         const { data, error } = await sb.from('documents').update({
           status: 'Void', updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return await auditedOk(data, 'document', String(id))
+        return await auditedOk(data, 'document', String(id), updatedExtra('documents', id, ['status'], before, data))
       }
 
       // ── Delete Record ────────────────────────────────────────
@@ -320,10 +369,11 @@ export async function POST(req: NextRequest) {
         if (!allowed.includes(table)) return fail(`Cannot delete from table: ${table}`)
         if (!id) return fail('Record id is required')
         // Scope the delete to the caller's shop so one shop can't delete another's row.
+         const doomed = await snapshot(table, id)
          const { data: deleted, error } = await sb.from(table).delete().eq('id', id).eq('shop_id', shopId).select('id').maybeSingle()
          if (error) return fail(error.message, 500)
          if (!deleted) return fail('Record not found in this shop', 404)
-         return await auditedOk({ deleted: true, table, id }, table, id)
+         return await auditedOk({ deleted: true, table, id }, table, id, { subject: subjectOf(table, doomed), undoReason: 'A deleted record and anything attached to it cannot be restored.' })
       }
 
       // ── Schedule Follow-Up ───────────────────────────────────
@@ -347,6 +397,8 @@ export async function POST(req: NextRequest) {
           resolvedCustomerId = data?.id || ''
         }
         if (!customer || !resolvedCustomerId) return fail('Customer must be found before scheduling a follow-up', 404)
+        const bannedPhrases = findNeverSay(shopRules.rules, `${message_body} ${typeof subject === 'string' ? subject : ''}`)
+        if (bannedPhrases.length) return fail(`This message uses ${bannedPhrases.length === 1 ? 'a phrase' : 'phrases'} your shop rules ban: ${bannedPhrases.map(phrase => `"${phrase}"`).join(', ')}. Edit the message and try again.`, 409, 'failed')
         if (selectedChannel === 'sms' && (customer.sms_opted_out || await isSmsOptedOut(sb, shopId, customer.phone))) return fail('This destination has opted out of SMS', 409)
         const { data, error } = await sb.from('scheduled_messages').insert({
           customer_id: resolvedCustomerId,
@@ -360,7 +412,10 @@ export async function POST(req: NextRequest) {
           created_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return await auditedOk(data, 'scheduled_message', data?.id)
+        {
+          const followUpName = subjectOf('scheduled_messages', data)
+          return await auditedOk(data, 'scheduled_message', data?.id, withUndo(undoForScheduledMessage({ row: data, label: labelFor(followUpName) }), followUpName, `${String(selectedChannel) === 'email' ? 'Email' : 'Text'}: ${String(message_body).trim().slice(0, 140)}`))
+        }
       }
 
       // ── Get Customer History ─────────────────────────────────
@@ -605,7 +660,7 @@ export async function POST(req: NextRequest) {
           .eq('shop_id', shopId)
         if (documentError) return fail('Email sent, but the document could not be marked as sent', 500)
 
-        return await auditedOk({ sent: true, to: toEmail, doc_number: doc.doc_number, type: doc.type }, 'document', doc.id)
+        return await auditedOk({ sent: true, to: toEmail, doc_number: doc.doc_number, type: doc.type }, 'document', doc.id, { subject: subjectOf('documents', doc), summary: `Emailed to ${toEmail}`, undoReason: 'An email cannot be taken back once it is sent.' })
       }
 
         case 'convertEstimateToInvoice': {
@@ -625,7 +680,10 @@ export async function POST(req: NextRequest) {
             updated_at: new Date().toISOString(),
           }).select().single()
           if (invErr) return fail(invErr.message, 500)
-          return await auditedOk(invData, 'document', invData?.id)
+          {
+            const subject = subjectOf('documents', invData)
+            return await auditedOk(invData, 'document', invData?.id, withUndo(undoForCreatedDocument({ row: invData, label: labelFor(subject) }), subject, `From estimate #${String(est.doc_number || '')}`.trim()))
+          }
         }
       // ── Add Staff Member ────────────────────────────────────
       case 'addStaff': {
@@ -640,19 +698,33 @@ export async function POST(req: NextRequest) {
           created_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return await auditedOk(data, 'staff', data?.id)
+        {
+          const subject = subjectOf('staff', data)
+          return await auditedOk(data, 'staff', data?.id, withUndo(undoForUpdate({ table: 'staff', id: String(data?.id || ''), fields: ['active'], before: { active: false }, after: data, label: labelFor(subject) }), subject, subject))
+        }
       }
 
       // ── Remove Staff Member ──────────────────────────────────
       case 'removeStaff': {
         const { name, id } = payload
+        let beforeStaff: Record<string, unknown> | null = id ? await snapshot('staff', id) : null
+        if (!id && name) {
+          const { data: matches } = await sb.from('staff').select('*').eq('shop_id', shopId).ilike('name', `%${String(name)}%`).limit(2)
+          if (matches?.length === 1) beforeStaff = matches[0] as Record<string, unknown>
+        }
         let query: any = sb.from('staff').update({ active: false }).eq('shop_id', shopId)
         if (id) query = query.eq('id', id)
         else if (name) query = query.ilike('name', `%${String(name)}%`)
         else return fail('Provide staff name or id')
         const { data, error } = await query.select().single()
         if (error) return fail(error.message, 500)
-        return await auditedOk({ removed: true, staff: data }, 'staff', data?.id)
+        {
+          const subject = subjectOf('staff', data)
+          const reversible = beforeStaff?.active === true
+          return await auditedOk({ removed: true, staff: data }, 'staff', data?.id, reversible
+            ? withUndo(undoForUpdate({ table: 'staff', id: String(data?.id || ''), fields: ['active'], before: beforeStaff, after: data, label: labelFor(subject) }), subject, subject)
+            : { subject, summary: subject, undoReason: 'They were not active before, so there is nothing to put back.' })
+        }
       }
 
       // ── List Staff ───────────────────────────────────────────
@@ -666,13 +738,14 @@ export async function POST(req: NextRequest) {
       case 'updateDocument': {
          const { id } = payload
          if (!id) return fail('Document id is required')
+         const before = await snapshot('documents', id)
          const updates = pickFields(payload, ['type','status','doc_date','due_date','expires_date','customer_id','customer_name','customer_phone','customer_email','job_id','vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage','parts','labors','shop_supplies','sublet','tax_rate','apply_tax','deposit','payment_method','cashier','payment_terms','payment_methods','warranty_type','warranty_months','warranty_mileage','warranty_start','warranty_exclusions','warranty_claim','notes','locked','sent_at','signature_signed_at','signature_signer_name','signature_requested_at','line_items','payment_plan','internal_notes'])
          if (updates.status && ['Paid', 'Partial'].includes(String(updates.status))) return fail('Use the payment action to change an invoice to Paid or Partial; the payment ledger is protected.')
          const { data, error } = await sb.from('documents').update({
            ...updates, updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return await auditedOk(data, 'document', String(id))
+        return await auditedOk(data, 'document', String(id), updatedExtra('documents', id, Object.keys(updates), before, data))
       }
 
       // ── Create Appointment ───────────────────────────────────
@@ -704,7 +777,7 @@ export async function POST(req: NextRequest) {
            updated_at: new Date().toISOString(),
         }).select().single()
         if (error) return fail(error.message, 500)
-        return await auditedOk(data, 'appointment', data?.id)
+        return await auditedOk(data, 'appointment', data?.id, createdExtra('appointments', data))
       }
 
       // ── Time Clock Report ────────────────────────────────────
@@ -735,16 +808,21 @@ export async function POST(req: NextRequest) {
       case 'deleteAppointment': {
         const { id } = payload
         if (!id) return fail('Appointment id is required')
+         const beforeDelete = await snapshot('appointments', id)
          const { data: deleted, error } = await sb.from('appointments').delete().eq('id', id).eq('shop_id', shopId).select('id').maybeSingle()
          if (error) return fail(error.message, 500)
          if (!deleted) return fail('Appointment not found in this shop', 404)
-         return await auditedOk({ deleted: true, id }, 'appointment', String(id))
+         {
+         const subject = subjectOf('appointments', beforeDelete)
+         return await auditedOk({ deleted: true, id }, 'appointment', String(id), withUndo(undoForDelete({ table: 'appointments', row: beforeDelete, label: labelFor(subject) }), subject, subject))
+         }
       }
 
       // ── Update Appointment ───────────────────────────────────
       case 'updateAppointment': {
          const { id } = payload
          if (!id) return fail('Appointment id is required')
+         const before = await snapshot('appointments', id)
          const updates = pickFields(payload, ['customer_name','customer_id','phone','email','vehicle','service','tech','date','time','scheduled_date','scheduled_time','duration','status','notes','reminder_sent_at'])
          if (updates.scheduled_date && !updates.date) updates.date = updates.scheduled_date
          if (updates.scheduled_time && !updates.time) updates.time = updates.scheduled_time
@@ -758,7 +836,7 @@ export async function POST(req: NextRequest) {
          updates.updated_at = new Date().toISOString()
          const { data, error } = await sb.from('appointments').update(updates).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return await auditedOk(data, 'appointment', String(id))
+        return await auditedOk(data, 'appointment', String(id), updatedExtra('appointments', id, Object.keys(updates), before, data))
       }
 
       // ── Get Inventory ────────────────────────────────────────
@@ -775,12 +853,13 @@ export async function POST(req: NextRequest) {
       case 'updateInventory': {
          const { id } = payload
          if (!id) return fail('Inventory item id is required')
+         const before = await snapshot('inventory', id)
          const updates = pickFields(payload, ['part_number','name','category','brand','description','cost','retail_price','qty_on_hand','qty_reorder','qty_on_order','location','supplier','supplier_part_number','notes','last_ordered'])
          const { data, error } = await sb.from('inventory').update({
            ...updates, updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()
         if (error) return fail(error.message, 500)
-        return await auditedOk(data, 'inventory', String(id))
+        return await auditedOk(data, 'inventory', String(id), updatedExtra('inventory', id, Object.keys(updates), before, data))
       }
       default:
         return fail(`Unknown action: ${action}`)

@@ -8,16 +8,19 @@ export function docLamp(type: string, status: string): DocLamp {
     case 'Approved': return 'green'
     case 'Partial': return 'amber'
     case 'Unpaid': return 'red'
+    case 'Declined': return 'red'
     case 'Sent': return 'blue'
     default: return 'off'
   }
 }
 
 export function docStatusLabel(type: string, status: string): string {
+  if (status === 'Void') return 'Voided'
   if (type === 'Estimate') {
     if (status === 'Draft') return 'Not sent'
     if (status === 'Sent') return 'Waiting on customer'
     if (status === 'Approved') return 'Approved'
+    if (status === 'Declined') return 'Declined'
     return status
   }
   if (status === 'Draft') return 'Not sent'

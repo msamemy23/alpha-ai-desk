@@ -21,7 +21,8 @@ export default function EntryForm({ person, entry, others, nowMs, defaultDay, bu
   busy: boolean
   error: string
   onSave: (p: EntryPayload) => void
-  onDelete?: () => void
+  /** Called with the reason for removing the entry. */
+  onDelete?: (reason: string) => void
   onCancel: () => void
 }) {
   const stillOpen = !!entry && !entry.clock_out
@@ -56,16 +57,25 @@ export default function EntryForm({ person, entry, others, nowMs, defaultDay, bu
   }
 
   if (confirming && entry) {
+    const remove = () => {
+      if (reason.trim().length < 3) { setShown('Say why you are removing this, in a few words.'); return }
+      setShown('')
+      onDelete?.(reason.trim())
+    }
     return (
       <div className="space-y-4">
         <p className="text-[0.9375rem]">
-          Delete {person.name}’s entry on {dayLabel(dayKey(new Date(entry.clock_in)))}, {fmtTimeOfDay(entry.clock_in)} to {entry.clock_out ? fmtTimeOfDay(entry.clock_out) : 'now'}?
-          It comes off the timesheet for good.
+          Remove {person.name}’s entry on {dayLabel(dayKey(new Date(entry.clock_in)))}, {fmtTimeOfDay(entry.clock_in)} to {entry.clock_out ? fmtTimeOfDay(entry.clock_out) : 'now'}?
+          It comes off the timesheet. A copy stays in the change history, so an owner or manager can put it back.
         </p>
-        {error && <p role="alert" className="form-error">{error}</p>}
+        <div>
+          <label htmlFor="ef-why-del" className="form-label">Why are you removing it?</label>
+          <input id="ef-why-del" className="form-input" autoComplete="off" maxLength={140} value={reason} onChange={e => { setReason(e.target.value); setShown('') }} placeholder="Punched in by mistake" />
+        </div>
+        {(shown || error) && <p role="alert" className="form-error">{shown || error}</p>}
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <button type="button" className="btn btn-secondary" onClick={() => setConfirming(false)} disabled={busy}>Keep entry</button>
-          <button type="button" className="btn btn-danger" onClick={onDelete} disabled={busy}>{busy ? 'Deleting…' : 'Delete entry'}</button>
+          <button type="button" className="btn btn-secondary" onClick={() => { setConfirming(false); setShown('') }} disabled={busy}>Keep entry</button>
+          <button type="button" className="btn btn-danger" onClick={remove} disabled={busy}>{busy ? 'Removing…' : 'Remove entry'}</button>
         </div>
       </div>
     )
@@ -100,7 +110,7 @@ export default function EntryForm({ person, entry, others, nowMs, defaultDay, bu
       </div>
       {message && <p role="alert" className="form-error">{message}</p>}
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
-        {entry && onDelete && <button type="button" className="btn btn-ghost !text-red sm:mr-auto" onClick={() => setConfirming(true)} disabled={busy}><Icon name="trash" className="h-5 w-5" />Delete entry</button>}
+        {entry && onDelete && <button type="button" className="btn btn-ghost !text-red sm:mr-auto" onClick={() => setConfirming(true)} disabled={busy}><Icon name="trash" className="h-5 w-5" />Remove entry</button>}
         <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
         <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : entry ? 'Save changes' : 'Add entry'}</button>
       </div>

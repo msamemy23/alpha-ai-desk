@@ -86,6 +86,12 @@ const PATHS: Record<string, ReactNode> = {
   sparkle: <path d="M12 3l1.9 5.6 5.6 1.9-5.6 1.900L12 18l-1.9-5.6-5.6-1.9 5.6-1.900z" />,
   chatStop: <rect x="6.5" y="6.5" width="11" height="11" rx="2" />,
   chatVolume: <><path d="M4 9.500v5h3.500L12 18.500v-13L7.500 9.500z" /><path d="M15.500 9a4 4 0 0 1 0 6" /><path d="M18 6.500a8 8 0 0 1 0 11" /></>,
+  video: <><rect x="2.500" y="6" width="13" height="12" rx="2" /><path d="M15.500 10.500l6-3.500v10l-6-3.500" /></>,
+  expand: <><path d="M4 9V4h5" /><path d="M20 9V4h-5" /><path d="M4 15v5h5" /><path d="M20 15v5h-5" /></>,
+  compress: <><path d="M9 4v5H4" /><path d="M15 4v5h5" /><path d="M9 20v-5H4" /><path d="M15 20v-5h5" /></>,
+  undo: <><path d="M9 14L4 9l5-5" /><path d="M4 9h10a6 6 0 0 1 0 12h-3" /></>,
+  circle: <circle cx="12" cy="12" r="8" />,
+  arrowUpRight: <><path d="M7 17L17 7" /><path d="M8 7h9v9" /></>,
 }
 
 export type IconName = keyof typeof PATHS | (string & {})

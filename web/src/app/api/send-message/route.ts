@@ -9,6 +9,10 @@ import { normalizePhoneDigits } from '@/lib/sms-normalize'
 import { isSmsOptedOut } from '@/lib/sms-consent'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
 import { sendDurableSms } from '@/lib/durable-sms'
+import { outgoingLinks } from '@/lib/voice/media-store'
+import { closeStaleDrafts, resolveNeedsPerson } from '@/lib/voice/actions'
+import { appUrl } from '@/lib/voice-runtime'
+import { phoneKey } from '@/lib/voice/rules'
 
 export async function POST(req: NextRequest) {
   try {
@@ -22,7 +26,9 @@ export async function POST(req: NextRequest) {
 
     const payload = await req.json().catch(() => null)
     const { to, body, channel, subject, customerId: rawCustomerId, jobId, documentId, customerName } = payload || {}
-    if (typeof to !== 'string' || !to.trim() || typeof body !== 'string' || !body.trim()) return NextResponse.json({ error: 'Missing to or body' }, { status: 400 })
+    const mediaIds: string[] = Array.isArray(payload?.mediaIds) ? payload.mediaIds.filter((x: unknown) => typeof x === 'string').slice(0, 5) : []
+    // A picture with no words is a normal text.
+    if (typeof to !== 'string' || !to.trim() || typeof body !== 'string' || (!body.trim() && !(mediaIds.length && channel === 'sms'))) return NextResponse.json({ error: 'Missing to or body' }, { status: 400 })
     if (!['sms', 'email'].includes(channel)) return NextResponse.json({ error: 'Channel must be sms or email' }, { status: 400 })
     if (body.length > 10000) return NextResponse.json({ error: 'Message is too long' }, { status: 400 })
     const escapeHtml = (value: string) => value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char))
@@ -122,6 +128,8 @@ export async function POST(req: NextRequest) {
       if (!settings?.telnyx_api_key || !settings?.telnyx_phone_number) {
         return NextResponse.json({ ok: false, error: 'Telnyx SMS is not configured for this shop' }, { status: 503 })
       }
+      const links = await outgoingLinks(db, auth.shopId, mediaIds, appUrl())
+      if (!links.ok) return NextResponse.json({ ok: false, error: links.error }, { status: 409 })
       const smsResult = await sendDurableSms({
         request: req,
         db,
@@ -133,10 +141,13 @@ export async function POST(req: NextRequest) {
         jobId: jobId || null,
         documentId: documentId || null,
         settings,
+        media: links.urls.length ? { ids: mediaIds, urls: links.urls } : undefined,
       })
       if (!smsResult.ok) {
         return NextResponse.json({ ok: false, error: smsResult.error, uncertain: smsResult.uncertain === true }, { status: smsResult.status })
       }
+      // A person answered: the assistant may flag nothing more on this thread, and "needs a person" is cleared.
+      try { await resolveNeedsPerson(db, auth.shopId, phoneKey(formattedPhone), auth.userId); await closeStaleDrafts(db, auth.shopId, phoneKey(formattedPhone)) } catch { /* the text already went out */ }
       return NextResponse.json({
         ok: true,
         message_id: smsResult.messageId,

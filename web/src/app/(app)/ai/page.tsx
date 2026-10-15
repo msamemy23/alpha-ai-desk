@@ -8,7 +8,16 @@ import { observedLinkClick } from '@/lib/ai/browser-interaction'
 import { AGENTS, SKILLS } from '@/lib/ai/capabilities'
 import { classifyRequest, type RouteDecision } from '@/lib/ai/router'
 import { normalizeDocumentDraft } from '@/lib/ai/document-draft'
-import { WorkflowReview, ApprovalFrame, PayloadList } from '@/components/ai/WorkflowReview'
+import { WorkflowReview, ApprovalFrame, ReviewRows, ReviewTags } from '@/components/ai/WorkflowReview'
+import UndoBar from '@/components/ai/UndoBar'
+import { buildActionReview, buildMessageReview, documentDraftLines, labelFor } from '@/lib/ai/review'
+import { hasCustomRules, normalizeRules, rulesPromptBlock, type AiRules } from '@/lib/ai/shop-rules'
+import { getActionInfo } from '@/lib/ai/action-risk'
+import { summarizeStop } from '@/lib/ai/stop-summary'
+import { apiJson, newEventId, postActivityEvent, postServerStop, streamWorkflow } from '@/lib/ai/client-api'
+import { preparePhoto, type PreparedPhoto } from '@/lib/ai/image-client'
+import { IMAGE_UNSUPPORTED_MESSAGE, MAX_IMAGES, looksLikeImageRejection, withImages } from '@/lib/ai/images'
+import { NEUTRAL_NOW, suggestPrompts } from '@/lib/ai/suggestions'
 import Icon from '@/components/Icon'
 import Sheet from '@/components/Sheet'
 import { renderChatMarkdown as renderMarkdown, chatPlainText, escapeHtml, safeUrl } from '@/components/ai-desk/markdown'
@@ -88,7 +97,7 @@ type RepairDtcGuide = {
   removalTerms: string
   requiredTerms: string[]
 }
-interface ChatMessage { role: 'user'|'assistant'|'browser'; content: string; html?: string; imageUrl?: string; reasoning?: string; thinkingSeconds?: number; browserSteps?: BrowserPanelStep[]; repairResult?: RepairChatResult }
+interface ChatMessage { role: 'user'|'assistant'|'browser'; content: string; html?: string; imageUrl?: string; imageUrls?: string[]; undo?: { operationKey: string; label: string }; reasoning?: string; thinkingSeconds?: number; browserSteps?: BrowserPanelStep[]; repairResult?: RepairChatResult }
 type ToolActivity = { time: string; agent: string; skill?: string; tool: string; status: 'running' | 'ok' | 'error'; detail: string }
 
 // The first message of a chat gives the model context, but it is not shown as a
@@ -118,6 +127,12 @@ const STOP_PATTERN = /^Stopped by you\.\s*/i
 const ABORT_PATTERN = /AbortError|signal is aborted|user aborted a request|operation was aborted/i
 
 type FailureKind = 'failed' | 'stopped'
+
+// The name an action is recorded under in Activity: letters, digits, dot, dash, underscore, starting with a letter.
+function externalActionId(action: string): string {
+  const id = action.replace(/[^A-Za-z0-9._-]/g, '').slice(0, 60)
+  return /^[A-Za-z]/.test(id) ? id : 'external'
+}
 function describeFailure(content: string): { title: string; detail: string; kind: FailureKind } | null {
   if (STOP_PATTERN.test(content)) return { title: 'You stopped this request', detail: content.replace(STOP_PATTERN, '').trim(), kind: 'stopped' }
   for (const [pattern, title] of FAILURE_PREFIXES) {
@@ -202,6 +217,35 @@ function ToolRows({ events, label = 'What Alpha did', showTime = false }: { even
         )
       })}
     </ul>
+  )
+}
+
+// Fields the owner may reword on a review. Record ids, table names and statuses are never typed in by hand.
+const LOCKED_FIELD = /(^|_)id$|^table$|^action$|^status$/i
+function editableKeysOf(payload: Record<string, unknown>): string[] {
+  return Object.keys(payload).filter(key => !LOCKED_FIELD.test(key) && ['string', 'number', 'boolean'].includes(typeof payload[key]))
+}
+
+function FieldEditor({ payload, onChange }: { payload: Record<string, unknown>; onChange: (key: string, value: string) => void }) {
+  const keys = editableKeysOf(payload)
+  return (
+    <div className="space-y-3" data-testid="review-editor">
+      {keys.map(key => {
+        const value = payload[key]
+        const long = typeof value === 'string' && (value.length > 60 || value.includes('\n'))
+        return (
+          <label key={key} className="block">
+            <span className="form-label">{labelFor(key)}</span>
+            {typeof value === 'boolean'
+              ? <select className="form-select" value={String(value)} onChange={e => onChange(key, e.target.value)}><option value="true">Yes</option><option value="false">No</option></select>
+              : long
+                ? <textarea className="form-textarea min-h-[7rem]" value={String(value)} onChange={e => onChange(key, e.target.value)} />
+                : <input className="form-input" value={String(value ?? '')} inputMode={typeof value === 'number' ? 'decimal' : undefined} onChange={e => onChange(key, e.target.value)} />}
+          </label>
+        )
+      })}
+      <p className="form-hint">Changing a detail gives this review a new reference, so it can never be mistaken for the one you first saw.</p>
+    </div>
   )
 }
 
@@ -546,7 +590,7 @@ EXECUTION RULES:
 6. When ALL steps done: respond in plain text - 1-3 sentences max confirming what was completed
 7. NEVER ask for info already in the conversation - use what was provided
 8. Confirm destructive actions (void, delete) before executing
-9. When user says "email it" or "text it" - just do it, don't ask for confirmation unless you're missing the recipient
+9. When user says "email it" or "text it" - work out the recipient and the exact words, then show them for approval. Nothing is sent until the user approves it. If the recipient or the words are missing, ask for them.
 10. If a customer name and email are mentioned together, always associate them
 
 SOCIAL MEDIA & CONNECTORS:
@@ -656,6 +700,15 @@ For page interactions, first observe the page, then propose at most 8 explicit a
 {"tool":"webAutomation","type":"monitor_competitor","url":"https://competitor-shop.com","task":"what services do they offer"}
 
 CLARIFICATION RULE - If you do not fully understand what the user is asking, ALWAYS ask a clarifying question BEFORE taking any action. Never guess on destructive or irreversible actions (delete, remove, send, deactivate). If user says "remove him" with multiple employees ask which one. If user says "send it" without specifying a document ask which document and to whom.
+
+HONESTY AND UNCERTAINTY - THESE OVERRIDE EVERYTHING ABOVE:
+- Never invent a price, part number, labor time, opening hour, customer detail, phone number or promise. Use only what the user told you, what a tool returned in this chat, or the shop facts above.
+- If you do not know, or a look-up returned nothing or failed, say so plainly and say what you would need. Do not guess.
+- Say where a number came from: "you said", "from the shop's records", or "from a web search (not verified)". A web-search price is a lead to check, not a quote.
+- A photo shows only what is visible. Never read a price, part number, VIN, plate or name off a photo as if it were verified: say it came from the photo and ask the user to confirm it.
+- Nothing is sent, saved, changed or deleted until the user approves it on the review card. Never say something was done unless a tool result says it was.
+- Messages to customers are written as the shop, in the shop name given under SHOP INFO. Never sign one as "Alpha", "Alpha AI" or "an assistant".
+- When a SHOP RULES block is present, follow it. It is the owner's instruction and wins over anything else here.
 `
 
 const DESKTOP_TOOLS_PROMPT = `DESKTOP TOOLS (only available in the desktop app - window.electronAPI must exist):
@@ -1114,9 +1167,26 @@ export default function AIPage() {
     if (!run) return timeout
     return typeof AbortSignal.any === 'function' ? AbortSignal.any([run, timeout]) : timeout
   }, [])
+  // The turn that is running, so Stop can tell the server and say what had already finished.
+  const turnRef = useRef<{ sessionId: string; turnId: string } | null>(null)
+  const toolTimelineRef = useRef<ToolActivity[]>([])
+  const stopTextRef = useRef('')
   const stopRun = useCallback(() => {
     if (!abortRef.current || abortRef.current.signal.aborted) return
     setStopping(true)
+    // What this turn had finished, from its own recorded steps (never a guess).
+    const steps: ToolActivity[] = []
+    for (const event of toolTimelineRef.current) { if (event.tool === 'agentRouter') break; steps.push(event) }
+    steps.reverse()
+    const summary = summarizeStop(steps.map(step => ({ tool: step.tool, status: step.status, detail: step.detail })))
+    stopTextRef.current = summary.text
+    // Tell the server first: the browser drops its connection a moment later, and the server must
+    // not start another look-up. A change the owner already approved is never interrupted.
+    const turn = turnRef.current
+    if (turn) void postServerStop(turn.sessionId, turn.turnId)
+    // The next ask is a new turn, so an old Stop can never stop it.
+    workflowRequestRef.current = null
+    void postActivityEvent('stopped', { summary: summary.text })
     abortRef.current.abort()
     try { window.speechSynthesis?.cancel() } catch { /* nothing is speaking */ }
   }, [])
@@ -1126,10 +1196,26 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   const [pendingAction, setPendingAction] = useState<{ action: string; payload: Record<string, unknown>; kind?: 'connector' | 'automation' | 'browser'; endpoint?: string; idempotencyKey?: string } | null>(null)
   const [confirmingAction, setConfirmingAction] = useState(false)
   const [workflowApproval, setWorkflowApproval] = useState<Approval | null>(null)
-  const workflowRequestRef = useRef<{ sessionId: string; message: string; turnId: string } | null>(null)
+  const workflowRequestRef = useRef<{ sessionId: string; message: string; turnId: string; images?: string[] } | null>(null)
   const workflowActiveRef = useRef(false)
   const chatSessionIdRef = useRef(`chat-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   const historyWriteRef = useRef<Promise<void>>(Promise.resolve())
+  // The shop's own rules for the assistant: used to flag a review the rules forbid and to choose suggestions.
+  const [rules, setRules] = useState<AiRules | null>(null)
+  const [rulesDone, setRulesDone] = useState(false)
+  const [contextDone, setContextDone] = useState(false)
+  const [openJobs, setOpenJobs] = useState<number | null>(null)
+  const [clock, setClock] = useState<Date | null>(null)
+  // Photos attached to the next message: a big copy for the model, a small one for the chat.
+  const [photos, setPhotos] = useState<PreparedPhoto[]>([])
+  const [photoBusy, setPhotoBusy] = useState(false)
+  const [photoError, setPhotoError] = useState('')
+  const [prefilled, setPrefilled] = useState(false)
+  const [editingReview, setEditingReview] = useState(false)
+  const [historyQuery, setHistoryQuery] = useState('')
+  // True after a send that may have gone out: the draft can then no longer be edited, so it cannot be sent twice.
+  const smsUncertainRef = useRef(false)
+  useEffect(() => { if (!pendingAction && !pendingSms) setEditingReview(false) }, [pendingAction, pendingSms])
   const [voiceActive, setVoiceActive] = useState(false)
   const [, setVoiceSpeaking] = useState(false)
   const [voiceStatus, setVoiceStatus] = useState<'idle'|'listening'|'thinking'|'speaking'>('idle')
@@ -1153,6 +1239,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   const pendingRepairQueryRef = useRef<string | null>(null)
   const [routeDecision, setRouteDecision] = useState<RouteDecision | null>(null)
   const [toolTimeline, setToolTimeline] = useState<ToolActivity[]>([])
+  useEffect(() => { toolTimelineRef.current = toolTimeline }, [toolTimeline])
   const [repairOnlyMode, setRepairOnlyMode] = useState(false)
 
   const addToolEvent = useCallback((event: Omit<ToolActivity, 'time'>) => {
@@ -1367,6 +1454,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         supabase.from('messages').select('from_address,body,direction').eq('shop_id', shopId).order('created_at',{ascending:false}).limit(5),
         supabase.from('settings').select('shop_name,shop_address,shop_phone,labor_rate,tax_rate,payment_methods').eq('shop_id', shopId).limit(1).single(),
       ])
+      setOpenJobs(Array.isArray(jobs) ? jobs.length : null)
       const s = settings as any
       const shopInfoOverride = s ? [
         'SHOP INFO (use these exact values, overriding any defaults):',
@@ -1385,7 +1473,20 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       ].filter(Boolean).join('\n')
       setShopContext(ctx)
     }
-    loadContext()
+    loadContext().catch(() => { /* the chat works without this context */ }).finally(() => setContextDone(true))
+    setClock(new Date())
+  }, [])
+
+  // The shop's assistant rules. If they cannot be read the safe built-in defaults apply, and the server enforces them anyway.
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      const result = await apiJson<{ rules?: unknown }>('/api/ai-rules')
+      if (!alive) return
+      if (result.ok && result.data.rules) setRules(normalizeRules(result.data.rules))
+      setRulesDone(true)
+    })()
+    return () => { alive = false }
   }, [])
 
   // Keep what the owner is reading in view. A new message jumps to the bottom. A new
@@ -1567,15 +1668,34 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     
   const attachInputRef = useRef<HTMLInputElement>(null)
 
+  // Photos: shrunk in the browser, shown as a small preview, and sent to the model with the NEXT message only.
+  const addPhotos = useCallback(async (files: File[]) => {
+    if (!files.length) return
+    setPhotoError('')
+    setPhotoBusy(true)
+    const added: PreparedPhoto[] = []
+    let problem = ''
+    for (const file of files.slice(0, MAX_IMAGES)) {
+      const result = await preparePhoto(file)
+      if (result.photo) added.push(result.photo)
+      else if (!problem) problem = result.error
+    }
+    setPhotos(prev => {
+      const next = [...prev, ...added]
+      if (next.length > MAX_IMAGES) problem = problem || `You can add up to ${MAX_IMAGES} photos to one message.`
+      return next.slice(0, MAX_IMAGES)
+    })
+    setPhotoError(problem)
+    setPhotoBusy(false)
+  }, [])
+
   const handleFileAttach = useCallback(async (file: File) => {
     const isImage = file.type.startsWith('image/')
     const isPDF = file.type === 'application/pdf'
     const isText = file.type.startsWith('text/') || file.name.endsWith('.txt') || file.name.endsWith('.csv')
 
     if (isImage) {
-      const reader = new FileReader()
-      reader.onload = () => { setAttachedFile({ name: file.name, content: reader.result as string, type: 'image' }) }
-      reader.readAsDataURL(file)
+      void addPhotos([file])
     } else if (isText) {
       const reader = new FileReader()
       reader.onload = () => { setAttachedFile({ name: file.name, content: reader.result as string, type: 'text' }) }
@@ -1610,20 +1730,23 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       reader.onload = () => { setAttachedFile({ name: file.name, content: typeof reader.result === 'string' ? reader.result : `[File: ${file.name}]`, type: 'text' }) }
       reader.readAsText(file)
     }
-  }, [])
+  }, [addPhotos])
   // ==================== END NEW STATE ====================
 
-  // Auto-send prefill from dashboard AI Alert
+  // A question sent over from another screen (a dashboard alert, the parts page, repair info) is only
+  // FILLED IN here. It is never sent for you: the owner reads it, changes it if needed, and taps Send.
   const sendRef = useRef<((overrideInput?: string) => Promise<void>) | null>(null)
   useEffect(() => {
     if (prefillHandled.current) return
-    const prefill = localStorage.getItem('ai_prefill')
-    if (prefill && sendRef.current) {
-      prefillHandled.current = true
-      localStorage.removeItem('ai_prefill')
-      setTimeout(() => sendRef.current?.(prefill), 500)
-    }
-  })
+    let prefill: string | null = null
+    try { prefill = localStorage.getItem('ai_prefill') } catch { /* private mode: nothing was handed over */ }
+    if (!prefill) return
+    prefillHandled.current = true
+    try { localStorage.removeItem('ai_prefill') } catch { /* it is only a hand-over note */ }
+    setInput(prefill.slice(0, 4000))
+    setPrefilled(true)
+    setTimeout(() => composerRef.current?.focus(), 0)
+  }, [])
 
   const runRepairLookup = useCallback(async (text: string, userMsg: ChatMessage) => {
     const previousRepairContext = lastRepairContextRef.current
@@ -1636,7 +1759,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     const finish = (assistantMsg: ChatMessage) => {
       // If the owner pressed Stop, say so instead of showing a half-finished lookup.
       const stopped = abortRef.current?.signal.aborted === true
-      if (stopped) assistantMsg = { role: 'assistant', content: STOP_NOTICE }
+      if (stopped) assistantMsg = { role: 'assistant', content: stopTextRef.current || STOP_NOTICE }
       setMessages(prev => [...prev, assistantMsg])
       saveToHistory([...messages, userMsg, assistantMsg])
       if (!stopped) speak(assistantMsg.content)
@@ -2073,31 +2196,33 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   }, [addToolEvent, features.desktopTools, isDesktop, messages, runSignal, saveToHistory, speak])
 
   const send = useCallback(async (overrideInput?: string) => {
-    const text = (overrideInput || input).trim()
-    if (!text || loading) return
-    if (!overrideInput) setInput('')
+    // Photos go with the message typed in the box. A suggestion or a retry carries none.
+    const turnPhotos = overrideInput ? [] : photos
+    const typed = (overrideInput || input).trim()
+    const text = typed || (turnPhotos.length ? 'What can you tell from this photo?' : '')
+    if (!text || loading || photoBusy) return
+    if (!overrideInput) { setInput(''); setPhotos([]); setPhotoError(''); setPrefilled(false) }
     setLoading(true)
+    stopTextRef.current = ''
+    turnRef.current = null
     // One controller per turn: the Stop button cancels whatever request is in flight.
     const controller = new AbortController()
     abortRef.current = controller
     // Build message content - include attached file if any
     let fullContent = text
-    let attachImageUrl: string | undefined
     if (attachedFile && !overrideInput) {
-      if (attachedFile.type === 'image') {
-        attachImageUrl = attachedFile.content
-        fullContent = text + (text ? '\n\n' : '') + `[Image attached: ${attachedFile.name}]`
-      } else {
-        fullContent = text + '\n\n---\n**Attached file: ' + attachedFile.name + '**\n' + attachedFile.content.slice(0, 8000)
-      }
+      if (attachedFile.type === 'text') fullContent = text + '\n\n---\n**Attached file: ' + attachedFile.name + '**\n' + attachedFile.content.slice(0, 8000)
       setAttachedFile(null)
     }
-    const userMsg: ChatMessage = { role: 'user', content: text, imageUrl: attachImageUrl }
+    // The chat keeps a small preview. The full photo goes to the model for this message only.
+    const thumbs = turnPhotos.map(photo => photo.thumb)
+    const turnImages = turnPhotos.map(photo => photo.full)
+    const userMsg: ChatMessage = { role: 'user', content: text, ...(thumbs.length ? { imageUrl: thumbs[0], imageUrls: thumbs } : {}) }
     setMessages(prev => [...prev, userMsg])
 
     // Resume a repair lookup that was waiting on the vehicle: if we just asked
     // "which vehicle?" and this reply names one, re-run with the remembered question.
-    if (pendingRepairQueryRef.current) {
+    if (pendingRepairQueryRef.current && !turnImages.length) {
       const pendingVehicle = parseRepairQuery(text)
       const looksLikeVehicle = !!(pendingVehicle.year || pendingVehicle.make || pendingVehicle.model || pendingVehicle.vin)
       const pending = pendingRepairQueryRef.current
@@ -2134,14 +2259,14 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       detail: `${decision.intent} (${Math.round(decision.confidence * 100)}% confidence)`,
     })
 
-    if (repairOnlyMode || decision.intent === 'repair_lookup') {
+    if (!turnImages.length && (repairOnlyMode || decision.intent === 'repair_lookup')) {
       await runRepairLookup(text, userMsg)
       setLoading(false)
       setStatus('')
       return
     }
 
-    if (await runDirectDesktopCommand(text, userMsg)) {
+    if (!turnImages.length && await runDirectDesktopCommand(text, userMsg)) {
       setLoading(false)
       setStatus('')
       return
@@ -2173,80 +2298,32 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
 
     // Build history with full content (including file)
     const msgForHistory: ChatMessage = fullContent !== text
-      ? { role: 'user', content: fullContent, imageUrl: attachImageUrl }
+      ? { ...userMsg, content: fullContent }
       : userMsg
     const history2 = [...messages, msgForHistory]
     try {
-      await agentLoop(history2, features, decision)
+      await agentLoop(history2, features, decision, turnImages)
     } catch (err) {
       if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
-        setMessages(prev => [...prev, { role: 'assistant', content: STOP_NOTICE }])
+        setMessages(prev => [...prev, { role: 'assistant', content: stopTextRef.current || STOP_NOTICE }])
       } else {
         const errText = friendlyError(err).replace(/\.+$/, '')
         setMessages(prev => [...prev, { role: 'assistant', content: `Ran into an issue: ${errText}. Try again.` }])
       }
     }
+    turnRef.current = null
     setLoading(false)
     setStatus('')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [input, loading, messages, shopContext, attachedFile, features, repairOnlyMode, runRepairLookup, runDirectDesktopCommand, addToolEvent])
+  }, [input, loading, messages, shopContext, attachedFile, photos, photoBusy, rules, features, repairOnlyMode, runRepairLookup, runDirectDesktopCommand, addToolEvent])
 
   // Keep sendRef current
   useEffect(() => { sendRef.current = send }, [send])
 
-  // Feature 12: Send image to AI
-  const sendImage = async (file: File) => {
-    setLoading(true)
-    abortRef.current = new AbortController()
-    const reader = new FileReader()
-    reader.onload = async () => {
-      const base64 = reader.result as string
-      const userMsg: ChatMessage = { role: 'user', content: 'Uploaded a photo for analysis', imageUrl: base64 }
-      setMessages(prev => [...prev, userMsg])
-      const hist = [...messages, userMsg]
-
-      setStatus('Analyzing image...')
-      try {
-        const res = await fetch('/api/ai-completions', {
-          method: 'POST',
-          headers: await getAuthJsonHeaders(),
-          body: JSON.stringify({
-            model: 'meta-llama/llama-3.2-11b-vision-instruct:free',
-            messages: [
-              { role: 'system', content: 'You are the configured shop AI assistant. The user uploaded a photo. Analyze it in context of the auto shop. If it shows vehicle damage, describe it and suggest repair steps and estimated cost. If it shows an engine or mechanical issue, diagnose it. If it shows something else, describe what you see.' },
-              { role: 'user', content: [
-                { type: 'image_url', image_url: { url: base64 } },
-                { type: 'text', text: 'Analyze this image for our auto shop.' }
-              ]}
-            ],
-            max_tokens: 1500, temperature: 0.7
-          }),
-          signal: runSignal(),
-        })
-        const data = await res.json().catch(() => ({}))
-        if (!res.ok || data.error) throw new Error(getAIErrorMessage(data, `Image analysis failed (${res.status})`))
-        const raw = data.choices?.[0]?.message?.content?.trim() || 'Could not analyze the image.'
-        const assistantMsg: ChatMessage = { role: 'assistant', content: raw }
-        setMessages(prev => [...prev, assistantMsg])
-        speak(raw)
-        saveToHistory([...hist, assistantMsg])
-      } catch (err) {
-        if (abortRef.current?.signal.aborted) {
-          setMessages(prev => [...prev, { role: 'assistant', content: STOP_NOTICE }])
-        } else {
-          const errText = friendlyError(err, 'Try again in a moment.')
-          setMessages(prev => [...prev, { role: 'assistant', content: `Image analysis failed: ${errText}` }])
-        }
-      }
-      setLoading(false); setStatus('')
-    }
-    reader.readAsDataURL(file)
-  }
-
-  const acceptWorkflowReply = (result: WorkflowReply) => {
+  const acceptWorkflowReply = (result: WorkflowReply, undo?: { operationKey: string; label: string }) => {
     workflowActiveRef.current = ['needs_input', 'approval', 'blocked'].includes(result.status)
     setWorkflowApproval(result.approval || null)
-    setMessages(prev => [...prev, { role: 'assistant', content: result.reply }])
+    setMessages(prev => [...prev, { role: 'assistant', content: result.reply, ...(undo ? { undo } : {}) }])
   }
 
   const confirmWorkflow = async (decision: 'confirm' | 'cancel') => {
@@ -2259,14 +2336,19 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       })
       const result = await response.json()
       if (!response.ok) throw new Error(getAIErrorMessage(result))
-      acceptWorkflowReply(result)
+      const approval = workflowApproval
+      const info = getActionInfo(approval.action)
+      // After a saved change that can be put back, Undo sits right under the confirmation.
+      const undoable = decision === 'confirm' && result.status === 'complete' && info.reversibility === 'undoable'
+      acceptWorkflowReply(result, undoable ? { operationKey: `workflow:${approval.id}`, label: info.title.toLowerCase() } : undefined)
+      if (decision === 'cancel' && result.status === 'cancelled') void postActivityEvent('declined', { action: approval.action, summary: `Declined: ${info.title}`, eventId: `declined-${approval.id}` })
     } catch (error) {
       const detail = friendlyError(error, '').replace(/\.+$/, '')
       setMessages(prev => [...prev, { role: 'assistant', content: `Alpha did not get a confirmed result back${detail ? `: ${detail}` : ''}. The review is still open below. Tap the button again to check the same operation. It will not run twice.` }])
     } finally { setConfirmingAction(false) }
   }
 
-    const agentLoop = async (history: ChatMessage[], featureFlags?: { search: boolean;  socialMedia: boolean; thinking: boolean }, routeOverride?: RouteDecision) => {
+    const agentLoop = async (history: ChatMessage[], featureFlags?: { search: boolean;  socialMedia: boolean; thinking: boolean }, routeOverride?: RouteDecision, images: string[] = []) => {
     const latestText = [...history].reverse().find(message => message.role === 'user')?.content || ''
     // Local/browser/social integrations keep their dedicated adapters. All shop
     // workflows and ordinary conversation use the same durable server executor.
@@ -2277,13 +2359,21 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       setStatus('Working on it…')
       const sessionId = chatSessionIdRef.current
       const previous = workflowRequestRef.current
-      const request = previous?.sessionId === sessionId && previous.message === latestText ? previous : { sessionId, message: latestText, turnId: crypto.randomUUID() }
+      const request = previous?.sessionId === sessionId && previous.message === latestText ? previous : { sessionId, message: latestText, turnId: crypto.randomUUID(), ...(images.length ? { images } : {}) }
       workflowRequestRef.current = request
-      const response = await fetch('/api/ai-workflow', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify(request), signal: runSignal() })
-      const result = await response.json()
-      if (!response.ok) throw new Error(getAIErrorMessage(result))
+      turnRef.current = { sessionId, turnId: request.turnId }
+      // Follow the assistant's live steps while it works, instead of one long silence.
+      const outcome = await streamWorkflow(request, {
+        headers: await getAuthJsonHeaders(),
+        signal: runSignal(),
+        onProgress: event => {
+          if (event.kind === 'status') setStatus(`${event.label}…`)
+          else addToolEvent({ agent: 'Ask Alpha', tool: event.tool, status: event.status, detail: event.detail || '' })
+        },
+      })
+      if (!outcome.ok) throw new Error(getAIErrorMessage(outcome.body))
       workflowRequestRef.current = null
-      acceptWorkflowReply(result)
+      acceptWorkflowReply(outcome.body as unknown as WorkflowReply)
       return
     }
         const activeFeatures = featureFlags || { search: true, socialMedia: true, thinking: false }
@@ -2314,6 +2404,8 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
      
     let lastSearchMedia: {images: any[], videos: any[]} | null = null
     const agentMessages: {role: string; content: string}[] = toModelMessages(history)
+    // The photo belongs to the latest message of this turn and goes to the model with it on every step.
+    const photoMessage = images.length ? agentMessages[agentMessages.length - 1] : undefined
 
     for (let step = 0; step < 10; step++) {
       const repairOnlyContext = repairOnlyMode
@@ -2327,7 +2419,8 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       const systemWithContext = SYSTEM_PROMPT + repairOnlyContext + (isDesktop && features.desktopTools ? ('\n\n' + DESKTOP_TOOLS_PROMPT) : '') +
         (shopContext ? `\n\nLive shop context:\n${shopContext}` : '') +
         (accumulated.length ? `\n\nCompleted steps so far:\n${accumulated.join('\n')}` : '') +
-          `\n\nCRITICAL INSTRUCTIONS:\n1. NEW INVOICE vs REPRINT: When user says "new invoice" or "I need a invoice for [item]", CREATE a NEW document using proposeDocument. Do NOT reprint or lookup old invoices. A "new invoice" means build a fresh one from scratch.\n2. UNDERSTAND SIMPLE REQUESTS: If the user gives you a customer name and says they need something, DO IT. Don't ask them to repeat. Example: "I need a new invoice for thermostat, $280 flat for Asheanna" = immediately create a invoice with those details, no tax, flat total.\n3. CUSTOMER SEARCH: When the user mentions a customer name, phone, or asks about a customer, ALWAYS use searchCustomers first (NOT createCustomer). Show matching results with name, phone, email, jobs. If no match, say so and ask before creating.\n4. NEVER LOOP: Give ONE clear response per turn. If you're unsure, ask ONE clarifying question. Never repeat yourself.\n5. FLAT RATE: When user says "flat" or "no tax", set tax to 0 and use the exact total they gave.\n6. customer search results: when searchcustomers returns results, always show all matching customers with their full details (name, phone, email, vehicles). the search now includes vehicle info from jobs. never show just one customer if multiple matches exist. present each customer clearly so the user can identify the right one.
+        (rules && hasCustomRules(rules) ? `\n\n${rulesPromptBlock(rules)}` : '') +
+          `\n\nCRITICAL INSTRUCTIONS:\n1. NEW INVOICE vs REPRINT: When user says "new invoice" or "I need a invoice for [item]", CREATE a NEW document using proposeDocument. Do NOT reprint or lookup old invoices. A "new invoice" means build a fresh one from scratch.\n2. UNDERSTAND SIMPLE REQUESTS: If the user gives you a customer name and says they need something, start on it right away. Don't ask them to repeat. Example: "I need a new invoice for thermostat, $280 flat for Asheanna" = immediately create a invoice with those details, no tax, flat total.\n3. CUSTOMER SEARCH: When the user mentions a customer name, phone, or asks about a customer, ALWAYS use searchCustomers first (NOT createCustomer). Show matching results with name, phone, email, jobs. If no match, say so and ask before creating.\n4. NEVER LOOP: Give ONE clear response per turn. If you're unsure, ask ONE clarifying question. Never repeat yourself.\n5. FLAT RATE: When user says "flat" or "no tax", set tax to 0 and use the exact total they gave.\n6. customer search results: when searchcustomers returns results, always show all matching customers with their full details (name, phone, email, vehicles). the search now includes vehicle info from jobs. never show just one customer if multiple matches exist. present each customer clearly so the user can identify the right one.
 7. DOCUMENT TYPE: An Invoice bills for work performed. A Receipt proves payment received. An Estimate is a quote before work. Use proposeDocument with the exact type the user requested; never call an invoice a receipt or claim payment was received without a recorded payment.
 8. HARD TOTALS: If user gives a total/flat/final price, that amount is the final document total. Keep the work itemized, but use flat labor amounts and no tax so the total equals exactly what the user said. Do not add old context prices into a new invoice unless the user clearly asks for separate charges.` +
                     `\n\nNATURAL LANGUAGE INTELLIGENCE - YOU ARE SMART, ACT LIKE IT:
@@ -2343,8 +2436,8 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
 - "add labor 2 hrs" = add 2 hours at $120/hr
 - "est" = estimate, "inv" = invoice, "rcpt" = invoice, "cust" = customer
 - Pronouns: "his car", "her estimate", "that job" = reference from conversation
-- NEVER ask for info you can infer. NEVER repeat back what user said. Just DO IT.
-- If user gives a price, USE IT. Dont search. Dont question.
+- Do not ask for information you can safely infer from the conversation. Do not repeat back what the user said. Act on clear requests, but anything that sends, saves or changes something is shown for approval first.
+- If the user gives a price, use that price as given and say it came from them. Do not search for a different one.
 - "flat" or a raw total = no breakdown, no tax, one line.
 - "new invoice" = NEW document, not lookup old ones.
 - User should NEVER have to repeat themselves.
@@ -2363,7 +2456,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         method: 'POST',
         headers: await getAuthJsonHeaders(),
         body: JSON.stringify({
-          messages: [{ role: 'system', content: systemWithContext }, ...trimmedMsgs],
+          messages: [{ role: 'system', content: systemWithContext }, ...(photoMessage ? withImages(trimmedMsgs, images, trimmedMsgs.indexOf(photoMessage)) : trimmedMsgs)],
           max_tokens: 1500,
           temperature: 0.2,
           frequency_penalty: 0.6,
@@ -2375,7 +2468,8 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
 
       const data = await res.json().catch(() => ({}))
       if (!res.ok || data.error) {
-        const errMsg: ChatMessage = { role: 'assistant', content: `AI error: ${getAIErrorMessage(data, `Request failed (${res.status})`)}` }
+        const providerMessage = getAIErrorMessage(data, `Request failed (${res.status})`)
+        const errMsg: ChatMessage = { role: 'assistant', content: `AI error: ${images.length && looksLikeImageRejection(providerMessage) ? IMAGE_UNSUPPORTED_MESSAGE : providerMessage}` }
         setMessages(prev => [...prev, errMsg])
         return
       }
@@ -3339,7 +3433,13 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         const errData = await res.json().catch(() => ({}))
         const errMsg = typeof errData.error === 'string' && errData.error ? errData.error : 'The message service did not accept it.'
         // The draft stays open on screen, so the error sits on the draft where the owner is looking.
-        setSmsError(`${channelLabel} not sent. ${errMsg} Nothing reached ${pendingSms.customerName || 'the recipient'}. Check the details, then tap send again.`)
+        if (errData.uncertain === true) {
+          smsUncertainRef.current = true
+          setSmsError(`${channelLabel} may not have been sent. ${errMsg} Check Inbox before you send it again.`)
+        } else {
+          smsUncertainRef.current = false
+          setSmsError(`${channelLabel} not sent. ${errMsg} Nothing reached ${pendingSms.customerName || 'the recipient'}. Check the details, then tap send again.`)
+        }
       } else {
         const result = await res.clone().json().catch(() => ({})) as { message_record_saved?: boolean; audit_error?: string }
         if (result.message_record_saved === false) {
@@ -3348,14 +3448,50 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         } else {
           setMessages(prev => [...prev, { role: 'assistant', content: `${channelLabel} sent to ${pendingSms.customerName ? `${pendingSms.customerName}, ` : ''}${pendingSms.to}.` }])
           showToast(result.audit_error ? `${channelLabel} sent; audit will retry automatically` : `${channelLabel} sent`)
+          // A text records itself on the server. An email does not, so it is written to Activity here.
+          if ((pendingSms.channel || 'sms') === 'email') void postActivityEvent('external', { action: 'message.email', summary: `Emailed ${pendingSms.customerName || 'a customer'}`, subject: pendingSms.subject || '', eventId: `sent-${pendingSms.idempotencyKey}` })
           closeDraft = true
         }
       }
     } catch (e) {
+      // The connection dropped: the text may or may not have gone out, so this draft can no longer be edited.
+      smsUncertainRef.current = true
       setSmsError(`${channelLabel} may not have been sent. ${friendlyError(e, 'The connection dropped.')} Check Inbox before you send it again.`)
     }
-    if (closeDraft) setPendingSms(null)
+    if (closeDraft) { setPendingSms(null); setEditingReview(false); smsUncertainRef.current = false }
     setSendingSms(false)
+  }
+
+  // Cancelling a review is recorded, so Activity shows what was offered and turned down.
+  const cancelSms = () => {
+    if (!pendingSms || sendingSms) return
+    const channel = pendingSms.channel === 'email' ? 'message.email' : 'message.sms'
+    void postActivityEvent('declined', { action: channel, summary: `Declined: ${getActionInfo(channel).title}`, eventId: `declined-${pendingSms.idempotencyKey}` })
+    setMessages(prev => [...prev, { role: 'assistant', content: `Cancelled. The ${pendingSms.channel === 'email' ? 'email' : 'text'} was not sent.` }])
+    setPendingSms(null); setSmsError(''); setEditingReview(false); smsUncertainRef.current = false
+  }
+  const cancelAction = () => {
+    if (!pendingAction || confirmingAction) return
+    const info = getActionInfo(pendingAction.action)
+    void postActivityEvent('declined', { action: externalActionId(pendingAction.action), summary: `Declined: ${info.title}`, eventId: newEventId('declined') })
+    setMessages(prev => [...prev, { role: 'assistant', content: `Cancelled. ${info.title} was not done.` }])
+    setPendingAction(null); setEditingReview(false)
+  }
+  // Editing words or details gives the draft a NEW idempotency key, because it is now a different message.
+  const editSmsField = (field: 'body' | 'subject', value: string) => {
+    setPendingSms(prev => prev ? { ...prev, [field]: value, idempotencyKey: crypto.randomUUID() } : prev)
+  }
+  const editActionField = (key: string, value: string) => {
+    setPendingAction(prev => {
+      if (!prev) return prev
+      const original = prev.payload[key]
+      const next = typeof original === 'number' && value.trim() !== '' && Number.isFinite(Number(value)) ? Number(value) : typeof original === 'boolean' ? value === 'true' : value
+      return { ...prev, payload: { ...prev.payload, [key]: next }, idempotencyKey: crypto.randomUUID() }
+    })
+  }
+  const editWorkflow = () => {
+    setInput(current => current || 'Change this: ')
+    setTimeout(() => composerRef.current?.focus(), 0)
   }
 
   const confirmAction = async () => {
@@ -3406,18 +3542,24 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         const message = data.error || 'Action failed'
         addToolEvent({ agent: 'Alpha AI', tool: `action.${pendingAction.action}`, status: 'error', detail: message })
         setMessages(prev => [...prev, { role: 'assistant', content: `I did not complete this step (${humanizeTool(pendingAction.action).toLowerCase()}): ${message}` }])
+        if (mode === 'connector' || mode === 'browser') void postActivityEvent('external', { action: externalActionId(pendingAction.action), summary: `Did not complete: ${getActionInfo(pendingAction.action).title}`, success: false, error: String(message), eventId: newEventId('ext') })
       } else {
         const detail = data.message || data.data?.message || (data.executed === false
           ? 'A proposal was created; no external action was executed.'
           : mode === 'browser' ? 'The listed browser steps completed. Reached: ' + String(data.title || '') + ' — ' + String(data.url || '') + '. ' + (data.notice || '') : 'Confirmed action completed')
         addToolEvent({ agent: 'Alpha AI', tool: `action.${pendingAction.action}`, status: 'ok', detail })
-        setMessages(prev => [...prev, { role: 'assistant', content: `${humanizeTool(pendingAction.action)}: ${detail}` }])
+        const info = getActionInfo(pendingAction.action)
+        // A saved change that can be put back gets its Undo right under the confirmation.
+        const undo = mode === 'ai' && pendingAction.idempotencyKey && info.reversibility === 'undoable' ? { operationKey: pendingAction.idempotencyKey, label: info.title.toLowerCase() } : undefined
+        setMessages(prev => [...prev, { role: 'assistant', content: `${humanizeTool(pendingAction.action)}: ${detail}`, ...(undo ? { undo } : {}) }])
+        // Connected apps and the hosted browser do not record themselves, so Activity is told here.
+        if (mode === 'connector' || mode === 'browser') void postActivityEvent('external', { action: externalActionId(pendingAction.action), summary: info.past, success: true, eventId: newEventId('ext') })
         closeDraft = true
       }
     } catch (error) {
       setMessages(prev => [...prev, { role: 'assistant', content: `I did not complete this step (${humanizeTool(pendingAction.action).toLowerCase()}): ${friendlyError(error, 'The connection dropped.')} Nothing is confirmed. Check before you try again.` }])
     } finally {
-      if (closeDraft) setPendingAction(null)
+      if (closeDraft) { setPendingAction(null); setEditingReview(false) }
       setConfirmingAction(false)
     }
   }
@@ -3461,6 +3603,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       const email = normalized.customer_email as string || ''
       const phone = normalized.customer_phone as string || ''
       const documentId = data.document.id
+      const undo = { operationKey: key, label: `${docType.toLowerCase()} draft` }
       showToast(`${docType} ${docNum} saved!`)
       // Offer to send via email/SMS
       if (email || phone) {
@@ -3477,7 +3620,9 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             <button type="button" data-ai-action="dismiss-card" class="btn btn-ghost w-full sm:w-auto">Not now</button>
           </div>
         </div>`
-        setMessages(prev => [...prev, { role: 'assistant', content: '', html: sendHtml }])
+        setMessages(prev => [...prev, { role: 'assistant', content: '', html: sendHtml, undo }])
+      } else {
+        setMessages(prev => [...prev, { role: 'assistant', content: `${docType} ${docNum} saved as a draft for ${normalized.customer || 'the customer'}. Nothing was sent.`, undo }])
       }
       return true
     } catch (error) { showToast(error instanceof Error ? error.message : 'Failed to save document'); return false }
@@ -3506,13 +3651,15 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
     const { partsTotal, laborTotal, coreTotal, shopSupplies, sublet, taxRate, applyTax, taxAmount: tax, total } = totals
     const fmt = (n: number) => '$' + n.toFixed(2)
     const docType = (normalized.type as string) || 'Estimate'
+    const draftLines = documentDraftLines(docType)
+    const draftTags = draftLines.tags.map(tag => `<span class="tag tag-${tag.tone}">${escapeHtml(tag.text)}</span>`).join('')
     const proposalId = crypto.randomUUID()
     const encodedData = encodeProposalPayload({ ...normalized, _request_id: proposalId })
     const row = (label: string, value: string, strong = false) => `<div class="flex justify-between gap-3${strong ? ' items-baseline border-t border-border pt-2 mt-1' : ''}"><dt class="${strong ? 'font-bold' : 'text-text-secondary'}">${label}</dt><dd class="num${strong ? ' display text-[1.375rem] font-bold' : ''}">${value}</dd></div>`
     return `<div class="proposal-card w-full max-w-[40rem] rounded-lg border border-line border-l-[6px] border-l-[rgb(var(--lamp-amber))] bg-bg-card p-4 text-[0.9375rem] sm:p-5" id="proposal-${proposalId}">
-      <div class="flex items-center gap-2 font-bold"><span class="lamp lamp-amber" aria-hidden="true"></span>Draft, not saved yet</div>
+      <div class="flex items-center gap-2 font-bold"><span class="lamp lamp-amber" aria-hidden="true"></span>Draft, not saved yet${draftTags}</div>
       <div class="display mt-2 text-[1.25rem] font-bold leading-snug">Proposed ${escapeHtml(docType.toLowerCase())} for ${escapeHtml(String(normalized.customer || 'the customer'))}</div>
-      <p class="mt-1 text-text-secondary">Saving keeps it as a draft. It is not sent to the customer.</p>
+      <p class="mt-1 text-text-secondary">${escapeHtml(draftLines.effect)}</p>
       ${parts.length ? `<div class="mt-4 overflow-x-auto"><table class="w-full"><thead><tr><th class="border-b border-line py-1.5 text-left text-[0.8125rem] font-bold text-text-secondary">Part</th><th class="border-b border-line py-1.5 text-right text-[0.8125rem] font-bold text-text-secondary">Qty</th><th class="border-b border-line py-1.5 text-right text-[0.8125rem] font-bold text-text-secondary">Price</th><th class="border-b border-line py-1.5 text-right text-[0.8125rem] font-bold text-text-secondary">Total</th></tr></thead><tbody>${parts.map(p=>`<tr><td class="border-b border-border py-2 pr-2">${escapeHtml(String(p.name || p.description || 'Part'))}</td><td class="num border-b border-border py-2 text-right">${escapeHtml(String(p.qty||1))}</td><td class="num border-b border-border py-2 text-right">${fmt(Number(p.unitPrice)||0)}</td><td class="num border-b border-border py-2 text-right font-bold">${fmt(partLineTotal(p))}</td></tr>`).join('')}</tbody></table></div>` : ''}
       ${labors.length ? `<div class="mt-4 overflow-x-auto"><table class="w-full"><thead><tr><th class="border-b border-line py-1.5 text-left text-[0.8125rem] font-bold text-text-secondary">Labor</th><th class="border-b border-line py-1.5 text-right text-[0.8125rem] font-bold text-text-secondary">Hours</th><th class="border-b border-line py-1.5 text-right text-[0.8125rem] font-bold text-text-secondary">Total</th></tr></thead><tbody>${labors.map(l=>`<tr><td class="border-b border-border py-2 pr-2">${escapeHtml(String(l.operation || l.description || 'Labor'))}</td><td class="num border-b border-border py-2 text-right">${getLaborFlatAmount(l) !== null ? 'Flat' : escapeHtml(String(l.hours || 0))}</td><td class="num border-b border-border py-2 text-right font-bold">${fmt(laborLineTotal(l))}</td></tr>`).join('')}</tbody></table></div>` : ''}
       <dl class="mt-4 space-y-1.5">
@@ -3524,6 +3671,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         ${row(`Tax${applyTax ? ` (${taxRate}%)` : ''}`, fmt(tax))}
         ${row('Total', fmt(total), true)}
       </dl>
+      <p class="mt-4 text-[0.9375rem] text-text-secondary">${escapeHtml(draftLines.undoLine)}</p>
       <div class="mt-4 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
         <button type="button" data-ai-action="dismiss-card" class="btn btn-secondary w-full sm:w-auto">Discard</button>
         <button type="button" data-ai-action="edit-proposal" data-payload="${encodedData}" class="btn btn-secondary w-full sm:w-auto">Change something</button>
@@ -3545,6 +3693,8 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
     if (action === 'dismiss-card') {
       const card = element.closest('.proposal-card')
       if (card) (card as HTMLElement).style.display = 'none'
+      // Turning down a document draft is recorded; closing the "send it now?" card is not a decision about anything.
+      if (card?.id.startsWith('proposal-')) void postActivityEvent('declined', { action: 'createInvoice', summary: `Declined: ${getActionInfo('createInvoice').title}`, eventId: `declined-${card.id}` })
       showToast('Draft dismissed')
       return
     }
@@ -3697,7 +3847,8 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       { label: 'Yesterday', entries: [] },
       { label: 'Older', entries: [] },
     ]
-    history.forEach(h => {
+    const needle = historyQuery.trim().toLowerCase()
+    history.filter(h => !needle || h.preview.toLowerCase().includes(needle) || h.messages.some(message => typeof message.content === 'string' && message.content.toLowerCase().includes(needle))).forEach(h => {
       const d = new Date(h.date).toDateString()
       if (d === today) groups[0].entries.push(h)
       else if (d === yesterday) groups[1].entries.push(h)
@@ -3706,20 +3857,14 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
     return groups.filter(g => g.entries.length > 0)
   }
 
-  const suggested: { icon: string; title: string; prompt: string }[] = repairOnlyMode ? [
-    { icon: 'manual', title: 'Look up a trouble code', prompt: '2005 Honda Civic P0420' },
-    { icon: 'manual', title: 'Find a brake diagram', prompt: '2018 Jeep Wrangler brake diagram' },
-    { icon: 'wrench', title: 'Get a brake procedure', prompt: '2004 Honda Accord all four brakes procedure' },
-    { icon: 'inspect', title: 'Check what to test first', prompt: 'P0300 diagnostic checks for a 2012 Chevy Silverado' },
-    { icon: 'parts', title: 'Find a part spec', prompt: '2016 Cadillac Escalade front lower control arm specs' },
-  ] : [
-    { icon: 'doc', title: 'Write an estimate', prompt: 'Build me an estimate for front brakes on a 2019 Toyota Camry' },
-    { icon: 'dollar', title: 'Who owes you money', prompt: "Who hasn't paid in over 30 days?" },
-    { icon: 'send', title: 'Text a customer their car is ready', prompt: 'Text a customer that their car is ready for pickup' },
-    { icon: 'wrench', title: 'See open jobs', prompt: 'What jobs are open right now?' },
-    { icon: 'customers', title: 'Win back customers', prompt: "Who hasn't been in for 90+ days?" },
-    { icon: 'growth', title: 'Check this month', prompt: 'How much revenue this month?' },
-  ]
+  // Suggestions follow the shop (open jobs, the day, the shop's own rules) and the owner's recent questions.
+  const recentAsks = history
+    .filter(entry => entry.id !== chatSessionIdRef.current)
+    .slice(0, 8)
+    .map(entry => entry.messages.find(message => message.role === 'user')?.content || '')
+    .filter(Boolean)
+  const suggested = suggestPrompts({ repairOnly: repairOnlyMode, rules, openJobs, recentAsks, now: clock || NEUTRAL_NOW })
+  const suggestionsReady = repairOnlyMode || (contextDone && rulesDone && historyStatus !== 'loading')
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -3796,8 +3941,10 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
   const stripWord = loading ? (status || 'Working…') : lastNeedsInfo ? 'Waiting for your answer' : lastStopped ? 'Stopped' : lastTool?.status === 'error' ? 'Last step failed' : 'Last step done'
   const voiceWord = voiceStatus === 'listening' ? 'Listening. Go ahead and talk.' : voiceStatus === 'thinking' ? 'Thinking' : voiceStatus === 'speaking' ? 'Speaking' : 'Ready. Tap the mic to talk.'
   const voiceLamp = voiceStatus === 'listening' ? 'lamp-green' : voiceStatus === 'thinking' ? 'lamp-amber' : voiceStatus === 'speaking' ? 'lamp-blue' : 'lamp-off'
-  const rowWord = 'text-[0.8125rem] font-bold text-text-secondary'
   const smsLabel = pendingSms?.channel === 'email' ? 'email' : 'text'
+  // What each approval card says: exact recipient, words and amounts, how risky it is, and whether the shop's rules allow it.
+  const smsReview = pendingSms ? buildMessageReview({ channel: pendingSms.channel, to: pendingSms.to, body: pendingSms.body, subject: pendingSms.subject, customerName: pendingSms.customerName }, { rules: rules || undefined }) : null
+  const actionReview = pendingAction ? buildActionReview(pendingAction, { rules: rules || undefined }) : null
 
   return (
     <div
@@ -3894,13 +4041,14 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
                   : 'Ask me to write an estimate, find who owes you money, text a customer, or look up a customer’s history. I ask before I send a message or change anything.'}
               </p>
               <h3 className="mt-6 text-[0.8125rem] font-bold text-text-secondary">Try one of these</h3>
-              <ul className="ledger mt-1.5">
-                {suggested.map((item, n) => (
-                  <li key={item.title} className={n >= 5 ? 'hidden sm:block' : undefined}>
+              <ul className="ledger mt-1.5" aria-busy={!suggestionsReady} data-testid="suggestions">
+                {!suggestionsReady && [0, 1, 2, 3].map(n => <li key={`s-${n}`} className="px-1 py-3"><div className="skeleton h-12 w-full" /></li>)}
+                {suggestionsReady && suggested.map((item, n) => (
+                  <li key={item.id} className={n >= 5 ? 'hidden sm:block' : undefined}>
                     <button type="button" className="ledger-row" disabled={loading} onClick={() => send(item.prompt)}>
                       <Icon name={item.icon} className="h-5 w-5 shrink-0 text-text-secondary" />
                       <span className="ledger-main">
-                        <span className="ledger-title block !whitespace-normal">{item.title}</span>
+                        <span className="ledger-title block !whitespace-normal">{item.title}{item.hint ? <span className="ml-2 font-normal text-text-secondary">· {item.hint}</span> : null}</span>
                         <span className="ledger-sub line-clamp-2 block !whitespace-normal">{item.prompt}</span>
                       </span>
                       <Icon name="chevronRight" className="h-5 w-5 shrink-0 text-text-muted" />
@@ -3918,10 +4066,12 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
                   <div className="max-w-[88%] rounded-2xl rounded-br-sm bg-blue px-4 py-2.5 text-base leading-6 text-[rgb(var(--c-on-blue))] sm:max-w-[78%]">
                     <span className="sr-only">You: </span>
                     {/* Feature 12: Image preview */}
-                    {m.imageUrl && (
-                      <div className="mb-2">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={m.imageUrl} alt="Uploaded" className="max-h-[150px] max-w-[200px] rounded-lg object-cover" />
+                    {(m.imageUrls?.length || m.imageUrl) && (
+                      <div className="mb-2 flex flex-wrap gap-2">
+                        {(m.imageUrls?.length ? m.imageUrls : [m.imageUrl as string]).map((src, n) => (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img key={n} src={src} alt={`Photo ${n + 1} you attached`} className="max-h-[150px] max-w-[200px] rounded-lg object-cover" />
+                        ))}
                       </div>
                     )}
                     <p className="whitespace-pre-wrap break-words">{m.content}</p>
@@ -3966,6 +4116,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
                       ? <div className="break-words text-base leading-[1.7]" onClick={handleGeneratedHtmlClick} dangerouslySetInnerHTML={{ __html: sanitizeGeneratedHtml((m.content ? renderMarkdown(m.content) : '') + m.html) }} />
                       : <div className="break-words text-base leading-[1.7]" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />}
                 {!failure && !m.html && !m.repairResult && m.content.trim().length >= 80 && <div className="-mb-2 mt-1"><CopyButton text={chatPlainText(m.content)} /></div>}
+                {m.undo && <div className="mt-3"><UndoBar operationKey={m.undo.operationKey} label={m.undo.label} /></div>}
               </div>
             )
           })}
@@ -3983,52 +4134,62 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           )}
           {!(loading || status) && turnRows.length > 0 && messages.length > 1 && <ToolRows events={turnRows} />}
 
-          {workflowApproval && <WorkflowReview approval={workflowApproval} busy={loading || confirmingAction} onDecision={confirmWorkflow} />}
+          {workflowApproval && <WorkflowReview approval={workflowApproval} busy={loading || confirmingAction} onDecision={confirmWorkflow} onEdit={editWorkflow} rules={rules || undefined} />}
 
           {/* Shop action confirmation card */}
-          {pendingAction && (
+          {pendingAction && actionReview && (
             <ApprovalFrame
               ariaLabel="Action to approve"
-              title={humanizeTool(pendingAction.action)}
-              effect="Alpha is ready to do this. Nothing has changed yet."
+              testId="action-review"
+              title={actionReview.title}
+              effect={actionReview.effect}
+              tags={<ReviewTags tags={actionReview.tags} />}
+              undoLine={actionReview.undoLine}
+              irreversible={actionReview.irreversible}
+              blockedReason={actionReview.blockedReason}
               busy={confirmingAction}
-              approveLabel={confirmingAction ? 'Running…' : 'Approve and run'}
+              approveLabel={confirmingAction ? 'Running…' : actionReview.approveLabel}
+              danger={actionReview.danger}
               onApprove={confirmAction}
-              onCancel={() => setPendingAction(null)}
+              onCancel={cancelAction}
+              onEdit={actionReview.editable && editableKeysOf(pendingAction.payload).length ? () => setEditingReview(value => !value) : undefined}
+              editLabel={editingReview ? 'Done editing' : 'Change something'}
             >
-              <PayloadList payload={pendingAction.payload} />
+              {editingReview && actionReview.editable
+                ? <FieldEditor payload={pendingAction.payload} onChange={editActionField} />
+                : <ReviewRows rows={actionReview.rows} />}
             </ApprovalFrame>
           )}
 
           {/* SMS/Email confirmation card */}
-          {pendingSms && (
+          {pendingSms && smsReview && (
             <ApprovalFrame
               ariaLabel={`${smsLabel === 'email' ? 'Email' : 'Text'} to approve`}
-              title={`Send this ${smsLabel}${pendingSms.customerName ? ` to ${pendingSms.customerName}` : ''}?`}
-              effect={`Alpha will send it exactly as written. It reaches ${pendingSms.customerName || 'the recipient'} right away.`}
-              tags={<span className="tag tag-gray">Sends a message</span>}
+              testId="message-review"
+              title={smsReview.title}
+              effect={smsReview.effect}
+              tags={<ReviewTags tags={smsReview.tags} />}
+              undoLine={smsReview.undoLine}
+              irreversible={smsReview.irreversible}
               warnings={smsError ? [smsError] : []}
+              blockedReason={smsReview.blockedReason}
               busy={sendingSms}
-              approveLabel={sendingSms ? 'Sending…' : `Approve and send ${smsLabel}`}
+              approveLabel={sendingSms ? 'Sending…' : smsReview.approveLabel}
               onApprove={confirmSendSms}
-              onCancel={() => { setPendingSms(null); setSmsError('') }}
+              onCancel={cancelSms}
+              onEdit={smsUncertainRef.current ? undefined : () => setEditingReview(value => !value)}
+              editLabel={editingReview ? 'Done editing' : 'Change the words'}
+              note={smsUncertainRef.current ? 'This message may already have gone out, so it cannot be changed here. Check Inbox first.' : undefined}
             >
-              <dl className="space-y-3 text-[0.9375rem]">
-                <div>
-                  <dt className={rowWord}>To</dt>
-                  <dd className="break-words font-bold">{pendingSms.customerName ? `${pendingSms.customerName}, ${pendingSms.to}` : pendingSms.to}</dd>
+              {editingReview ? (
+                <div className="space-y-3">
+                  {pendingSms.channel === 'email' && (
+                    <label className="block"><span className="form-label">Subject</span><input className="form-input" value={pendingSms.subject || ''} onChange={e => editSmsField('subject', e.target.value)} /></label>
+                  )}
+                  <label className="block"><span className="form-label">Message</span><textarea className="form-textarea min-h-[8rem]" value={pendingSms.body} onChange={e => editSmsField('body', e.target.value)} /></label>
+                  <p className="form-hint">It will go to {pendingSms.customerName ? `${pendingSms.customerName}, ` : ''}{pendingSms.to}. Only the words can be changed here.</p>
                 </div>
-                {pendingSms.subject && (
-                  <div>
-                    <dt className={rowWord}>Subject</dt>
-                    <dd className="break-words">{pendingSms.subject}</dd>
-                  </div>
-                )}
-                <div>
-                  <dt className={rowWord}>Message</dt>
-                  <dd className="mt-1 whitespace-pre-wrap break-words rounded-md border border-border bg-bg-base px-3 py-2.5 text-base leading-relaxed">{pendingSms.body}</dd>
-                </div>
-              </dl>
+              ) : <ReviewRows rows={smsReview.rows} />}
             </ApprovalFrame>
           )}
         </div>
@@ -4052,6 +4213,30 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             <div role="alert" className="mb-2 flex items-center gap-3 rounded-md border border-line border-l-[6px] border-l-[rgb(var(--lamp-red))] bg-bg-card px-3 py-2">
               <p className="min-w-0 flex-1 text-[0.9375rem] leading-snug"><span className="font-bold">Not saved.</span> This chat could not be saved to the cloud. Keep this tab open until saving works.</p>
               <button type="button" className="btn btn-secondary btn-sm shrink-0" onClick={() => saveToHistory(historySaveError.messages, historySaveError.id)}>Retry saving</button>
+            </div>
+          )}
+
+          {prefilled && input && (
+            <p role="status" data-testid="prefill-note" className="mb-2 flex items-start gap-2 text-[0.9375rem] text-text-secondary">
+              <Icon name="info" className="mt-0.5 h-4 w-4 shrink-0" />
+              Filled in from the screen you came from. Read it, change it if you like, then tap Send.
+            </p>
+          )}
+
+          {(photos.length > 0 || photoBusy || photoError) && (
+            <div className="mb-2 flex flex-wrap items-center gap-2" data-testid="photo-chips">
+              {photos.map((photo, index) => (
+                <div key={`${photo.name}-${index}`} className="flex min-w-0 max-w-full items-center gap-2 rounded-md border border-line bg-bg-card py-1 pl-1 pr-1 text-[0.9375rem]">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={photo.thumb} alt="" className="h-10 w-10 shrink-0 rounded object-cover" />
+                  <span className="min-w-0 truncate font-bold">{photo.name}</span>
+                  <button type="button" onClick={() => setPhotos(prev => prev.filter((_, i) => i !== index))} className="btn-icon -my-1 h-11 w-11 shrink-0" aria-label={`Remove photo ${photo.name}`} title="Remove photo">
+                    <Icon name="close" className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              {photoBusy && <span role="status" className="text-[0.875rem] text-text-secondary">Getting the photo ready…</span>}
+              {photoError && <span role="alert" className="text-[0.875rem] text-red">{photoError}</span>}
             </div>
           )}
 
@@ -4082,7 +4267,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
 
           <div className="flex items-end gap-2">
             {/* Feature 12: Photo button */}
-            <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) sendImage(f); e.target.value = '' }} />
+            <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={e => { const files = Array.from(e.target.files || []); if (files.length) void addPhotos(files); e.target.value = '' }} />
             {/* File attach (hidden input) */}
             <input ref={attachInputRef} type="file" accept=".pdf,.txt,.csv,application/pdf,text/plain,text/csv" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFileAttach(f); e.target.value = '' }} />
             <button
@@ -4099,10 +4284,17 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
               aria-label="Message Alpha"
               className="form-input min-h-[44px] flex-1 resize-none py-2.5 leading-6"
               rows={1}
-              placeholder={repairOnlyMode ? 'Year, make, model, problem' : 'Ask anything'}
+              placeholder={repairOnlyMode ? 'Year, make, model, problem' : photos.length ? 'Say what you want to know about the photo' : 'Ask anything'}
               value={input}
-              onChange={e => setInput(e.target.value)}
+              onChange={e => { setInput(e.target.value); if (!e.target.value) setPrefilled(false) }}
               onKeyDown={e => {
+                // Esc stops a reply that is being worked on. Up recalls your last message, like a chat app.
+                if (e.key === 'Escape' && loading && !stopping) { e.preventDefault(); stopRun(); return }
+                if (e.key === 'ArrowUp' && !input && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  const last = [...messages].reverse().find(message => message.role === 'user' && message.content)
+                  if (last) { e.preventDefault(); setInput(last.content) }
+                  return
+                }
                 if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return
                 // On a phone the Enter key starts a new line and the Send button sends.
                 if (window.matchMedia?.('(pointer: coarse)').matches) return
@@ -4152,7 +4344,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
                 aria-label="Send message"
                 title="Send"
                 onClick={() => send()}
-                disabled={!input.trim()}
+                disabled={(!input.trim() && photos.length === 0) || photoBusy}
               >
                 <Icon name="send" className="h-5 w-5" />
               </button>
@@ -4168,7 +4360,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
               <Icon name="settings" className="h-5 w-5" />
               Options
             </button>
-            <p className="ml-auto hidden text-[0.8125rem] text-text-secondary lg:block">Enter sends. Shift+Enter adds a line.</p>
+            <p className="ml-auto hidden text-[0.8125rem] text-text-secondary lg:block">Enter sends. Shift+Enter adds a line. Esc stops a reply.</p>
           </div>
 
           {listening && !voiceActive && (
@@ -4194,6 +4386,15 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             {history.length > 0 && <p className="mt-1 text-[0.9375rem] text-text-secondary">Showing the chats from this visit only.</p>}
             <button type="button" className="btn btn-secondary mt-3" onClick={() => { void loadHistory() }}>Try again</button>
           </div>
+        )}
+        {history.length > 4 && (
+          <div className="mt-4">
+            <label className="sr-only" htmlFor="history-search">Search your saved chats</label>
+            <input id="history-search" type="search" className="form-input w-full" placeholder="Search your saved chats" value={historyQuery} onChange={e => setHistoryQuery(e.target.value)} />
+          </div>
+        )}
+        {historyQuery.trim() && history.length > 0 && groupHistoryByDate().length === 0 && (
+          <p role="status" className="mt-5 text-[0.9375rem] text-text-secondary">No saved chat mentions “{historyQuery.trim()}”.</p>
         )}
         {historyStatus === 'ready' && history.length === 0 && (
           <div className="empty-state mt-5">
@@ -4234,8 +4435,8 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             <button type="button" className="ledger-row" onClick={() => { fileInputRef.current?.click(); setShowAttach(false) }}>
               <Icon name="camera" className="h-5 w-5 shrink-0 text-text-secondary" />
               <span className="ledger-main">
-                <span className="ledger-title block">Photo for Alpha to look at</span>
-                <span className="ledger-sub block !whitespace-normal">Alpha studies the picture and answers right away, like a damaged panel or an engine bay.</span>
+                <span className="ledger-title block">Photo to look at</span>
+                <span className="ledger-sub block !whitespace-normal">Add up to {MAX_IMAGES} pictures to your next message, like a damaged panel or an engine bay. A photo shows what is visible. It is not proof of a price or a part number.</span>
               </span>
             </button>
           </li>

@@ -4,21 +4,26 @@ import type { ReactNode } from 'react'
 import { useParams } from 'next/navigation'
 import Icon from '@/components/Icon'
 import Sheet from '@/components/Sheet'
-import { RATING_CUSTOMER_WORD, decisionSummary, firstNameOf, fmtMoney } from '@/lib/dvi'
+import { RATING_CUSTOMER_WORD, URGENCIES, URGENCY_HELP, URGENCY_WORD, decisionSummary, estimateTotal, firstNameOf, fmtMoney } from '@/lib/dvi'
 import type { Decision, Decisions, Finding } from '@/lib/dvi'
 
 interface Shop { name: string; phone: string; address: string; logo: string | null }
+/** A finding as the page gets it: pictures and recordings are already addresses the browser can open. */
+type PFinding = Omit<Finding, 'clips'> & { clips: { kind: 'video' | 'audio'; secs: number; url: string }[] }
+const LAMP = { green: 'lamp-green', yellow: 'lamp-amber', red: 'lamp-red' } as const
 interface Loaded {
   shop: Shop
   customer: string
   vehicle: string
   date: string
   note: string
-  findings: Finding[]
+  findings: PFinding[]
   good: string[]
   checked: number
   decisions: Decisions
   decidedAt: string | null
+  /** The shop's online booking address, when it takes bookings. */
+  book: string | null
 }
 
 const telHref = (phone: string) => 'tel:' + phone.replace(/[^\d+]/g, '')
@@ -80,8 +85,9 @@ export default function CustomerInspectionPage() {
       const loaded: Loaded = {
         shop: { name: String(d.shop?.name || ''), phone: String(d.shop?.phone || ''), address: String(d.shop?.address || ''), logo: typeof d.shop?.logo === 'string' ? d.shop.logo : null },
         customer: String(i.customer || ''), vehicle: String(i.vehicle || ''), date: String(i.date || ''), note: String(i.note || ''),
-        findings: Array.isArray(i.findings) ? i.findings : [], good: Array.isArray(i.good) ? i.good : [], checked: Number(i.checked) || 0,
+        findings: Array.isArray(i.findings) ? i.findings.map((f: PFinding) => ({ ...f, photos: Array.isArray(f.photos) ? f.photos : [], clips: Array.isArray(f.clips) ? f.clips : [] })) : [], good: Array.isArray(i.good) ? i.good : [], checked: Number(i.checked) || 0,
         decisions: i.decisions && typeof i.decisions === 'object' ? i.decisions : {}, decidedAt: typeof i.decidedAt === 'string' ? i.decidedAt : null,
+        book: typeof d.book === 'string' && d.book ? d.book : null,
       }
       setData(loaded)
       setChoice(loaded.decisions)
@@ -186,7 +192,10 @@ export default function CustomerInspectionPage() {
             </ul>
           </section>
         )}
-        <button type="button" className="btn btn-secondary mt-6 w-full" onClick={() => { setChoice(data.decisions); setView('choose') }}>Change my answers</button>
+        {data.book && approvedList.length > 0 && (
+          <a href={`/book/${encodeURIComponent(data.book)}?r=${encodeURIComponent(token)}`} className="btn btn-primary mt-6 w-full no-underline"><Icon name="calendar" className="h-5 w-5" />Pick a time for this work</a>
+        )}
+        <button type="button" className="btn btn-secondary mt-3 w-full" onClick={() => { setChoice(data.decisions); setView('choose') }}>Change my answers</button>
       </Frame>
     )
   }
@@ -216,48 +225,85 @@ export default function CustomerInspectionPage() {
       ) : (
         <>
           <p className="mt-5 text-[0.9375rem] text-text-secondary">Choose <b className="text-text-primary">Approve</b> for the work you want done and <b className="text-text-primary">Skip</b> for anything you do not. Then send your answers. Prices are estimates, before tax.</p>
-          <ul className="mt-3 space-y-3" aria-label="What we found">
-            {list.map(f => {
-              const c = choice[f.id]
-              const red = f.status === 'red'
-              return (
-                <li key={f.id} className={`rotag lamp-${red ? 'red' : 'amber'} !pb-3`}>
-                  <p className="flex items-start justify-between gap-3">
-                    <span className="min-w-0 break-words text-[1.0625rem] font-bold leading-snug">{f.name}</span>
-                    <span className="num shrink-0 font-bold">{f.price !== null ? fmtMoney(f.price) : ''}</span>
-                  </p>
-                  <p className="mt-0.5 flex flex-wrap items-center gap-x-3 text-[0.875rem] text-text-secondary">
-                    <span className="flex items-center gap-1.5"><span className={`lamp ${red ? 'lamp-red' : 'lamp-amber'} !h-2.5 !w-2.5`} aria-hidden="true" />{RATING_CUSTOMER_WORD[f.status]}</span>
-                    <span>{f.section}</span>
-                    {f.price === null && <span>Price to follow</span>}
-                  </p>
-                  {f.note && <p className="mt-2 break-words text-[0.9375rem]">{f.note}</p>}
-                  {f.photos.length > 0 && (
-                    <ul className="mt-2.5 flex flex-wrap gap-2" aria-label={`Photos of ${f.name}`}>
-                      {f.photos.map((src, i) => (
-                        <li key={i}>
-                          <button type="button" className="block h-20 w-20 overflow-hidden rounded-md border border-border" onClick={() => setPhoto(src)} aria-label={`Open photo ${i + 1} of ${f.photos.length} for ${f.name}`}>
-                            {/* eslint-disable-next-line @next/next/no-img-element -- a data URL, so next/image has nothing to optimize */}
-                            <img src={src} alt="" className="h-full w-full object-cover" />
+          {URGENCIES.map(u => {
+            const group = list.filter(f => f.urgency === u)
+            if (group.length === 0) return null
+            const total = estimateTotal(group)
+            const allIn = group.every(f => choice[f.id] === 'approved')
+            return (
+              <section key={u} className="mt-6" aria-label={URGENCY_WORD[u]}>
+                <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+                  <h2 className="display text-[1.125rem] font-bold">{URGENCY_WORD[u]} <span className="num text-[0.9375rem] font-normal text-text-secondary">({group.length})</span></h2>
+                  {total > 0 && <p className="num text-[0.9375rem] text-text-secondary">About {fmtMoney(total)}</p>}
+                </div>
+                <p className="text-[0.875rem] text-text-secondary">{URGENCY_HELP[u]}</p>
+                {group.length > 1 && (
+                  <button type="button" className="btn btn-secondary btn-sm mt-2" onClick={() => setChoice(c => { const next = { ...c }; for (const f of group) { if (allIn) delete next[f.id]; else next[f.id] = 'approved' } return next })}>
+                    {allIn ? 'Clear these answers' : `Approve all ${group.length}`}
+                  </button>
+                )}
+                <ul className="mt-3 space-y-3" aria-label={URGENCY_WORD[u]}>
+                  {group.map(f => {
+                    const c = choice[f.id]
+                    const red = f.status === 'red'
+                    return (
+                      <li key={f.id} className={`rotag lamp-${red ? 'red' : 'amber'} !pb-3`}>
+                        <p className="flex items-start justify-between gap-3">
+                          <span className="min-w-0 break-words text-[1.0625rem] font-bold leading-snug">{f.name}</span>
+                          <span className="num shrink-0 font-bold">{f.price !== null ? fmtMoney(f.price) : ''}</span>
+                        </p>
+                        <p className="mt-0.5 flex flex-wrap items-center gap-x-3 text-[0.875rem] text-text-secondary">
+                          <span className="flex items-center gap-1.5"><span className={`lamp ${red ? 'lamp-red' : 'lamp-amber'} !h-2.5 !w-2.5`} aria-hidden="true" />{RATING_CUSTOMER_WORD[f.status]}</span>
+                          <span>{f.section}</span>
+                          {f.price === null && <span>Price to follow</span>}
+                        </p>
+                        {f.measure && (
+                          <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[0.9375rem]">
+                            <span className={`lamp ${f.measure.rating ? LAMP[f.measure.rating] : 'lamp-off'} !h-2.5 !w-2.5 shrink-0`} aria-hidden="true" />
+                            <span className="num font-bold">{f.measure.text}</span><span>{f.measure.word}</span>
+                          </p>
+                        )}
+                        {f.note && <p className="mt-2 break-words text-[0.9375rem]">{f.note}</p>}
+                        {f.photos.length > 0 && (
+                          <ul className="mt-2.5 flex flex-wrap gap-2" aria-label={`Photos of ${f.name}`}>
+                            {f.photos.map((src, i) => (
+                              <li key={i}>
+                                <button type="button" className="block h-20 w-20 overflow-hidden rounded-md border border-border" onClick={() => setPhoto(src)} aria-label={`Open photo ${i + 1} of ${f.photos.length} for ${f.name}`}>
+                                  {/* eslint-disable-next-line @next/next/no-img-element -- a stored or inline picture, so next/image has nothing to optimize */}
+                                  <img src={src} alt="" className="h-full w-full object-cover" />
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {f.clips.length > 0 && (
+                          <ul className="mt-2.5 space-y-2" aria-label={`Recordings about ${f.name}`}>
+                            {f.clips.map((k, i) => (
+                              <li key={i}>
+                                {k.kind === 'video'
+                                  ? <video src={k.url} controls playsInline preload="metadata" className="aspect-video w-full rounded-md border border-border bg-bg-hover" aria-label={`Video about ${f.name}`} />
+                                  : <audio src={k.url} controls preload="none" className="w-full" aria-label={`Voice note about ${f.name}`} />}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        <div role="group" aria-label={`Your answer for ${f.name}`} className="mt-3 grid grid-cols-2 gap-2">
+                          <button type="button" aria-pressed={c === 'approved'} onClick={() => pick(f.id, 'approved')}
+                            className={`inline-flex min-h-[48px] items-center justify-center gap-1.5 rounded-md border px-3 font-bold ${c === 'approved' ? 'border-green bg-green/10 text-green' : 'border-[rgb(var(--c-line))] bg-bg-card hover:bg-bg-hover'}`}>
+                            {c === 'approved' && <Icon name="check" className="h-5 w-5" strokeWidth={2.4} />}Approve
                           </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  <div role="group" aria-label={`Your answer for ${f.name}`} className="mt-3 grid grid-cols-2 gap-2">
-                    <button type="button" aria-pressed={c === 'approved'} onClick={() => pick(f.id, 'approved')}
-                      className={`inline-flex min-h-[48px] items-center justify-center gap-1.5 rounded-md border px-3 font-bold ${c === 'approved' ? 'border-green bg-green/10 text-green' : 'border-[rgb(var(--c-line))] bg-bg-card hover:bg-bg-hover'}`}>
-                      {c === 'approved' && <Icon name="check" className="h-5 w-5" strokeWidth={2.4} />}Approve
-                    </button>
-                    <button type="button" aria-pressed={c === 'declined'} onClick={() => pick(f.id, 'declined')}
-                      className={`inline-flex min-h-[48px] items-center justify-center gap-1.5 rounded-md border px-3 font-bold ${c === 'declined' ? 'border-text-secondary bg-bg-hover' : 'border-[rgb(var(--c-line))] bg-bg-card hover:bg-bg-hover'}`}>
-                      {c === 'declined' && <Icon name="check" className="h-5 w-5" strokeWidth={2.4} />}Skip
-                    </button>
-                  </div>
-                </li>
-              )
-            })}
-          </ul>
+                          <button type="button" aria-pressed={c === 'declined'} onClick={() => pick(f.id, 'declined')}
+                            className={`inline-flex min-h-[48px] items-center justify-center gap-1.5 rounded-md border px-3 font-bold ${c === 'declined' ? 'border-text-secondary bg-bg-hover' : 'border-[rgb(var(--c-line))] bg-bg-card hover:bg-bg-hover'}`}>
+                            {c === 'declined' && <Icon name="check" className="h-5 w-5" strokeWidth={2.4} />}Skip
+                          </button>
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </section>
+            )
+          })}
         </>
       )}
 

@@ -8,6 +8,10 @@ import { object, type JsonObject } from '@/lib/ai/workflow/catalog'
 import { POST as complete } from '@/app/api/ai-completions/route'
 import { POST as action } from '@/app/api/ai-action/route'
 import { POST as lookupParts } from '@/app/api/parts-lookup/route'
+import { makeStopCheck } from '@/lib/ai/run-control'
+import { loadShopRules } from '@/lib/ai/shop-rules-server'
+import { decideAction, hasCustomRules, rulesPromptBlock } from '@/lib/ai/shop-rules'
+import { cleanImages, IMAGE_UNSUPPORTED_MESSAGE, looksLikeImageRejection, withImages } from '@/lib/ai/images'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300
@@ -44,12 +48,18 @@ export async function POST(req: NextRequest) {
   if (body.message !== undefined && (typeof body.message !== 'string' || body.message.length > 12000)) return NextResponse.json({ error: 'Message must be text under 12,000 characters' }, { status: 400 })
   if (body.confirmation !== undefined && (!object(body.confirmation) || !validId(body.confirmation.id) || !['confirm', 'cancel'].includes(String(body.confirmation.decision)))) return NextResponse.json({ error: 'Invalid confirmation' }, { status: 400 })
   if (body.message !== undefined && body.confirmation !== undefined) return NextResponse.json({ error: 'Send a message or confirm a review, not both' }, { status: 400 })
+  // Photos belong to this one message. They go to the model for this turn only and are never saved in the task.
+  const photos = cleanImages(body.images)
+  if (photos.error) return NextResponse.json({ error: photos.error }, { status: 400 })
+  if (photos.images.length && typeof body.message !== 'string') return NextResponse.json({ error: 'Photos go with a message.' }, { status: 400 })
   if (body.history !== undefined && (!Array.isArray(body.history) || body.history.length > 20 || body.history.some(item => !object(item) || !['user', 'assistant'].includes(String(item.role)) || typeof item.content !== 'string' || item.content.length > 4000))) {
     return NextResponse.json({ error: 'Legacy history is invalid' }, { status: 400 })
   }
   const legacyHistory = Array.isArray(body.history) ? body.history as { role: 'user' | 'assistant'; content: string }[] : []
   const db = getServiceClient()
-  const scope = { p_shop_id: auth.shopId, p_user_id: auth.userId, p_session_id: body.sessionId, p_lease_id: randomUUID() }
+  const sessionId: string = body.sessionId
+  const turnId: string = body.turnId
+  const scope = { p_shop_id: auth.shopId, p_user_id: auth.userId, p_session_id: sessionId, p_lease_id: randomUUID() }
   const { data: lease, error: leaseError } = await db.rpc('lease_ai_workflow', scope)
   if (leaseError) return NextResponse.json({ error: 'Task storage is unavailable. No action was started.' }, { status: 503 })
   if (lease?.busy) return NextResponse.json({ error: 'This conversation is already processing a request. Wait and retry.' }, { status: 409 })
@@ -101,15 +111,20 @@ export async function POST(req: NextRequest) {
       headers.set('x-ai-approval', 'confirm')
       headers.set('x-idempotency-key', `workflow:${approvalKey}`)
     }
-    const response = await handler(new NextRequest(new URL(path, req.url), { method: 'POST', headers, body: JSON.stringify(payload) }))
+    // A model call or look-up stops when the browser goes away. An approved change never does:
+    // it carries an approvalKey and always runs to a recorded result.
+    const response = await handler(new NextRequest(new URL(path, req.url), { method: 'POST', headers, body: JSON.stringify(payload), ...(approvalKey ? {} : { signal: req.signal }) }))
     const data = await response.json().catch(() => ({}))
     return { response, data }
   }
+  // The work itself. It returns the status and body so the same code can answer as plain JSON or,
+  // when the screen asks for it, as a stream of progress lines that ends with the same body.
+  const run = async (emit: (event: Record<string, unknown>) => void): Promise<{ status: number; body: unknown }> => {
   try {
     if (!state.turns.length) {
       // Upgrade existing conversations from server-held history. Legacy
       // assistant quotes are context, never monetary or execution evidence.
-      const { data: history, error: historyError } = await db.from('ai_chat_history').select('role,content,sequence_no').eq('shop_id', auth.shopId).eq('user_id', auth.userId).eq('session_id', body.sessionId).order('sequence_no', { ascending: true }).limit(60)
+      const { data: history, error: historyError } = await db.from('ai_chat_history').select('role,content,sequence_no').eq('shop_id', auth.shopId).eq('user_id', auth.userId).eq('session_id', sessionId).order('sequence_no', { ascending: true }).limit(60)
       if (historyError) throw new Error('Existing conversation could not be restored')
       for (const row of history || []) {
         let text = row.content
@@ -127,15 +142,25 @@ export async function POST(req: NextRequest) {
     }
     const { data: settings, error: settingsError } = await db.from('settings').select('shop_name,labor_rate,tax_rate').eq('shop_id', auth.shopId).limit(1).maybeSingle()
     if (settingsError) throw new Error('Shop settings could not be loaded')
+    // The shop's own rules: injected into what the model sees, and enforced again before any review is shown.
+    const rulesState = await loadShopRules(db, auth.shopId)
+    if (rulesState.status === 'error') throw new Error('Your shop rules could not be checked, so nothing was started. Try again in a moment.')
+    const shopFacts = { ...(settings || {}), ...(hasCustomRules(rulesState.rules) ? { ownerRules: rulesPromptBlock(rulesState.rules, { shopName: typeof settings?.shop_name === 'string' ? settings.shop_name : undefined }) } : {}) }
+    const shouldStop = makeStopCheck(db, { shopId: auth.shopId, userId: auth.userId, sessionId, turnId }, { signal: req.signal })
     const result = await runWorkflow(state, {
-      turnId: body.turnId,
+      turnId,
       message: typeof body.message === 'string' ? body.message : undefined,
       confirmation: body.confirmation as { id: string; decision: 'confirm' | 'cancel' } | undefined,
     }, {
-      shop: settings || {}, id: randomUUID, checkpoint, deadline: Date.now() + 240_000,
+      shop: shopFacts, id: randomUUID, checkpoint, deadline: Date.now() + 240_000, shouldStop,
+      progress: event => emit({ type: 'progress', ...event }),
+      checkAction: action => { const decision = decideAction(rulesState.rules, action); return { allowed: decision.allowed, reason: decision.reason } },
       model: async messages => {
-        const { response, data } = await dispatch(complete, '/api/ai-completions', { messages, temperature: 0.1, max_tokens: 5000 })
-        if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : data.error?.message || 'AI provider unavailable')
+        const { response, data } = await dispatch(complete, '/api/ai-completions', { messages: withImages(messages, photos.images), temperature: 0.1, max_tokens: 5000 })
+        if (!response.ok) {
+          const reason = typeof data.error === 'string' ? data.error : data.error?.message || 'AI provider unavailable'
+          throw new Error(photos.images.length && looksLikeImageRejection(reason) ? IMAGE_UNSUPPORTED_MESSAGE : reason)
+        }
         const text = data.choices?.[0]?.message?.content
         if (typeof text !== 'string' || !text.trim()) throw new Error('AI provider returned no usable decision')
         return text
@@ -153,13 +178,31 @@ export async function POST(req: NextRequest) {
     await stopHeartbeat()
     if (heartbeatLeaseLost) throw new Error('Workflow ownership expired before progress could be saved. Retry to reconcile the saved task safely.')
     await checkpoint(state, true)
-    return NextResponse.json(result, { headers: { 'Cache-Control': 'no-store' } })
+    return { status: 200, body: result }
   } catch (error) {
     // A failure here never authorizes another write. Persisted approval and
     // operation IDs allow the next request to reconcile a partially finished turn.
     await stopHeartbeat()
     await checkpoint(state, true).catch(() => {})
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Workflow unavailable' }, { status: 503 })
+    return { status: 503, body: { error: error instanceof Error ? error.message : 'Workflow unavailable' } }
   }
+  }
+
+  if (!(req.headers.get('accept') || '').includes('application/x-ndjson')) {
+    const { status, body: payload } = await run(() => {})
+    return NextResponse.json(payload, { status, headers: { 'Cache-Control': 'no-store' } })
+  }
+  // Streaming: one JSON object per line. `progress` lines are live steps; the last line is
+  // `final` and carries exactly what the plain JSON answer would have carried.
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const write = (event: Record<string, unknown>) => { try { controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`)) } catch { /* the screen went away; the work still finishes and is saved */ } }
+      const { status, body: payload } = await run(write)
+      write({ type: 'final', status, body: payload })
+      try { controller.close() } catch { /* already closed */ }
+    },
+  })
+  return new Response(stream, { headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' } })
 }
 

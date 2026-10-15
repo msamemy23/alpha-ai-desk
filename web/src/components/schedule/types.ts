@@ -15,6 +15,12 @@ export interface Appointment {
   status: string
   notes: string
   created_at?: string
+  /** Drop-off or waiting, and the bay (migration 050). Absent until that migration is applied. */
+  kind?: 'dropoff' | 'wait' | null
+  bay?: string | null
+  /** 'online' for a booking made on the public page. */
+  source?: string | null
+  reminder_sent_at?: string | null
 }
 
 export interface ApptCustomer {
@@ -22,7 +28,7 @@ export interface ApptCustomer {
   vehicle_year: string; vehicle_make: string; vehicle_model: string
 }
 
-export const STATUSES = ['Scheduled', 'Confirmed', 'In Progress', 'Completed', 'Cancelled', 'No Show'] as const
+export const STATUSES = ['Requested', 'Scheduled', 'Confirmed', 'In Progress', 'Completed', 'Cancelled', 'No Show', 'Declined'] as const
 
 export type Lamp = 'green' | 'amber' | 'red' | 'blue' | 'off'
 
@@ -32,7 +38,9 @@ export function statusLamp(s: string): Lamp {
     case 'Completed': return 'green'
     case 'In Progress': return 'blue'
     case 'No Show': return 'amber'
+    case 'Requested': return 'amber'
     case 'Cancelled': return 'off'
+    case 'Declined': return 'off'
     default: return 'off'
   }
 }
@@ -42,11 +50,12 @@ export function statusWord(s: string): string {
     case 'In Progress': return 'In the shop'
     case 'Completed': return 'Done'
     case 'No Show': return 'No show'
+    case 'Declined': return 'Declined'
     default: return s || 'Scheduled'
   }
 }
 
-export const isClosed = (s: string) => s === 'Cancelled' || s === 'Completed' || s === 'No Show'
+export const isClosed = (s: string) => s === 'Cancelled' || s === 'Completed' || s === 'No Show' || s === 'Declined'
 
 export const DURATIONS = [
   { m: 30, label: '30 minutes' },

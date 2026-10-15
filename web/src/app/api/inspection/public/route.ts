@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { checkRateLimit } from '@/lib/rate-limit'
-import { cleanDecisions, counts, findings, normalizeSections } from '@/lib/dvi'
+import { cleanDecisions, counts, findings, isStorageRef, normalizeSections, storageRefParts } from '@/lib/dvi'
+import type { Finding } from '@/lib/dvi'
+import { MEDIA_BUCKET, SIGNED_URL_SECONDS } from '@/lib/dvi-media'
+import { loadSchedule } from '@/lib/schedule-store'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,6 +24,36 @@ async function load(token: string) {
   return { sb, row: row as Record<string, unknown> }
 }
 
+type Db = ReturnType<typeof getServiceClient>
+
+/**
+ * Photos and clips kept in storage are turned into short-lived viewing addresses. Only files in this inspection's own
+ * folder are signed, so a link to one inspection can never open another one's files. A file that cannot be signed
+ * (storage not set up yet) is simply left out; the page still shows everything else.
+ */
+async function publicFindings(sb: Db, inspectionId: string, list: Finding[]) {
+  const wanted = new Set<string>()
+  for (const f of list) {
+    for (const p of f.photos) if (isStorageRef(p)) wanted.add(p)
+    for (const c of f.clips) wanted.add(c.ref)
+  }
+  const urls = new Map<string, string>()
+  const own = [...wanted].filter(r => storageRefParts(r)?.folder === inspectionId)
+  if (own.length > 0) {
+    const paths = own.map(r => (storageRefParts(r) as { path: string }).path)
+    const { data, error } = await sb.storage.from(MEDIA_BUCKET).createSignedUrls(paths, SIGNED_URL_SECONDS)
+    if (!error && data) for (const item of data) {
+      const ref = own.find(r => (storageRefParts(r) as { path: string }).path === item.path)
+      if (ref && item.signedUrl) urls.set(ref, item.signedUrl)
+    }
+  }
+  return list.map(f => ({
+    ...f,
+    photos: f.photos.map(p => (isStorageRef(p) ? urls.get(p) : p)).filter((p): p is string => typeof p === 'string'),
+    clips: f.clips.flatMap(c => { const url = urls.get(c.ref); return url ? [{ kind: c.kind, secs: c.secs, url }] : [] }),
+  }))
+}
+
 export async function GET(req: NextRequest) {
   const token = req.nextUrl.searchParams.get('token') || ''
   if (!TOKEN.test(token)) return reply({ ok: false, error: 'This link is not valid. Call the shop and they will send a new one.' }, 404)
@@ -37,7 +70,11 @@ export async function GET(req: NextRequest) {
 
   const sections = normalizeSections(row.sections)
   const list = findings(sections)
+  const shown = await publicFindings(sb, String(row.id), list)
   const good = sections.flatMap(sec => sec.items.filter(i => i.status === 'green').map(i => i.name))
+  // A "book this work" button, only when the shop has switched its booking page on.
+  let book: string | null = null
+  try { const sch = await loadSchedule(shopId); if (sch.online.enabled && sch.online.slug) book = sch.online.slug } catch { /* no booking page: no button */ }
   const decisions = cleanDecisions(row.customer_decisions, list.map(f => f.id))
 
   // First time opened: note it so the shop knows the customer has seen it. Never blocks the page.
@@ -56,12 +93,13 @@ export async function GET(req: NextRequest) {
       vehicle: String(row.vehicle || ''),
       date: String(row.created_at || ''),
       note: String(row.tech_notes || '').slice(0, 1000),
-      findings: list,
+      findings: shown,
       good,
       checked: counts(sections).rated,
       decisions,
       decidedAt: typeof row.customer_decided_at === 'string' ? row.customer_decided_at : null,
     },
+    book,
   })
 }
 

@@ -18,6 +18,7 @@ export function useLookups() {
   const [customersError, setCustomersError] = useState('')
   const [stopped, setStopped] = useState<{ ids: Set<string>; phones: Set<string> }>({ ids: new Set(), phones: new Set() })
   const [serviceIdeas, setServiceIdeas] = useState<string[]>([])
+  const [canned, setCanned] = useState<{ name: string; labor_hours: number | null }[]>([])
   const [shop, setShop] = useState({ name: '', phone: '' })
 
   const loadCustomers = useCallback(async () => {
@@ -48,6 +49,10 @@ export function useLookups() {
     getShopId().then(shopId => {
       if (!shopId) return
       supabase.from('canned_jobs').select('name').eq('shop_id', shopId).eq('active', true).order('name').limit(8).then(({ data }) => setServiceIdeas((data || []).map((r: { name: string }) => r.name)))
+      // Labor hours let a new booking fill in how long the job takes. If this fails the form falls back to the service times.
+      supabase.from('canned_jobs').select('name,labor_hours').eq('shop_id', shopId).eq('active', true).limit(400).then(({ data, error }) => {
+        if (!error && data) setCanned((data as unknown as { name: string; labor_hours: unknown }[]).map(j => ({ name: String(j.name || ''), labor_hours: Number(j.labor_hours) > 0 ? Number(j.labor_hours) : null })))
+      })
       supabase.from('settings').select('shop_name,shop_phone').eq('shop_id', shopId).maybeSingle().then(({ data }) => {
         if (data) setShop({ name: String(data.shop_name || ''), phone: String(data.shop_phone || '') })
       })
@@ -58,5 +63,5 @@ export function useLookups() {
     (!!a.customer_id && stopped.ids.has(String(a.customer_id))) || (!!phoneTail(a.phone) && stopped.phones.has(phoneTail(a.phone)))
   ), [stopped])
 
-  return { customers, customersError, reloadCustomers: loadCustomers, serviceIdeas, shop, isStopped }
+  return { customers, customersError, reloadCustomers: loadCustomers, serviceIdeas, canned, shop, isStopped }
 }

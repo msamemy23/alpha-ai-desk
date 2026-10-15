@@ -2,6 +2,7 @@
 import Icon from '@/components/Icon'
 import { STATE_WORD, summaryWords } from '@/lib/dvi'
 import type { Counts, DviState } from '@/lib/dvi'
+import { agoWords, followUpState } from '@/lib/dvi-followup'
 import { dayKey, fmtTimeOfDay } from '@/lib/timeclock'
 import type { DviListRow } from './types'
 
@@ -36,12 +37,13 @@ function StateTag({ r, state }: { r: DviListRow; state: DviState }) {
   return <span className="tag tag-gray">{STATE_WORD.new}</span>
 }
 
-export default function DviRows({ rows, todayKey, onOpen }: { rows: DviListRow[]; todayKey: string; onOpen: (r: DviListRow) => void }) {
+export default function DviRows({ rows, todayKey, onOpen, onFollow }: { rows: DviListRow[]; todayKey: string; onOpen: (r: DviListRow) => void; onFollow?: (r: DviListRow) => void }) {
   return (
     <ul className="ledger" aria-label="Inspections">
       {rows.map(r => {
         const state = listState(r)
         const s = r.summary
+        const fu = followUpState(r)
         const c: Pick<Counts, 'red' | 'yellow' | 'green' | 'rated'> | null = s && typeof s.rated === 'number'
           ? { red: s.red ?? 0, yellow: s.yellow ?? 0, green: s.green ?? 0, rated: s.rated }
           : null
@@ -55,6 +57,12 @@ export default function DviRows({ rows, todayKey, onOpen }: { rows: DviListRow[]
                 <span className="ledger-sub block !whitespace-normal">
                   {c ? `${summaryWords(c)}${c.green > 0 && (c.red > 0 || c.yellow > 0) ? `, ${c.green} good` : ''}${typeof s?.total === 'number' && s.total > 0 ? ` · ${c.rated} of ${s.total} checked` : ''}` : lampWords(r.overall_status)}
                 </span>
+                {fu && (
+                  <span className="ledger-sub block !whitespace-normal font-bold text-text-primary">
+                    {fu.kind === 'declined' ? `Said no to some work ${agoWords(fu.days)}` : `No answer yet, sent ${agoWords(fu.days)}`}
+                    {fu.followedUp ? <span className="font-normal text-text-secondary">{` · followed up ${agoWords(Math.max(0, Math.floor((Date.now() - Date.parse(fu.followedUp)) / 86_400_000)))}`}</span> : ''}
+                  </span>
+                )}
               </span>
               <span className="flex shrink-0 flex-col items-end gap-1 text-right">
                 <StateTag r={r} state={state} />
@@ -62,6 +70,11 @@ export default function DviRows({ rows, todayKey, onOpen }: { rows: DviListRow[]
               </span>
               <Icon name="chevronRight" className="hidden h-5 w-5 shrink-0 text-text-muted sm:block" />
             </button>
+            {onFollow && fu?.due && (
+              <div className="px-3 pb-3">
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => onFollow(r)} aria-label={`Text a follow-up to ${r.customer_name || 'the customer'}`}>Text a follow-up</button>
+              </div>
+            )}
           </li>
         )
       })}

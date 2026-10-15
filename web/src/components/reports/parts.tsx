@@ -19,7 +19,9 @@ export function Block({ title, right, children, className = '' }: { title: strin
 }
 
 /** Up, down or same, said in words and paired with a lamp. `goodWhen` says which direction is the good news for this figure. */
-export function DeltaLine({ change, vs, goodWhen = 'up' }: { change: Change; vs: string; goodWhen?: 'up' | 'down' }) {
+export function DeltaLine({ change, vs, goodWhen = 'up' }: { change: Change | null; vs: string; goodWhen?: 'up' | 'down' }) {
+  // Nothing is being compared (the person chose "No comparison"): say nothing rather than guess.
+  if (change === null) return null
   if (change.kind === 'none') return <p className="mt-1 text-[0.875rem] text-text-muted">Nothing {vs} to compare with</p>
   const good = change.kind === 'same' ? null : (change.kind === 'up') === (goodWhen === 'up')
   const lamp = change.kind === 'same' ? 'off' : good ? 'green' : 'amber'
@@ -33,13 +35,18 @@ export function DeltaLine({ change, vs, goodWhen = 'up' }: { change: Change; vs:
 }
 
 /** One headline figure. */
-export function Kpi({ label, value, note, children }: { label: string; value: string; note?: string; children?: ReactNode }) {
+export function Kpi({ label, value, note, children, open }: { label: string; value: string; note?: string; children?: ReactNode; /** Shows a button that lists the paperwork this figure was added up from. */ open?: { label: string; run: () => void } }) {
   return (
     <div className="card !p-4">
       <p className="text-[0.9375rem] font-bold text-text-secondary">{label}</p>
       <p className="display num mt-1 text-[1.75rem] font-bold leading-tight text-text-primary">{value}</p>
       {note && <p className="mt-0.5 text-[0.875rem] text-text-secondary">{note}</p>}
       {children}
+      {open && (
+        <button type="button" className="mt-2 inline-flex min-h-[44px] items-center gap-1 text-[0.9375rem] font-bold text-blue underline-offset-2 hover:underline sm:min-h-[32px]" onClick={open.run}>
+          {open.label}
+        </button>
+      )}
     </div>
   )
 }
@@ -179,7 +186,7 @@ export function BarChart({ buckets, format, what, unit = '', height = 176, highl
   )
 }
 
-export interface RankRow { key: string; label: string; value: number; shown: string; sub?: string; href?: string }
+export interface RankRow { key: string; label: string; value: number; shown: string; sub?: string; href?: string; /** Opens the paperwork behind this row. */ onOpen?: () => void }
 
 /** A short ranked list with a quiet bar behind each figure. */
 export function Rank({ rows, empty }: { rows: RankRow[]; empty: string }) {
@@ -204,7 +211,9 @@ export function Rank({ rows, empty }: { rows: RankRow[]; empty: string }) {
           <li key={r.key}>
             {r.href
               ? <Link href={r.href} className="block min-h-[44px] py-2.5 hover:bg-bg-hover">{inner}</Link>
-              : <div className="py-2.5">{inner}</div>}
+              : r.onOpen
+                ? <button type="button" className="block min-h-[44px] w-full py-2.5 text-left hover:bg-bg-hover" onClick={r.onOpen} aria-label={`${r.label}: show the invoices`}>{inner}</button>
+                : <div className="py-2.5">{inner}</div>}
           </li>
         )
       })}

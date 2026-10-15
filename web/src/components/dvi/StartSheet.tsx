@@ -3,20 +3,24 @@ import { useMemo, useState } from 'react'
 import Icon from '@/components/Icon'
 import { SearchField } from '@/components/ListKit'
 import { carLine, roShort } from '@/components/jobs/types'
-import { TEMPLATES } from '@/lib/dvi'
+import { TEMPLATES, templateBlurb } from '@/lib/dvi'
 import { normName } from '@/lib/shopboard'
 import { phonePretty } from '@/lib/today'
 import type { StartJob } from './types'
+import type { ShopTemplate } from './useTemplates'
 
-export interface StartCustomer { id: string; name: string; phone: string; vehicle_year: string; vehicle_make: string; vehicle_model: string }
+export interface StartCustomer { id: string; name: string; phone: string; email?: string; vehicle_year: string; vehicle_make: string; vehicle_model: string }
 export interface StartValues { job_id: string | null; customer_id: string | null; customer_name: string; vehicle: string; tech: string; template: string }
 
 /** Start an inspection: pick the car it is for, pick the checklist, go. Everything else is filled in on the checklist. */
-export default function StartSheet({ jobs, customers, techs, presetJobId, busy, error, onStart }: {
+export default function StartSheet({ jobs, customers, techs, presetJobId, shopTemplates, onManage, busy, error, onStart }: {
   jobs: StartJob[]
   customers: StartCustomer[]
   techs: string[]
   presetJobId: string | null
+  /** The shop's own checklists, not removed. They are listed before the built-in ones. */
+  shopTemplates: ShopTemplate[]
+  onManage: () => void
   busy: boolean
   error: string
   onStart: (v: StartValues) => void
@@ -27,7 +31,7 @@ export default function StartSheet({ jobs, customers, techs, presetJobId, busy, 
   const [name, setName] = useState('')
   const [vehicle, setVehicle] = useState('')
   const [tech, setTech] = useState('')
-  const [template, setTemplate] = useState(TEMPLATES[0].key)
+  const [template, setTemplate] = useState(shopTemplates[0]?.key || TEMPLATES[0].key)
   const [problem, setProblem] = useState('')
 
   const shown = useMemo(() => {
@@ -103,12 +107,15 @@ export default function StartSheet({ jobs, customers, techs, presetJobId, busy, 
         </div>
       )}
 
-      <h3 className="section-title mt-5">Which checklist?</h3>
+      <div className="mt-5 flex items-center justify-between gap-2">
+        <h3 className="section-title">Which checklist?</h3>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={onManage}><Icon name="edit" className="h-4 w-4" />Your checklists</button>
+      </div>
       <ul className="ledger mt-1" aria-label="Checklists">
-        {TEMPLATES.map(t => (
+        {[...shopTemplates.map(t => ({ key: t.key, label: t.label, blurb: t.blurb || templateBlurb(t.sections), own: true })), ...TEMPLATES.map(t => ({ key: t.key, label: t.label, blurb: t.blurb, own: false }))].map(t => (
           <li key={t.key}>
             <button type="button" className="ledger-row" aria-pressed={template === t.key} onClick={() => setTemplate(t.key)}>
-              <span className="ledger-main"><span className="ledger-title block">{t.label}</span><span className="ledger-sub block !whitespace-normal">{t.blurb}</span></span>
+              <span className="ledger-main"><span className="ledger-title block">{t.label}{t.own && <span className="tag tag-blue ml-2 align-middle">Yours</span>}</span><span className="ledger-sub block !whitespace-normal">{t.blurb}</span></span>
               {template === t.key && <Icon name="check" className="h-5 w-5 shrink-0 text-blue" strokeWidth={2.4} />}
             </button>
           </li>

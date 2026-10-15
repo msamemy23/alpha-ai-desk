@@ -6,6 +6,9 @@ import ts from 'typescript'
 import * as crypto from 'node:crypto'
 import * as oauthCore from '@openai-oauth/core'
 import * as oauthWeb from '@openai-oauth/web/server'
+import * as shopRules from '../src/lib/ai/shop-rules.ts'
+import * as actionRisk from '../src/lib/ai/action-risk.ts'
+import * as undoLib from '../src/lib/ai/undo.ts'
 
 function load(relativePath, stubs = {}, globals = {}) {
   const source = readFileSync(new URL(relativePath, import.meta.url), 'utf8')
@@ -177,6 +180,10 @@ for (const scenario of ['success', 'query-error', 'audit-error']) {
       '@/lib/rate-limit': { checkRateLimit: () => ({ ok: true }), rateLimitKey: () => 'test-limit' },
       '@/lib/sms-consent': {},
       '@/lib/document-money': {},
+      '@/lib/ai/shop-rules-server': { loadShopRules: async () => ({ rules: shopRules.defaultRules(), status: 'ok', settingsId: null }) },
+      '@/lib/ai/shop-rules': shopRules,
+      '@/lib/ai/action-risk': actionRisk,
+      '@/lib/ai/undo': undoLib,
     })
     const response = await route.POST(new Request('https://alpha.invalid/api/ai-action', { method: 'POST', body: JSON.stringify({ action: 'getInventory', payload: {} }) }))
     assert.equal(audits.length, 1)
