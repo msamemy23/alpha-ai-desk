@@ -6,6 +6,7 @@ import { addOpenAIOAuthHeaders } from '@/lib/openai-oauth-client'
 import { laborLineTotal } from '@/lib/document-money'
 import { summarizeToday, money0, ageLabel, DAY, type FeedItem, type Lamp } from '@/lib/today'
 import Icon from '@/components/Icon'
+import DailyNotes from '@/components/today/DailyNotes'
 
 type Row = Record<string, unknown>
 
@@ -473,7 +474,7 @@ export default function DashboardPage() {
             <section aria-labelledby="calls-h">
               <div className="mb-2 flex items-end justify-between">
                 <h2 id="calls-h" className="section-title">Alpha answered</h2>
-                <Link href="/voicemail" className="text-[0.9375rem] font-bold text-blue underline-offset-4 hover:underline">All calls</Link>
+                <Link href="/messages?tab=calls" className="text-[0.9375rem] font-bold text-blue underline-offset-4 hover:underline">All calls</Link>
               </div>
               <ul className="ledger">
                 {data.aiCalls.map(c => {
@@ -482,7 +483,7 @@ export default function DashboardPage() {
                   const caller = String(c.caller && c.caller !== 'unknown' ? c.caller : m ? m[1] : 'Unknown caller')
                   return (
                     <li key={String(c.id)}>
-                      <Link href="/voicemail" className="ledger-row">
+                      <Link href="/messages?tab=calls" className="ledger-row">
                         <span className="ledger-main">
                           <span className="ledger-title block">{caller}</span>
                           <span className="ledger-sub block">{String(c.summary || 'No summary yet')}</span>
@@ -495,6 +496,8 @@ export default function DashboardPage() {
               </ul>
             </section>
           )}
+
+          <DailyNotes />
         </div>
       </div>
     </div>

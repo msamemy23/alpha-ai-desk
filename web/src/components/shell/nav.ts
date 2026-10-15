@@ -46,7 +46,6 @@ export const MORE_GROUPS: NavGroup[] = [
   {
     label: 'Calls, texts and growth',
     items: [
-      { href: '/voicemail', label: 'AI voicemail', icon: 'voicemail' },
       { href: '/growth', label: 'Get more customers', icon: 'growth' },
       { href: '/automations', label: 'Automations', icon: 'clock' },
     ],
