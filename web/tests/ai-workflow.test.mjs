@@ -694,3 +694,78 @@ test('workflow schema and endpoint fail closed on tenant and lease boundaries', 
   assert.doesNotMatch(route, /hasInternalApiSecret|CRON_SECRET|INTERNAL_API_SECRET/)
 })
 
+
+test('a plain parts look-up is read-only: it never drafts an invoice, even if the model tries', async () => {
+  const h = harness(Array.from({ length: 5 }, () => ({ kind: 'propose', task: task({ type: 'Invoice', customer_name: 'Walk-in', labors: [{ operation: 'Brakes', amount: 100 }], apply_tax: false }), proofs: {} })))
+  h.deps.execute = async (action, payload, key) => {
+    h.calls.push({ action, payload, key })
+    if (action === 'lookupParts') return { ok: true, data: { options: [{ parts: [{ name: 'Front Brake Pad Set', position: 'Front', brand: 'Duralast', price: 80, quantity: 1 }] }, { parts: [{ name: 'Front Brake Rotor', position: 'Front', brand: 'Duralast', price: 60, quantity: 2 }] }] } }
+    return { ok: true, data: { id: 'saved-record', ...payload } }
+  }
+  const reply = await h.run('Look on AutoZone for front brake pads and rotors for a 2015 Honda Accord.', 'lookup-only')
+  assert.notEqual(reply.status, 'approval')
+  assert.equal(h.state.task, null)
+  assert.equal(h.state.pending, null)
+  assert.equal(h.calls.filter(call => call.key).length, 0, 'no save or send was attempted')
+  assert.equal(h.state.research?.createsDocument, false)
+})
+
+test('part names without prices are not treated as a result', async () => {
+  const h = harness([])
+  h.deps.execute = async (action, payload, key) => {
+    h.calls.push({ action, payload, key })
+    if (action === 'lookupParts') return { ok: true, data: { options: [{ parts: [{ name: 'Front Brake Pad Set', position: 'Front', brand: 'Duralast', sourceConfidence: 'price_unavailable' }] }] } }
+    return { ok: true, data: {} }
+  }
+  const reply = await h.run('Make an invoice for Jake Paul: 2015 Honda Accord front brake pads from AutoZone. Look it up.', 'no-prices')
+  assert.equal(reply.status, 'blocked')
+  assert.match(reply.reply, /did not return a usable price/i)
+  assert.equal(h.calls.filter(call => call.key).length, 0)
+})
+
+test('an old draft that came from a look-up is cleared instead of being turned into an invoice', async () => {
+  const h = harness([])
+  h.state.task = { action: 'createInvoice', payload: { type: 'Invoice', vehicle_year: '2012', vehicle_make: 'Toyota', vehicle_model: 'Camry' }, proofs: {}, instructions: ['Research requested before drafting: 2012 Toyota Camry brakes'] }
+  h.state.turns.push({ id: 'old-1', role: 'user', text: 'Look up brakes for a 2012 Toyota Camry' })
+  h.deps.execute = async (action, payload, key) => {
+    h.calls.push({ action, payload, key })
+    return { ok: true, data: { options: [] } }
+  }
+  await h.run('retry the AutoZone brake lookup for the Camry', 'retry-lookup')
+  assert.equal(h.state.task, null, 'the untagged invoice draft was removed')
+  assert.equal(h.calls.filter(call => call.key).length, 0)
+})
+
+test('an invoice draft that the person really asked for is kept', async () => {
+  const h = harness([{ kind: 'ask', fields: ['parts_choice'], message: 'Which side?' }])
+  h.state.task = { action: 'createInvoice', payload: { type: 'Invoice', customer_name: 'Maya Lopez' }, proofs: {}, instructions: [], origin: 'document' }
+  await h.run('Which side did you mean?', 'keep-draft')
+  assert.equal(h.state.task?.customer_name ?? h.state.task?.payload.customer_name, 'Maya Lopez')
+})
+
+test('long chats are trimmed to a working window and the count of older items is kept', () => {
+  const state = engine.initialState()
+  state.turns = Array.from({ length: 400 }, (_, i) => ({ id: `t${i}`, role: 'user', text: `message ${i}` }))
+  state.evidence = Array.from({ length: 300 }, (_, i) => ({ id: `e${i}`, tool: 'searchCustomers', input: {}, data: {}, at: new Date().toISOString() }))
+  const restored = engine.restoreState(JSON.parse(JSON.stringify(state)))
+  assert.equal(restored.turns.length, 120)
+  assert.equal(restored.evidence.length, 80)
+  assert.equal(restored.archive.turns, 280)
+  assert.equal(restored.archive.evidence, 220)
+  assert.equal(restored.turns.at(-1).id, 't399')
+})
+
+test('a saved chat with an impossible archive or fitment is refused', () => {
+  const base = JSON.parse(JSON.stringify(engine.initialState()))
+  assert.throws(() => engine.restoreState({ ...base, archive: { turns: -1, evidence: 0 } }), /archive is invalid/)
+  assert.throws(() => engine.restoreState({ ...base, facts: { exclusions: [], fitment: { trim: 5 } } }), /facts are invalid/)
+  assert.throws(() => engine.restoreState({ ...base, research: { query: 'x' } }), /research is invalid/)
+})
+
+test('trim and engine from a plain answer are remembered, and engine sizes keep their decimal', async () => {
+  const h = harness([{ kind: 'answer', message: 'Noted.', sideQuestion: true }])
+  h.state.facts.vehicle = { year: '2015', make: 'Honda', model: 'Accord' }
+  await h.run('The trim is Sport, engine is 2.4L', 'fitment')
+  assert.equal(h.state.facts.fitment.trim, 'Sport')
+  assert.equal(h.state.facts.fitment.engine, '2.4L')
+})

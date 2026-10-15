@@ -42,11 +42,47 @@ test('an invoice service with no priced lines implicitly starts pricing research
   assert.match(result?.query || '', /water pump/i)
 })
 
-test('a general conversation without an invoice or estimate task does not trigger research', () => {
-  assert.equal(inferResearchIntent({
+test('a plain look-up with no invoice or estimate is read-only research, never a document', () => {
+  const result = inferResearchIntent({
     message: 'Can you look up the best brake pads for my car?',
     conversation: [{ role: 'user', text: 'I am comparing options.' }],
-  }), null)
+  })
+  assert.equal(result?.createsDocument, false)
+  assert.equal(result?.wantsParts, true)
+  assert.equal(result?.wantsLabor, false)
+})
+
+test('chat that is not about a repair does not start research', () => {
+  assert.equal(inferResearchIntent({ message: 'How is the weather today?', conversation: [{ role: 'user', text: 'Hello' }] }), null)
+})
+
+test('an invoice request is marked as creating a document, a look-up is not', () => {
+  const invoice = inferResearchIntent({ message: 'Make an invoice for front brakes on a 2015 Honda Accord from AutoZone.', conversation: [] })
+  assert.equal(invoice?.createsDocument, true)
+  const lookup = inferResearchIntent({ message: 'Look on AutoZone for front brakes on a 2015 Honda Accord.', conversation: [{ role: 'user', text: 'Earlier I asked for an invoice for a different car.' }] })
+  assert.equal(lookup?.createsDocument, false)
+  assert.equal(lookup?.vehicle?.make, 'Honda')
+})
+
+test('trim, engine and brake type are read from a plain answer, including engine sizes with a decimal', () => {
+  const answer = inferResearchIntent({
+    message: 'The trim is Sport, engine is 2.4L. Rear brakes are disc.',
+    conversation: [{ role: 'user', text: 'Look on AutoZone for brakes on a 2015 Honda Accord.' }],
+    research: { query: '2015 Honda Accord brakes', stores: ['AutoZone'], wantsParts: true, wantsLabor: false, createsDocument: false, documentType: 'Estimate' },
+  })
+  assert.equal(answer?.fitment?.trim, 'Sport')
+  assert.equal(answer?.fitment?.engine, '2.4L')
+  assert.equal(answer?.fitment?.brakeType, 'disc')
+  assert.match(answer?.query || '', /engine 2\.4L/)
+})
+
+test('a priced labor line does not hide missing parts prices', () => {
+  const result = inferResearchIntent({
+    message: 'Make an invoice for front brakes on a 2015 Honda Accord, 1.5 hours labor.',
+    task: { action: 'createInvoice', payload: { labors: [{ operation: 'Brakes', hours: 1.5, rate: 120 }], parts: [{ name: 'Front brake pads' }] } },
+    conversation: [],
+  })
+  assert.equal(result?.wantsParts, true)
 })
 
 test('AutoZone and all-four brake wording are retained without inventing a price or trim', () => {

@@ -2,16 +2,21 @@ export type ResearchIntentInput = {
   message: string
   task?: { action?: unknown; payload?: unknown; instructions?: unknown } | null
   conversation?: Array<{ role?: unknown; text?: unknown }>
-  facts?: { retailer?: unknown } | null
+  facts?: { retailer?: unknown; fitment?: unknown } | null
+  research?: ResearchIntent | null
 }
+
+export type ResearchFitment = { trim?: string; engine?: string; brakeType?: string }
 
 export type ResearchIntent = {
   query: string
   stores: string[]
   wantsParts: boolean
   wantsLabor: boolean
+  createsDocument: boolean
   documentType: 'Invoice' | 'Estimate'
   vehicle?: { year: string; make: string; model: string }
+  fitment?: ResearchFitment
 }
 
 const MAX_SOURCE_CHARS = 4_000
@@ -82,7 +87,7 @@ function unique(values: string[]): string[] {
   })
 }
 
-function missingPricedLines(payload: unknown): boolean {
+function missingPricedLines(payload: unknown, wantsParts: boolean, wantsLabor: boolean): boolean {
   if (!payload || typeof payload !== 'object') return true
   const record = payload as Record<string, unknown>
   const parts = Array.isArray(record.parts) ? record.parts : []
@@ -94,17 +99,55 @@ function missingPricedLines(payload: unknown): boolean {
     const item = line as Record<string, unknown>
     return hasNumber(item.amount) || (hasNumber(item.hours) && hasNumber(item.rate))
   })
-  return !pricedPart && !pricedLabor
+  // A priced labor line must not make missing parts look complete (and vice
+  // versa). This is the distinction the old `some priced line` check lost.
+  const partsRequested = wantsParts || parts.length > 0
+  const laborRequested = wantsLabor || labors.length > 0
+  return (partsRequested && !pricedPart) || (laborRequested && !pricedLabor)
 }
 
 function extractVehicle(value: unknown): { year: string; make: string; model: string } | undefined {
   if (!value || typeof value !== 'object') return undefined
   const source = value as Record<string, unknown>
-  const year = typeof source.vehicle_year === 'string' ? source.vehicle_year.trim() : ''
+  const year = typeof source.vehicle_year === 'number'
+    ? String(source.vehicle_year)
+    : typeof source.vehicle_year === 'string' ? source.vehicle_year.trim() : ''
   const make = typeof source.vehicle_make === 'string' ? source.vehicle_make.trim() : ''
   const model = typeof source.vehicle_model === 'string' ? source.vehicle_model.trim() : ''
   if (/^(?:19|20)\d{2}$/.test(year) && make && model) return { year, make, model }
   return undefined
+}
+
+function extractFitment(value: unknown): ResearchFitment | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const source = value as Record<string, unknown>
+  const trim = ['vehicle_trim', 'trim'].map(key => source[key]).find(item => typeof item === 'string' && item.trim())
+  const engine = ['vehicle_engine', 'engine'].map(key => source[key]).find(item => typeof item === 'string' && item.trim())
+  const brakeType = ['brake_type', 'rear_brake_type'].map(key => source[key]).find(item => typeof item === 'string' && item.trim())
+  if (!trim && !engine && !brakeType) return undefined
+  return {
+    ...(typeof trim === 'string' ? { trim: text(trim, 80) } : {}),
+    ...(typeof engine === 'string' ? { engine: text(engine, 80) } : {}),
+    ...(typeof brakeType === 'string' ? { brakeType: text(brakeType, 80) } : {}),
+  }
+}
+
+function fitmentFromText(source: string): ResearchFitment | undefined {
+  const trim = source.match(/\b(?:trim|package|edition)\s*(?:is|:|=)?\s*([A-Za-z0-9][A-Za-z0-9 .+\-/]{0,50}?)(?=\s*(?:,|;|\.(?=\s|$)|$)|\s+(?:engine|motor)\b)/i)?.[1]?.trim()
+  const engine = source.match(/\b(?:engine|motor)\s*(?:is|:|=)?\s*([A-Za-z0-9][A-Za-z0-9 .+\-/]{0,50}?)(?=\s*(?:,|;|\.(?=\s|$)|$))/i)?.[1]?.trim()
+  const brakeType = source.match(/\b(?:rear\s+)?(?:brakes?\s+are|brake\s+type\s*(?:is|:|=)?)\s*(disc|drum)\b/i)?.[1]
+  if (!trim && !engine && !brakeType) return undefined
+  return {
+    ...(trim ? { trim: trim.slice(0, 80) } : {}),
+    ...(engine ? { engine: engine.slice(0, 80) } : {}),
+    ...(brakeType ? { brakeType: brakeType.toLowerCase() } : {}),
+  }
+}
+
+function looksLikeFitmentAnswer(source: string): boolean {
+  return Boolean(fitmentFromText(source))
+    || /\b(?:v6|v8|i4|l4|4[- ]?cylinder|6[- ]?cylinder)\b/i.test(source)
+    || /^\s*[A-Za-z][A-Za-z0-9 +\/-]{1,30}\s+\d+(?:\.\d+)?(?:\s*(?:l|liter))?(?:\s+(?:turbo|hybrid))?\s*$/i.test(source)
 }
 
 function vehicleFromText(source: string): { year: string; make: string; model: string } | undefined {
@@ -133,30 +176,43 @@ export function inferResearchIntent(input: ResearchIntentInput): ResearchIntent 
   const taskValues: string[] = []
   collectResearchValues(input.task?.payload, taskValues)
   collectResearchValues(input.task?.instructions, taskValues, 'instructions')
+  if (input.research?.query) taskValues.push(input.research.query)
   const source = [userSource, ...taskValues].join(' ').slice(0, MAX_SOURCE_CHARS)
 
-  const documentTask = isDocumentAction(input.task?.action, userSource)
-  if (!documentTask) return null
+  // Document intent is a turn boundary, not a keyword that can be inherited
+  // from an old conversational transcript. If a task is already an invoice
+  // or estimate, its action is the durable continuation signal. Otherwise a
+  // current lookup such as "look on AutoZone for brakes" must stay read-only
+  // even when an earlier, unrelated turn mentioned an invoice.
+  const createsDocument = isDocumentAction(input.task?.action, current)
+  const hasActiveDocumentTask = input.task?.action === 'createInvoice' || input.task?.action === 'createEstimate'
+  const scopeSource = hasActiveDocumentTask || hasClearDocumentWording(current)
+    ? source
+    : [current, input.research?.query || ''].join(' ')
 
-  const wantsParts = PART_TERMS.test(source)
-  const isService = SERVICE_TERMS.test(source) || wantsParts
-  const wantsLabor = /\blabo(?:r|ur)\b/i.test(source) || (documentTask && isService)
+  const wantsParts = PART_TERMS.test(scopeSource)
+  const isService = SERVICE_TERMS.test(scopeSource) || wantsParts
+  const wantsLabor = /\blabo(?:r|ur)\b/i.test(scopeSource) || (createsDocument && isService) || Boolean(input.research?.wantsLabor && isService)
   const documentType: 'Invoice' | 'Estimate' = input.task?.action === 'createInvoice'
     ? String((input.task?.payload as Record<string, unknown> | undefined)?.type || '').toLowerCase() === 'estimate' ? 'Estimate' : 'Invoice'
     : /\binvoice\b/i.test(current) || /\binvoice\b/i.test(userSource) ? 'Invoice' : 'Estimate'
   const currentHasServiceScope = SERVICE_TERMS.test(current) || PART_TERMS.test(current)
+  const currentVehicle = vehicleFromText(current)
+  const currentFitment = fitmentFromText(current)
   const explicitResearch = RESEARCH_TERMS.test(current) || PRICING_TERMS.test(current) || RETAILERS.some(([, pattern]) => pattern.test(current))
+    || Boolean(input.research && (currentHasServiceScope || looksLikeFitmentAnswer(current) || currentVehicle || /\b(?:front|rear|left|right|all\s+four|both)\b/i.test(current)))
   // Do not restart a retailer lookup on every follow-up in a long chat. An
   // implicit lookup is triggered by the turn that supplies the repair scope;
   // later turns must explicitly ask to research again or provide new scope.
-  const implicitResearch = documentTask && currentHasServiceScope && missingPricedLines(input.task?.payload)
+  const implicitResearch = createsDocument && currentHasServiceScope && missingPricedLines(input.task?.payload, wantsParts, wantsLabor)
 
   if (!isService || (!explicitResearch && !implicitResearch)) return null
 
   const currentStores = RETAILERS.filter(([, pattern]) => pattern.test(current)).map(([store]) => store)
   const rememberedStore = typeof input.facts?.retailer === 'string' && input.facts.retailer.trim() ? [input.facts.retailer.trim()] : []
   const stores = (currentStores.length ? currentStores : rememberedStore.length ? rememberedStore : RETAILERS.filter(([, pattern]) => pattern.test(source)).map(([store]) => store))
-  const vehicle = extractVehicle(input.task?.payload) || vehicleFromText(current) || vehicleFromText(userSource)
+  const vehicle = extractVehicle(input.task?.payload) || currentVehicle || vehicleFromText(userSource)
+  const fitment = extractFitment(input.task?.payload) || extractFitment(input.facts?.fitment) || currentFitment
   const relevantPriorTurns = priorUserTurns
     .filter(turn => turn !== current)
     // Keep the earlier service turn when it describes the active vehicle. A
@@ -172,7 +228,12 @@ export function inferResearchIntent(input: ResearchIntentInput): ResearchIntent 
       const priorStores = RETAILERS.filter(([, pattern]) => pattern.test(turn)).map(([store]) => store)
       return !priorStores.length || priorStores.some(store => currentStores.includes(store))
     })
-    .filter(turn => SERVICE_TERMS.test(turn) || PART_TERMS.test(turn) || RESEARCH_TERMS.test(turn) || RETAILERS.some(([, pattern]) => pattern.test(turn)))
+    // Once the current message supplies a new repair scope, its words are
+    // authoritative. Carry prior turns only for terse continuation turns
+    // such as "retry", a retailer-only correction, or a fitment answer; old
+    // brake terms must not leak into a new water-pump or rotor request.
+    .filter(() => !currentHasServiceScope || (!currentFitment && !currentVehicle && !RESEARCH_TERMS.test(current)))
+    .filter(turn => SERVICE_TERMS.test(turn) || PART_TERMS.test(turn) || RESEARCH_TERMS.test(turn) || RETAILERS.some(([, pattern]) => pattern.test(turn)) || Boolean(fitmentFromText(turn)))
     .slice(-6)
   // Query priority is deliberate. The current user message is the latest
   // correction/scope, followed by the newest same-vehicle service turns. Old
@@ -184,8 +245,10 @@ export function inferResearchIntent(input: ResearchIntentInput): ResearchIntent 
     current,
     ...relevantPriorTurns.slice(-6).reverse(),
     ...taskValues,
+    fitment?.trim ? `trim ${fitment.trim}` : '',
+    fitment?.engine ? `engine ${fitment.engine}` : '',
+    fitment?.brakeType ? `brake type ${fitment.brakeType}` : '',
   ])
   if (!query) return null
-  return { query, stores, wantsParts, wantsLabor, documentType, ...(vehicle ? { vehicle } : {}) }
+  return { query, stores, wantsParts, wantsLabor, createsDocument, documentType, ...(vehicle ? { vehicle } : {}), ...(fitment ? { fitment } : {}) }
 }
-

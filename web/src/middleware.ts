@@ -5,10 +5,18 @@ import { NextResponse, type NextRequest } from 'next/server'
 // every protected route 401s/redirects. Never fall back to hardcoded keys.
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
 const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
-const SUPABASE_AUTH_COOKIES = SUPABASE_URL
-  ? [`sb-${new URL(SUPABASE_URL).hostname.split('.')[0]}-auth-token`]
+const SUPABASE_PROJECT_REF = (() => {
+  try {
+    return SUPABASE_URL ? new URL(SUPABASE_URL).hostname.split('.')[0] : ''
+  } catch {
+    return ''
+  }
+})()
+const SUPABASE_CONFIGURED = !!SUPABASE_PROJECT_REF && !!SUPABASE_ANON
+const SUPABASE_AUTH_COOKIES = SUPABASE_PROJECT_REF
+  ? [`sb-${SUPABASE_PROJECT_REF}-auth-token`]
   : []
-const SUPABASE_AUTH_TARGETS = SUPABASE_URL && SUPABASE_ANON
+const SUPABASE_AUTH_TARGETS = SUPABASE_CONFIGURED
   ? [{ url: SUPABASE_URL, key: SUPABASE_ANON }]
   : []
 
@@ -140,6 +148,21 @@ export async function middleware(req: NextRequest) {
     pathname === '/favicon.ico'
   ) {
     return withSecurityHeaders(NextResponse.next())
+  }
+
+  // Do not pass empty or malformed configuration to @supabase/ssr. That can
+  // throw before a protected handler gets a chance to return a normal 401,
+  // which turns a missing deployment secret into a confusing 500/edge error.
+  // Public webhook/auth handlers still receive the request and can report
+  // their own configuration error; every protected path fails closed here.
+  if (!SUPABASE_CONFIGURED) {
+    if (pathname.startsWith('/api/') && (isPublicApiPath(pathname) || hasInternalApiSecret(req))) {
+      return withSecurityHeaders(NextResponse.next())
+    }
+    if (pathname.startsWith('/api/')) {
+      return withSecurityHeaders(NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 }))
+    }
+    return withSecurityHeaders(NextResponse.redirect(new URL('/login', req.url)))
   }
 
   const res = NextResponse.next({ request: req })

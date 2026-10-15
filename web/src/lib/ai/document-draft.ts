@@ -196,7 +196,10 @@ function normalizeLabors(labors: unknown): DraftLine[] {
       ...line,
       operation: lineName(line, 'Labor'),
       hours: quantityFromUnknown(line.hours, 0),
-      rate: nonNegativeDecimal(line.rate, 120),
+      // Never turn an omitted labor rate into a made-up shop charge. The
+      // durable workflow supplies a configured rate with its own proof; this
+      // legacy normalizer must preserve the missing-price state instead.
+      rate: nonNegativeDecimal(line.rate, 0),
     }
   })
 }

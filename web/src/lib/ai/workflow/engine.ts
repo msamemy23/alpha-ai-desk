@@ -5,11 +5,11 @@ import { inferResearchIntent, type ResearchIntent } from './research-intent'
 
 export type Evidence = { id: string; tool: string; input: JsonObject; data: unknown; at: string }
 export type Proof = { ref: string; path?: string; quote?: string }
-export type Task = { action: string; payload: JsonObject; proofs: Record<string, Proof>; instructions: string[] }
+export type Task = { action: string; payload: JsonObject; proofs: Record<string, Proof>; instructions: string[]; origin?: 'document' | 'action' }
 /** What the assistant did and did not check before asking. Shown on the review card so a figure is never presented as checked when it was not. */
 export type ApprovalChecks = { verified: string[]; unverified: string[] }
 export type Approval = { id: string; action: string; payload: JsonObject; warnings: string[]; sources?: { label: string; url: string }[]; total?: number; checks?: ApprovalChecks; status: 'pending' | 'executing' | 'uncertain' }
-export type UserFacts = { phone?: string | null; email?: string | null; vehicle?: { year: string; make: string; model: string }; retailer?: string; noTax?: boolean; noAlignment?: boolean; exclusions: string[] }
+export type UserFacts = { phone?: string | null; email?: string | null; vehicle?: { year: string; make: string; model: string }; fitment?: { trim?: string; engine?: string; brakeType?: string }; retailer?: string; noTax?: boolean; noAlignment?: boolean; exclusions: string[] }
 export type WorkflowReply = { reply: string; status: 'answer' | 'needs_input' | 'approval' | 'complete' | 'blocked' | 'cancelled'; approval?: Approval; result?: { action: string; data: unknown }; turnId: string }
 /**
  * What the assistant is doing right now, for the live progress line in the chat. It is a display aid
@@ -27,6 +27,8 @@ export type WorkflowState = {
   evidence: Evidence[]
   receipts: Record<string, WorkflowReply>
   facts: UserFacts
+  research: ResearchIntent | null
+  archive: { turns: number; evidence: number }
 }
 export type WorkflowInput = { turnId: string; message?: string; confirmation?: { id: string; decision: 'confirm' | 'cancel' } }
 export type Dependencies = {
@@ -45,11 +47,50 @@ export type Dependencies = {
 }
 
 export function initialState(): WorkflowState {
-  return { version: 1, turns: [], task: null, pending: null, evidence: [], receipts: {}, facts: { exclusions: [] } }
+  return { version: 1, turns: [], task: null, pending: null, evidence: [], receipts: {}, facts: { exclusions: [] }, research: null, archive: { turns: 0, evidence: 0 } }
+}
+
+const MAX_RESTORABLE_HISTORY = 2_000
+const MAX_LIVE_TURNS = 120
+const MAX_LIVE_EVIDENCE = 80
+
+function compactWorkflowState(state: WorkflowState): void {
+  state.archive ||= { turns: 0, evidence: 0 }
+  const proofRefs = Object.values(state.task?.proofs || {}).map(proof => proof.ref).filter(Boolean)
+  const protectedTurnIds = new Set(proofRefs)
+  const protectedEvidenceIds = new Set(proofRefs)
+
+  const trim = <T>(items: T[], max: number, protectedIds: Set<string>, idOf: (item: T) => string) => {
+    if (items.length <= max) return items
+    const keepIds = new Set(items.slice(-max).map(idOf))
+    for (const id of protectedIds) if (id) keepIds.add(id)
+    return items.filter(item => keepIds.has(idOf(item)))
+  }
+
+  const nextTurns = trim(state.turns, MAX_LIVE_TURNS, protectedTurnIds, turn => turn.id)
+  state.archive.turns += state.turns.length - nextTurns.length
+  state.turns = nextTurns
+  const nextEvidence = trim(state.evidence, MAX_LIVE_EVIDENCE, protectedEvidenceIds, evidence => evidence.id)
+  state.archive.evidence += state.evidence.length - nextEvidence.length
+  state.evidence = nextEvidence
 }
 
 function validWorkflowId(value: unknown): value is string {
   return typeof value === 'string' && /^[a-zA-Z0-9._:-]{1,160}$/.test(value)
+}
+
+type FitmentFacts = { trim?: string; engine?: string; brakeType?: string }
+
+function validFitmentFacts(value: unknown): value is FitmentFacts {
+  if (!object(value)) return false
+  return ['trim', 'engine', 'brakeType'].every(key => value[key] === undefined || typeof value[key] === 'string')
+}
+
+function validResearchIntent(value: unknown): value is ResearchIntent {
+  if (!object(value) || typeof value.query !== 'string' || value.query.length > 600 || !Array.isArray(value.stores) || value.stores.some(store => typeof store !== 'string') || typeof value.wantsParts !== 'boolean' || typeof value.wantsLabor !== 'boolean' || typeof value.createsDocument !== 'boolean' || !['Invoice', 'Estimate'].includes(String(value.documentType))) return false
+  if (value.vehicle !== undefined && (!object(value.vehicle) || typeof value.vehicle.year !== 'string' || typeof value.vehicle.make !== 'string' || typeof value.vehicle.model !== 'string')) return false
+  if (value.fitment !== undefined && !validFitmentFacts(value.fitment)) return false
+  return true
 }
 
 /**
@@ -67,9 +108,13 @@ export function restoreState(value: unknown): WorkflowState {
   if (!object(value) || value.version !== 1 || !Array.isArray(value.turns) || !Array.isArray(value.evidence) || !object(value.receipts) || !object(value.facts)) {
     throw new Error('Saved workflow state is invalid')
   }
-  if (value.turns.length > 250 || value.evidence.length > 250) throw new Error('Saved workflow state is too large')
+  if (value.turns.length > MAX_RESTORABLE_HISTORY || value.evidence.length > MAX_RESTORABLE_HISTORY) throw new Error('Saved workflow state is too large')
   const state = value as unknown as WorkflowState
-  if (state.task && (!object(state.task.payload) || !object(state.task.proofs) || !Array.isArray(state.task.instructions) || state.task.instructions.some(item => typeof item !== 'string') || !CATALOG[state.task.action]?.write || validateInput(state.task.action, state.task.payload, true).length)) {
+  state.research ||= null
+  if (!object(state.archive)) state.archive = { turns: 0, evidence: 0 }
+  if (!Number.isSafeInteger(state.archive.turns) || state.archive.turns < 0 || !Number.isSafeInteger(state.archive.evidence) || state.archive.evidence < 0) throw new Error('Saved workflow archive is invalid')
+  if (state.research !== null && !validResearchIntent(state.research)) throw new Error('Saved workflow research is invalid')
+  if (state.task && (!object(state.task.payload) || !object(state.task.proofs) || !Array.isArray(state.task.instructions) || state.task.instructions.some(item => typeof item !== 'string') || (state.task.origin !== undefined && state.task.origin !== 'document' && state.task.origin !== 'action') || !CATALOG[state.task.action]?.write || validateInput(state.task.action, state.task.payload, true).length)) {
     throw new Error('Saved workflow task is invalid')
   }
   if (state.task && Object.values(state.task.proofs).some(proof => !object(proof) || typeof proof.ref !== 'string' || (proof.path !== undefined && typeof proof.path !== 'string') || (proof.quote !== undefined && typeof proof.quote !== 'string'))) throw new Error('Saved workflow proofs are invalid')
@@ -77,7 +122,7 @@ export function restoreState(value: unknown): WorkflowState {
     throw new Error('Saved workflow approval is invalid')
   }
   if (state.pending && (!state.task || state.pending.action !== state.task.action)) throw new Error('Saved workflow approval does not match its task')
-  if (!Array.isArray(state.facts.exclusions) || state.facts.exclusions.some(item => typeof item !== 'string') || (state.facts.retailer !== undefined && typeof state.facts.retailer !== 'string')) throw new Error('Saved workflow facts are invalid')
+  if (!Array.isArray(state.facts.exclusions) || state.facts.exclusions.some(item => typeof item !== 'string') || (state.facts.retailer !== undefined && typeof state.facts.retailer !== 'string') || (state.facts.fitment !== undefined && !validFitmentFacts(state.facts.fitment))) throw new Error('Saved workflow facts are invalid')
   const turnIds = new Set<string>()
   for (const turn of state.turns) {
     if (!object(turn) || !validWorkflowId(turn.id) || typeof turn.text !== 'string' || (turn.role !== undefined && turn.role !== 'user' && turn.role !== 'assistant') || turnIds.has(turn.id)) throw new Error('Saved workflow turn is invalid')
@@ -85,6 +130,7 @@ export function restoreState(value: unknown): WorkflowState {
   }
   for (const evidence of state.evidence) if (!object(evidence) || !validWorkflowId(evidence.id) || typeof evidence.tool !== 'string' || !object(evidence.input) || typeof evidence.at !== 'string') throw new Error('Saved workflow evidence is invalid')
   state.facts.exclusions = state.facts.exclusions.slice(0, 30)
+  compactWorkflowState(state)
   return state
 }
 
@@ -304,6 +350,30 @@ function captureUserFacts(facts: UserFacts, text: string) {
   if (vehicle) facts.vehicle = { year: vehicle[1], make: vehicle[2], model: vehicle[3] }
   const retailer = retailerFromText(text)
   if (retailer) facts.retailer = retailer
+
+  const fitment = { ...(facts.fitment || {}) }
+  const explicitTrim = text.match(/\b(?:trim|package|edition)\s*(?:is|:|=)?\s*([A-Za-z0-9][A-Za-z0-9 .+\/-]{0,50}?)(?=\s*(?:,|;|\.(?=\s|$)|$)|\s+(?:engine|motor)\b)/i)?.[1]?.trim()
+  const explicitEngine = text.match(/\b(?:engine|motor)\s*(?:is|:|=)?\s*([A-Za-z0-9][A-Za-z0-9 .+\/-]{0,50}?)(?=\s*(?:,|;|\.(?=\s|$)|$))/i)?.[1]?.trim()
+  const explicitBrakeType = text.match(/\b(?:rear\s+)?(?:brakes?\s+are|brake\s+type\s*(?:is|:|=)?)\s*(disc|drum)\b/i)?.[1]
+  if (explicitTrim) fitment.trim = explicitTrim.slice(0, 80)
+  if (explicitEngine) fitment.engine = explicitEngine.slice(0, 80)
+  if (explicitBrakeType) fitment.brakeType = explicitBrakeType.toLowerCase()
+
+  // A fitment answer is often terse (for example, "Abarth 1.4 turbo") and
+  // omits the labels used above. Only interpret that shorthand when a vehicle
+  // is already known; this prevents customer names and ordinary chat from
+  // becoming fake trim/engine facts.
+  if (facts.vehicle && !explicitTrim && !explicitEngine && !explicitBrakeType) {
+    const shorthand = text.trim().replace(/^[,;:\s]+|[,;.\s]+$/g, '')
+    const engineMatch = shorthand.match(/\b\d+(?:\.\d+)?(?:\s*(?:l|liter))?(?:\s+(?:turbo|hybrid|v6|v8|i4|l4|4[- ]?cylinder|6[- ]?cylinder))+\b/i)
+    if (engineMatch) {
+      const possibleTrim = shorthand.slice(0, engineMatch.index).trim()
+      if (possibleTrim && /^[A-Za-z][A-Za-z0-9 +\/-]{1,30}$/.test(possibleTrim)) fitment.trim = possibleTrim
+      fitment.engine = engineMatch[0].replace(/\s+/g, ' ')
+    }
+  }
+  if (Object.keys(fitment).length) facts.fitment = fitment
+
   if (/\b(?:no|without|skip|don't include|do not include|leave out)\s+(?:the\s+)?alignment\b/i.test(text)) {
     facts.noAlignment = true
     if (!facts.exclusions.some(item => /alignment/i.test(item))) facts.exclusions.push('No alignment requested.')
@@ -313,6 +383,74 @@ function captureUserFacts(facts: UserFacts, text: string) {
   }
   if (/\b(?:no|without|skip|don't apply|do not apply)\s+(?:the\s+)?tax\b/i.test(text)) facts.noTax = true
   else if (/\b(?:include|add|apply|with)\s+(?:the\s+)?tax\b/i.test(text)) facts.noTax = false
+}
+
+function shouldResetStandaloneResearch(message: string): boolean {
+  const source = message.trim()
+  if (!source) return false
+  // A short follow-up such as "retry", "rear", or "Abarth 1.4 turbo" is
+  // part of the active lookup. Clear the read-only context only when the
+  // user clearly starts a different shop operation, so an interrupted lookup
+  // remains resumable without making every later request inherit its evidence.
+  const researchTerms = /\b(?:look\s*(?:it\s*)?up|search|find|price|prices|parts?|brakes?|pads?|rotors?|calipers?|control\s*arms?|vehicle|trim|engine|front|rear|left|right|fitment|retailer|autozone|o['’]?reilly|napa|rockauto|amazon|ebay)\b/i
+  if (researchTerms.test(source)) return false
+  return /\b(?:customer|appointment|inventory|job|staff|timeclock|stats?|revenue|call|dial|send|email|text|sms|delete|remove|update|schedule|settings?)\b/i.test(source)
+}
+
+function taskIdentityTokens(task: Task): string[] {
+  const values: string[] = []
+  const collect = (value: unknown, depth = 0) => {
+    if (depth > 3 || values.length >= 24 || value === null || value === undefined) return
+    if (typeof value === 'string' || typeof value === 'number') {
+      values.push(String(value))
+      return
+    }
+    if (Array.isArray(value)) {
+      value.slice(0, 12).forEach(item => collect(item, depth + 1))
+      return
+    }
+    if (object(value)) {
+      for (const [key, child] of Object.entries(value)) {
+        if (/^(?:type|customer_name|vehicle_year|vehicle_make|vehicle_model|notes|concern|name|operation|description|position|partNumber|store|brand)$/i.test(key)) collect(child, depth + 1)
+      }
+    }
+  }
+  collect(task.payload)
+  return contextTokens(values.join(' ')).filter(token => !['invoice', 'estimate', 'customer', 'vehicle', 'front', 'rear', 'left', 'right', 'both', 'parts', 'brakes', 'brake'].includes(token))
+}
+
+function documentRequestBelongsToTask(message: string, task: Task): boolean {
+  if (!/\b(?:invoice|estimate|quote|receipt)\b/i.test(message)) return false
+  const identity = taskIdentityTokens(task)
+  // If the task contains no identifying fields, retaining a legacy document
+  // task is safer than dropping a draft that cannot be associated precisely.
+  if (!identity.length) return true
+  const tokens = new Set(contextTokens(message))
+  return identity.some(token => tokens.has(token))
+}
+
+/**
+ * Early workflow versions could create a createInvoice task for a lookup-only
+ * request. Those rows remain in persisted sessions after the code is fixed.
+ * Repair only an untagged legacy task, and only when no document request in
+ * the transcript can be tied to that task. Explicit document tasks created by
+ * current code carry `origin: document` and are never guessed away.
+ */
+function repairLegacyResearchTask(state: WorkflowState, currentMessage: string): boolean {
+  const task = state.task
+  if (!task || !['createInvoice', 'createEstimate'].includes(task.action) || task.origin) return false
+  // A current explicit document request is authoritative even when the
+  // persisted task predates the origin marker.
+  if (/\b(?:invoice|estimate|quote|receipt)\b/i.test(currentMessage)) return false
+  const messages = [currentMessage, ...state.turns.filter(turn => turn.role === 'user').map(turn => turn.text)]
+  if (messages.some(message => documentRequestBelongsToTask(message, task))) return false
+  state.task = null
+  state.pending = null
+  // A malformed task may have attached prices to the wrong intent. Force a
+  // fresh lookup rather than allowing those prices to become proof for a new
+  // request. The durable research description is reconstructed by the caller.
+  state.evidence = []
+  return true
 }
 
 function applyUserFacts(state: WorkflowState) {
@@ -331,6 +469,15 @@ function applyUserFacts(state: WorkflowState) {
     payload.vehicle_year = state.facts.vehicle.year
     payload.vehicle_make = state.facts.vehicle.make
     payload.vehicle_model = state.facts.vehicle.model
+  }
+  if (state.facts.fitment) {
+    task.instructions = task.instructions.filter(instruction => !/^Fitment context:/i.test(instruction))
+    const fitmentText = [
+      state.facts.fitment.trim ? `trim ${state.facts.fitment.trim}` : '',
+      state.facts.fitment.engine ? `engine ${state.facts.fitment.engine}` : '',
+      state.facts.fitment.brakeType ? `brake type ${state.facts.fitment.brakeType}` : '',
+    ].filter(Boolean).join(', ')
+    if (fitmentText) task.instructions.push(`Fitment context: ${fitmentText}`)
   }
   if (task.action === 'createInvoice' && state.facts.noTax) {
     payload.apply_tax = false
@@ -363,6 +510,7 @@ function ensureResearchTask(state: WorkflowState, intent: ResearchIntent) {
     payload,
     proofs: {},
     instructions: [`Research requested before drafting: ${intent.query}`],
+    origin: 'document',
   }
   return true
 }
@@ -381,7 +529,6 @@ function lookupEvidenceMatchesTask(evidence: Evidence, task: Task, state: Workfl
     const returnedVehicle = normalizedResearchText(data.vehicle)
     if (!returnedVehicle || expectedVehicle.some(value => !returnedVehicle.includes(normalizedResearchText(value)))) return false
   }
-  const currentStoreText = currentMessage.toLowerCase()
   const requestedStore = retailerFromText(currentMessage) || state.facts.retailer || ''
   const selectedStores = requestedStore ? [] : (Array.isArray(task.payload.parts) ? task.payload.parts.filter(object).map(line => String(line.store || '')) : []).filter(Boolean)
   const expectedStoreText = normalizedResearchText([requestedStore, ...selectedStores].join(' '))
@@ -538,7 +685,13 @@ function mergeTask(state: WorkflowState, decision: JsonObject) {
     if (object(value) && typeof value.ref === 'string') proofs[key] = { ref: value.ref, path: typeof value.path === 'string' ? value.path : undefined, quote: typeof value.quote === 'string' ? value.quote : undefined }
   }
   const incomingInstructions = Array.isArray(decision.task.instructions) ? decision.task.instructions.filter((item): item is string => typeof item === 'string') : []
-  state.task = { action, payload: { ...previous.payload, ...patch }, proofs, instructions: [...new Set([...previous.instructions, ...incomingInstructions])].slice(0, 30) }
+  state.task = {
+    action,
+    payload: { ...previous.payload, ...patch },
+    proofs,
+    instructions: [...new Set([...previous.instructions, ...incomingInstructions])].slice(0, 30),
+    origin: previous.origin || (['createInvoice', 'createEstimate'].includes(action) ? 'document' : 'action'),
+  }
   applyUserFacts(state)
 }
 
@@ -607,20 +760,68 @@ function approvalChecks(state: WorkflowState, task: Task, document: boolean, sou
 
 function hasUsableResearchData(value: unknown, intent?: { wantsParts?: boolean; wantsLabor?: boolean }): boolean {
   if (!object(value)) return false
-  const options = Array.isArray(value.options) && value.options.some(option => object(option) && Array.isArray(option.parts) && option.parts.length > 0)
-  const kits = Array.isArray(value.kits) && value.kits.some(kit => object(kit) && typeof kit.price === 'number' && typeof kit.url === 'string')
-  const labor = object(value.laborGuidance) && typeof value.laborGuidance.hours === 'number' && Number.isFinite(value.laborGuidance.hours)
-  const hasParts = options || kits
-  return (!intent?.wantsParts || hasParts) && (!intent?.wantsLabor || labor || hasParts)
+  // A non-empty option is not evidence of a price. Retailer category pages
+  // commonly return product names with no price, and treating those as usable
+  // is what used to send the workflow into a false "ready for invoice" path.
+  const pricedPart = (part: unknown) => object(part)
+    && typeof part.price === 'number'
+    && Number.isFinite(part.price)
+    && part.price >= 0
+    && part.sourceConfidence !== 'price_unavailable'
+  const hasParts = (Array.isArray(value.options) && value.options.some(option => object(option) && Array.isArray(option.parts) && option.parts.some(pricedPart)))
+    || (Array.isArray(value.kits) && value.kits.some(kit => object(kit) && pricedPart(kit)))
+  const labor = object(value.laborGuidance)
+    && typeof value.laborGuidance.hours === 'number'
+    && Number.isFinite(value.laborGuidance.hours)
+    && value.laborGuidance.hours >= 0
+  if (intent?.wantsParts && !hasParts) return false
+  if (intent?.wantsLabor && !labor) return false
+  return hasParts || labor
 }
 
 function normalizedResearchText(value: unknown): string {
   return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
+function lookupEvidenceCoversRequestedScope(evidence: Evidence, intent: { query: string }): boolean {
+  const requested = normalizedResearchText(intent.query)
+  const returned = normalizedResearchText(`${JSON.stringify(evidence.data)} ${JSON.stringify(evidence.input)}`)
+  const requiredPhrases = [
+    /lower\s+control\s+arms?/,
+    /ball\s+joint/,
+    /tie\s+rods?/,
+    /wheel\s+bearings?/,
+    /water\s+pumps?/,
+    /timing\s+belts?/,
+    /head\s+gaskets?/,
+    /alternators?/,
+    /starters?/,
+    /radiators?/,
+    /spark\s+plugs?/,
+    /fuel\s+pumps?/,
+    /thermostats?/,
+    /struts?/,
+    /shocks?/,
+    /axles?/,
+    /cv\s+joint/,
+  ]
+  for (const phrase of requiredPhrases) {
+    if (phrase.test(requested) && !phrase.test(returned)) return false
+  }
+  if (/\brotors?\b/.test(requested) && !/\brotors?\b/.test(returned)) return false
+  if (/\bpads?\b/.test(requested) && !/\bpads?\b/.test(returned)) return false
+  if (/\bcalipers?\b/.test(requested) && !/\bcalipers?\b/.test(returned)) return false
+  if (/\b(?:front|rear)\b/.test(requested)) {
+    const requestedPositions = ['front', 'rear'].filter(position => requested.includes(position))
+    if (requestedPositions.some(position => !returned.includes(position))) return false
+  }
+  return true
+}
+
 function lookupMatchesResearchIntent(evidence: Evidence, intent: { query: string; stores: string[]; wantsParts?: boolean; wantsLabor?: boolean; vehicle?: { year: string; make: string; model: string } }): boolean {
   if (evidence.tool !== 'lookupParts' || !object(evidence.data)) return false
   if (!hasUsableResearchData(evidence.data, intent)) return false
+  if (!lookupEvidenceCoversRequestedScope(evidence, intent)) return false
   const data = evidence.data
   if (intent.vehicle) {
     const returnedVehicle = normalizedResearchText(data.vehicle)
@@ -674,16 +875,17 @@ function partsLookupLimitMessage(intent: ResearchIntent | null, state: WorkflowS
   const allFour = /\b(?:all four|four|4) (?:wheel )?brakes?\b|\b4 brakes? and rotors?\b/i.test(scope)
   const latestLookup = [...state.evidence].reverse().find(item => item.tool === 'lookupParts')
   const complete = Boolean(intent && latestLookup && lookupMatchesResearchIntent(latestLookup, intent))
-  if (complete) return 'The retailer returned usable source data, but I could not safely assemble a complete invoice line set from it without mixing products. I will not invent or silently omit parts. Retry the saved lookup later; no invoice was created.'
+  const unchanged = intent?.createsDocument ? 'no invoice was created' : 'no shop record was changed'
+  if (complete) return `The retailer returned usable source data, but I could not safely assemble a complete result from it without mixing products. I will not invent or silently omit parts. Retry the saved lookup later; ${unchanged}.`
   if (allFour) {
     const conversation = [currentMessage, ...state.turns.filter(turn => turn.role === 'user').map(turn => turn.text)].join(' ')
     const fitmentKnown = fitmentFactsSupplied(state, conversation)
     const nextStep = fitmentKnown
       ? 'No additional fitment detail is needed; retry the saved lookup later.'
       : 'Confirm the trim or rear brake type if that is still unknown, or retry the saved lookup later.'
-    return `I ran one vehicle-and-retailer lookup, but it did not return a complete compatible set of front and rear brake pads and rotors. I will not mix unverified axle prices or invent the missing parts. ${nextStep} No invoice was created.`
+    return `I ran one vehicle-and-retailer lookup, but it did not return a complete compatible set of front and rear brake pads and rotors. I will not mix unverified axle prices or invent the missing parts. ${nextStep} ${unchanged}.`
   }
-  return 'I ran one vehicle-and-retailer lookup, but it did not return enough reliable evidence to price this request. I will not repeat variant searches in the same turn or invent a price. Retry the saved lookup to continue; no invoice was created.'
+  return `I ran one vehicle-and-retailer lookup, but it did not return enough reliable evidence to price this request. I will not repeat variant searches in the same turn or invent a price. Retry the saved lookup to continue; ${unchanged}.`
 }
 
 function researchQuestion(fields: unknown, message = ''): boolean {
@@ -736,9 +938,11 @@ function promoteResearchEvidenceToTask(state: WorkflowState, intent: ResearchInt
   if (!task || task.action !== 'createInvoice') return false
   const existingParts = Array.isArray(task.payload.parts) ? task.payload.parts.filter(object) : []
   const existingLabors = Array.isArray(task.payload.labors) ? task.payload.labors.filter(object) : []
-  const alreadyPriced = existingParts.some(line => typeof line.unitPrice === 'number' && Number.isFinite(line.unitPrice))
-    || existingLabors.some(line => typeof line.amount === 'number' && Number.isFinite(line.amount) || (typeof line.hours === 'number' && Number.isFinite(line.hours) && typeof line.rate === 'number' && Number.isFinite(line.rate)))
-  if (alreadyPriced) return false
+  const pricedParts = existingParts.some(line => typeof line.unitPrice === 'number' && Number.isFinite(line.unitPrice))
+  const pricedLabor = existingLabors.some(line => typeof line.amount === 'number' && Number.isFinite(line.amount) || (typeof line.hours === 'number' && Number.isFinite(line.hours) && typeof line.rate === 'number' && Number.isFinite(line.rate)))
+  const needsParts = intent.wantsParts && !pricedParts
+  const needsLabor = intent.wantsLabor && !pricedLabor
+  if (!needsParts && !needsLabor) return false
 
   const evidence = [...state.evidence].reverse().find(item => item.tool === 'lookupParts' && lookupMatchesResearchIntent(item, intent))
   if (!evidence || !object(evidence.data)) return false
@@ -756,7 +960,7 @@ function promoteResearchEvidenceToTask(state: WorkflowState, intent: ResearchInt
     if (name) basePayload.customer_name = name
   }
   const baseProofs = { ...task.proofs }
-  const laborPatch = intent.wantsLabor && laborGuidance
+  const laborPatch = needsLabor && laborGuidance
     ? {
         labors: [{ operation: String(laborGuidance.operation), hours: Number(laborGuidance.hours), rate: laborRate }],
         proofs: {
@@ -774,7 +978,7 @@ function promoteResearchEvidenceToTask(state: WorkflowState, intent: ResearchInt
   }
 
   const candidates: { parts: JsonObject[]; proofs: Record<string, Proof> }[] = []
-  if (Array.isArray(data.kits)) for (const [index, kit] of data.kits.entries()) {
+  if (needsParts && Array.isArray(data.kits)) for (const [index, kit] of data.kits.entries()) {
     if (!object(kit) || typeof kit.name !== 'string' || typeof kit.price !== 'number' || !Number.isFinite(kit.price) || typeof kit.url !== 'string') continue
     const kitText = `${kit.name} ${kit.includes || ''} ${kit.positions || ''}`
     if (!/front/i.test(kitText) || !/rear/i.test(kitText) || !/pad/i.test(kitText) || !/rotor/i.test(kitText)) continue
@@ -783,7 +987,7 @@ function promoteResearchEvidenceToTask(state: WorkflowState, intent: ResearchInt
     for (const key of ['positions', 'store', 'brand', 'url', 'sourceConfidence']) if (typeof kit[key] === 'string' && kit[key].trim()) line[key === 'positions' ? 'position' : key] = kit[key]
     candidates.push({ parts: [line], proofs: { 'parts.0.unitPrice': { ref: evidence.id, path: `kits.${index}.price` } } })
   }
-  if (Array.isArray(data.options)) for (const [optionIndex, option] of data.options.entries()) {
+  if (needsParts && Array.isArray(data.options)) for (const [optionIndex, option] of data.options.entries()) {
     if (!object(option) || !Array.isArray(option.parts)) continue
     const parts: JsonObject[] = []
     const proofs: Record<string, Proof> = {}
@@ -795,16 +999,20 @@ function promoteResearchEvidenceToTask(state: WorkflowState, intent: ResearchInt
     }
     if (parts.length) candidates.push({ parts, proofs })
   }
+  // Labor-only completion still needs a candidate even when the provider did
+  // not return a part option. Preserve every already-priced class instead of
+  // forcing the user through a second question or dropping their lines.
+  if (!needsParts) candidates.push({ parts: existingParts, proofs: {} })
 
   for (const candidate of candidates) {
     const candidateTask: Task = {
       ...task,
       payload: {
         ...basePayload,
-        parts: candidate.parts,
-        ...(laborPatch.labors ? { labors: laborPatch.labors } : {}),
+        parts: needsParts ? candidate.parts : existingParts,
+        labors: needsLabor && laborPatch.labors ? laborPatch.labors : existingLabors,
       },
-      proofs: { ...baseProofs, ...candidate.proofs, ...laborPatch.proofs },
+      proofs: { ...baseProofs, ...(needsParts ? candidate.proofs : {}), ...(needsLabor ? laborPatch.proofs : {}) },
       instructions: [...new Set([...task.instructions, 'Selected a complete retailer result automatically for review; change it before confirming if needed.'])].slice(0, 30),
     }
     const candidateState = { ...state, task: candidateTask }
@@ -827,6 +1035,7 @@ function isPersistenceFailure(error: unknown): boolean {
 
 export async function runWorkflow(state: WorkflowState, input: WorkflowInput, deps: Dependencies): Promise<WorkflowReply> {
   state.facts ||= { exclusions: [] }
+  state.archive ||= { turns: 0, evidence: 0 }
   const existing = state.turns.find(turn => turn.id === input.turnId)
   if (!input.confirmation && existing && existing.text !== (input.message || '')) throw new Error('Turn ID reused with different input')
   if (!input.confirmation && existing?.reply) {
@@ -838,6 +1047,7 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
   const finish = async (reply: WorkflowReply) => {
     const turn = state.turns.find(item => item.id === input.turnId)
     if (turn) turn.reply = reply
+    compactWorkflowState(state)
     await deps.checkpoint(state)
     return reply
   }
@@ -905,6 +1115,7 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
       state.evidence.push({ id: deps.id(), tool: pending.action, input: pending.payload, data: result.data, at: new Date().toISOString() })
       state.pending = null
       state.task = null
+      state.research = null
       return await finish(receipt)
     } catch (error) {
       if (state.receipts[id]) throw error // committed result; retry persistence, not the operation
@@ -916,11 +1127,17 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
   }
 
   if (!input.message?.trim()) return respond('Enter a message.', 'needs_input')
-  if (!state.task && !state.pending) {
+  if (!state.task && !state.pending && !state.research) {
     state.facts = { exclusions: [] }
     // Evidence is scoped to the active task. Retaining a previous customer's
     // price/search result would let a later task reuse stale proof silently.
     state.evidence = []
+  }
+  if (state.research && !state.task && !state.pending && shouldResetStandaloneResearch(input.message)) {
+    state.research = null
+    state.evidence = []
+    state.facts = { exclusions: [] }
+    await deps.checkpoint(state)
   }
   captureUserFacts(state.facts, input.message)
   if (state.pending?.status === 'executing' || state.pending?.status === 'uncertain') return respond('The previous operation needs reconciliation first. Use Retry on its review so a second record is not created.', 'blocked', { approval: state.pending })
@@ -935,6 +1152,7 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
     state.pending = null // invalidate old approval before applying any edits
   }
   if (!existing) state.turns.push({ id: input.turnId, role: 'user', text: input.message })
+  compactWorkflowState(state)
   await deps.checkpoint(state)
   const errors: string[] = []
   const reads = new Set<string>()
@@ -944,12 +1162,28 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
   // live shop state must trigger a fresh read in this turn.
   const successfulReads = new Set<string>()
   applyUserFacts(state)
-  const researchIntent = inferResearchIntent({ message: input.message, task: state.task, conversation: state.turns, facts: state.facts })
+  let researchIntent = inferResearchIntent({ message: input.message, task: state.task, conversation: state.turns, facts: state.facts, research: state.research })
+  // Repair a task created by the pre-durable lookup flow before the model can
+  // turn it into an approval. Keep the old vehicle/part scope as read-only
+  // research, then re-infer with no write task so this turn cannot save a
+  // document merely because the legacy row said createInvoice.
+  if (state.task && repairLegacyResearchTask(state, input.message)) {
+    if (researchIntent) state.research = { ...researchIntent, createsDocument: false }
+    await deps.checkpoint(state)
+    researchIntent = inferResearchIntent({ message: input.message, task: null, conversation: state.turns, facts: state.facts, research: state.research })
+  }
+  // Research is durable even when it is not attached to a write task. This is
+  // what lets a user answer a fitment question on the next turn without losing
+  // the original retailer, vehicle, or requested component.
+  if (researchIntent && !researchIntent.createsDocument) {
+    state.research = researchIntent
+    await deps.checkpoint(state)
+  }
   // Persist a minimal document task before the automatic lookup. If the
   // retailer or a provider fails, the next "retry" must retain the vehicle,
   // service scope, contact facts and evidence instead of starting from a
-  // taskless conversation.
-  if (researchIntent && !state.task && (researchIntent.wantsParts || researchIntent.wantsLabor)) {
+  // taskless conversation. A read-only lookup never creates this task.
+  if (researchIntent?.createsDocument && !state.task && (researchIntent.wantsParts || researchIntent.wantsLabor)) {
     ensureResearchTask(state, researchIntent)
     applyUserFacts(state)
     await deps.checkpoint(state)
@@ -957,6 +1191,7 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
   const hasVehicleContext = Boolean(
     state.facts.vehicle ||
     (state.task?.payload.vehicle_year && state.task?.payload.vehicle_make && state.task?.payload.vehicle_model) ||
+    researchIntent?.vehicle ||
     /\b(?:19|20)\d{2}\s+[A-Za-z][A-Za-z-]+\s+[A-Za-z0-9][A-Za-z0-9-]+\b/i.test(researchIntent?.query || '')
   )
   const currentSuppliesPricing = /(?:\$|\bUSD\s*)\s*\d|\b\d+(?:\.\d+)?\s*(?:hours?|hrs?|hr)\b/i.test(input.message)
@@ -980,12 +1215,18 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
           lookupResult = { ok: false, error: error instanceof Error ? error.message : 'Parts lookup failed' }
         }
         emit({ kind: 'tool', tool: 'lookupParts', status: lookupResult.ok ? 'ok' : 'error', ...(lookupResult.ok ? {} : { detail: 'The lookup did not return a result.' }) })
-        if (!lookupResult.ok) return respond(`I couldn't retrieve the requested parts research yet: ${lookupResult.error || 'the retailer lookup failed'}. Your invoice details are saved. Retry the lookup and I will continue from here.`, 'blocked')
+        if (!lookupResult.ok) {
+          const savedState = researchIntent.createsDocument ? 'Your document details are saved.' : 'No shop record was changed.'
+          return respond(`I couldn't retrieve the requested parts research yet: ${lookupResult.error || 'the retailer lookup failed'}. ${savedState} Retry the lookup and I will continue from here.`, 'blocked')
+        }
         const evidence = { id: deps.id(), tool: 'lookupParts', input: lookupInput, data: lookupResult.data, at: new Date().toISOString() }
         state.evidence.push(evidence)
         successfulReads.add('lookupParts')
         await deps.checkpoint(state)
-        if (!hasUsableResearchData(lookupResult.data, researchIntent)) return respond('I saved the invoice request, but the retailer did not return a usable price or labor result. Nothing was priced or saved. Retry the lookup to continue.', 'blocked')
+        if (!hasUsableResearchData(lookupResult.data, researchIntent)) {
+          const savedState = researchIntent.createsDocument ? 'I saved the document request, but nothing was priced or saved.' : 'Nothing was priced or saved.'
+          return respond(`${savedState} The retailer did not return a usable price or labor result. Retry the lookup to continue.`, 'blocked')
+        }
       }
     }
   }
@@ -995,7 +1236,9 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
     let decisionKind = ''
     try {
       if (deps.deadline && Date.now() >= deps.deadline) throw new Error('Workflow time budget expired. The saved task is intact; retry to continue it.')
-      const context = JSON.stringify({ date: new Date().toISOString(), shop: deps.shop, task: state.task, conversation: state.turns, evidence: state.evidence, correction: errors.at(-1) })
+      const proofRefs = new Set(Object.values(state.task?.proofs || {}).map(proof => proof.ref).filter(Boolean))
+      const modelEvidence = state.evidence.filter((item, index) => proofRefs.has(item.id) || index >= Math.max(0, state.evidence.length - 60))
+      const context = JSON.stringify({ date: new Date().toISOString(), shop: deps.shop, task: state.task, history: state.archive, conversation: state.turns, evidence: modelEvidence, correction: errors.at(-1) })
       // Never silently drop earlier facts. Refuse a too-large task, retaining it.
       if (context.length > 180000) return respond('This conversation has reached its working-context limit. Its saved details are intact. Start a new chat for a new task, or finish the current review.', 'blocked')
       emit({ kind: 'status', label: step === 0 ? 'Reading your request' : 'Working out the next step' })
@@ -1014,6 +1257,7 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
         const validation = validateInput(tool, payload)
         if (validation.length) throw new Error(validation.join('; '))
       }
+      if (researchIntent && !researchIntent.createsDocument && decision.task) throw new Error('This is a read-only parts lookup. Do not create a document unless the user explicitly asks for one.')
       mergeTask(state, decision)
       await deps.checkpoint(state)
       if (decision.kind === 'read') {
@@ -1099,4 +1343,3 @@ export async function runWorkflow(state: WorkflowState, input: WorkflowInput, de
   }
   return respond(`I could not safely finish this step. Your supplied details are retained and no new action was executed. ${errors.at(-1) || 'The tool sequence needs another step.'}`, 'blocked')
 }
-

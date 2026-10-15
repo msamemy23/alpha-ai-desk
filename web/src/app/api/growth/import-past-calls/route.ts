@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300 // 5 min for large imports
@@ -100,6 +100,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null)
     const auth = await getRouteShop(req, body?.shopId)
     if (!auth) return unauthorized()
+    if (auth.role === 'viewer') return forbidden()
     const supabase = getServiceClient()
     const { data: settings, error: settingsError } = await supabase.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle()
     if (settingsError) return NextResponse.json({ error: 'Unable to load shop settings' }, { status: 500 })
@@ -134,47 +135,41 @@ export async function POST(req: NextRequest) {
     }
 
     const uniqueCallers = Object.entries(callerMap)
+    // ai_calls is the live AI-call table, not the legacy Telnyx call schema.
+    // Keep this read aligned with the deployed contract and normalize the
+    // last ten digits because inbound providers do not always preserve +1.
+    const { data: aiCalls, error: aiCallsError } = await supabase
+      .from('ai_calls')
+      .select('id,caller,task,started_at')
+      .eq('shop_id', auth.shopId)
+      .order('started_at', { ascending: false })
+      .limit(1000)
+    if (aiCallsError) return NextResponse.json({ error: 'Unable to load existing AI call history' }, { status: 500 })
+    const phoneDigits = (value: unknown) => String(value || '').replace(/\D/g, '').slice(-10)
     let imported = 0
     let skipped = 0
     let errors = 0
 
     for (const [phone, rec] of uniqueCallers) {
       try {
-        // Check if lead already exists
-        const { data: existing } = await supabase
-          .from('growth_leads')
-          .select('id')
-          .eq('shop_id', auth.shopId)
-          .eq('phone', phone)
-          .maybeSingle()
-
-        if (existing) {
+        // The importer maintains two legacy lead projections. A prior run can
+        // succeed in one table and fail in the other, so only skip when both
+        // rows exist; retries repair the missing projection instead of hiding
+        // the partial write forever.
+        const [{ data: existingGrowth, error: growthLookupError }, { data: existingLead, error: leadLookupError }] = await Promise.all([
+          supabase.from('growth_leads').select('id').eq('shop_id', auth.shopId).eq('phone', phone).maybeSingle(),
+          supabase.from('leads').select('id').eq('shop_id', auth.shopId).eq('phone', phone).maybeSingle(),
+        ])
+        if (growthLookupError || leadLookupError) throw growthLookupError || leadLookupError
+        if (existingGrowth && existingLead) {
           skipped++
           continue
         }
 
-        // Also check the leads table
-        const { data: existingLead } = await supabase
-          .from('leads')
-          .select('id')
-          .eq('shop_id', auth.shopId)
-          .eq('phone', phone)
-          .maybeSingle()
-
-        if (existingLead) {
-          skipped++
-          continue
-        }
-
-        // Try to get caller info from ai_calls table
-        const { data: aiCall } = await supabase
-          .from('ai_calls')
-          .select('*')
-          .eq('shop_id', auth.shopId)
-          .or(`from_number.eq.${phone},caller_id.eq.${phone}`)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .single()
+        // Enrich from the deployed ai_calls contract. The old query used
+        // from_number/caller_id/created_at/customer_name fields that do not
+        // exist in this table and made every import silently lose enrichment.
+        const aiCall = (aiCalls || []).find(call => phoneDigits(call.caller) === phoneDigits(phone))
 
         const { data: historyCall } = await supabase
           .from('call_history')
@@ -188,41 +183,43 @@ export async function POST(req: NextRequest) {
 
         const historyName = historyCall?.matched_customer_name
         const isPhoneNumber = !!historyName && /^\+?[0-9]+$/.test(historyName)
-        const callerName = aiCall?.customer_name || aiCall?.caller_name || (!isPhoneNumber && historyName) || 'Past Caller'
-        const vehicle = aiCall?.vehicle_info || ''
-        const service = aiCall?.service_needed || aiCall?.reason || ''
-        const callDate = rec.recording_started_at || rec.created_at
+        const callerName = (!isPhoneNumber && historyName) || 'Past Caller'
+        const vehicle = ''
+        const service = aiCall?.task || ''
+        const callDate = rec.recording_started_at || rec.created_at || aiCall?.started_at
 
-        // Insert into growth_leads
-        const { error: growthLeadError } = await supabase.from('growth_leads').insert({
-          shop_id: auth.shopId,
-          name: callerName,
-          phone: phone,
-          source: 'past-call',
-          vehicle_info: vehicle || null,
-          notes: `Imported from Telnyx call history. Call date: ${callDate ? new Date(callDate).toLocaleDateString() : 'unknown'}. ${service ? `Service: ${service}` : ''}`,
-          status: 'new',
-          needs_followup: true,
-          touch_count: 1,
-          last_contact: callDate || new Date().toISOString(),
-          converted: false,
-          created_at: new Date().toISOString()
-        })
-        if (growthLeadError) throw growthLeadError
+        if (!existingGrowth) {
+          const { error: growthLeadError } = await supabase.from('growth_leads').insert({
+            shop_id: auth.shopId,
+            name: callerName,
+            phone: phone,
+            source: 'past-call',
+            vehicle_info: vehicle || null,
+            notes: `Imported from Telnyx call history. Call date: ${callDate ? new Date(callDate).toLocaleDateString() : 'unknown'}. ${service ? `Service: ${service}` : ''}`,
+            status: 'new',
+            needs_followup: true,
+            touch_count: 1,
+            last_contact: callDate || new Date().toISOString(),
+            converted: false,
+            created_at: new Date().toISOString()
+          })
+          if (growthLeadError) throw growthLeadError
+        }
 
-        // Also insert into leads table for the Growth page
-        const { error: leadError } = await supabase.from('leads').insert({
-          shop_id: auth.shopId,
-          name: callerName,
-          phone: phone,
-          service_needed: service || 'Previous caller - follow up',
-          source: 'past-call',
-          notes: `Auto-imported from Telnyx. Called on ${callDate ? new Date(callDate).toLocaleDateString() : 'unknown'}`,
-          status: 'new',
-          follow_up_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
-          created_at: new Date().toISOString()
-        })
-        if (leadError) throw leadError
+        if (!existingLead) {
+          const { error: leadError } = await supabase.from('leads').insert({
+            shop_id: auth.shopId,
+            name: callerName,
+            phone: phone,
+            service_needed: service || 'Previous caller - follow up',
+            source: 'past-call',
+            notes: `Auto-imported from Telnyx. Called on ${callDate ? new Date(callDate).toLocaleDateString() : 'unknown'}`,
+            status: 'new',
+            follow_up_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+            created_at: new Date().toISOString()
+          })
+          if (leadError) throw leadError
+        }
 
         imported++
       } catch (e) {
