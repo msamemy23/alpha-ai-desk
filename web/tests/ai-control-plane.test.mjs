@@ -35,7 +35,7 @@ test('router classifies parts, desktop, Kapture, and communications requests bef
 test('Kapture no-tab state is handled honestly in chat and status UI', () => {
   assert.match(aiPage, /No connected Kapture tab|no Chrome tab is connected/i)
   assert.match(aiPage, /kapture\.list_tabs/)
-  assert.match(toolsPage, /Kapture Connected Tabs/)
+  assert.match(toolsPage, /Chrome tabs Alpha can use/)
   assert.match(toolsPage, /connectedTabs/)
 })
 

@@ -39,7 +39,7 @@ const repairManualRoute = readFileSync(new URL('../src/app/api/repair-manual/rou
 const repairProcedureRoute = readFileSync(new URL('../src/app/api/repair-procedures/route.ts', import.meta.url), 'utf8')
 const repairEstimateRoute = readFileSync(new URL('../src/app/api/repair-estimate/route.ts', import.meta.url), 'utf8')
 const repairPage = readFileSync(new URL('../src/app/(app)/repair/page.tsx', import.meta.url), 'utf8')
-const layout = readFileSync(new URL('../src/app/(app)/layout.tsx', import.meta.url), 'utf8')
+const shellNav = readFileSync(new URL('../src/components/shell/nav.ts', import.meta.url), 'utf8')
 const capabilities = readFileSync(new URL('../src/lib/ai/capabilities.ts', import.meta.url), 'utf8')
 const router = readFileSync(new URL('../src/lib/ai/router.ts', import.meta.url), 'utf8')
 const aiPage = readFileSync(new URL('../src/app/(app)/ai/page.tsx', import.meta.url), 'utf8')
@@ -247,7 +247,7 @@ test('repair workspace migration defines shop-scoped procedure cards and session
 })
 
 test('repair UI exposes workflow tabs, manual reader, source stack, saved drafts, and estimate handoff', () => {
-  assert.match(layout, /href: '\/repair'/)
+  assert.match(shellNav, /href: '\/repair'/)
   assert.match(repairPage, /LEMON/)
   assert.match(repairPage, /CHARM/)
   assert.match(repairPage, /NHTSA/)

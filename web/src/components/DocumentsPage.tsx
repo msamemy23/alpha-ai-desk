@@ -194,7 +194,7 @@ export default function DocumentsPage({ type }: { type: DocType }) {
         if (hit) { handledLink.current = true; openDoc(hit, people) }
       } else if (wantsNew) {
         handledLink.current = true
-        void openNew(shop, params.get('customer') || undefined, people)
+        void openNew(shop, params.get('customer') || undefined, people, params.get('job') || undefined)
       }
     }
     return rows
@@ -246,7 +246,7 @@ export default function DocumentsPage({ type }: { type: DocType }) {
     return data
   }
 
-  async function openNew(shop: Record<string, string> = settings, customerId?: string, people: Customer[] = customers) {
+  async function openNew(shop: Record<string, string> = settings, customerId?: string, people: Customer[] = customers, jobId?: string) {
     setActionError(null)
     try {
       const docNumber = await genDocNumber()
@@ -259,6 +259,24 @@ export default function DocumentsPage({ type }: { type: DocType }) {
       // Started from a customer (for example from the schedule): fill in who and what car.
       const who = customerId ? people.find(c => c.id === customerId) : undefined
       if (who) Object.assign(next, { customer_id: who.id, customer_name: who.name, customer_phone: who.phone, customer_email: who.email, vehicle_year: who.vehicle_year, vehicle_make: who.vehicle_make, vehicle_model: who.vehicle_model, vehicle_vin: who.vehicle_vin, vehicle_plate: who.vehicle_plate, vehicle_mileage: who.vehicle_mileage })
+      // Started from a job: link the paperwork to it and take the car from the job, which is the most exact record of it.
+      if (jobId) {
+        const shopId = await getShopId()
+        const { data: job } = shopId
+          ? await supabase.from('jobs').select('id,customer_id,customer_name,vehicle_year,vehicle_make,vehicle_model,vehicle_vin,vehicle_plate,vehicle_mileage').eq('id', jobId).eq('shop_id', shopId).maybeSingle()
+          : { data: null }
+        if (job) {
+          const owner = job.customer_id ? people.find(c => c.id === job.customer_id) : undefined
+          Object.assign(next, {
+            job_id: job.id,
+            ...(job.customer_id ? { customer_id: job.customer_id } : {}),
+            customer_name: job.customer_name || owner?.name || '',
+            customer_phone: owner?.phone ?? '', customer_email: owner?.email ?? '',
+            vehicle_year: job.vehicle_year ?? '', vehicle_make: job.vehicle_make ?? '', vehicle_model: job.vehicle_model ?? '',
+            vehicle_vin: job.vehicle_vin ?? '', vehicle_plate: job.vehicle_plate ?? '', vehicle_mileage: job.vehicle_mileage ?? '',
+          })
+        }
+      }
       setForm(next); setBaseline(JSON.stringify(next)); setEditing('new')
       setSignatureImg(null); setNotice(null)
     } catch (e) {

@@ -170,7 +170,7 @@ export function summarizeToday(input: TodayInput): TodaySummary {
       id: `job-${j.id}`, lamp: 'amber', weight: 25,
       title: `${j.customer_name || 'A job'} has not moved in days`,
       detail: `${[j.vehicle_year, j.vehicle_make, j.vehicle_model].filter(Boolean).join(' ') || 'Vehicle'} · ${String(j.status)}`,
-      href: '/jobs',
+      href: j.id ? `/jobs?job=${encodeURIComponent(String(j.id))}` : '/jobs',
     })
   })
 

@@ -1,365 +1,438 @@
 'use client'
-import { useEffect, useState, useCallback } from 'react'
-import { getShopId, supabase, formatCurrency } from '@/lib/supabase'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { getShopId, supabase } from '@/lib/supabase'
+import Sheet from '@/components/Sheet'
+import Icon from '@/components/Icon'
+import Segmented from '@/components/inbox/Segmented'
+import { FilterChips, SearchField } from '@/components/ListKit'
+import { JobRows, JobTag } from '@/components/jobs/JobCards'
+import JobDetail from '@/components/jobs/JobDetail'
+import JobForm from '@/components/jobs/JobForm'
+import {
+  OPEN_STAGES, STAGES, byUrgency, carLine, docTotals, firstName, isDone, localKey, nextRoNumber, stageOf, statusWord,
+} from '@/components/jobs/types'
+import type { Job, JobCustomer, JobDoc, StageKey } from '@/components/jobs/types'
 
-interface Job {
-  id: string; ro_number: string; customer_name: string; concern: string; status: string; tech: string
-  priority: string; vehicle_year: string; vehicle_color: string; vehicle_engine: string; vehicle_plate: string
-  vehicle_make: string; vehicle_model: string; vehicle_vin: string; vehicle_mileage: string
-  promise_date: string; created_at: string; internal_notes: string; customer_notes: string
-}
-interface Customer { id: string; name: string; phone: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_color: string; vehicle_engine: string; vehicle_plate: string }
+type View = 'board' | 'list'
+type Filter = 'open' | StageKey
+interface Notice { text: string; action?: { label: string; run: () => void } }
 
-const STATUSES = ['New','Waiting on Parts','Waiting on Customer','Approved','In Progress','Completed','Ready for Pickup','Paid','Closed']
-const STATUS_COLOR: Record<string,string> = {
-  'New':'tag-blue','In Progress':'tag-amber','Completed':'tag-green','Ready for Pickup':'tag-green',
-  'Waiting on Parts':'tag-amber','Waiting on Customer':'tag-amber','Paid':'tag-gray','Closed':'tag-gray','Approved':'tag-green'
-}
+const errText = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback)
 
-function toTitleCase(str: string) {
-  return str.replace(/\b\w/g, c => c.toUpperCase())
-}
-
-async function generateRoNumber(shopId: string): Promise<string> {
-  const year = new Date().getFullYear()
-  const { count } = await supabase.from('jobs').select('*', { count: 'exact', head: true }).eq('shop_id', shopId)
-  const seq = ((count || 0) + 1).toString().padStart(4, '0')
-  return `RO-${year}-${seq}`
-}
+/** The columns a person can edit. Everything else on the row (insurance fields and so on) is left as it was. */
+const EDITABLE = [
+  'customer_id', 'customer_name', 'concern', 'status', 'tech', 'priority',
+  'vehicle_year', 'vehicle_make', 'vehicle_model', 'vehicle_color', 'vehicle_engine', 'vehicle_plate', 'vehicle_vin', 'vehicle_mileage',
+  'promise_date', 'internal_notes', 'customer_notes',
+] as const
 
 export default function JobsPage() {
-  const [jobs, setJobs] = useState<Job[]>([])
-  const [customers, setCustomers] = useState<Customer[]>([])
-  const [loading, setLoading] = useState(true)
-  const [view, setView] = useState<'list'|'kanban'>('list')
-  const [editing, setEditing] = useState<string | null | 'new'>(null)
-  const [form, setForm] = useState<Partial<Job>>({})
+  // Anything that depends on today's date waits for the browser, so the server and browser never disagree.
+  const [todayKey, setTodayKey] = useState('')
+  const [desktop, setDesktop] = useState(false)
+  const [view, setView] = useState<View>('list')
+  const [filter, setFilter] = useState<Filter>('open')
   const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState('active')
-  const [technicians, setTechnicians] = useState<string[]>(['Unassigned'])
+
+  const [jobs, setJobs] = useState<Job[]>([])
+  const [docs, setDocs] = useState<JobDoc[]>([])
+  const [customers, setCustomers] = useState<JobCustomer[]>([])
+  const [techs, setTechs] = useState<string[]>(['Unassigned'])
+  const [shop, setShop] = useState({ name: '', phone: '' })
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [notice, setNotice] = useState<Notice | null>(null)
+  const [moveError, setMoveError] = useState('')
+
+  const [sheet, setSheet] = useState<null | 'form' | 'detail' | 'delete'>(null)
+  const [openId, setOpenId] = useState<string | null>(null)
+  const [textFirst, setTextFirst] = useState(false)
+  const [form, setForm] = useState<Partial<Job>>({})
   const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [detailError, setDetailError] = useState('')
+  const [textSent, setTextSent] = useState('')
+  const [detailNote, setDetailNote] = useState('')
+  const [dragging, setDragging] = useState<string | null>(null)
+  const [overStage, setOverStage] = useState<StageKey | null>(null)
+
+  // Once the owner picks Board or List, the screen size no longer chooses for them.
+  const viewTouched = useRef(false)
+  useEffect(() => {
+    setTodayKey(localKey())
+    const mq = window.matchMedia('(min-width: 1024px)')
+    const apply = () => { setDesktop(mq.matches); if (mq.matches) setView(v => (v === 'list' && !viewTouched.current ? 'board' : v)) }
+    apply()
+    mq.addEventListener('change', apply)
+    return () => mq.removeEventListener('change', apply)
+  }, [])
 
   const load = useCallback(async () => {
-    setLoading(true)
     try {
       const shopId = await getShopId()
-      if (!shopId) { setJobs([]); setCustomers([]); return }
-      const [{ data: j }, { data: c }] = await Promise.all([
-        supabase.from('jobs').select('*').eq('shop_id', shopId).order('created_at', { ascending: false }),
-        supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model,vehicle_color,vehicle_engine,vehicle_plate').eq('shop_id', shopId).order('name')
+      if (!shopId) { setJobs([]); setLoadError('We could not find your shop. Refresh, or sign out and back in.'); return }
+      const [j, d] = await Promise.all([
+        supabase.from('jobs').select('*').eq('shop_id', shopId).order('created_at', { ascending: false }).limit(2000),
+        supabase.from('documents').select('id,job_id,type,doc_number,status,parts,labors,shop_supplies,sublet,tax_rate,apply_tax,deposit,amount_paid').eq('shop_id', shopId).not('job_id', 'is', null).order('created_at', { ascending: false }).limit(1000),
       ])
-      setJobs((j || []) as Job[])
-      setCustomers((c || []) as Customer[])
+      if (j.error) throw j.error
+      setJobs((j.data || []) as Job[])
+      // Paperwork is a bonus on this screen: if it fails to load the jobs still show.
+      setDocs(((d.data || []) as Record<string, unknown>[]).map(r => ({
+        id: String(r.id), job_id: String(r.job_id), type: String(r.type || ''), doc_number: String(r.doc_number || ''), status: String(r.status || ''), ...docTotals(r),
+      })))
+      setLoadError('')
+    } catch (e) {
+      setLoadError(`Jobs did not load. ${errText(e, 'Check your connection and try again.')}`)
     } finally { setLoading(false) }
   }, [])
+
   useEffect(() => {
     load()
     fetch('/api/staff?role=technician').then(r => r.json()).then(d => {
-      if (d.ok && d.staff) setTechnicians(['Unassigned', ...d.staff.map((s: {name: string}) => s.name)])
-    }).catch(() => {})
-    const ch = supabase.channel('jobs_page').on('postgres_changes', { event: '*', schema: 'public', table: 'jobs' }, load).subscribe()
+      if (d?.ok && Array.isArray(d.staff)) setTechs(['Unassigned', ...d.staff.map((s: { name: string }) => s.name).filter(Boolean)])
+    }).catch(() => { /* typing a tech name still works */ })
+    getShopId().then(shopId => {
+      if (!shopId) return
+      supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model,vehicle_color,vehicle_engine,vehicle_plate').eq('shop_id', shopId).order('name').then(({ data }) => setCustomers((data || []) as JobCustomer[]))
+      supabase.from('settings').select('shop_name,shop_phone').eq('shop_id', shopId).maybeSingle().then(({ data }) => {
+        if (data) setShop({ name: String(data.shop_name || ''), phone: String(data.shop_phone || '') })
+      })
+    }).catch(() => { /* the form still works without the customer list */ })
+    const ch = supabase.channel('jobs_page').on('postgres_changes', { event: '*', schema: 'public', table: 'jobs' }, () => { void load() }).subscribe()
     return () => { supabase.removeChannel(ch) }
   }, [load])
 
+  /* ---------- opening things ---------- */
+  const openNew = useCallback((customerId?: string) => {
+    const base: Partial<Job> = { status: 'New', priority: 'Normal', tech: '', promise_date: null }
+    const c = customerId ? customers.find(x => x.id === customerId) : undefined
+    if (c) Object.assign(base, {
+      customer_id: c.id, customer_name: c.name, vehicle_year: c.vehicle_year || '', vehicle_make: c.vehicle_make || '', vehicle_model: c.vehicle_model || '',
+      vehicle_color: c.vehicle_color || '', vehicle_engine: c.vehicle_engine || '', vehicle_plate: c.vehicle_plate || '',
+    })
+    setForm(base); setFormError(''); setOpenId(null); setSheet('form')
+  }, [customers])
+
+  const openJob = useCallback((j: Job, texting = false) => { setOpenId(j.id); setTextFirst(texting); setDetailError(''); setTextSent(''); setDetailNote(''); setSheet('detail') }, [])
+  const closeSheet = () => { setSheet(null); setFormError(''); setDetailError('') }
+  const current = jobs.find(j => j.id === openId) || null
+  const currentDocs = docs.filter(d => d.job_id === openId)
+  const currentPhone = current?.customer_id ? customers.find(c => c.id === current.customer_id)?.phone || '' : ''
+
+  // Links from other screens: /jobs?new=1&customer=<id> and /jobs?job=<id>.
+  const [linkDone, setLinkDone] = useState(false)
+  useEffect(() => {
+    if (linkDone || !todayKey || loading) return
+    const p = new URLSearchParams(window.location.search)
+    if (p.get('new')) {
+      const wanted = p.get('customer') || undefined
+      if (wanted && customers.length === 0) return // wait for the customer list
+      setLinkDone(true); openNew(wanted)
+      window.history.replaceState(null, '', window.location.pathname)
+    } else if (p.get('job')) {
+      setLinkDone(true)
+      const hit = jobs.find(j => j.id === p.get('job'))
+      if (hit) openJob(hit); else setNotice({ text: 'That job was not found. It may have been deleted.' })
+      window.history.replaceState(null, '', window.location.pathname)
+    } else setLinkDone(true)
+  }, [linkDone, todayKey, loading, customers, jobs, openNew, openJob])
+
+  /* ---------- changing things ---------- */
   const save = async () => {
-    setSaving(true)
+    if (!form.customer_name?.trim()) { setFormError('Add the customer’s name.'); return }
+    setSaving(true); setFormError('')
     try {
       const shopId = await getShopId()
       if (!shopId) throw new Error('No shop is associated with the signed-in user')
-      const data = { ...form, shop_id: shopId, updated_at: new Date().toISOString() }
-      if (editing === 'new') {
-        const ro_number = await generateRoNumber(shopId)
-        const { error } = await supabase.from('jobs').insert({ ...data, ro_number, status: data.status || 'New', created_at: new Date().toISOString() })
-        if (error) throw error
-      } else if (editing) {
-        const { error } = await supabase.from('jobs').update(data).eq('id', editing).eq('shop_id', shopId)
-        if (error) throw error
+      const row: Record<string, unknown> = {}
+      for (const k of EDITABLE) row[k] = (form as Record<string, unknown>)[k] ?? (k === 'promise_date' || k === 'customer_id' ? null : '')
+      row.customer_id = row.customer_id || null
+      row.promise_date = row.promise_date || null
+      row.customer_name = String(row.customer_name).trim()
+      row.status = row.status || 'New'
+      const now = new Date().toISOString()
+      if (!openId) {
+        const r = await supabase.from('jobs').insert({ ...row, ro_number: nextRoNumber(jobs), shop_id: shopId, created_at: now, updated_at: now })
+        if (r.error) throw new Error(r.error.message)
+      } else {
+        const r = await supabase.from('jobs').update({ ...row, updated_at: now }).eq('id', openId).eq('shop_id', shopId)
+        if (r.error) throw new Error(r.error.message)
       }
-      setEditing(null); setForm({}); await load()
-    } catch (error) {
-      alert('Job could not be saved: ' + (error instanceof Error ? error.message : 'Unknown error'))
+      setSheet(null)
+      setNotice({ text: `${openId ? 'Saved' : 'Job created'}: ${row.customer_name}.` })
+      await load()
+    } catch (e) {
+      setFormError(`Not saved. ${errText(e, 'Check your connection and try again.')}`)
     } finally { setSaving(false) }
   }
 
+  /** Moves a job at once on screen, then saves. If saving fails the job goes back where it was and says so. */
+  const moveJob = useCallback(async (j: Job, status: string, fromSheet = false) => {
+    if (j.status === status) return
+    const before = j.status
+    setMoveError(''); setDetailError(''); setBusy(true)
+    setJobs(js => js.map(x => (x.id === j.id ? { ...x, status } : x)))
+    try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const r = await supabase.from('jobs').update({ status, updated_at: new Date().toISOString() }).eq('id', j.id).eq('shop_id', shopId)
+      if (r.error) throw new Error(r.error.message)
+      const phone = j.customer_id ? customers.find(c => c.id === j.customer_id)?.phone : ''
+      const ready = status === 'Ready for Pickup' || status === 'Completed'
+      const text = `${j.customer_name || 'Job'} is now ${statusWord(status).toLowerCase()}.`
+      // A notice behind an open sheet cannot be seen, so a change made in the sheet is announced inside it.
+      if (fromSheet) setDetailNote(text)
+      else setNotice({ text, action: ready && phone ? { label: `Text ${firstName(j.customer_name) || 'the customer'}`, run: () => openJob({ ...j, status }, true) } : undefined })
+    } catch (e) {
+      setJobs(js => js.map(x => (x.id === j.id ? { ...x, status: before } : x)))
+      const msg = `${j.customer_name || 'The job'} was not moved. ${errText(e, 'Check your connection and try again.')}`
+      setMoveError(msg); setDetailError(msg)
+    } finally { setBusy(false) }
+  }, [customers, openJob])
+
+  const sendText = async (body: string) => {
+    if (!current || !currentPhone) return
+    setBusy(true); setDetailError(''); setTextSent('')
+    try {
+      const res = await fetch('/api/send-message', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: currentPhone, body, channel: 'sms', jobId: current.id, ...(current.customer_id ? { customerId: current.customer_id } : {}) }),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok || d.error) throw new Error(d.error || 'The text did not send. Check your connection and try again.')
+      setTextSent(`Text sent to ${current.customer_name}.`)
+    } catch (e) { setDetailError(errText(e, 'The text did not send.')) }
+    finally { setBusy(false) }
+  }
+
   const del = async () => {
-    if (!editing || editing === 'new') return
-    if (!confirm('Delete this job?')) return
+    if (!openId) return
+    setBusy(true)
     try {
       const shopId = await getShopId()
       if (!shopId) throw new Error('No shop is associated with the signed-in user')
-      const { error } = await supabase.from('jobs').delete().eq('id', editing).eq('shop_id', shopId)
-      if (error) throw error
-      setEditing(null); setForm({}); await load()
-    } catch (error) {
-      alert('Job could not be deleted: ' + (error instanceof Error ? error.message : 'Unknown error'))
-    }
-  }
-
-  const markPaid = async (id: string) => {
-    try {
-      const shopId = await getShopId()
-      if (!shopId) throw new Error('No shop is associated with the signed-in user')
-      const { error } = await supabase.from('jobs').update({ status: 'Paid', updated_at: new Date().toISOString() }).eq('id', id).eq('shop_id', shopId)
-      if (error) throw error
+      const r = await supabase.from('jobs').delete().eq('id', openId).eq('shop_id', shopId)
+      if (r.error) throw new Error(r.error.message)
+      const name = current?.customer_name || 'The job'
+      setSheet(null); setOpenId(null)
+      setNotice({ text: `${name}’s job was deleted.` })
       await load()
-    } catch (error) {
-      alert('Job status could not be updated: ' + (error instanceof Error ? error.message : 'Unknown error'))
-    }
+    } catch (e) { setDetailError(`Not deleted. ${errText(e, 'Try again.')}`) }
+    finally { setBusy(false) }
   }
 
-  const openNew = () => { setForm({ status: 'New', priority: 'Normal' }); setEditing('new') }
-  const openEdit = (j: Job) => { setForm(j as unknown as Partial<Job>); setEditing(j.id) }
+  /* ---------- what to show ---------- */
+  const term = search.trim().toLowerCase()
+  const matching = useMemo(() => {
+    if (!term) return jobs
+    return jobs.filter(j => [j.customer_name, j.concern, j.ro_number, carLine(j), j.vehicle_vin, j.vehicle_plate, j.tech, j.status, statusWord(j.status)]
+      .some(v => String(v || '').toLowerCase().includes(term)))
+  }, [jobs, term])
 
-  const selectCustomer = (id: string) => {
-    const c = customers.find(c => c.id === id)
-    if (c) setForm(f => ({ ...f, customer_id: c.id, customer_name: c.name, vehicle_year: c.vehicle_year||'', vehicle_make: c.vehicle_make||'', vehicle_model: c.vehicle_model||'', vehicle_color: c.vehicle_color||'', vehicle_engine: c.vehicle_engine||'', vehicle_plate: c.vehicle_plate||'' }))
-    else setForm(f => ({ ...f, customer_id: id }))
-  }
+  const sorted = useMemo(() => [...matching].sort(byUrgency(todayKey || '0000-00-00')), [matching, todayKey])
+  const countFor = (k: StageKey) => matching.filter(j => stageOf(j.status).key === k).length
+  const openCount = matching.filter(j => !isDone(j.status)).length
+  const shown = sorted.filter(j => (filter === 'open' ? !isDone(j.status) : stageOf(j.status).key === filter))
+  const lateCount = jobs.filter(j => !isDone(j.status) && stageOf(j.status).key !== 'ready' && j.promise_date && j.promise_date.slice(0, 10) < todayKey).length
+  const allOpen = jobs.filter(j => !isDone(j.status)).length
 
-  const filtered = jobs.filter(j => {
-    if (statusFilter === 'active') return !['Paid','Closed'].includes(j.status)
-    if (statusFilter !== 'all') return j.status === statusFilter
-    return true
-  }).filter(j => !search || [j.customer_name, j.concern, j.status, j.vehicle_make, j.vehicle_model, j.ro_number].some(v => (v||'').toLowerCase().includes(search.toLowerCase())))
+  const ready = todayKey !== ''
+  const subtitle = !ready || loading ? 'Loading…' : loadError && jobs.length === 0 ? 'Could not load jobs'
+    : jobs.length === 0 ? 'No jobs yet'
+    : `${allOpen} open${lateCount > 0 ? `, ${lateCount} late` : ''}`
 
-  const fmt = (d: string) => d ? new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : ''
-
-  if (loading && jobs.length === 0) {
-    return (
-      <div className="p-4 sm:p-6 lg:p-8">
-        <div className="flex items-center justify-between mb-6">
-          <div className="h-8 w-24 bg-bg-card rounded animate-pulse" />
-          <div className="h-9 w-28 bg-bg-card rounded animate-pulse" />
-        </div>
-        <div className="card overflow-hidden">
-          {[1,2,3,4,5].map(i => (
-            <div key={i} className="flex gap-4 p-4 border-b border-border last:border-0 animate-pulse">
-              <div className="h-4 w-24 bg-bg-hover rounded" />
-              <div className="h-4 w-32 bg-bg-hover rounded" />
-              <div className="h-4 w-40 bg-bg-hover rounded" />
-              <div className="h-4 w-48 bg-bg-hover rounded flex-1" />
-              <div className="h-5 w-20 bg-bg-hover rounded-full" />
-            </div>
-          ))}
-        </div>
-      </div>
-    )
+  const columns = filter === 'open' ? OPEN_STAGES : STAGES.filter(s => s.key === filter)
+  const drop = (stageKey: StageKey) => {
+    const id = dragging
+    setDragging(null); setOverStage(null)
+    const j = jobs.find(x => x.id === id)
+    const stage = STAGES.find(s => s.key === stageKey)
+    if (!j || !stage || stageOf(j.status).key === stage.key) return
+    void moveJob(j, stage.dropTo)
   }
 
   return (
-    <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
-      {editing !== null ? (
-        <div>
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h1 className="text-2xl font-bold">{editing === 'new' ? 'New Job' : 'Edit Job'}</h1>
-              {editing !== 'new' && form.ro_number && <div className="text-sm text-text-muted font-mono mt-0.5">{form.ro_number}</div>}
-            </div>
-            <div className="flex gap-2">
-              <button className="btn btn-secondary btn-sm" onClick={() => { setEditing(null); setForm({}) }}>← Back</button>
-              <button className="btn btn-primary btn-sm" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save Job'}</button>
-              {editing !== 'new' && <button className="btn btn-danger btn-sm" onClick={del}>Delete</button>}
-            </div>
-          </div>
-          <div className="max-w-3xl space-y-6">
-            <div className="card space-y-4">
-              <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Customer & Vehicle</div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="form-label">Customer</label>
-                  <select className="form-select" value={(form as Record<string,string>).customer_id || ''} onChange={e => selectCustomer(e.target.value)}>
-                    <option value="">Select customer...</option>
-                    {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="form-label">Customer Name</label>
-                  <input className="form-input" value={form.customer_name||''} onChange={e => setForm(f=>({...f,customer_name:toTitleCase(e.target.value)}))} placeholder="Customer name" />
-                </div>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                {(['vehicle_year','vehicle_make','vehicle_model'] as const).map(k => (
-                  <div key={k}>
-                    <label className="form-label">{k.split('_').slice(1).join(' ').replace(/^\w/,c=>c.toUpperCase())}</label>
-                    <input className="form-input" value={(form as Record<string,string>)[k]||''} onChange={e => setForm(f=>({...f,[k]:e.target.value}))} />
-                  </div>
-                ))}
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="form-label">VIN</label>
-                  <input className="form-input font-mono text-sm" value={form.vehicle_vin||''} onChange={e=>setForm(f=>({...f,vehicle_vin:e.target.value.toUpperCase()}))} placeholder="17-digit VIN" />
-                </div>
-                <div>
-                  <label className="form-label">Mileage In</label>
-                  <input className="form-input" value={form.vehicle_mileage||''} onChange={e=>setForm(f=>({...f,vehicle_mileage:e.target.value}))} placeholder="e.g. 87,432" />
-                </div>
-              </div>
-            </div>
-            <div className="card space-y-4">
-              <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Job Details</div>
-              <div>
-                <label className="form-label">Customer Concern</label>
-                <textarea className="form-input" rows={3} value={form.concern||''} onChange={e=>setForm(f=>({...f,concern:e.target.value}))} placeholder="What does the customer say is wrong?" />
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                <div>
-                  <label className="form-label">Status</label>
-                  <select className="form-select" value={form.status||'New'} onChange={e=>setForm(f=>({...f,status:e.target.value}))}>
-                    {STATUSES.map(s=><option key={s}>{s}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="form-label">Tech</label>
-                  <select className="form-select" value={form.tech||''} onChange={e=>setForm(f=>({...f,tech:e.target.value}))}>
-                    {technicians.map(t=><option key={t} value={t==='Unassigned'?'':t}>{t}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="form-label">Priority</label>
-                  <select className="form-select" value={form.priority||'Normal'} onChange={e=>setForm(f=>({...f,priority:e.target.value}))}>
-                    {['Low','Normal','High','Rush'].map(p=><option key={p}>{p}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="form-label">Promise Date</label>
-                  <input className="form-input" type="date" value={form.promise_date||''} onChange={e=>setForm(f=>({...f,promise_date:e.target.value}))} />
-                </div>
-              </div>
-              <div>
-                <label className="form-label">Internal Notes</label>
-                <textarea className="form-input" rows={2} value={form.internal_notes||''} onChange={e=>setForm(f=>({...f,internal_notes:e.target.value}))} placeholder="Notes for technicians only" />
-              </div>
-              <div>
-                <label className="form-label">Customer Notes</label>
-                <textarea className="form-input" rows={2} value={form.customer_notes||''} onChange={e=>setForm(f=>({...f,customer_notes:e.target.value}))} placeholder="Notes printed on customer paperwork" />
-              </div>
-            </div>
-          </div>
+    <div className="page-container animate-fade-in">
+      <header className="page-header">
+        <div className="min-w-0">
+          <h1 className="page-title">Jobs</h1>
+          <p className="page-subtitle num" aria-live="polite">{subtitle}</p>
         </div>
+        <button type="button" className="btn btn-primary w-full sm:w-auto" onClick={() => openNew()} disabled={!ready}>
+          <Icon name="plus" className="h-5 w-5" />New job
+        </button>
+      </header>
+
+      {notice && (
+        <div role="status" className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-md border border-green/40 bg-bg-card px-4 py-2.5 text-[0.9375rem]">
+          <span className="flex min-w-0 items-center gap-2"><Icon name="check" className="h-5 w-5 shrink-0 text-green" /><span className="min-w-0 break-words">{notice.text}</span></span>
+          <span className="flex shrink-0 items-center gap-1">
+            {notice.action && <button type="button" className="btn btn-secondary btn-sm" onClick={() => { const a = notice.action; setNotice(null); a?.run() }}><Icon name="send" className="h-4 w-4" />{notice.action.label}</button>}
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setNotice(null)}>Dismiss</button>
+          </span>
+        </div>
+      )}
+
+      {moveError && sheet !== 'detail' && (
+        <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-md border border-red/50 bg-red/[0.08] px-4 py-3 text-[0.9375rem]">
+          <p className="text-red">{moveError}</p>
+          <button type="button" className="btn btn-ghost btn-sm shrink-0" onClick={() => setMoveError('')}>Dismiss</button>
+        </div>
+      )}
+
+      {loadError && (
+        <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-md border border-red/50 bg-red/[0.08] px-4 py-3 text-[0.9375rem]">
+          <p className="text-red">{loadError}{jobs.length > 0 ? ' What you see may be out of date.' : ''}</p>
+          <button type="button" className="btn btn-secondary btn-sm shrink-0" onClick={() => { setLoadError(''); setLoading(true); void load() }}>Try again</button>
+        </div>
+      )}
+
+      {!ready || (loading && jobs.length === 0 && !loadError) ? (
+        <div className="space-y-2" aria-busy="true" aria-label="Loading jobs">
+          <div className="skeleton h-12" />
+          {[0, 1, 2, 3].map(i => <div key={i} className="skeleton h-[4.25rem]" />)}
+        </div>
+      ) : jobs.length === 0 ? (
+        loadError ? null : (
+          <div className="empty-state">
+            <p className="font-bold text-text-primary">No jobs yet</p>
+            <p className="mx-auto mt-1 max-w-md">Write up a job when a car comes in. It moves across the board as the work gets done, and you can text the customer from it.</p>
+            <button type="button" className="btn btn-primary mt-4" onClick={() => openNew()}><Icon name="plus" className="h-5 w-5" />Create the first job</button>
+          </div>
+        )
       ) : (
-        <div>
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-6">
-            <h1 className="text-xl sm:text-2xl font-bold">Jobs</h1>
-            <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-              <input className="form-input w-full sm:w-56" placeholder="Search jobs, RO#..." value={search} onChange={e=>setSearch(e.target.value)} />
-              <select className="form-select" value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}>
-                <option value="active">Active Jobs</option>
-                <option value="all">All Jobs</option>
-                {STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
-              </select>
-              <div className="flex gap-1 bg-bg-card border border-border rounded-lg p-1">
-                <button onClick={()=>setView('list')} className={`btn btn-sm ${view==='list'?'btn-primary':'btn-secondary border-0'}`}>List</button>
-                <button onClick={()=>setView('kanban')} className={`btn btn-sm ${view==='kanban'?'btn-primary':'btn-secondary border-0'}`}>Board</button>
-              </div>
-              <button className="btn btn-primary whitespace-nowrap" onClick={openNew}>+ New Job</button>
-            </div>
+        <>
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <SearchField className="min-w-0 flex-1 sm:max-w-md" label="Search jobs" placeholder="Search name, car, RO number or concern" value={search} onChange={setSearch} />
+            <Segmented
+              className="w-full sm:ml-auto sm:w-64"
+              label="Jobs view"
+              value={view}
+              onChange={v => { viewTouched.current = true; setView(v) }}
+              options={[{ value: 'board', label: 'Board' }, { value: 'list', label: 'List' }]}
+            />
+          </div>
+          <div className="mb-4">
+            <FilterChips
+              scroll
+              label="Show jobs"
+              value={filter}
+              onChange={setFilter}
+              options={[
+                { key: 'open', label: 'All open', count: openCount },
+                ...OPEN_STAGES.map(s => ({ key: s.key, label: s.label, count: countFor(s.key) })),
+                { key: 'done', label: 'Paid and closed', count: countFor('done') },
+              ]}
+            />
           </div>
 
           {view === 'list' ? (
-            <>
-            {/* Phone: stacked cards — no sideways scrolling */}
-            <div className="space-y-2 sm:hidden">
-              {filtered.length === 0 && !loading ? (
-                <div className="card p-8 text-center text-text-muted">
-                  <div className="text-4xl mb-2">🔧</div>
-                  <div className="font-semibold mb-2">{jobs.length === 0 ? 'No jobs yet' : 'No jobs match your filter'}</div>
-                  {jobs.length === 0 && <button className="btn btn-primary mt-1" onClick={openNew}>+ Create First Job</button>}
-                </div>
-              ) : filtered.map(j => (
-                <button key={j.id} onClick={()=>openEdit(j)} className="card w-full p-3 text-left">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold truncate">{j.customer_name||'Unknown'}</span>
-                    <span className={`tag shrink-0 ${STATUS_COLOR[j.status]||'tag-gray'}`}>{j.status}</span>
-                  </div>
-                  <div className="mt-1 text-sm text-text-muted truncate">{[j.vehicle_year,j.vehicle_make,j.vehicle_model].filter(Boolean).join(' ')||'—'}</div>
-                  {j.concern && <div className="mt-1 text-sm text-text-muted truncate">{j.concern}</div>}
-                  <div className="mt-1 flex items-center justify-between text-xs text-text-muted">
-                    <span className="font-mono">{j.ro_number||'—'}</span>
-                    <span className={j.promise_date&&new Date(j.promise_date)<new Date()&&!['Paid','Closed','Completed'].includes(j.status)?'text-red font-semibold':''}>{fmt(j.promise_date)}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-            {/* Desktop: full table */}
-            <div className="card overflow-x-auto hidden sm:block">
-              <table className="data-table w-full min-w-[700px]">
-                <thead>
-                  <tr><th>RO #</th><th>Customer</th><th>Vehicle</th><th>Concern</th><th>Tech</th><th>Status</th><th>Due</th></tr>
-                </thead>
-                <tbody>
-                  {filtered.length === 0 && !loading ? (
-                    <tr>
-                      <td colSpan={7} className="text-center py-16 text-text-muted">
-                        <div className="text-5xl mb-3">🔧</div>
-                        <div className="text-lg font-semibold mb-2">{jobs.length === 0 ? 'No jobs yet' : 'No jobs match your filter'}</div>
-                        {jobs.length === 0 && <button className="btn btn-primary mt-1" onClick={openNew}>+ Create First Job</button>}
-                      </td>
-                    </tr>
-                  ) : filtered.map(j => (
-                    <tr key={j.id} onClick={()=>openEdit(j)} className="cursor-pointer">
-                      <td className="font-mono text-xs text-text-muted whitespace-nowrap">{j.ro_number||'—'}</td>
-                      <td className="font-medium">{j.customer_name||'Unknown'}</td>
-                      <td className="text-text-muted text-sm">{[j.vehicle_year,j.vehicle_make,j.vehicle_model].filter(Boolean).join(' ')||'—'}</td>
-                      <td className="text-text-muted max-w-xs truncate text-sm">{j.concern||'—'}</td>
-                      <td className="text-text-muted text-sm">{j.tech||'—'}</td>
-                      <td>
-                        <div className="flex items-center gap-2">
-                          <span className={`tag ${STATUS_COLOR[j.status]||'tag-gray'}`}>{j.status}</span>
-                          {j.status !== 'Paid' && j.status !== 'Closed' && (
-                            <button
-                              className="btn btn-sm"
-                              style={{background:'#16a34a',color:'white',fontSize:'11px',padding:'3px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}}
-                              onClick={async (e) => { e.stopPropagation(); await markPaid(j.id) }}
-                              title="Mark job as Paid"
-                            >💰 Paid</button>
-                          )}
-                        </div>
-                      </td>
-                      <td className={`text-sm ${j.promise_date&&new Date(j.promise_date)<new Date()&&!['Paid','Closed','Completed'].includes(j.status)?'text-red font-semibold':'text-text-muted'}`}>{fmt(j.promise_date)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            </>
+            shown.length === 0 ? (
+              <div className="empty-state">
+                <p className="font-bold text-text-primary">{term ? `No jobs match “${search.trim()}”` : 'Nothing in this list'}</p>
+                <p className="mx-auto mt-1 max-w-md">{term ? 'Check the spelling, or search by customer, car, RO number or concern.' : 'Jobs show here as soon as one moves into this step.'}</p>
+                {term && <button type="button" className="btn btn-secondary mt-4" onClick={() => setSearch('')}>Clear search</button>}
+              </div>
+            ) : <JobRows jobs={shown} todayKey={todayKey} onOpen={j => openJob(j)} />
           ) : (
-            <div className="flex gap-4 overflow-x-auto pb-4">
-              {['New','Approved','In Progress','Waiting on Parts','Ready for Pickup','Paid'].map(col => {
-                const colJobs = filtered.filter(j=>j.status===col)
+            <div className="-mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-4 sm:mx-0 sm:px-0" role="region" aria-label="Job board" tabIndex={0}>
+              {columns.map(s => {
+                const items = sorted.filter(j => stageOf(j.status).key === s.key)
                 return (
-                  <div key={col} className="min-w-[240px] flex-shrink-0">
-                    <div className="flex items-center justify-between mb-3">
-                      <span className="text-sm font-semibold">{col}</span>
-                      <span className="text-xs text-text-muted bg-bg-card border border-border px-2 py-0.5 rounded-full">{colJobs.length}</span>
-                    </div>
-                    {colJobs.length===0 ? (
-                      <div className="card p-4 border-dashed text-center text-xs text-text-muted">No jobs</div>
+                  <section
+                    key={s.key}
+                    aria-label={`${s.label}, ${items.length}`}
+                    className={`min-w-[17.5rem] shrink-0 snap-start rounded-lg border p-2.5 transition-colors sm:min-w-[15rem] sm:flex-1 ${overStage === s.key ? 'border-blue bg-blue/[0.06]' : 'border-border bg-bg-chrome/50'}`}
+                    style={columns.length === 1 ? { maxWidth: '28rem' } : undefined}
+                    onDragOver={e => { if (dragging) { e.preventDefault(); setOverStage(s.key) } }}
+                    onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setOverStage(o => (o === s.key ? null : o)) }}
+                    onDrop={e => { e.preventDefault(); drop(s.key) }}
+                  >
+                    <h2 className="mb-2.5 flex items-center gap-2 px-1 text-[0.9375rem] font-bold">
+                      <span className={`lamp lamp-${s.lamp}`} aria-hidden="true" />
+                      <span className="min-w-0 flex-1 truncate">{s.label}</span>
+                      <span className="num text-text-secondary">{items.length}</span>
+                    </h2>
+                    {items.length === 0 ? (
+                      <p className="rounded-md border border-dashed border-border px-3 py-6 text-center text-[0.875rem] text-text-secondary">{overStage === s.key ? 'Drop here' : s.empty}</p>
                     ) : (
-                      <div className="space-y-2">
-                        {colJobs.map(j=>(
-                          <div key={j.id} onClick={()=>openEdit(j)} className="card p-3 cursor-pointer hover:border-blue/50 transition-colors">
-                            <div className="flex items-start justify-between mb-1">
-                              <div className="font-medium text-sm">{j.customer_name||'Unknown'}</div>
-                              {j.ro_number&&<span className="text-[10px] font-mono text-text-muted">{j.ro_number}</span>}
-                            </div>
-                            <div className="text-xs text-text-muted">{[j.vehicle_year,j.vehicle_make,j.vehicle_model].filter(Boolean).join(' ')}</div>
-                            <div className="text-xs text-text-secondary mt-1 line-clamp-2">{j.concern}</div>
-                            <div className="flex items-center justify-between mt-2">
-                              <span className="text-xs text-text-muted">{j.tech||'Unassigned'}</span>
-                              {j.promise_date&&<span className={`text-xs ${new Date(j.promise_date)<new Date()?'text-red':'text-amber'}`}>{fmt(j.promise_date)}</span>}
-                            </div>
-                          </div>
+                      <div className="space-y-2.5">
+                        {items.map(j => (
+                          <JobTag
+                            key={j.id}
+                            job={j}
+                            docs={docs.filter(d => d.job_id === j.id)}
+                            todayKey={todayKey}
+                            draggable={desktop}
+                            onOpen={x => openJob(x)}
+                            onStep={(x, to) => void moveJob(x, to)}
+                            onDragStart={x => setDragging(x.id)}
+                            onDragEnd={() => { setDragging(null); setOverStage(null) }}
+                          />
                         ))}
                       </div>
                     )}
-                  </div>
+                  </section>
                 )
               })}
             </div>
           )}
-        </div>
+          {view === 'board' && desktop && <p className="mt-1 text-[0.875rem] text-text-secondary">Drag a job to another column to change its status.</p>}
+        </>
       )}
+
+      <Sheet open={sheet === 'form'} onClose={closeSheet} title={openId ? 'Edit job' : 'New job'} wide>
+        <JobForm
+          key={`${openId || 'new'}-${sheet === 'form' ? 'open' : 'closed'}`}
+          form={form}
+          setForm={setForm}
+          isNew={!openId}
+          customers={customers}
+          techs={techs}
+          saving={saving}
+          error={formError}
+          onSave={save}
+          onCancel={closeSheet}
+        />
+      </Sheet>
+
+      <Sheet open={sheet === 'detail' && !!current} onClose={closeSheet} title={current?.customer_name || 'Job'}>
+        {current && (
+          <JobDetail
+            key={`${current.id}-${textFirst ? 'text' : 'view'}`}
+            job={current}
+            docs={currentDocs}
+            phone={currentPhone}
+            shopName={shop.name}
+            shopPhone={shop.phone}
+            todayKey={todayKey}
+            busy={busy}
+            error={detailError}
+            textSent={textSent}
+            note={detailNote}
+            startTexting={textFirst}
+            onStatus={s => void moveJob(current, s, true)}
+            onEdit={() => { setForm({ ...current, promise_date: current.promise_date ? current.promise_date.slice(0, 10) : null }); setFormError(''); setSheet('form') }}
+            onCall={() => window.dispatchEvent(new CustomEvent('phone:call', { detail: { number: currentPhone, name: current.customer_name } }))}
+            onSendText={sendText}
+            onDelete={() => { setDetailError(''); setSheet('delete') }}
+          />
+        )}
+      </Sheet>
+
+      <Sheet open={sheet === 'delete' && !!current} onClose={() => setSheet('detail')} title="Delete this job?">
+        <p className="text-[0.9375rem]">
+          This removes {current?.customer_name ? `${current.customer_name}’s` : 'the'} job{current?.ro_number ? ` (${current.ro_number})` : ''} from the board for good.
+          Estimates and invoices written for it stay, and they are not changed.
+        </p>
+        {detailError && <p role="alert" className="form-error">{detailError}</p>}
+        <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button type="button" className="btn btn-secondary" onClick={() => setSheet('detail')} disabled={busy}>Keep job</button>
+          <button type="button" className="btn btn-danger" onClick={del} disabled={busy}>{busy ? 'Deleting…' : 'Delete job'}</button>
+        </div>
+      </Sheet>
     </div>
   )
 }

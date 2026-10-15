@@ -313,7 +313,7 @@ export default function DashboardPage() {
                   const car = [j.vehicle_year, j.vehicle_make, j.vehicle_model].filter(Boolean).join(' ')
                   return (
                     <li key={String(j.id)} className="w-[17rem] shrink-0 snap-start sm:w-auto">
-                      <Link href="/jobs" className={`rotag lamp-${lamp}`}>
+                      <Link href={`/jobs?job=${encodeURIComponent(String(j.id))}`} className={`rotag lamp-${lamp}`}>
                         <span className="flex items-center gap-2 text-[0.875rem] font-bold text-text-secondary">
                           <span className={`lamp lamp-${lamp}`} aria-hidden="true" />
                           {String(j.status)}
