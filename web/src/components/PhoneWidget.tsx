@@ -1,12 +1,15 @@
 'use client'
 
 /**
- * PhoneWidget — Browser WebRTC Softphone (v4.1)
+ * PhoneWidget — Browser WebRTC Softphone (v4.2)
  *
- * Fixes vs v4.0:
+ * Call logic is unchanged from v4.1:
  * - Widget appears IMMEDIATELY on call trigger (no waiting for token)
  * - Phone numbers normalized to E.164 (+1XXXXXXXXXX) so calls actually ring
  * - Error state shown if token fetch fails instead of silent dismiss
+ *
+ * v4.2 is a restyle only: design tokens, status lamps with words, big
+ * Mute / Hang up buttons, and a position that clears the phone tab bar.
  */
 
 import React, {
@@ -21,6 +24,7 @@ import {
   useNotification,
   useCallbacks,
 } from '@telnyx/react-client'
+import Icon from '@/components/Icon'
 
 type CallStatus = 'connecting' | 'calling' | 'active' | 'ended' | 'error'
 
@@ -29,20 +33,21 @@ interface PhoneCallDetail {
   name?: string
 }
 
-const STATUS_COLOR: Record<CallStatus, string> = {
-  connecting: '#f59e0b',
-  calling:    '#8b5cf6',
-  active:     '#10b981',
-  ended:      '#6b7280',
-  error:      '#ef4444',
+// Lamp colour for each call state: calling amber, active green, ended grey, error red.
+const STATUS_LAMP: Record<CallStatus, string> = {
+  connecting: 'lamp-amber',
+  calling:    'lamp-amber',
+  active:     'lamp-green',
+  ended:      'lamp-off',
+  error:      'lamp-red',
 }
 
 const STATUS_LABEL: Record<CallStatus, string> = {
-  connecting: 'Connecting...',
-  calling:    'Calling...',
+  connecting: 'Connecting',
+  calling:    'Calling',
   active:     'Active',
-  ended:      'Call Ended',
-  error:      'Connection Error',
+  ended:      'Call ended',
+  error:      'Call failed',
 }
 
 /** Normalize any US number to E.164: +12819008141 */
@@ -52,6 +57,12 @@ function toE164(raw: string): string {
   if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`
   if (digits.length === 10) return `+1${digits}`
   return raw  // leave as-is if we can't normalize
+}
+
+/** Display only: +17135550142 becomes (713) 555-0142. Anything else is shown as given. */
+function prettyNumber(raw: string): string {
+  const m = raw.match(/^\+1(\d{3})(\d{3})(\d{4})$/)
+  return m ? `(${m[1]}) ${m[2]}-${m[3]}` : raw
 }
 
 function RemoteAudio() {
@@ -139,67 +150,90 @@ function PhoneWidgetInner({ number, name, callerNumber, callerName, onClose }: {
     setTimeout(onClose, 1200)
   }
 
-  const dotColor = STATUS_COLOR[status]
-  const label    = status === 'active' ? `Active  ${fmt(elapsed)}` : STATUS_LABEL[status]
-
   return (
-    <WidgetShell dotColor={dotColor} label={label} number={number} name={name}>
-      {status !== 'ended' && status !== 'error' && (
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={handleMute}
-            disabled={status === 'connecting' || status === 'calling'}
-            style={{ flex: 1, padding: '9px 0', borderRadius: 8, border: 'none',
-              background: isMuted ? '#2563eb' : '#374151', color: '#fff',
-              cursor: (status === 'connecting' || status === 'calling') ? 'not-allowed' : 'pointer',
-              fontSize: 13, fontWeight: 600,
-              opacity: (status === 'connecting' || status === 'calling') ? 0.5 : 1 }}>
-            {isMuted ? '🔇 Unmute' : '🎤 Mute'}
-          </button>
-          <button onClick={handleHangup}
-            style={{ flex: 1, padding: '9px 0', borderRadius: 8, border: 'none',
-              background: '#dc2626', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-            ✕ End Call
-          </button>
-        </div>
-      )}
-      {status === 'error' && (
-        <div>
-          <p style={{ fontSize: 13, color: '#f87171', marginBottom: 10 }}>
-            Could not connect. Check microphone permissions.
-          </p>
-          <button onClick={onClose}
-            style={{ width: '100%', padding: '9px 0', borderRadius: 8, border: 'none',
-              background: '#374151', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-            Dismiss
-          </button>
-        </div>
-      )}
-    </WidgetShell>
+    <CallPanel
+      status={status}
+      timer={status === 'active' ? fmt(elapsed) : undefined}
+      muted={isMuted && status === 'active'}
+      number={number}
+      name={name}
+      onMute={handleMute}
+      onHangup={handleHangup}
+      onDismiss={onClose}
+    />
   )
 }
 
-/** Shared popup shell — used for both loading and active states */
-function WidgetShell({
-  dotColor, label, number, name, children,
+/**
+ * The floating call panel. Pure presentation: it only knows the call state it
+ * is given and which handlers to run, so every state can be previewed on its own.
+ */
+export function CallPanel({
+  status, timer, muted = false, number, name, detail, onMute, onHangup, onDismiss,
 }: {
-  dotColor: string; label: string; number: string; name?: string; children?: React.ReactNode
+  status: CallStatus
+  timer?: string
+  muted?: boolean
+  number: string
+  name?: string
+  detail?: string
+  onMute?: () => void
+  onHangup?: () => void
+  onDismiss?: () => void
 }) {
+  const setup = status === 'connecting' || status === 'calling'
   return (
-    <div style={{
-      position: 'fixed', bottom: 24, left: 24, zIndex: 9999,
-      background: '#111827', border: '1px solid #374151', borderRadius: 14,
-      padding: '18px 22px', minWidth: 250, boxShadow: '0 10px 40px rgba(0,0,0,0.5)',
-      fontFamily: 'system-ui, sans-serif', color: '#f9fafb', userSelect: 'none',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-        <span style={{ width: 10, height: 10, borderRadius: '50%', background: dotColor, boxShadow: `0 0 6px ${dotColor}` }} />
-        <span style={{ fontSize: 13, color: dotColor, fontWeight: 600 }}>{label}</span>
+    <div
+      role="region"
+      aria-label="Phone call"
+      aria-live="polite"
+      className="no-print fixed inset-x-3 bottom-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+0.75rem)] z-[70] rounded-xl border border-line bg-bg-card p-4 text-text-primary shadow-[var(--shadow-pop)] sm:left-auto sm:right-4 sm:w-[22rem] lg:bottom-6 lg:right-6"
+    >
+      <div className="flex items-center gap-2.5">
+        <span className={`lamp ${STATUS_LAMP[status]}`} aria-hidden="true" />
+        <span className="font-bold">{STATUS_LABEL[status]}{setup ? '…' : ''}</span>
+        {muted && <span className="tag tag-amber">Muted</span>}
+        {timer && <span className="num ml-auto text-[1.125rem] font-bold">{timer}</span>}
       </div>
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 20, fontWeight: 700 }}>{name || number}</div>
-        {name && <div style={{ fontSize: 13, color: '#9ca3af', marginTop: 4 }}>{number}</div>}
+
+      <div className="mt-2.5 min-w-0">
+        <div className="display truncate text-[1.375rem] font-bold leading-tight">{name || prettyNumber(number)}</div>
+        {name && <div className="num text-[0.9375rem] text-text-secondary">{prettyNumber(number)}</div>}
       </div>
-      {children}
+
+      {status === 'connecting' && !onHangup && (
+        <p className="mt-3 text-[0.9375rem] text-text-secondary">{detail || 'Setting up the connection…'}</p>
+      )}
+
+      {status === 'error' && (
+        <div className="mt-3">
+          <p role="alert" className="text-[0.9375rem] text-red">{detail || 'Could not connect. Check that this browser can use your microphone, then try again.'}</p>
+          <button type="button" className="btn btn-secondary btn-lg mt-3 w-full" onClick={onDismiss}>Dismiss</button>
+        </div>
+      )}
+
+      {status !== 'ended' && status !== 'error' && onHangup && (
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            className={`btn btn-lg ${muted ? 'border-blue bg-blue/10 text-blue' : 'btn-secondary'}`}
+            onClick={onMute}
+            disabled={setup}
+            aria-pressed={muted}
+          >
+            <Icon name="mic" className="h-5 w-5" />
+            {muted ? 'Unmute' : 'Mute'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-lg bg-red text-[rgb(var(--c-card))] hover:brightness-110"
+            onClick={onHangup}
+          >
+            <Icon name="phone" className="h-5 w-5" />
+            Hang up
+          </button>
+        </div>
+      )}
     </div>
   )
 }
@@ -260,27 +294,20 @@ export default function PhoneWidget() {
   // Token failed — show error with dismiss
   if (tokenError) {
     return (
-      <WidgetShell dotColor={STATUS_COLOR.error} label={STATUS_LABEL.error}
-        number={callDetails.number} name={callDetails.name}>
-        <p style={{ fontSize: 13, color: '#f87171', marginBottom: 10 }}>
-          Could not fetch WebRTC token. Check your connection.
-        </p>
-        <button onClick={handleClose}
-          style={{ width: '100%', padding: '9px 0', borderRadius: 8, border: 'none',
-            background: '#374151', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-          Dismiss
-        </button>
-      </WidgetShell>
+      <CallPanel
+        status="error"
+        number={callDetails.number}
+        name={callDetails.name}
+        detail="Could not set up the call. Check your connection and try again."
+        onDismiss={handleClose}
+      />
     )
   }
 
   // Token loading — show "Connecting..." shell immediately
   if (!token) {
     return (
-      <WidgetShell dotColor={STATUS_COLOR.connecting} label={STATUS_LABEL.connecting}
-        number={callDetails.number} name={callDetails.name}>
-        <div style={{ fontSize: 12, color: '#6b7280' }}>Setting up connection…</div>
-      </WidgetShell>
+      <CallPanel status="connecting" number={callDetails.number} name={callDetails.name} />
     )
   }
 

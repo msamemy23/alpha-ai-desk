@@ -1,7 +1,12 @@
 'use client'
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import Link from 'next/link'
 import { getShopId, supabase } from '@/lib/supabase'
 import { addOpenAIOAuthHeaders } from '@/lib/openai-oauth-client'
+import Icon from '@/components/Icon'
+import Sheet from '@/components/Sheet'
+import { EmptyBlock, ErrorCard, FilterChips, RowsSkeleton, SearchField } from '@/components/ListKit'
+
 async function getAuthJsonHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   try {
@@ -12,44 +17,72 @@ async function getAuthJsonHeaders(): Promise<Record<string, string>> {
 }
 
 const STATUSES = ['New', 'Estimate Sent', 'Approved', 'In Repair', 'Supplement', 'Waiting on Customer', 'Ready for Pickup', 'Paid', 'Closed']
-const STATUS_COLORS: Record<string, string> = {
-  'New': 'bg-blue-500/20 text-blue-400 border-blue-500/20',
-  'Estimate Sent': 'bg-cyan-500/20 text-cyan-400 border-cyan-500/20',
-  'Approved': 'bg-emerald-500/20 text-emerald-400 border-emerald-500/20',
-  'In Repair': 'bg-purple-500/20 text-purple-400 border-purple-500/20',
-  'Supplement': 'bg-orange-500/20 text-orange-400 border-orange-500/20',
-  'Waiting on Customer': 'bg-amber-500/20 text-amber-400 border-amber-500/20',
-  'Ready for Pickup': 'bg-green-500/20 text-green-400 border-green-500/20',
-  'Paid': 'bg-gray-500/20 text-gray-400 border-gray-500/20',
-  'Closed': 'bg-gray-600/20 text-gray-500 border-gray-600/20',
+type Lamp = 'blue' | 'amber' | 'green' | 'off'
+// Blue = in progress, amber = waiting on someone, green = done, grey = closed out.
+const STATUS_LAMP: Record<string, Lamp> = {
+  'New': 'blue',
+  'Estimate Sent': 'blue',
+  'Approved': 'blue',
+  'In Repair': 'blue',
+  'Supplement': 'amber',
+  'Waiting on Customer': 'amber',
+  'Ready for Pickup': 'green',
+  'Paid': 'green',
+  'Closed': 'off',
 }
-const FILTERS = [
-  { key: 'all', label: 'All' },
-  { key: 'open', label: 'Open' },
-  { key: 'supplement', label: 'Supplement' },
-  { key: 'deductible', label: 'Deductible Due' },
-  { key: 'paid', label: 'Paid/Closed' },
-]
-const fmt = (n: unknown) => n ? '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2 }) : 'N/A'
-const fmtDate = (d: string) => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
+const lampOf = (status: string | undefined) => STATUS_LAMP[status || 'New'] || 'off'
+const statusLabel = (s: string) => ({ 'Estimate Sent': 'Estimate sent', 'In Repair': 'In repair', 'Waiting on Customer': 'Waiting on customer', 'Ready for Pickup': 'Ready for pickup' } as Record<string, string>)[s] || s
+
+type FilterKey = 'all' | 'open' | 'supplement' | 'deductible' | 'paid'
+
+// Dollar text used inside the Alpha prompt. Kept as before: "N/A" tells the AI the value is missing.
+const fmtForAi = (n: unknown) => n ? '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2 }) : 'N/A'
+const money = (n: unknown) => '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const fmtDate = (d: string) => d ? new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''
 
 interface ClaimMsg { role: 'user' | 'assistant'; content: string }
 interface NoteEntry { id: string; date: string; type: string; text: string }
- 
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Job = Record<string, any>
+
+const carOf = (j: Job) => [j.vehicle_year, j.vehicle_make, j.vehicle_model].filter(Boolean).join(' ')
+
+const notEntered = <span className="text-text-muted">Not entered</span>
+
+function Lampword({ status }: { status: string | undefined }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap font-bold">
+      <span className={`lamp lamp-${lampOf(status)}`} aria-hidden="true" />
+      {statusLabel(status || 'New')}
+    </span>
+  )
+}
+
+function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="panel">
+      <div className="panel-header"><h2 className="section-title">{title}</h2></div>
+      <div className="panel-body">{children}</div>
+    </section>
+  )
+}
 
 export default function InsurancePage() {
   const [jobs, setJobs] = useState<Job[]>([])
-  const [filter, setFilter] = useState('all')
+  const [loaded, setLoaded] = useState(false)
+  const [filter, setFilter] = useState<FilterKey>('all')
   const [search, setSearch] = useState('')
   const [editing, setEditing] = useState<Job | null>(null)
-  const [saving, setSaving] = useState(false)
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle')
+  const [saveError, setSaveError] = useState('')
   const [loadError, setLoadError] = useState('')
   // AI Claim Assistant
   const [claimJob, setClaimJob] = useState<Job | null>(null)
   const [claimChat, setClaimChat] = useState<ClaimMsg[]>([])
   const [claimInput, setClaimInput] = useState('')
   const [claimLoading, setClaimLoading] = useState(false)
+  const chatLog = useRef<HTMLDivElement>(null)
   // Communication log
   const [noteText, setNoteText] = useState('')
   const [noteType, setNoteType] = useState('Call')
@@ -57,14 +90,14 @@ export default function InsurancePage() {
   const load = useCallback(async () => {
     try {
       const shopId = await getShopId()
-      if (!shopId) { setJobs([]); setLoadError('No shop is associated with the signed-in user'); return }
+      if (!shopId) { setJobs([]); setLoadError('We could not find your shop. Try refreshing, or sign out and back in.'); return }
       const { data, error } = await supabase.from('jobs').select('*').eq('shop_id', shopId).eq('is_insurance', true).order('created_at', { ascending: false })
       if (error) throw error
       setJobs((data || []) as Job[])
       setLoadError('')
-    } catch (error) {
-      setLoadError('Insurance claims could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error'))
-    }
+    } catch {
+      setLoadError('Your insurance claims could not be loaded. Check your connection and try again.')
+    } finally { setLoaded(true) }
   }, [])
 
   useEffect(() => {
@@ -73,48 +106,72 @@ export default function InsurancePage() {
     return () => { supabase.removeChannel(ch) }
   }, [load])
 
-  const filtered = jobs.filter(j => {
-    if (search) {
-      const s = search.toLowerCase()
-      const match = [j.customer_name, j.insurance_company, j.claim_number, j.vehicle_make, j.vehicle_model].some(v => (v || '').toLowerCase().includes(s))
-      if (!match) return false
-    }
-    if (filter === 'open') return !['Paid', 'Closed'].includes(j.status)
-    if (filter === 'supplement') return j.supplement_status && j.supplement_status !== 'None'
-    if (filter === 'deductible') return j.deductible && Number(j.deductible) > 0 && !j.deductible_collected
-    if (filter === 'paid') return ['Paid', 'Closed'].includes(j.status)
-    return true
-  })
+  useEffect(() => { const el = chatLog.current; if (el) el.scrollTop = el.scrollHeight }, [claimChat, claimLoading])
+  // Opening or leaving a claim starts at the top of the page, not wherever the list was scrolled.
+  useEffect(() => { document.getElementById('main')?.scrollTo(0, 0) }, [editing?.id])
 
-  // KPI calculations
-  const openJobs = jobs.filter(j => !['Paid', 'Closed'].includes(j.status))
+  const isOpen = (j: Job) => !['Paid', 'Closed'].includes(j.status)
+  const hasSupplement = (j: Job) => !!j.supplement_status && j.supplement_status !== 'None'
+  const owesDeductible = (j: Job) => !!j.deductible && Number(j.deductible) > 0 && !j.deductible_collected
+
+  const q = search.trim().toLowerCase()
+  const matchesSearch = useCallback((j: Job) => {
+    if (!q) return true
+    return [j.customer_name, j.insurance_company, j.claim_number, j.vehicle_make, j.vehicle_model].some(v => (v || '').toLowerCase().includes(q))
+  }, [q])
+
+  // Open claims first, newest first within each group (the query already sorts by date).
+  const filtered = useMemo(() => jobs.filter(j => {
+    if (!matchesSearch(j)) return false
+    if (filter === 'open') return isOpen(j)
+    if (filter === 'supplement') return hasSupplement(j)
+    if (filter === 'deductible') return owesDeductible(j)
+    if (filter === 'paid') return !isOpen(j)
+    return true
+  }).sort((a, b) => (isOpen(b) ? 1 : 0) - (isOpen(a) ? 1 : 0)), [jobs, filter, matchesSearch])
+
+  const counts = useMemo(() => ({
+    all: jobs.length,
+    open: jobs.filter(isOpen).length,
+    supplement: jobs.filter(hasSupplement).length,
+    deductible: jobs.filter(owesDeductible).length,
+    paid: jobs.filter(j => !isOpen(j)).length,
+  }), [jobs])
+
+  // Summary numbers
+  const openJobs = jobs.filter(isOpen)
   const totalApproved = openJobs.reduce((s, j) => s + (Number(j.approved_amount) || 0), 0)
   const totalDeductibleDue = openJobs.filter(j => !j.deductible_collected).reduce((s, j) => s + (Number(j.deductible) || 0), 0)
   const supplementPending = openJobs.filter(j => j.supplement_status && j.supplement_status !== 'None' && j.supplement_status !== 'Approved').length
 
-  const saveJob = async (updates: Partial<Job>) => {
-    if (!editing) return
-    setSaving(true)
+  const saveJob = async (updates: Partial<Job>): Promise<boolean> => {
+    if (!editing) return false
+    setSaveState('saving')
+    setSaveError('')
     try {
       const shopId = await getShopId()
-      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      if (!shopId) throw new Error('We could not find your shop. Try refreshing, or sign out and back in.')
       const { error } = await supabase.from('jobs').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', editing.id).eq('shop_id', shopId)
       if (error) throw error
       await load()
       const { data, error: reloadError } = await supabase.from('jobs').select('*').eq('id', editing.id).eq('shop_id', shopId).single()
       if (reloadError) throw reloadError
       if (data) setEditing(data as Job)
+      setSaveState('saved')
+      return true
     } catch (error) {
-      alert('Claim could not be saved: ' + (error instanceof Error ? error.message : 'Unknown error'))
-    } finally { setSaving(false) }
+      setSaveState('idle')
+      setSaveError('This change was not saved. ' + (error instanceof Error ? error.message : 'Check your connection and try again.'))
+      return false
+    }
   }
 
   const addNote = async () => {
     if (!noteText.trim() || !editing) return
     const notes: NoteEntry[] = editing.communication_log || []
     const newNote: NoteEntry = { id: crypto.randomUUID(), date: new Date().toISOString(), type: noteType, text: noteText.trim() }
-    await saveJob({ communication_log: [newNote, ...notes] })
-    setNoteText('')
+    const ok = await saveJob({ communication_log: [newNote, ...notes] })
+    if (ok) setNoteText('')
   }
 
   const deleteNote = async (noteId: string) => {
@@ -125,9 +182,10 @@ export default function InsurancePage() {
 
   const openClaimAssistant = (job: Job) => {
     setClaimJob(job)
-    setClaimChat([{ role: 'assistant', content: `I'm ready to help with the insurance claim for **${job.customer_name || 'this customer'}**'s ${[job.vehicle_year, job.vehicle_make, job.vehicle_model].filter(Boolean).join(' ') || 'vehicle'}.\n\nClaim #: ${job.claim_number || 'Not set'}\nInsurance: ${job.insurance_company || 'Not set'}\nApproved: ${fmt(job.approved_amount)}\n\nHow can I help? I can:\n- Draft supplement requests\n- Write adjuster emails\n- Explain coverage questions\n- Prepare documentation` }])
+    setClaimChat([{ role: 'assistant', content: `I'm ready to help with the insurance claim for ${job.customer_name || 'this customer'}'s ${carOf(job) || 'vehicle'}.\n\nClaim number: ${job.claim_number || 'Not set'}\nInsurance: ${job.insurance_company || 'Not set'}\nApproved: ${fmtForAi(job.approved_amount)}\n\nHow can I help? I can:\n- Draft supplement requests\n- Write adjuster emails\n- Explain coverage questions\n- Prepare documentation` }])
     setClaimInput('')
   }
+  const closeClaimAssistant = useCallback(() => setClaimJob(null), [])
 
   const sendClaimMsg = async () => {
     if (!claimInput.trim() || !claimJob) return
@@ -138,13 +196,13 @@ export default function InsurancePage() {
     setClaimLoading(true)
     try {
       const jobContext = 'Insurance job context: Customer: ' + claimJob.customer_name +
-        ', Vehicle: ' + [claimJob.vehicle_year, claimJob.vehicle_make, claimJob.vehicle_model].filter(Boolean).join(' ') +
+        ', Vehicle: ' + carOf(claimJob) +
         ', Insurance: ' + (claimJob.insurance_company || 'unknown') +
         ', Claim #: ' + (claimJob.claim_number || 'N/A') +
-        ', Adjuster: ' + (claimJob.adjuster_name || 'N/A') +
+        ', Adjuster: ' + (claimJob.adjuster || claimJob.adjuster_name || 'N/A') +
         ', Adjuster Phone: ' + (claimJob.adjuster_phone || 'N/A') +
-        ', Approved: ' + fmt(claimJob.approved_amount) +
-        ', Deductible: ' + fmt(claimJob.deductible) +
+        ', Approved: ' + fmtForAi(claimJob.approved_amount) +
+        ', Deductible: ' + fmtForAi(claimJob.deductible) +
         ', Supplement status: ' + (claimJob.supplement_status || 'None') +
         ', Status: ' + (claimJob.status || 'N/A') +
         ', Notes: ' + (claimJob.inspection_notes || 'none')
@@ -159,305 +217,330 @@ export default function InsurancePage() {
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok || data.error) throw new Error(data.error || 'AI request failed')
-      setClaimChat([...updated, { role: 'assistant', content: data.reply || 'Sorry, I could not generate a response.' }])
+      setClaimChat([...updated, { role: 'assistant', content: data.reply || 'Alpha could not write a reply. Try asking again.' }])
     } catch (error) {
-      setClaimChat([...updated, { role: 'assistant', content: error instanceof Error ? error.message : 'Error contacting AI. Check settings.' }])
+      setClaimChat([...updated, { role: 'assistant', content: error instanceof Error ? error.message : 'Alpha could not be reached. Check your AI settings and try again.' }])
     } finally { setClaimLoading(false) }
   }
 
-  // === RENDER ===
-  if (editing) return (
-    <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-6">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-bold text-text-primary">{editing.customer_name || 'Insurance Claim'}</h1>
-          <p className="text-text-muted text-sm">{[editing.vehicle_year, editing.vehicle_make, editing.vehicle_model].filter(Boolean).join(' ') || 'No vehicle'}</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button className="btn btn-secondary" onClick={() => setEditing(null)}>← Back</button>
-          <button className="btn btn-primary" onClick={() => openClaimAssistant(editing)}>🤖 AI Assistant</button>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left column - Claim Details */}
-        <div className="lg:col-span-2 space-y-4">
-          {/* Status Pipeline */}
-          <div className="card">
-            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Claim Status</div>
-            <div className="flex flex-wrap gap-1.5">
-              {STATUSES.map(s => (
-                <button key={s} onClick={() => saveJob({ status: s })}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
-                    editing.status === s
-                      ? STATUS_COLORS[s] || 'bg-gray-500/20 text-gray-400 border-gray-500/20'
-                      : 'bg-bg-hover text-text-muted border-border hover:border-text-muted'
-                  }`}>
-                  {s}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Insurance & Claim Info */}
-          <div className="card">
-            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Insurance Info</div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              <div><label className="form-label">Insurance Company</label>
-                <input className="form-input" defaultValue={editing.insurance_company || ''} onBlur={e => { if (e.target.value !== (editing.insurance_company || '')) saveJob({ insurance_company: e.target.value }) }} /></div>
-              <div><label className="form-label">Claim #</label>
-                <input className="form-input" defaultValue={editing.claim_number || ''} onBlur={e => { if (e.target.value !== (editing.claim_number || '')) saveJob({ claim_number: e.target.value }) }} /></div>
-              <div><label className="form-label">Loss Date</label>
-                <input className="form-input" type="date" defaultValue={editing.loss_date || ''} onChange={e => saveJob({ loss_date: e.target.value })} /></div>
-              <div><label className="form-label">Policy #</label>
-                <input className="form-input" defaultValue={editing.policy_number || ''} onBlur={e => { if (e.target.value !== (editing.policy_number || '')) saveJob({ policy_number: e.target.value }) }} /></div>
-            </div>
-          </div>
-
-          {/* Adjuster Info */}
-          <div className="card">
-            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Adjuster Contact</div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div><label className="form-label">Adjuster Name</label>
-                <input className="form-input" defaultValue={editing.adjuster || ''} onBlur={e => { if (e.target.value !== (editing.adjuster || '')) saveJob({ adjuster: e.target.value }) }} /></div>
-              <div><label className="form-label">Adjuster Phone</label>
-                <input className="form-input" type="tel" defaultValue={editing.adjuster_phone || ''} onBlur={e => { if (e.target.value !== (editing.adjuster_phone || '')) saveJob({ adjuster_phone: e.target.value }) }} /></div>
-              <div><label className="form-label">Adjuster Email</label>
-                <input className="form-input" type="email" defaultValue={editing.adjuster_email || ''} onBlur={e => { if (e.target.value !== (editing.adjuster_email || '')) saveJob({ adjuster_email: e.target.value }) }} /></div>
-            </div>
-          </div>
-
-          {/* Financial */}
-          <div className="card">
-            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Financials</div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              <div><label className="form-label">Approved Amount</label>
-                <input className="form-input" type="number" step="0.01" defaultValue={editing.approved_amount || ''} onBlur={e => saveJob({ approved_amount: Number(e.target.value) || null })} /></div>
-              <div><label className="form-label">Deductible</label>
-                <input className="form-input" type="number" step="0.01" defaultValue={editing.deductible || ''} onBlur={e => saveJob({ deductible: Number(e.target.value) || null })} /></div>
-              <div className="flex items-end gap-3">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={editing.deductible_collected || false} onChange={e => saveJob({ deductible_collected: e.target.checked })} className="w-4 h-4" />
-                  <span className="text-sm font-medium">Deductible Collected</span>
-                </label>
-              </div>
-              <div><label className="form-label">Deductible Payment Method</label>
-                <select className="form-select" value={editing.deductible_payment_method || ''} onChange={e => saveJob({ deductible_payment_method: e.target.value })}>
-                  <option value="">Select...</option>
-                  <option>Cash</option><option>Card</option><option>Zelle</option><option>Cash App</option><option>Check</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          {/* Supplement */}
-          <div className="card">
-            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Supplement</div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div><label className="form-label">Supplement Status</label>
-                <select className="form-select" value={editing.supplement_status || 'None'} onChange={e => saveJob({ supplement_status: e.target.value })}>
-                  <option>None</option><option>Requested</option><option>Submitted</option><option>Under Review</option><option>Approved</option><option>Denied</option>
-                </select>
-              </div>
-              <div><label className="form-label">Amount Requested</label>
-                <input className="form-input" type="number" step="0.01" defaultValue={editing.supplement_amount_requested || ''} onBlur={e => saveJob({ supplement_amount_requested: Number(e.target.value) || null })} /></div>
-              <div><label className="form-label">Amount Approved</label>
-                <input className="form-input" type="number" step="0.01" defaultValue={editing.supplement_amount_approved || ''} onBlur={e => saveJob({ supplement_amount_approved: Number(e.target.value) || null })} /></div>
-            </div>
-          </div>
-
-          {/* Inspection Notes */}
-          <div className="card">
-            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Inspection Notes</div>
-            <textarea className="form-textarea w-full" rows={4} defaultValue={editing.inspection_notes || ''}
-              onBlur={e => { if (e.target.value !== (editing.inspection_notes || '')) saveJob({ inspection_notes: e.target.value }) }}
-              placeholder="Damage description, parts needed, repair plan..." />
-          </div>
-        </div>
-
-        {/* Right column - Communication Log */}
-        <div className="space-y-4">
-          {/* Quick Info Card */}
-          <div className="card">
-            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Summary</div>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-text-muted">Status</span><span className={`px-2 py-0.5 rounded text-xs font-medium border ${STATUS_COLORS[editing.status] || ''}`}>{editing.status || 'New'}</span></div>
-              <div className="flex justify-between"><span className="text-text-muted">Insurance</span><span className="font-medium">{editing.insurance_company || 'N/A'}</span></div>
-              <div className="flex justify-between"><span className="text-text-muted">Claim #</span><span className="font-mono text-xs">{editing.claim_number || 'N/A'}</span></div>
-              <div className="flex justify-between"><span className="text-text-muted">Approved</span><span className="font-semibold text-green-400">{fmt(editing.approved_amount)}</span></div>
-              <div className="flex justify-between"><span className="text-text-muted">Deductible</span><span className={editing.deductible_collected ? 'text-text-muted line-through' : 'font-semibold text-red-400'}>{fmt(editing.deductible)}</span></div>
-              {editing.supplement_status && editing.supplement_status !== 'None' && (
-                <div className="flex justify-between"><span className="text-text-muted">Supplement</span><span className="font-medium text-orange-400">{editing.supplement_status}</span></div>
-              )}
-            </div>
-          </div>
-
-          {/* Communication Log */}
-          <div className="card">
-            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">📞 Communication Log</div>
-            <div className="flex gap-2 mb-3">
-              <select className="form-select text-sm flex-shrink-0 w-24" value={noteType} onChange={e => setNoteType(e.target.value)}>
-                <option>Call</option><option>Email</option><option>Fax</option><option>Note</option><option>Text</option>
-              </select>
-              <input className="form-input text-sm flex-1" placeholder="Add note..." value={noteText}
-                onChange={e => setNoteText(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') addNote() }} />
-              <button className="btn btn-primary btn-sm" onClick={addNote} disabled={!noteText.trim()}>+</button>
-            </div>
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {(editing.communication_log || []).length === 0 && (
-                <p className="text-xs text-text-muted text-center py-4">No communication logged yet</p>
-              )}
-              {(editing.communication_log || []).map((n: NoteEntry) => (
-                <div key={n.id} className="bg-bg-hover rounded-lg p-2.5 text-sm group">
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-medium px-1.5 py-0.5 rounded bg-bg-card border border-border">{n.type}</span>
-                      <span className="text-xs text-text-muted">{new Date(n.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} {new Date(n.date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</span>
-                    </div>
-                    <button className="text-xs text-red-400 opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => deleteNote(n.id)}>✕</button>
-                  </div>
-                  <p className="text-text-primary text-sm">{n.text}</p>
+  const assistantSheet = (
+    <Sheet open={!!claimJob} onClose={closeClaimAssistant} title="Ask Alpha about this claim" wide>
+      {claimJob && (
+        <div className="flex flex-col gap-3">
+          <p className="-mt-2 text-text-secondary">{claimJob.customer_name || 'Customer'} · {claimJob.insurance_company || 'Insurance not entered'}{claimJob.claim_number ? ` · claim ${claimJob.claim_number}` : ''}</p>
+          <div ref={chatLog} className="h-[min(55dvh,28rem)] space-y-3 overflow-y-auto rounded-md border border-border bg-bg-base p-3" role="log" aria-live="polite" aria-label="Conversation">
+            {claimChat.map((m, i) => (
+              <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[88%] whitespace-pre-wrap rounded-lg px-3.5 py-2.5 ${m.role === 'user' ? 'bg-blue text-[rgb(var(--c-on-blue))]' : 'border border-border bg-bg-card text-text-primary'}`}>
+                  {m.content}
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
+            {claimLoading && (
+              <div className="flex justify-start">
+                <div className="rounded-lg border border-border bg-bg-card px-3.5 py-2.5 text-text-secondary">Alpha is thinking…</div>
+              </div>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <label htmlFor="claim-input" className="sr-only">Ask about this claim</label>
+            <input id="claim-input" className="form-input flex-1" placeholder="Ask about this claim" value={claimInput}
+              onChange={e => setClaimInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendClaimMsg() } }} />
+            <button className="btn btn-primary" onClick={sendClaimMsg} disabled={claimLoading || !claimInput.trim()}><Icon name="send" className="h-5 w-5" />Send</button>
           </div>
         </div>
-      </div>
-      {saving && <div className="fixed bottom-4 right-4 bg-blue-500 text-white px-4 py-2 rounded-lg text-sm shadow-lg animate-pulse">Saving...</div>}
-    </div>
+      )}
+    </Sheet>
   )
 
-  // === MAIN LIST VIEW ===
-  return (
-    <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
-      {loadError && <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
-        <span>{loadError}</span>
-        <button className="btn btn-secondary btn-sm" onClick={load}>Retry</button>
-      </div>}
-      {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        <div className="card text-center">
-          <div className="text-2xl font-bold text-text-primary">{openJobs.length}</div>
-          <div className="text-xs text-text-muted uppercase tracking-wider">Open Claims</div>
-        </div>
-        <div className="card text-center">
-          <div className="text-2xl font-bold text-green-400">{fmt(totalApproved)}</div>
-          <div className="text-xs text-text-muted uppercase tracking-wider">Total Approved</div>
-        </div>
-        <div className="card text-center">
-          <div className="text-2xl font-bold text-red-400">{fmt(totalDeductibleDue)}</div>
-          <div className="text-xs text-text-muted uppercase tracking-wider">Deductible Due</div>
-        </div>
-        <div className="card text-center">
-          <div className="text-2xl font-bold text-orange-400">{supplementPending}</div>
-          <div className="text-xs text-text-muted uppercase tracking-wider">Supplements Pending</div>
-        </div>
-      </div>
+  // ============ Claim detail ============
+  if (editing) {
+    const dedDue = owesDeductible(editing)
+    return (
+      <div className="page-container animate-fade-in">
+        <button className="btn btn-ghost -ml-3 mb-1" onClick={() => { setEditing(null); setSaveError(''); setSaveState('idle') }}><Icon name="back" className="h-5 w-5" />All claims</button>
+        <header className="page-header">
+          <div className="min-w-0">
+            <h1 className="page-title">{editing.customer_name || 'Insurance claim'}</h1>
+            <p className="page-subtitle">{carOf(editing) || 'No vehicle on this claim'}</p>
+          </div>
+          <div className="toolbar">
+            <span className="mr-1 inline-flex items-center gap-1.5 text-[0.9375rem] text-text-secondary" role="status" aria-live="polite">
+              {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? <><span className="lamp lamp-green" aria-hidden="true" />Saved</> : 'Changes save when you leave a field'}
+            </span>
+            <button className="btn btn-primary" onClick={() => openClaimAssistant(editing)}><Icon name="alpha" className="h-5 w-5" />Ask Alpha</button>
+          </div>
+        </header>
 
-      {/* Header + Search + Filters */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-bold text-text-primary">Insurance Claims</h1>
-          <p className="text-text-muted text-sm mt-0.5">{filtered.length} claim{filtered.length !== 1 ? 's' : ''}</p>
-        </div>
-        <input className="form-input w-full sm:w-64" placeholder="Search claims..." value={search} onChange={e => setSearch(e.target.value)} />
-      </div>
+        {saveError && (
+          <div role="alert" className="mb-4 flex items-start gap-2 rounded-md border border-red/60 bg-red/[0.08] p-3">
+            <Icon name="alert" className="mt-0.5 h-5 w-5 shrink-0 text-red" />
+            <p className="flex-1">{saveError}</p>
+            <button className="btn-icon -m-2" onClick={() => setSaveError('')} aria-label="Dismiss message"><Icon name="close" className="h-5 w-5" /></button>
+          </div>
+        )}
 
-      <div className="flex gap-2 mb-6 flex-wrap">
-        {FILTERS.map(f => (
-          <button key={f.key} onClick={() => setFilter(f.key)}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${filter === f.key ? 'bg-blue-500 text-white' : 'bg-bg-card text-text-muted hover:text-text-primary border border-border'}`}>
-            {f.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Claims Grid */}
-      {filtered.length === 0 ? (
-        <div className="text-center py-20 text-text-muted">
-          <div className="text-4xl mb-3">🛡️</div>
-          <h3 className="font-semibold text-text-primary mb-1">No insurance claims</h3>
-          <p className="text-sm">Mark a job as an insurance job to track it here</p>
-        </div>
-      ) : (
-        <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 360px), 1fr))' }}>
-          {filtered.map(j => (
-            <div key={j.id} onClick={() => setEditing(j)}
-              className="card hover:border-blue-500/40 transition-colors cursor-pointer">
-              <div className="flex items-start justify-between mb-3">
-                <div>
-                  <div className="font-semibold text-text-primary">{j.customer_name || 'Unknown'}</div>
-                  <div className="text-sm text-text-muted">{[j.vehicle_year, j.vehicle_make, j.vehicle_model].filter(Boolean).join(' ') || 'No vehicle'}</div>
-                </div>
-                <span className={`text-xs px-2 py-1 rounded-md font-medium border ${STATUS_COLORS[j.status] || 'bg-gray-500/20 text-gray-400 border-gray-500/20'}`}>
-                  {j.status || 'New'}
-                </span>
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_21rem]">
+          <div className="space-y-5">
+            <Panel title="Claim status">
+              <label htmlFor="claim-status" className="sr-only">Claim status</label>
+              <select id="claim-status" className="form-select md:hidden" value={editing.status || 'New'} onChange={e => saveJob({ status: e.target.value })}>
+                {STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
+              </select>
+              <div className="hidden md:block">
+                <FilterChips label="Claim status" value={editing.status || 'New'} onChange={s => { if (s !== editing.status) saveJob({ status: s }) }} options={STATUSES.map(s => ({ key: s, label: statusLabel(s) }))} />
               </div>
-              <div className="grid grid-cols-2 gap-3 text-sm">
+            </Panel>
+
+            <Panel title="Insurance and claim">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div><label className="form-label" htmlFor="f-ins">Insurance company</label>
+                  <input id="f-ins" className="form-input" defaultValue={editing.insurance_company || ''} onBlur={e => { if (e.target.value !== (editing.insurance_company || '')) saveJob({ insurance_company: e.target.value }) }} /></div>
+                <div><label className="form-label" htmlFor="f-claim">Claim number</label>
+                  <input id="f-claim" className="form-input" defaultValue={editing.claim_number || ''} onBlur={e => { if (e.target.value !== (editing.claim_number || '')) saveJob({ claim_number: e.target.value }) }} /></div>
+                <div><label className="form-label" htmlFor="f-loss">Loss date</label>
+                  <input id="f-loss" className="form-input" type="date" defaultValue={editing.loss_date || ''} onChange={e => saveJob({ loss_date: e.target.value })} /></div>
+                <div><label className="form-label" htmlFor="f-policy">Policy number</label>
+                  <input id="f-policy" className="form-input" defaultValue={editing.policy_number || ''} onBlur={e => { if (e.target.value !== (editing.policy_number || '')) saveJob({ policy_number: e.target.value }) }} /></div>
+              </div>
+            </Panel>
+
+            <Panel title="Adjuster">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <div><label className="form-label" htmlFor="f-adj">Name</label>
+                  <input id="f-adj" className="form-input" defaultValue={editing.adjuster || ''} onBlur={e => { if (e.target.value !== (editing.adjuster || '')) saveJob({ adjuster: e.target.value }) }} /></div>
+                <div><label className="form-label" htmlFor="f-adjph">Phone</label>
+                  <input id="f-adjph" className="form-input" type="tel" defaultValue={editing.adjuster_phone || ''} onBlur={e => { if (e.target.value !== (editing.adjuster_phone || '')) saveJob({ adjuster_phone: e.target.value }) }} /></div>
+                <div><label className="form-label" htmlFor="f-adjem">Email</label>
+                  <input id="f-adjem" className="form-input" type="email" defaultValue={editing.adjuster_email || ''} onBlur={e => { if (e.target.value !== (editing.adjuster_email || '')) saveJob({ adjuster_email: e.target.value }) }} /></div>
+              </div>
+            </Panel>
+
+            <Panel title="Money">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div><label className="form-label" htmlFor="f-appr">Approved amount</label>
+                  <input id="f-appr" className="form-input num" type="number" inputMode="decimal" step="0.01" defaultValue={editing.approved_amount || ''} onBlur={e => saveJob({ approved_amount: Number(e.target.value) || null })} /></div>
+                <div><label className="form-label" htmlFor="f-ded">Deductible</label>
+                  <input id="f-ded" className="form-input num" type="number" inputMode="decimal" step="0.01" defaultValue={editing.deductible || ''} onBlur={e => saveJob({ deductible: Number(e.target.value) || null })} /></div>
+                <label className="flex min-h-[44px] cursor-pointer items-center gap-3 sm:self-end">
+                  <input type="checkbox" checked={editing.deductible_collected || false} onChange={e => saveJob({ deductible_collected: e.target.checked })} className="h-5 w-5 accent-blue" />
+                  <span className="font-bold">Deductible collected</span>
+                </label>
+                <div><label className="form-label" htmlFor="f-dedpm">How the deductible was paid</label>
+                  <select id="f-dedpm" className="form-select" value={editing.deductible_payment_method || ''} onChange={e => saveJob({ deductible_payment_method: e.target.value })}>
+                    <option value="">Choose a method</option>
+                    <option>Cash</option><option>Card</option><option>Zelle</option><option>Cash App</option><option>Check</option>
+                  </select>
+                </div>
+              </div>
+            </Panel>
+
+            <Panel title="Supplement">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <div><label className="form-label" htmlFor="f-sup">Supplement status</label>
+                  <select id="f-sup" className="form-select" value={editing.supplement_status || 'None'} onChange={e => saveJob({ supplement_status: e.target.value })}>
+                    <option>None</option><option>Requested</option><option>Submitted</option><option>Under Review</option><option>Approved</option><option>Denied</option>
+                  </select>
+                </div>
+                <div><label className="form-label" htmlFor="f-supreq">Amount requested</label>
+                  <input id="f-supreq" className="form-input num" type="number" inputMode="decimal" step="0.01" defaultValue={editing.supplement_amount_requested || ''} onBlur={e => saveJob({ supplement_amount_requested: Number(e.target.value) || null })} /></div>
+                <div><label className="form-label" htmlFor="f-supappr">Amount approved</label>
+                  <input id="f-supappr" className="form-input num" type="number" inputMode="decimal" step="0.01" defaultValue={editing.supplement_amount_approved || ''} onBlur={e => saveJob({ supplement_amount_approved: Number(e.target.value) || null })} /></div>
+              </div>
+            </Panel>
+
+            <Panel title="Damage and repair notes">
+              <label htmlFor="f-notes" className="sr-only">Damage and repair notes</label>
+              <textarea id="f-notes" className="form-textarea" rows={4} defaultValue={editing.inspection_notes || ''}
+                onBlur={e => { if (e.target.value !== (editing.inspection_notes || '')) saveJob({ inspection_notes: e.target.value }) }}
+                placeholder="Damage description, parts needed, repair plan" />
+            </Panel>
+          </div>
+
+          <div className="space-y-5">
+            <section className="panel">
+              <div className="panel-header"><h2 className="section-title">Summary</h2></div>
+              <dl className="divide-y divide-border px-4 sm:px-5">
                 {[
-                  { label: 'Insurance', value: j.insurance_company },
-                  { label: 'Claim #', value: j.claim_number },
-                  { label: 'Adjuster', value: j.adjuster },
-                  { label: 'Approved', value: fmt(j.approved_amount) },
-                  { label: 'Deductible', value: fmt(j.deductible) },
-                  { label: 'Supplement', value: j.supplement_status || 'None' },
-                ].map(field => (
-                  <div key={field.label}>
-                    <div className="text-xs text-text-muted uppercase tracking-wide mb-0.5">{field.label}</div>
-                    <div className="font-medium">{field.value || 'N/A'}</div>
+                  { k: 'Status', v: <Lampword status={editing.status} /> },
+                  { k: 'Insurance', v: editing.insurance_company || notEntered },
+                  { k: 'Claim number', v: editing.claim_number ? <span className="num">{editing.claim_number}</span> : notEntered },
+                  { k: 'Loss date', v: editing.loss_date ? fmtDate(editing.loss_date) : notEntered },
+                  { k: 'Approved', v: editing.approved_amount ? <span className="num font-bold">{money(editing.approved_amount)}</span> : notEntered },
+                  { k: 'Deductible', v: editing.deductible
+                    ? <span className="num inline-flex flex-wrap items-center justify-end gap-x-2"><span className="font-bold">{money(editing.deductible)}</span>{dedDue ? <span className="inline-flex items-center gap-1.5 font-bold text-amber"><span className="lamp lamp-amber" aria-hidden="true" />Not collected</span> : <span className="inline-flex items-center gap-1.5 font-bold text-green"><span className="lamp lamp-green" aria-hidden="true" />Collected</span>}</span>
+                    : notEntered },
+                  ...(hasSupplement(editing) ? [{ k: 'Supplement', v: <span className="font-bold">{editing.supplement_status}</span> }] : []),
+                ].map(r => (
+                  <div key={r.k} className="flex items-start justify-between gap-4 py-2.5">
+                    <dt className="text-text-secondary">{r.k}</dt>
+                    <dd className="text-right">{r.v}</dd>
                   </div>
                 ))}
-              </div>
-              {j.deductible && !j.deductible_collected && (
-                <div className="mt-3 pt-2 border-t border-border text-xs text-red-400 font-medium">⚠️ Deductible not collected</div>
-              )}
-              {j.inspection_notes && (
-                <div className="mt-2 pt-2 border-t border-border text-xs text-text-muted truncate">{j.inspection_notes}</div>
-              )}
-              <div className="flex gap-2 mt-3">
-                <button className="btn btn-sm btn-secondary flex-1" onClick={e => { e.stopPropagation(); openClaimAssistant(j) }}>🤖 AI Assistant</button>
-                <button className="btn btn-sm btn-secondary" onClick={e => { e.stopPropagation(); setEditing(j) }}>Edit</button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+              </dl>
+            </section>
 
-      {/* AI Claim Assistant Modal */}
-      {claimJob && (
-        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
-          <div className="bg-bg-card border border-border rounded-xl w-full max-w-2xl h-[90vh] sm:h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between p-4 border-b border-border">
-              <div>
-                <h2 className="font-bold">🤖 AI Claim Assistant</h2>
-                <p className="text-xs text-text-muted">{claimJob.customer_name} — {claimJob.insurance_company || 'Insurance'} #{claimJob.claim_number || 'N/A'}</p>
-              </div>
-              <button className="btn btn-sm btn-secondary" onClick={() => setClaimJob(null)}>Close</button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
-              {claimChat.map((m, i) => (
-                <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[80%] rounded-xl px-4 py-2 text-sm whitespace-pre-wrap ${m.role === 'user' ? 'bg-blue-500 text-white' : 'bg-bg-hover text-text-primary'}`}>
-                    {m.content}
+            <section className="panel">
+              <div className="panel-header"><h2 className="section-title">Calls and notes</h2></div>
+              <div className="panel-body">
+                <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-2">
+                  <div>
+                    <label className="sr-only" htmlFor="note-type">Type of note</label>
+                    <select id="note-type" className="form-select" value={noteType} onChange={e => setNoteType(e.target.value)}>
+                      <option>Call</option><option>Email</option><option>Fax</option><option>Note</option><option>Text</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="sr-only" htmlFor="note-text">Note</label>
+                    <input id="note-text" className="form-input" placeholder="Add a note" value={noteText}
+                      onChange={e => setNoteText(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') addNote() }} />
                   </div>
                 </div>
-              ))}
-              {claimLoading && (
-                <div className="flex justify-start">
-                  <div className="bg-bg-hover rounded-xl px-4 py-2 text-sm text-text-muted">Thinking...</div>
-                </div>
-              )}
-            </div>
-            <div className="p-4 border-t border-border flex gap-2">
-              <input className="form-input flex-1" placeholder="Ask about this claim..." value={claimInput}
-                onChange={e => setClaimInput(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendClaimMsg() }}} />
-              <button className="btn btn-primary" onClick={sendClaimMsg} disabled={claimLoading || !claimInput.trim()}>Send</button>
-            </div>
+                <button className="btn btn-secondary mt-2 w-full" onClick={addNote} disabled={!noteText.trim() || saveState === 'saving'}><Icon name="plus" className="h-5 w-5" />Add note</button>
+                <ul className="mt-4 max-h-96 space-y-2 overflow-y-auto">
+                  {(editing.communication_log || []).length === 0 && (
+                    <li className="py-3 text-center text-text-secondary">Nothing logged yet. Add each call or email with the adjuster so you can show what was agreed.</li>
+                  )}
+                  {(editing.communication_log || []).map((n: NoteEntry) => (
+                    <li key={n.id} className="rounded-md border border-border bg-bg-base p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="tag tag-gray !text-[0.8125rem]">{n.type}</span>
+                          <span className="num text-[0.875rem] text-text-secondary">{new Date(n.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} {new Date(n.date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</span>
+                        </div>
+                        <button className="btn-icon -my-2 -mr-2.5" onClick={() => deleteNote(n.id)} aria-label={`Delete ${n.type.toLowerCase()} note`}><Icon name="trash" className="h-5 w-5" /></button>
+                      </div>
+                      <p className="mt-1">{n.text}</p>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </section>
           </div>
         </div>
+        {assistantSheet}
+      </div>
+    )
+  }
+
+  // ============ Claims list ============
+  const filtering = filter !== 'all' || !!q
+  const firstLoad = !loaded && !loadError
+
+  return (
+    <div className="page-container animate-fade-in">
+      <header className="page-header">
+        <div>
+          <h1 className="page-title">Insurance claims</h1>
+          <p className="page-subtitle">Claims, adjusters, deductibles and supplements in one place.</p>
+        </div>
+        <SearchField className="w-full sm:w-80" label="Search claims" placeholder="Search claims" value={search} onChange={setSearch} />
+      </header>
+
+      {loadError && <ErrorCard className="mb-5 max-w-xl" title="Claims could not load" message={loadError} onRetry={load} />}
+
+      {loaded && !(loadError && jobs.length === 0) && jobs.length > 0 && (
+        <>
+          <dl className="panel mb-5 grid grid-cols-2 overflow-hidden sm:grid-cols-4" aria-label="Claims summary">
+            <div className="flex flex-col justify-center border-b border-r border-border px-4 py-3 sm:border-b-0">
+              <dt className="text-[0.875rem] font-bold text-text-secondary">Open claims</dt>
+              <dd className="display num mt-0.5 text-[1.5rem] font-bold leading-tight">{openJobs.length}</dd>
+            </div>
+            <div className="flex flex-col justify-center border-b border-border px-4 py-3 sm:border-b-0 sm:border-r">
+              <dt className="text-[0.875rem] font-bold text-text-secondary">Approved on open claims</dt>
+              <dd className="display num mt-0.5 text-[1.5rem] font-bold leading-tight">{money(totalApproved)}</dd>
+            </div>
+            <div className={`flex flex-col justify-center border-r border-border px-4 py-3 ${totalDeductibleDue > 0 ? 'bg-amber/[0.14]' : ''}`}>
+              <dt className={`flex items-center gap-2 text-[0.875rem] font-bold ${totalDeductibleDue > 0 ? 'text-amber' : 'text-text-secondary'}`}>
+                <span className={`lamp ${totalDeductibleDue > 0 ? 'lamp-amber' : 'lamp-green'}`} aria-hidden="true" />Deductibles to collect
+              </dt>
+              <dd className="display num mt-0.5 text-[1.5rem] font-bold leading-tight">{money(totalDeductibleDue)}</dd>
+            </div>
+            <div className="flex flex-col justify-center px-4 py-3">
+              <dt className="flex items-center gap-2 text-[0.875rem] font-bold text-text-secondary">
+                <span className={`lamp ${supplementPending > 0 ? 'lamp-amber' : 'lamp-green'}`} aria-hidden="true" />Supplements pending
+              </dt>
+              <dd className="display num mt-0.5 text-[1.5rem] font-bold leading-tight">{supplementPending}</dd>
+            </div>
+          </dl>
+
+          <div className="mb-4">
+            <FilterChips<FilterKey> scroll label="Show claims" value={filter} onChange={setFilter} options={[
+              { key: 'all', label: 'All', count: counts.all },
+              { key: 'open', label: 'Open', count: counts.open },
+              { key: 'supplement', label: 'Supplement', count: counts.supplement },
+              { key: 'deductible', label: 'Deductible due', count: counts.deductible },
+              { key: 'paid', label: 'Paid or closed', count: counts.paid },
+            ]} />
+          </div>
+        </>
       )}
+
+      {firstLoad ? (
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3" aria-busy="true" aria-label="Loading claims" role="status">
+          {[0, 1, 2].map(i => <div key={i} className="skeleton h-52" />)}
+        </div>
+      ) : loadError && jobs.length === 0 ? null : jobs.length === 0 ? (
+        <EmptyBlock icon="shield" title="No insurance claims yet" action={<Link href="/jobs" className="btn btn-primary">Go to jobs</Link>}>
+          A claim shows up here once a repair order is marked as an insurance job. Then you can track the adjuster, claim number, deductible and supplements.
+        </EmptyBlock>
+      ) : filtered.length === 0 ? (
+        <EmptyBlock icon="search" title="No claims match" action={<button className="btn btn-secondary" onClick={() => { setFilter('all'); setSearch('') }}>Show all claims</button>}>
+          {filter === 'deductible' ? 'No deductible is waiting to be collected.' : filter === 'supplement' ? 'No claim has a supplement right now.' : 'Try a different name or claim number.'}
+        </EmptyBlock>
+      ) : (
+        <>
+          {filtering && <p className="mb-2 text-[0.9375rem] text-text-secondary" aria-live="polite"><span className="num font-bold text-text-primary">{filtered.length}</span> {filtered.length === 1 ? 'claim' : 'claims'} shown</p>}
+          <ul className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {filtered.map(j => (
+              <li key={j.id} className={`rotag lamp-${lampOf(j.status) === 'off' ? 'off' : lampOf(j.status)}`}>
+                <button type="button" className="block w-full text-left" onClick={() => setEditing(j)} aria-label={`Open claim for ${j.customer_name || 'unknown customer'}`}>
+                  <span className="block min-w-0">
+                    <span className="display block text-[1.125rem] font-bold leading-tight">{j.customer_name || 'Unknown customer'}</span>
+                    <span className="block text-text-secondary">{carOf(j) || 'No vehicle'}</span>
+                    <span className="mt-1 block"><Lampword status={j.status} /></span>
+                  </span>
+                  <span className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2">
+                    {[
+                      { label: 'Insurance', value: j.insurance_company, none: 'Not entered' },
+                      { label: 'Claim number', value: j.claim_number, none: 'Not entered' },
+                      { label: 'Adjuster', value: j.adjuster, none: 'Not entered' },
+                      { label: 'Supplement', value: hasSupplement(j) ? j.supplement_status : 'None', none: 'None' },
+                    ].map(f => (
+                      <span key={f.label} className="block min-w-0">
+                        <span className="block text-[0.8125rem] text-text-secondary">{f.label}</span>
+                        <span className={`block truncate ${f.value ? 'font-bold' : 'text-text-muted'}`}>{f.value || f.none}</span>
+                      </span>
+                    ))}
+                    <span className="block">
+                      <span className="block text-[0.8125rem] text-text-secondary">Approved</span>
+                      <span className={`num block ${j.approved_amount ? 'font-bold' : 'text-text-muted'}`}>{j.approved_amount ? money(j.approved_amount) : 'Not entered'}</span>
+                    </span>
+                    <span className="block">
+                      <span className="block text-[0.8125rem] text-text-secondary">Deductible</span>
+                      <span className={`num block ${j.deductible ? 'font-bold' : 'text-text-muted'}`}>{j.deductible ? money(j.deductible) : 'None'}</span>
+                    </span>
+                  </span>
+                  {owesDeductible(j) && (
+                    <span className="mt-3 flex items-center gap-2 border-t border-border pt-2 font-bold text-amber"><span className="lamp lamp-amber" aria-hidden="true" />Deductible not collected</span>
+                  )}
+                  {j.inspection_notes && (
+                    <span className="mt-2 block truncate text-[0.9375rem] text-text-secondary">{j.inspection_notes}</span>
+                  )}
+                </button>
+                <div className="mt-3 flex gap-2">
+                  <button className="btn btn-secondary flex-1 whitespace-nowrap px-3" onClick={() => openClaimAssistant(j)}><Icon name="alpha" className="h-5 w-5" />Ask Alpha</button>
+                  <button className="btn btn-secondary flex-1 whitespace-nowrap px-3" onClick={() => setEditing(j)}>Open claim</button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {assistantSheet}
     </div>
   )
 }

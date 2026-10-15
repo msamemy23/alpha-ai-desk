@@ -4,17 +4,6 @@ import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 
 export const dynamic = 'force-dynamic'
 
-// Default staff if table is empty
-const DEFAULT_STAFF = [
-  { name: 'Paul', role: 'technician', emoji: '🔧', active: true },
-  { name: 'Devin', role: 'technician', emoji: '🔧', active: true },
-  { name: 'Luis', role: 'technician', emoji: '🔧', active: true },
-  { name: 'Louie', role: 'technician', emoji: '🔧', active: true },
-  { name: 'Masoud', role: 'employee', emoji: '👤', active: true },
-  { name: 'Omar', role: 'employee', emoji: '👤', active: true },
-  { name: 'Javier', role: 'employee', emoji: '👤', active: true },
-]
-
 export async function GET(req: NextRequest) {
   const auth = await getAuthedShop()
   if (!auth) return unauthorized()
@@ -28,24 +17,12 @@ export async function GET(req: NextRequest) {
     if (role) query = query.eq('role', role)
     const { data, error } = await query
 
-    // If table doesn't exist or is empty, seed defaults
-    if (error || !data || data.length === 0) {
-      // Try to seed
-      try {
-        await sb.from('staff').upsert(
-          DEFAULT_STAFF.map((s) => ({ ...s, shop_id: auth.shopId, created_at: new Date().toISOString() }))
-        )
-        const { data: seeded } = await sb.from('staff').select('*').eq('shop_id', auth.shopId).eq('active', true).order('name')
-        return NextResponse.json({ ok: true, staff: seeded || DEFAULT_STAFF })
-      } catch {
-        // Table doesn't exist yet — return defaults
-        return NextResponse.json({ ok: true, staff: DEFAULT_STAFF, fallback: true })
-      }
-    }
+    // A shop with no staff yet gets an empty list. Never show another shop's people.
+    if (error || !data) return NextResponse.json({ ok: true, staff: [], fallback: true })
 
     return NextResponse.json({ ok: true, staff: data })
   } catch {
-    return NextResponse.json({ ok: true, staff: DEFAULT_STAFF, fallback: true })
+    return NextResponse.json({ ok: true, staff: [], fallback: true })
   }
 }
 

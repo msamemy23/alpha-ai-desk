@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { ensureShopProfile, supabase, supabaseAuthStorageKey } from '@/lib/supabase'
+import Notice from '@/components/Notice'
+import { Spinner, StatusScreen } from '@/components/PublicChrome'
 
 const COOKIE_MAX_AGE = 400 * 24 * 60 * 60
 const MAX_COOKIE_CHUNK_SIZE = 3180
@@ -74,7 +76,7 @@ async function ensureShopProfileAndRedirect(session: Session) {
 }
 
 export default function DesktopOAuthComplete() {
-  const [status, setStatus] = useState('Finishing desktop sign-in...')
+  const [status, setStatus] = useState('Finishing desktop sign-in…')
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -98,7 +100,7 @@ export default function DesktopOAuthComplete() {
         if (!data.session) throw new Error('No desktop session was created.')
 
         persistSupabaseSessionCookie(data.session)
-        setStatus('Opening your dashboard...')
+        setStatus('Opening Today…')
         await new Promise(resolve => window.setTimeout(resolve, 100))
         await ensureShopProfileAndRedirect(data.session)
       } catch (err) {
@@ -111,84 +113,20 @@ export default function DesktopOAuthComplete() {
   }, [])
 
   return (
-    <main className="desktop-auth-screen">
-      <section>
-        <div className="mark">A</div>
-        <p>Alpha AI Desk</p>
-        <h1>{status}</h1>
-        {!error && <span>Keep this window open while the session is saved.</span>}
-        {error && <div role="alert">{error}</div>}
-      </section>
-
-      <style jsx>{`
-        .desktop-auth-screen {
-          min-height: 100vh;
-          display: grid;
-          place-items: center;
-          padding: 24px;
-          background: linear-gradient(135deg, #08111f, #101827);
-          color: #f8fafc;
-          font-family: Inter, system-ui, sans-serif;
-        }
-
-        section {
-          width: min(420px, 100%);
-          text-align: center;
-          border: 1px solid rgba(226, 232, 240, 0.16);
-          border-radius: 18px;
-          padding: 32px;
-          background: rgba(15, 23, 42, 0.9);
-          box-shadow: 0 28px 90px rgba(0, 0, 0, 0.4);
-        }
-
-        .mark {
-          width: 54px;
-          height: 54px;
-          margin: 0 auto 18px;
-          display: grid;
-          place-items: center;
-          border-radius: 14px;
-          background: #f8fafc;
-          color: #0f172a;
-          font-weight: 900;
-          font-size: 28px;
-        }
-
-        p {
-          margin: 0 0 10px;
-          color: #7dd3fc;
-          font-size: 12px;
-          font-weight: 850;
-          letter-spacing: 0.16em;
-          text-transform: uppercase;
-        }
-
-        h1 {
-          margin: 0;
-          font-size: 25px;
-          line-height: 1.18;
-          font-weight: 850;
-        }
-
-        span {
-          display: block;
-          margin-top: 12px;
-          color: #94a3b8;
-          font-size: 14px;
-          line-height: 1.5;
-        }
-
-        div[role='alert'] {
-          margin-top: 16px;
-          border: 1px solid rgba(248, 113, 113, 0.36);
-          border-radius: 12px;
-          padding: 12px 14px;
-          background: rgba(127, 29, 29, 0.24);
-          color: #fecaca;
-          font-size: 13px;
-          line-height: 1.45;
-        }
-      `}</style>
-    </main>
+    <StatusScreen>
+      <div aria-live="polite">
+        <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full border border-border bg-bg-base">
+          {error ? <span className="lamp lamp-red" aria-hidden="true" /> : <Spinner className="h-6 w-6" />}
+        </div>
+        <h1 className="display text-[1.5rem] font-bold leading-tight">{status}</h1>
+        {!error && <p className="mt-2 text-[0.9375rem] text-text-secondary">Keep this window open while the session is saved.</p>}
+      </div>
+      {error && (
+        <Notice kind="error" className="mt-5 text-left">
+          <p>{error}</p>
+          <p className="mt-2"><a href="/login" className="font-bold text-blue underline underline-offset-4">Return to sign in</a></p>
+        </Notice>
+      )}
+    </StatusScreen>
   )
 }

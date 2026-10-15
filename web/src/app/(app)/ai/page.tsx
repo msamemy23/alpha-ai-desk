@@ -7,7 +7,9 @@ import { observedLinkClick } from '@/lib/ai/browser-interaction'
 import { AGENTS, SKILLS } from '@/lib/ai/capabilities'
 import { classifyRequest, type RouteDecision } from '@/lib/ai/router'
 import { normalizeDocumentDraft } from '@/lib/ai/document-draft'
-import { WorkflowReview } from '@/components/ai/WorkflowReview'
+import { WorkflowReview, ApprovalFrame, PayloadList } from '@/components/ai/WorkflowReview'
+import Icon from '@/components/Icon'
+import Sheet from '@/components/Sheet'
 import type { Approval, WorkflowReply } from '@/lib/ai/workflow/engine'
 import { verifyReadClaims, unverifiedReadMessage } from '@/lib/ai/read-verification'
 import { calculateDocumentTotals, getLaborFlatAmount, laborLineTotal, partLineTotal } from '@/lib/document-money'
@@ -31,12 +33,12 @@ import {
 type SpeechRecognition = any
 type SpeechRecognitionEvent = any
 
-// Connector info for popup
-const CONNECTOR_SERVICE_INFO: Record<string, { icon: string; name: string; description: string; color: string; bgColor: string; oauthPath: string }> = {
-  facebook: { icon: 'FB', name: 'Facebook Pages', description: 'Post updates, reply to comments, manage messages', color: '#1877F2', bgColor: 'rgba(24,119,242,0.1)', oauthPath: '/api/auth/facebook' },
-  instagram: { icon: 'IG', name: 'Instagram Business', description: 'Post photos, reply to comments and DMs', color: '#E1306C', bgColor: 'rgba(225,48,108,0.1)', oauthPath: '/api/auth/facebook' },
-  google_business: { icon: 'GB', name: 'Google Business Profile', description: 'Post updates, reply to reviews, see ratings', color: '#4285F4', bgColor: 'rgba(66,133,244,0.1)', oauthPath: '/api/auth/google' },
-  google_calendar: { icon: 'GC', name: 'Google Calendar', description: 'Schedule appointments, manage bookings', color: '#0F9D58', bgColor: 'rgba(15,157,88,0.1)', oauthPath: '/api/auth/google' },
+// Connector info for the connected-accounts sheet
+const CONNECTOR_SERVICE_INFO: Record<string, { icon: string; name: string; description: string; oauthPath: string }> = {
+  facebook: { icon: 'FB', name: 'Facebook Pages', description: 'Post updates, reply to comments, manage messages', oauthPath: '/api/auth/facebook' },
+  instagram: { icon: 'IG', name: 'Instagram Business', description: 'Post photos, reply to comments and DMs', oauthPath: '/api/auth/facebook' },
+  google_business: { icon: 'GB', name: 'Google Business Profile', description: 'Post updates, reply to reviews, see ratings', oauthPath: '/api/auth/google' },
+  google_calendar: { icon: 'GC', name: 'Google Calendar', description: 'Schedule appointments, manage bookings', oauthPath: '/api/auth/google' },
 }
 const CONNECTOR_ORDER = ['facebook', 'instagram', 'google_business', 'google_calendar']
 
@@ -96,6 +98,124 @@ type RepairDtcGuide = {
 }
 interface ChatMessage { role: 'user'|'assistant'|'browser'; content: string; html?: string; imageUrl?: string; reasoning?: string; thinkingSeconds?: number; browserSteps?: BrowserPanelStep[]; repairResult?: RepairChatResult }
 type ToolActivity = { time: string; agent: string; skill?: string; tool: string; status: 'running' | 'ok' | 'error'; detail: string }
+
+// The first message of a chat gives the model context, but it is not shown as a
+// message: the empty state (or the repair banner) already says the same thing.
+const INTRO_GREETING = "Hi, I'm Alpha, your shop assistant. I can look up customers and jobs, build estimates and invoices, draft texts and emails, check shop numbers, and look up parts and repair info. What do you need?"
+const REPAIR_GREETING = 'Repair Only Mode is on. I will stay focused on diagnostics, repair sources, safety checks, work notes, and estimate-ready repair details.'
+function isGreeting(m: ChatMessage, index: number) {
+  return index === 0 && m.role === 'assistant' && (
+    m.content === INTRO_GREETING || m.content === REPAIR_GREETING ||
+    m.content.startsWith("Hey! I'm Alpha AI") || m.content.startsWith('Repair Only Mode is on.')
+  )
+}
+
+// Failed turns are saved as ordinary assistant messages. These prefixes mark them
+// so they can show as an error with a Retry button instead of looking like an answer.
+const FAILURE_PREFIXES: [RegExp, string][] = [
+  [/^AI error:\s*/i, 'Alpha could not answer'],
+  [/^Ran into an issue:\s*/i, 'Alpha ran into a problem'],
+  [/^Repair lookup failed:\s*/i, 'The repair lookup failed'],
+  [/^Image analysis failed:\s*/i, 'Alpha could not read that photo'],
+  [/^Desktop action failed:\s*/i, 'The desktop action failed'],
+]
+function describeFailure(content: string): { title: string; detail: string } | null {
+  for (const [pattern, title] of FAILURE_PREFIXES) {
+    if (pattern.test(content)) return { title, detail: content.replace(pattern, '').replace(/\s*Try again\.\s*$/i, '').replace(/\.{2,}$/, '.').trim() }
+  }
+  return null
+}
+
+function humanizeTool(tool: string) {
+  const base = tool.replace(/^action\./, '').replace(/^kapture\./, 'browser ')
+  const words = base.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[._-]+/g, ' ').trim().toLowerCase()
+  return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+// Tool events are stored newest first and a tool logs "running" and then "ok" or
+// "error" as separate entries. Return this turn's events oldest first, with each
+// finished tool replacing its own "running" entry.
+function turnTools(events: ToolActivity[], loading: boolean): ToolActivity[] {
+  const turn: ToolActivity[] = []
+  for (const event of events) {
+    if (event.tool === 'agentRouter') break
+    turn.push(event)
+  }
+  turn.reverse()
+  const rows: ToolActivity[] = []
+  for (const event of turn) {
+    if (event.status === 'running') { rows.push(event); continue }
+    const at = rows.map(row => `${row.tool}:${row.status}`).lastIndexOf(`${event.tool}:running`)
+    if (at >= 0) rows[at] = event
+    else rows.push(event)
+  }
+  return rows.filter(row => loading || row.status !== 'running')
+}
+
+function ToolRows({ events, label = 'What Alpha did', showTime = false }: { events: ToolActivity[]; label?: string; showTime?: boolean }) {
+  if (!events.length) return null
+  return (
+    <ul className="ledger max-w-[70ch]" aria-label={label}>
+      {events.map((event, index) => {
+        const lamp = event.status === 'ok' ? 'lamp-green' : event.status === 'error' ? 'lamp-red' : 'lamp-amber'
+        const word = event.status === 'ok' ? 'Done' : event.status === 'error' ? 'Failed' : 'Running'
+        const tone = event.status === 'ok' ? 'text-green' : event.status === 'error' ? 'text-red' : 'text-amber'
+        return (
+          <li key={`${event.time}-${event.tool}-${index}`} className="flex items-start gap-3 px-1 py-2.5">
+            <span className={`lamp ${lamp} mt-1.5`} aria-hidden="true" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-[0.9375rem] font-bold leading-snug">{humanizeTool(event.tool)}</span>
+              {event.detail && <span className="block break-words text-[0.875rem] leading-snug text-text-secondary">{event.agent}{event.skill ? `, ${event.skill}` : ''}: {event.detail}</span>}
+            </span>
+            <span className="shrink-0 text-right">
+              <span className={`block text-[0.875rem] font-bold ${tone}`}>{word}</span>
+              {showTime && <span className="num block text-[0.75rem] text-text-muted">{event.time}</span>}
+            </span>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+function FailureRow({ title, detail, onRetry, busy }: { title: string; detail: string; onRetry?: () => void; busy: boolean }) {
+  return (
+    <div role="alert" className="max-w-[40rem] rounded-lg border border-line border-l-[6px] border-l-[rgb(var(--lamp-red))] bg-bg-card p-4">
+      <div className="flex items-center gap-2 font-bold">
+        <span className="lamp lamp-red" aria-hidden="true" />
+        Failed
+      </div>
+      <p className="mt-1 text-[1.0625rem] font-bold leading-snug">{title}</p>
+      {detail && <p className="mt-1 break-words text-[0.9375rem] text-text-secondary">{detail}</p>}
+      {onRetry && (
+        <button type="button" className="btn btn-secondary mt-3 w-full sm:w-auto" onClick={onRetry} disabled={busy}>
+          <Icon name="refresh" className="h-5 w-5" />
+          Retry
+        </button>
+      )}
+      {!onRetry && <p className="mt-1 text-[0.9375rem] text-text-secondary">Ask again in your own words to try once more.</p>}
+    </div>
+  )
+}
+
+function SwitchRow({ label, hint, on, onToggle }: { label: string; hint: string; on: boolean; onToggle: () => void }) {
+  return (
+    <li>
+      <button type="button" role="switch" aria-checked={on} onClick={onToggle} className="ledger-row">
+        <span className="ledger-main">
+          <span className="ledger-title block !whitespace-normal">{label}</span>
+          <span className="ledger-sub block !whitespace-normal">{hint}</span>
+        </span>
+        <span className="flex shrink-0 items-center gap-2">
+          <span className={`w-7 text-right text-[0.875rem] font-bold ${on ? 'text-green' : 'text-text-secondary'}`}>{on ? 'On' : 'Off'}</span>
+          <span aria-hidden="true" className={`relative inline-block h-7 w-12 rounded-full border ${on ? 'border-blue bg-blue' : 'border-line bg-bg-input'}`}>
+            <span className={`absolute top-0.5 h-5 w-5 rounded-full ${on ? 'left-[1.5rem] bg-[rgb(var(--c-on-blue))]' : 'left-0.5 bg-text-muted'}`} />
+          </span>
+        </span>
+      </button>
+    </li>
+  )
+}
 
 function getAIErrorMessage(data: unknown, fallback = 'AI request failed') {
   if (!data || typeof data !== 'object') return fallback
@@ -741,37 +861,42 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
     return () => { cancelled = true }
   }, [data, query, result.manual])
 
+  // Manual diagrams are line drawings on white. A light colour scheme on the mat keeps
+  // them readable in dark mode without hardcoding a colour.
+  const imageMat = { colorScheme: 'light', backgroundColor: 'Canvas' } as const
+  const secondaryTips = view.actionLinks.filter(link => link.confidence !== 'manual_choice').slice(0, 4)
+
   return (
-    <div className="space-y-3 text-sm">
+    <div className="space-y-4 text-[0.9375rem]">
       {loadingContent && !content && (
-        <section className="rounded-lg border border-border bg-bg-hover p-4 text-sm text-text-muted">Pulling it straight from the manual…</section>
+        <p role="status" className="flex items-center gap-2 text-text-secondary"><span className="lamp lamp-amber" aria-hidden="true" />Pulling it straight from the manual…</p>
       )}
       {content?.procedureText && content.procedureText.length > 60 && (
-        <section className="rounded-lg border border-green/25 bg-green/[0.06] p-4">
-          <div className="text-xs font-black uppercase text-green">From the manual{content.sourceTitle ? ` — ${content.sourceTitle}` : ''}</div>
-          <div className="mt-2 max-w-none whitespace-pre-wrap text-sm leading-6 text-text-secondary" dangerouslySetInnerHTML={{ __html: renderProcedureHtml(content.procedureText) }} />
-          <a href={content.sourceUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex text-[11px] font-bold text-blue hover:underline">Open the full manual page</a>
+        <section className="rounded-lg border border-border bg-bg-card p-4">
+          <h4 className="flex items-center gap-2 font-bold"><span className="lamp lamp-green" aria-hidden="true" />From the manual{content.sourceTitle ? `: ${content.sourceTitle}` : ''}</h4>
+          <div className="mt-2 max-w-[70ch] whitespace-pre-wrap text-base leading-7" dangerouslySetInnerHTML={{ __html: renderProcedureHtml(content.procedureText) }} />
+          <a href={content.sourceUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex min-h-[44px] items-center font-bold text-blue underline underline-offset-4">Open the full manual page</a>
         </section>
       )}
       {content && content.images.length > 0 && (
-        <section className="rounded-lg border border-blue/25 bg-blue/5 p-4">
-          <div className="text-xs font-black uppercase text-blue">Diagram</div>
+        <section className="rounded-lg border border-border bg-bg-card p-4">
+          <h4 className="font-bold">Diagram</h4>
           <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
             {content.images.map(img => (
-              <a key={img.url} href={proxiedImage(img.url)} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-md border border-white/10 bg-white transition-colors hover:border-blue/50">
+              <a key={img.url} href={proxiedImage(img.url)} target="_blank" rel="noreferrer" style={imageMat} className="block overflow-hidden rounded-md border border-border hover:border-blue">
                 <img src={proxiedImage(img.url)} alt={img.alt} loading="lazy" className="h-auto w-full object-contain" />
               </a>
             ))}
           </div>
-          <div className="mt-2 text-[11px] font-bold text-text-muted">Tap to enlarge. Straight from the manual.</div>
+          <p className="mt-2 text-[0.8125rem] text-text-secondary">Tap a picture to enlarge it. These come straight from the manual.</p>
         </section>
       )}
       {(result.webImages?.length || 0) > 0 && (
-        <section className="rounded-lg border border-purple-500/30 bg-purple-500/10 p-4">
-          <div className="text-xs font-black uppercase text-purple-300">From the web — reference pictures, not factory pages</div>
+        <section className="rounded-lg border border-border bg-bg-card p-4">
+          <h4 className="flex items-center gap-2 font-bold"><span className="lamp lamp-amber" aria-hidden="true" />From the web: reference pictures, not factory pages</h4>
           <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
             {(result.webImages || []).map(img => (
-              <a key={img.url} href={img.source_url || img.url} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-md border border-white/10 bg-white transition-colors hover:border-purple-400/60">
+              <a key={img.url} href={img.source_url || img.url} target="_blank" rel="noreferrer" style={imageMat} className="block overflow-hidden rounded-md border border-border hover:border-blue">
                 <img
                   src={img.thumbnail || img.url}
                   alt={img.title || 'Web reference picture'}
@@ -782,45 +907,48 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
               </a>
             ))}
           </div>
-          <div className="mt-2 text-[11px] font-bold text-text-muted">Web pictures for reference — double-check against the manual before torquing anything.</div>
+          <p className="mt-2 text-[0.8125rem] text-text-secondary">Web pictures are for reference. Double-check them against the manual before you torque anything.</p>
         </section>
       )}
       {content && content.intent === 'diagram' && !content.diagramFound && !(result.webImages?.length) && (
-        <section className="rounded-lg border border-amber/30 bg-amber/10 p-4">
-          <div className="text-sm font-bold text-amber">No drawing found in the book or on the web this time.</div>
-          <p className="mt-1 text-sm text-text-secondary">The steps and specs are still here. Try once more or word it differently (&quot;front caliper exploded view&quot;).</p>
-          <button className="btn btn-secondary btn-sm mt-3" onClick={() => onAskNext?.(`look online for a ${query} diagram`)}>
+        <section role="status" className="rounded-lg border border-border bg-bg-card p-4">
+          <p className="flex items-center gap-2 font-bold"><span className="lamp lamp-amber" aria-hidden="true" />No drawing found in the book or on the web this time.</p>
+          <p className="mt-1 text-text-secondary">The steps and specs are still here. Try once more or word it differently (&quot;front caliper exploded view&quot;).</p>
+          <button className="btn btn-secondary mt-3" onClick={() => onAskNext?.(`look online for a ${query} diagram`)}>
             Try the web again
           </button>
         </section>
       )}
       {!loadingContent && !content && (
-        <section className="rounded-lg border border-amber/30 bg-amber/10 p-4">
-          <div className="text-sm font-bold text-amber">The manual site was slow — nothing came back this time.</div>
-          <p className="mt-1 text-sm text-text-secondary">It usually works on the second try (pages get remembered once fetched).</p>
-          <button className="btn btn-primary btn-sm mt-3" onClick={() => onAskNext?.(query)}>Try again</button>
+        <section role="status" className="rounded-lg border border-border bg-bg-card p-4">
+          <p className="flex items-center gap-2 font-bold"><span className="lamp lamp-amber" aria-hidden="true" />The manual site was slow, so nothing came back this time.</p>
+          <p className="mt-1 text-text-secondary">It usually works on the second try, because pages are remembered once fetched.</p>
+          <button className="btn btn-primary mt-3" onClick={() => onAskNext?.(query)}>Try again</button>
         </section>
       )}
 
-      <section className="rounded-lg border border-border bg-bg-hover p-4">
+      <section className="rounded-lg border border-border bg-bg-card p-4">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div className="text-xs font-black uppercase text-blue">Open in the manual</div>
-          <button className="btn btn-secondary btn-sm shrink-0" onClick={() => { window.location.href = repairWorkspaceUrl(query) }}>Repair workspace</button>
+          <h4 className="font-bold">Open in the manual</h4>
+          <button className="btn btn-secondary shrink-0" onClick={() => { window.location.href = repairWorkspaceUrl(query) }}>Repair workspace</button>
         </div>
         {content?.sourceUrl && (
-          <a href={content.sourceUrl} target="_blank" rel="noreferrer" className="mt-3 block rounded-md border border-blue/30 bg-blue/10 p-3 transition-colors hover:border-blue/60">
-            <span className="block font-black text-text-primary">Open the exact page{content.sourceTitle ? ` — ${content.sourceTitle}` : ''}</span>
-            <span className="mt-1 block text-xs text-text-secondary">Lands directly on the page shown above — no clicking around.</span>
+          <a href={content.sourceUrl} target="_blank" rel="noreferrer" className="mt-3 flex items-center gap-3 rounded-md border border-border bg-bg-base px-3 py-3 no-underline hover:bg-bg-hover">
+            <span className="min-w-0 flex-1">
+              <span className="block font-bold text-blue">Open the exact page{content.sourceTitle ? `: ${content.sourceTitle}` : ''}</span>
+              <span className="block text-[0.875rem] text-text-secondary">Lands directly on the page shown above, no clicking around.</span>
+            </span>
+            <Icon name="chevronRight" className="h-5 w-5 shrink-0 text-text-muted" />
           </a>
         )}
         {view.vehicleChoices.length > 0 && (
-          <div className="mt-3">
-            <div className="text-[11px] font-bold text-text-muted">Different engine or trim?</div>
+          <div className="mt-4">
+            <p className="text-[0.8125rem] font-bold text-text-secondary">Different engine or trim?</p>
             <div className="mt-2 flex flex-wrap gap-2">
               {view.vehicleChoices.slice(0, 6).map(choice => (
                 <button
                   key={choice.url}
-                  className="rounded-md border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs font-bold text-text-secondary hover:border-blue/40 hover:text-text-primary"
+                  className="btn btn-secondary"
                   onClick={() => onAskNext?.(choice.selectionQuery || `${query} ${choice.label}`)}
                 >
                   {choice.label}
@@ -829,25 +957,33 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
             </div>
           </div>
         )}
-        {!content && (
-          <div className="mt-3 grid gap-2 md:grid-cols-2">
+        {!content && secondaryTips.length > 0 && (
+          <ul className="ledger mt-3">
             {view.actionLinks.filter(link => link.confidence !== 'manual_choice').slice(0, 4).map(link => (
-              <a key={`${link.kind}-${link.url}`} href={link.url} target="_blank" rel="noreferrer" className="rounded-md border border-white/10 bg-white/[0.035] p-3 transition-colors hover:border-blue/50 hover:bg-blue/10">
-                <span className="block font-black text-text-primary">{link.label}</span>
-                <span className="mt-1 block text-xs leading-5 text-text-secondary">{link.detail}</span>
-              </a>
+              <li key={`${link.kind}-${link.url}`}>
+                <a href={link.url} target="_blank" rel="noreferrer" className="ledger-row">
+                  <span className="ledger-main">
+                    <span className="ledger-title block !whitespace-normal text-blue">{link.label}</span>
+                    <span className="ledger-sub block !whitespace-normal">{link.detail}</span>
+                  </span>
+                  <Icon name="chevronRight" className="h-5 w-5 shrink-0 text-text-muted" />
+                </a>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </section>
 
       {view.askNext.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {view.askNext.map(item => (
-            <button key={item} className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs font-bold text-text-secondary hover:border-green/40 hover:text-text-primary" onClick={() => onAskNext?.(item)}>
-              {item}
-            </button>
-          ))}
+        <div>
+          <p className="mb-2 text-[0.8125rem] font-bold text-text-secondary">Ask next</p>
+          <div className="flex flex-wrap gap-2">
+            {view.askNext.map(item => (
+              <button key={item} className="btn btn-secondary justify-start text-left" onClick={() => onAskNext?.(item)}>
+                {item}
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -874,7 +1010,6 @@ function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
   const [idx, setIdx] = useState(0)
   const [loaded, setLoaded] = useState(false)
   const [imgError, setImgError] = useState(false)
-  const [hovered, setHovered] = useState(false)
   useEffect(() => {
     setImgError(false)
     const fallback = setTimeout(() => setLoaded(true), 3000)
@@ -890,74 +1025,46 @@ function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
   const isDone = idx >= steps.length - 1
   let hostname = ''
   try { hostname = new URL(step.url).hostname } catch { hostname = step.url }
-  const faviconUrl = `https://www.google.com/s2/favicons?domain=${hostname}&sz=64`
   const openUrl = () => window.open(step.url, '_blank', 'noopener,noreferrer')
   return (
-    <div style={{borderRadius:'12px',overflow:'hidden',border:'1px solid rgba(255,255,255,0.1)',marginBottom:'4px',boxShadow:'0 4px 24px rgba(0,0,0,0.4)'}}>
-      {/* Title bar */}
-      <div style={{background:'#1c1c2e',padding:'8px 12px',display:'flex',alignItems:'center',gap:'8px',borderBottom:'1px solid rgba(255,255,255,0.07)'}}>
-        <div style={{display:'flex',gap:'5px',flexShrink:0}}>
-          <div style={{width:10,height:10,borderRadius:'50%',background:'#ff5f57'}} />
-          <div style={{width:10,height:10,borderRadius:'50%',background:'#febc2e'}} />
-          <div style={{width:10,height:10,borderRadius:'50%',background:'#28c840'}} />
-        </div>
-        <div style={{flex:1,background:'rgba(255,255,255,0.07)',borderRadius:'6px',padding:'4px 10px',fontSize:'11px',color:'#9ca3af',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',cursor:'pointer'}} onClick={openUrl} title="Click to open in browser">
-          {step.url}
-        </div>
-        <button onClick={openUrl} title="Open in browser" style={{flexShrink:0,background:'rgba(74,222,128,0.15)',border:'1px solid rgba(74,222,128,0.3)',borderRadius:'6px',padding:'3px 10px',fontSize:'11px',color:'#4ade80',cursor:'pointer',display:'flex',alignItems:'center',gap:'4px',fontWeight:600}}>
-          Open
-        </button>
-        <div style={{fontSize:'10px',color:isDone?'#4ade80':'#6b7280',flexShrink:0,fontWeight:600}}>{idx+1}/{steps.length}</div>
+    <section aria-label="Alpha's browser" className="max-w-3xl overflow-hidden rounded-lg border border-border bg-bg-card">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+        <Icon name="globe" className="h-5 w-5 shrink-0 text-text-secondary" />
+        <span className="min-w-0 flex-1 truncate text-[0.875rem] text-text-secondary" title={step.url}>{step.url}</span>
+        <span className="num shrink-0 text-[0.8125rem] text-text-secondary">Step {idx + 1} of {steps.length}</span>
       </div>
-      {/* Screenshot / content area */}
-      <div
-        style={{position:'relative',background:'#0a0a14',minHeight:200,cursor:'pointer'}}
-        onClick={openUrl}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        title="Click to open in browser"
-      >
+      <button type="button" onClick={openUrl} className="relative block w-full border-0 bg-bg-base p-0 text-left" aria-label={`Open ${hostname} in a new tab`}>
         {imgSrc && !imgError ? (
           <>
-            <img key={imgSrc} src={imgSrc} alt={`Alpha browser: ${step.title}`} style={{width:'100%',maxHeight:'45dvh',objectFit:'contain',display:'block',opacity:loaded?1:0,transition:'opacity 0.4s ease'}} onLoad={()=>setLoaded(true)} onError={()=>{setImgError(true);setLoaded(true)}} />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img key={imgSrc} src={imgSrc} alt={`Alpha browser: ${step.title}`} className={`block max-h-[45dvh] w-full object-contain transition-opacity ${loaded ? 'opacity-100' : 'opacity-0'}`} onLoad={() => setLoaded(true)} onError={() => { setImgError(true); setLoaded(true) }} />
             {!loaded && (
-              <div style={{position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:12,background:'#0a0a14'}}>
-                <div style={{width:28,height:28,borderRadius:'50%',border:'3px solid rgba(74,222,128,0.2)',borderTopColor:'#4ade80'}} />
-                <span style={{fontSize:'11px',color:'#4ade80'}}>Loading page...</span>
-              </div>
-            )}
-            {/* Hover overlay */}
-            {loaded && hovered && (
-              <div style={{position:'absolute',inset:0,background:'rgba(0,0,0,0.45)',display:'flex',alignItems:'center',justifyContent:'center',transition:'opacity 0.2s'}}>
-                <div style={{background:'rgba(74,222,128,0.9)',color:'#000',fontWeight:700,fontSize:'14px',padding:'10px 24px',borderRadius:'8px',display:'flex',alignItems:'center',gap:'8px'}}>
-                  Open in Browser
-                </div>
+              <div className="absolute inset-0 grid place-items-center">
+                <span className="text-[0.9375rem] text-text-secondary">Loading page…</span>
               </div>
             )}
           </>
         ) : (
-          <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'40px 24px',gap:16,minHeight:200}}>
-            <img src={faviconUrl} alt="" style={{width:48,height:48,borderRadius:8,background:'rgba(255,255,255,0.05)',padding:4}} onError={(e)=>{(e.target as HTMLImageElement).style.display='none'}} />
-            <div style={{fontSize:'18px',fontWeight:600,color:'#e5e7eb',textAlign:'center'}}>{step.title || hostname}</div>
-            <div style={{fontSize:'12px',color:'#6b7280',textAlign:'center',maxWidth:400}}>{step.url}</div>
-            <div style={{marginTop:8,padding:'6px 16px',borderRadius:20,background:'rgba(74,222,128,0.1)',border:'1px solid rgba(74,222,128,0.2)',fontSize:'11px',color:'#4ade80'}}>{isDone ? 'Page analyzed' : 'Browsing...'}</div>
+          <div className="flex min-h-[10rem] flex-col items-center justify-center gap-2 px-6 py-8 text-center">
+            <Icon name="globe" className="h-8 w-8 text-text-muted" />
+            <div className="display text-[1.125rem] font-bold">{step.title || hostname}</div>
+            <div className="max-w-full truncate text-[0.8125rem] text-text-secondary">{step.url}</div>
           </div>
         )}
+      </button>
+      <div className="flex items-center gap-3 border-t border-border px-3 py-2.5">
+        <span className={`lamp ${isDone ? 'lamp-green' : 'lamp-amber'}`} aria-hidden="true" />
+        <span className="shrink-0 text-[0.9375rem] font-bold">{isDone ? 'Done' : 'Working'}</span>
+        <span className="min-w-0 flex-1 text-[0.9375rem] leading-snug text-text-secondary">{step.action}</span>
+        <button type="button" onClick={openUrl} className="btn btn-secondary btn-sm shrink-0">Open page</button>
       </div>
-      {/* Status bar */}
-      <div style={{background:'#12121f',padding:'10px 14px',borderTop:'1px solid rgba(255,255,255,0.05)',display:'flex',alignItems:'center',gap:'10px'}}>
-        <span style={{fontSize:'11px',fontWeight:700,flexShrink:0}}>WEB</span>
-        <span style={{fontSize:'12px',color:'#d1d5db',flex:1,lineHeight:1.5}}>{step.action}</span>
-        {!isDone && <span style={{fontSize:'10px',color:'#4ade80',flexShrink:0,fontWeight:600}}>Working</span>}
-        {isDone && <span style={{fontSize:'10px',color:'#4ade80',flexShrink:0,fontWeight:600}}>Done</span>}
-      </div>
-    </div>
+    </section>
   )
 }
 
 export default function AIPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: 'assistant', content: "Hey! I'm Alpha AI, your shop command center. I can create customers, open jobs, build estimates, send texts and emails, look up anyone's history, check shop stats, schedule follow-ups, and more. What do you need?" }
+    { role: 'assistant', content: INTRO_GREETING }
   ])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -967,6 +1074,9 @@ export default function AIPage() {
   const [showHistory, setShowHistory] = useState(false)
   const [showActivity, setShowActivity] = useState(false)
   const [history, setHistory] = useState<HistoryEntry[]>([])
+  const [historyStatus, setHistoryStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [showOptions, setShowOptions] = useState(false)
+  const [showAttach, setShowAttach] = useState(false)
   const [historySaveError, setHistorySaveError] = useState<HistoryEntry | null>(null)
 const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:string;subject?:string;customerId?:string;customerName?:string;idempotencyKey:string}|null>(null)
   const [pendingAction, setPendingAction] = useState<{ action: string; payload: Record<string, unknown>; kind?: 'connector' | 'automation' | 'browser'; endpoint?: string; idempotencyKey?: string } | null>(null)
@@ -1152,17 +1262,16 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   // Conversation history is stored per user/shop in Supabase so it follows
   // the operator between browsers and devices. Keep the local state only as a
   // fast display cache; it is never the source of truth.
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      try {
-        const res = await fetch('/api/ai-chat-history?limit=30', { headers: await getAuthJsonHeaders() })
-        const data = await res.json().catch(() => ({}))
-        if (!cancelled && res.ok && data.ok && Array.isArray(data.history)) setHistory(data.history)
-      } catch { /* history is optional; the chat still works */ }
-    })()
-    return () => { cancelled = true }
+  const loadHistory = useCallback(async () => {
+    setHistoryStatus('loading')
+    try {
+      const res = await fetch('/api/ai-chat-history?limit=30', { headers: await getAuthJsonHeaders() })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.ok && Array.isArray(data.history)) { setHistory(data.history); setHistoryStatus('ready') }
+      else setHistoryStatus('error')
+    } catch { setHistoryStatus('error') /* history is optional; the chat still works */ }
   }, [])
+  useEffect(() => { void loadHistory() }, [loadHistory])
 
   const saveToHistory = useCallback((msgs: ChatMessage[], sessionId = chatSessionIdRef.current) => {
     if (msgs.length < 2) return
@@ -1202,7 +1311,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     setRepairOnlyMode(true)
     setMessages([{
       role: 'assistant',
-      content: 'Repair Only Mode is on. I will stay focused on diagnostics, repair sources, safety checks, work notes, and estimate-ready repair details.',
+      content: REPAIR_GREETING,
     }])
   }, [])
 
@@ -1239,8 +1348,37 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
 
   useEffect(() => {
     const scroller = bottomRef.current?.parentElement
-    if (scroller) scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' })
-  }, [messages, status])
+    if (!scroller) return
+    // A new or empty chat starts at the top so the intro and suggestions are all in view.
+    if (messages.length <= 1) scroller.scrollTo({ top: 0 })
+    else scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' })
+  }, [messages, status, workflowApproval, pendingAction, pendingSms])
+
+  // Phones keep the layout the same size when the on-screen keyboard opens and cover the
+  // bottom of the page instead. Shrink the chat by the covered part so the composer
+  // stays visible just above the keyboard.
+  const [keyboardInset, setKeyboardInset] = useState(0)
+  useEffect(() => {
+    const viewport = window.visualViewport
+    if (!viewport) return
+    const update = () => {
+      const covered = Math.round(window.innerHeight - viewport.height - viewport.offsetTop)
+      setKeyboardInset(covered > 120 ? covered : 0)
+    }
+    update()
+    viewport.addEventListener('resize', update)
+    viewport.addEventListener('scroll', update)
+    return () => { viewport.removeEventListener('resize', update); viewport.removeEventListener('scroll', update) }
+  }, [])
+
+  // Let the message box grow with what is typed, up to about six lines.
+  const composerRef = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => {
+    const box = composerRef.current
+    if (!box) return
+    box.style.height = 'auto'
+    box.style.height = `${Math.min(box.scrollHeight, 168)}px`
+  }, [input])
 
   useEffect(() => {
     const latestRepair = [...messages].reverse().find(message => message.repairResult)?.repairResult
@@ -1286,9 +1424,11 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   const [connectorsLoading, setConnectorsLoading] = useState(false)
   const [disconnecting, setDisconnecting] = useState<string | null>(null)
   const [connectorToast, setConnectorToast] = useState('')
+  const [connectorsFailed, setConnectorsFailed] = useState(false)
 
   const loadConnectors = useCallback(async () => {
     setConnectorsLoading(true)
+    setConnectorsFailed(false)
     try {
       const response = await fetch('/api/connectors', {
         headers: await getAuthJsonHeaders(),
@@ -1300,6 +1440,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       for (const c of (data.connectors || [])) map[c.service] = c
       setConnectors(map)
     } catch (error) {
+      setConnectorsFailed(true)
       setConnectorToast(error instanceof Error ? error.message : 'Could not load connections')
       setTimeout(() => setConnectorToast(''), 3000)
     }
@@ -2523,7 +2664,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `action.${actionName}`, status: 'error', detail: 'Waiting for confirmation' })
           const assistantMsg: ChatMessage = {
             role: 'assistant',
-            content: `${actionName} is prepared for review. Nothing was changed. Confirm it below if you want me to run it.`,
+            content: `I prepared this: ${humanizeTool(actionName).toLowerCase()}. Nothing has changed yet. Check the details below, then approve it to run.`,
           }
           setMessages(prev => [...prev, assistantMsg])
           saveToHistory([...history, assistantMsg])
@@ -2609,7 +2750,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         const channel = (parsed.channel as string) || 'sms'
         const assistantMsg: ChatMessage = {
           role: 'assistant',
-          content: `Draft ${channel === 'email' ? 'email' : 'text'} ready - review below and hit Send.`
+          content: `Draft ${channel === 'email' ? 'email' : 'text'} ready. Check it below, then approve it to send.`
         }
         setMessages(prev => [...prev, assistantMsg])
         saveToHistory([...history, assistantMsg])
@@ -3087,30 +3228,20 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
 
   // Voice call status card
   const renderVoiceCallCard = (state: VoiceCallState): string => {
-    const statusColors: Record<string, string> = {
-      dialing: '#f59e0b',
-      active: '#10b981',
-      ended: '#6b7280',
-      error: '#ef4444',
-    }
-    const color = statusColors[state.status] || '#6b7280'
-    const statusLabel = state.status.charAt(0).toUpperCase() + state.status.slice(1)
-    return `<div class="voice-call-card" style="border:1px solid ${color};border-radius:12px;padding:12px;background:var(--bg-card,#1a1a2e)">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-        <span style="width:10px;height:10px;border-radius:50%;background:${color};display:inline-block${state.status==='active'?' animation:pulse 1s infinite':''};"></span>
-        <strong>AI Voice Call</strong>
-        <span style="color:${color};font-size:0.75rem;margin-left:auto">${escapeHtml(statusLabel)}</span>
-      </div>
-      <div style="font-size:0.8rem;color:#9ca3af">Calling: ${escapeHtml(String(state.to || ''))}</div>
-      <div style="font-size:0.8rem;margin-top:4px">${escapeHtml(String(state.task || ''))}</div>
-      <div style="font-size:0.75rem;color:#6b7280;margin-top:6px">AI is handling the conversation. Summary will appear when the call ends.</div>
+    const lamp = state.status === 'active' ? 'lamp-green' : state.status === 'error' ? 'lamp-red' : state.status === 'ended' ? 'lamp-off' : 'lamp-amber'
+    const statusLabel = state.status === 'dialing' ? 'Dialing' : state.status === 'active' ? 'Live' : state.status === 'ended' ? 'Ended' : 'Failed'
+    return `<div class="voice-call-card w-full max-w-[40rem] rounded-lg border border-line bg-bg-card p-4 text-[0.9375rem]">
+      <div class="flex items-center gap-2 font-bold"><span class="lamp ${lamp}" aria-hidden="true"></span>AI voice call<span class="ml-auto">${escapeHtml(statusLabel)}</span></div>
+      <p class="mt-2 text-text-secondary">Calling ${escapeHtml(String(state.to || ''))}</p>
+      <p class="mt-1">${escapeHtml(String(state.task || ''))}</p>
+      <p class="mt-2 text-[0.8125rem] text-text-secondary">Alpha is handling the conversation. A summary appears here when the call ends.</p>
     </div>`
   }
 
   // Voice call summary card (shown after call ends)
   const renderVoiceSummary = (d: {summary?: string; transcript?: Array<{speaker:string;text:string}>; duration?: number; to?: string; recording_url?: string}): string => {
     const lines = (d.transcript || []).map(t =>
-      `<div style="margin:3px 0;font-size:0.8rem"><span style="color:${t.speaker==='ai'?'#60a5fa':'#a3e635'};font-weight:600">${t.speaker==='ai'?'AI':'Person'}:</span> ${escapeHtml(String(t.text || ''))}</div>`
+      `<p class="mt-1.5 first:mt-0"><span class="font-bold">${t.speaker==='ai'?'Alpha':'Person'}:</span> ${escapeHtml(String(t.text || ''))}</p>`
     ).join('')
     const dur = d.duration ? `${Math.floor(d.duration/60)}m ${d.duration%60}s` : ''
     // Use the proxy route so the recording is always accessible (S3 presigned URLs expire in 10min)
@@ -3119,23 +3250,20 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       : ''
     const escapedProxyUrl = escapeHtml(proxyUrl)
     const recordingBlock = proxyUrl
-      ? `<div style="margin-bottom:12px">
-          <div style="font-size:0.75rem;color:#9ca3af;margin-bottom:4px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em">Call Recording</div>
-          <audio controls style="width:100%;border-radius:8px">
+      ? `<div class="mt-3">
+          <p class="mb-1 text-[0.8125rem] font-bold text-text-secondary">Call recording</p>
+          <audio controls class="w-full">
             <source src="${escapedProxyUrl}" type="audio/mpeg">
             Your browser does not support audio playback.
           </audio>
-          <a href="${escapedProxyUrl}" download="call-recording.mp3" style="display:inline-block;margin-top:4px;font-size:0.75rem;color:#60a5fa">Download MP3</a>
+          <a href="${escapedProxyUrl}" download="call-recording.mp3" class="mt-1 inline-flex min-h-[44px] items-center font-bold text-blue underline underline-offset-4">Download MP3</a>
         </div>`
       : ''
-    return `<div style="border:1px solid #374151;border-radius:12px;padding:16px;background:var(--bg-card,#1a1a2e)">
-      <div style="font-weight:700;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
-        <span>AI Call Summary</span>
-        <span style="font-size:0.75rem;color:#9ca3af">${dur}</span>
-      </div>
+    return `<div class="w-full max-w-[40rem] rounded-lg border border-line bg-bg-card p-4 text-[0.9375rem]">
+      <div class="flex items-center gap-2 font-bold"><span class="lamp lamp-off" aria-hidden="true"></span>AI call summary<span class="num ml-auto text-text-secondary">${dur}</span></div>
       ${recordingBlock}
-      ${d.summary ? `<div style="background:#0f172a;border-radius:8px;padding:10px;margin-bottom:10px;font-size:0.85rem;white-space:pre-wrap">${escapeHtml(String(d.summary))}</div>` : ''}
-      ${lines ? `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:0.8rem;color:#6b7280">Full Transcript</summary><div style="margin-top:8px;padding:8px;background:#111827;border-radius:8px">${lines}</div></details>` : ''}
+      ${d.summary ? `<div class="mt-3 whitespace-pre-wrap rounded-md bg-bg-base px-3 py-2.5 text-base leading-relaxed">${escapeHtml(String(d.summary))}</div>` : ''}
+      ${lines ? `<details class="mt-3"><summary class="min-h-[44px] cursor-pointer py-2 font-bold text-blue">Full transcript</summary><div class="mt-1 rounded-md bg-bg-base px-3 py-2.5">${lines}</div></details>` : ''}
     </div>`
   }
 
@@ -3293,12 +3421,14 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         const sendOptions: string[] = []
         if (email) sendOptions.push('email')
         if (phone) sendOptions.push('SMS')
-        const sendHtml = `<div class="proposal-card" style="margin-top:8px">
-          <div class="font-bold text-sm mb-2">${escapeHtml(docType)} ${escapeHtml(String(docNum))} saved! Send to ${escapeHtml(String(normalized.customer || 'customer'))}?</div>
-          <div class="flex gap-2">
-            ${email ? `<button type="button" data-ai-action="send-saved-doc" data-doc-id="${escapeHtml(String(documentId))}" data-channel="email" data-to="${escapeHtml(email)}" class="btn btn-primary btn-sm">Email to ${escapeHtml(email)}</button>` : ''}
-            ${phone ? `<button type="button" data-ai-action="send-saved-doc" data-doc-id="${escapeHtml(String(documentId))}" data-channel="sms" data-to="${escapeHtml(phone)}" class="btn btn-secondary btn-sm">SMS to ${escapeHtml(phone)}</button>` : ''}
-            <button type="button" data-ai-action="dismiss-card" class="btn btn-sm" style="opacity:0.6">Skip</button>
+        const sendHtml = `<div class="proposal-card w-full max-w-[40rem] rounded-lg border border-line border-l-[6px] border-l-[rgb(var(--lamp-green))] bg-bg-card p-4 text-[0.9375rem] sm:p-5">
+          <div class="flex items-center gap-2 font-bold"><span class="lamp lamp-green" aria-hidden="true"></span>Saved as a draft</div>
+          <div class="display mt-2 text-[1.25rem] font-bold leading-snug">${escapeHtml(docType)} ${escapeHtml(String(docNum))} for ${escapeHtml(String(normalized.customer || 'the customer'))}</div>
+          <p class="mt-1 text-text-secondary">Want to send it now? Nothing is sent until you tap a button.</p>
+          <div class="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+            ${email ? `<button type="button" data-ai-action="send-saved-doc" data-doc-id="${escapeHtml(String(documentId))}" data-channel="email" data-to="${escapeHtml(email)}" class="btn btn-primary w-full sm:w-auto">Email to ${escapeHtml(email)}</button>` : ''}
+            ${phone ? `<button type="button" data-ai-action="send-saved-doc" data-doc-id="${escapeHtml(String(documentId))}" data-channel="sms" data-to="${escapeHtml(phone)}" class="btn btn-secondary w-full sm:w-auto">Text to ${escapeHtml(phone)}</button>` : ''}
+            <button type="button" data-ai-action="dismiss-card" class="btn btn-ghost w-full sm:w-auto">Not now</button>
           </div>
         </div>`
         setMessages(prev => [...prev, { role: 'assistant', content: '', html: sendHtml }])
@@ -3339,20 +3469,69 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
     return JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>
   }
 
-  // Render a small safe markdown subset for chat messages.
+  // Render a small safe markdown subset for chat messages: paragraphs, lists, headings,
+  // simple tables, bold, inline code, links and images. All text is escaped first, so
+  // model or provider output can never add markup of its own.
+  const renderInline = (escaped: string): string => escaped
+    // YouTube embeds: [YouTube](embed_url) or bare embed URLs
+    .replace(/(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([\w-]{11})/g, (_m, id) => `<div style="margin:8px 0;border-radius:12px;overflow:hidden;max-width:480px"><iframe width="100%" height="270" src="https://www.youtube.com/embed/${id}" frameborder="0" allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture" allowfullscreen style="border-radius:12px"></iframe></div>`)
+    // Images: ![alt](url)
+    .replace(/!\[([^\]]*)]\(([^)]+)\)/g, (_m, alt, url) => `<img src="${safeUrl(String(url).replace(/&amp;/g, '&'))}" alt="${escapeHtml(alt)}" class="rounded-lg max-w-full sm:max-w-[300px] max-h-[300px] object-cover my-1 inline-block" />`)
+    // Links: [text](url)
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, url) => `<a href="${safeUrl(String(url).replace(/&amp;/g, '&'))}" target="_blank" rel="noopener noreferrer" class="font-bold text-blue underline underline-offset-4">${escapeHtml(label)}</a>`)
+    // Bold: **text**
+    .replace(/\*\*([^*]+)\*\*/g, '<strong class="font-bold">$1</strong>')
+    // Inline code: `text`
+    .replace(/`([^`]+)`/g, '<code class="rounded bg-text-primary/[0.08] px-1 py-0.5 text-[0.9em]">$1</code>')
+
   const renderMarkdown = (text: string): string => {
-    const escaped = escapeHtml(text)
-    return escaped
-      // YouTube embeds: [YouTube](embed_url) or bare embed URLs
-      .replace(/(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([\w-]{11})/g, (_m, id) => `<div style="margin:8px 0;border-radius:12px;overflow:hidden;max-width:480px"><iframe width="100%" height="270" src="https://www.youtube.com/embed/${id}" frameborder="0" allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture" allowfullscreen style="border-radius:12px"></iframe></div>`)
-            // Images: ![alt](url)
-      .replace(/!\[([^\]]*)]\(([^)]+)\)/g, (_m, alt, url) => `<img src="${safeUrl(url)}" alt="${escapeHtml(alt)}" class="rounded-lg max-w-full sm:max-w-[300px] max-h-[300px] object-cover my-1 inline-block" />`)
-      // Links: [text](url)
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, url) => `<a href="${safeUrl(url)}" target="_blank" rel="noopener noreferrer" class="text-blue underline hover:text-blue/80">${escapeHtml(label)}</a>`)
-      // Bold: **text**
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      // Newlines
-      .replace(/\n/g, '<br />')
+    const lines = escapeHtml(text).split('\n')
+    const out: string[] = []
+    let paragraph: string[] = []
+    let list: { tag: 'ul' | 'ol'; items: string[]; start: number } | null = null
+    const flushParagraph = () => {
+      if (paragraph.length) out.push(`<p class="mt-3 first:mt-0">${paragraph.map(renderInline).join('<br />')}</p>`)
+      paragraph = []
+    }
+    const flushList = () => {
+      if (list) {
+        const style = list.tag === 'ul' ? 'list-disc' : 'list-decimal'
+        const start = list.tag === 'ol' && list.start > 1 ? ` start="${list.start}"` : ''
+        out.push(`<${list.tag}${start} class="mt-3 first:mt-0 ${style} space-y-1.5 pl-6">${list.items.map(item => `<li class="pl-1">${renderInline(item)}</li>`).join('')}</${list.tag}>`)
+      }
+      list = null
+    }
+    const cells = (row: string) => row.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim())
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]
+      if (!line.trim()) { flushParagraph(); flushList(); continue }
+      const heading = line.match(/^\s{0,3}#{1,6}\s+(.*)$/)
+      if (heading) { flushParagraph(); flushList(); out.push(`<h3 class="mt-4 first:mt-0 font-bold text-[1.0625rem] leading-snug">${renderInline(heading[1])}</h3>`); continue }
+      if (line.trim().startsWith('|') && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[i + 1])) {
+        flushParagraph(); flushList()
+        const head = cells(line)
+        const rows: string[][] = []
+        i += 2
+        while (i < lines.length && lines[i].trim().startsWith('|')) { rows.push(cells(lines[i])); i++ }
+        i--
+        out.push(`<div class="mt-3 first:mt-0 overflow-x-auto rounded-lg border border-border"><table class="w-full text-[0.9375rem]"><thead><tr>${head.map(cell => `<th class="whitespace-nowrap border-b border-line px-3 py-2 text-left text-[0.8125rem] font-bold text-text-secondary">${renderInline(cell)}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr>${head.map((_, c) => `<td class="border-b border-border px-3 py-2 align-top">${renderInline(row[c] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`)
+        continue
+      }
+      const bullet = line.match(/^\s*[-*•]\s+(.*)$/)
+      const numbered = line.match(/^\s*(\d{1,3})[.)]\s+(.*)$/)
+      if (bullet || numbered) {
+        flushParagraph()
+        const tag = bullet ? 'ul' : 'ol'
+        if (list && list.tag !== tag) flushList()
+        if (!list) list = { tag, items: [], start: numbered ? Number(numbered[1]) : 1 }
+        list.items.push(bullet ? bullet[1] : numbered![2])
+        continue
+      }
+      flushList()
+      paragraph.push(line)
+    }
+    flushParagraph(); flushList()
+    return out.join('')
   }
 
   const renderProposal = (parsed: Record<string, unknown>, userText = ''): string => {
@@ -3365,23 +3544,26 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
     const docType = (normalized.type as string) || 'Estimate'
     const proposalId = crypto.randomUUID()
     const encodedData = encodeProposalPayload({ ...normalized, _request_id: proposalId })
-    return `<div class="proposal-card" id="proposal-${proposalId}">
-      <div class="font-bold text-base mb-2">Proposed ${escapeHtml(docType)} - ${escapeHtml(String(normalized.customer || ''))}</div>
-      ${parts.length ? `<table class="w-full text-xs mb-3"><thead><tr class="text-text-muted"><th class="text-left pb-1">Part</th><th class="text-right pb-1">Qty</th><th class="text-right pb-1">Price</th><th class="text-right pb-1">Total</th></tr></thead><tbody>${parts.map(p=>`<tr><td>${escapeHtml(String(p.name || p.description || 'Part'))}</td><td class="text-right">${escapeHtml(String(p.qty||1))}</td><td class="text-right">${fmt(Number(p.unitPrice)||0)}</td><td class="text-right">${fmt(partLineTotal(p))}</td></tr>`).join('')}</tbody></table>` : ''}
-      ${labors.length ? `<table class="w-full text-xs mb-3"><thead><tr class="text-text-muted"><th class="text-left pb-1">Labor</th><th class="text-right pb-1">Hrs</th><th class="text-right pb-1">Total</th></tr></thead><tbody>${labors.map(l=>`<tr><td>${escapeHtml(String(l.operation || l.description || 'Labor'))}</td><td class="text-right">${getLaborFlatAmount(l) !== null ? 'Flat' : escapeHtml(String(l.hours || 0))}</td><td class="text-right">${fmt(laborLineTotal(l))}</td></tr>`).join('')}</tbody></table>` : ''}
-      <div class="border-t border-border pt-2 space-y-1 text-xs">
-        <div class="flex justify-between"><span>Parts</span><span>${fmt(partsTotal)}</span></div>
-        <div class="flex justify-between"><span>Labor</span><span>${fmt(laborTotal)}</span></div>
-        ${coreTotal > 0 ? `<div class="flex justify-between"><span>Core Charges</span><span>${fmt(coreTotal)}</span></div>` : ''}
-        ${shopSupplies > 0 ? `<div class="flex justify-between"><span>Shop Supplies</span><span>${fmt(shopSupplies)}</span></div>` : ''}
-        ${sublet > 0 ? `<div class="flex justify-between"><span>Sublet</span><span>${fmt(sublet)}</span></div>` : ''}
-        <div class="flex justify-between"><span>Tax${applyTax ? ` (${taxRate}%)` : ''}</span><span>${fmt(tax)}</span></div>
-        <div class="flex justify-between font-bold text-base mt-1 pt-1 border-t border-border"><span>Total</span><span class="text-green">${fmt(total)}</span></div>
-      </div>
-      <div class="flex gap-2 mt-3">
-        <button type="button" data-ai-action="save-proposal" data-payload="${encodedData}" class="btn btn-success btn-sm">Save ${escapeHtml(docType)}</button>
-        <button type="button" data-ai-action="edit-proposal" data-payload="${encodedData}" class="btn btn-secondary btn-sm">Edit</button>
-        <button type="button" data-ai-action="dismiss-card" class="btn btn-sm" style="background:rgba(239,68,68,0.1);color:#ef4444;border:1px solid rgba(239,68,68,0.3)">Delete</button>
+    const row = (label: string, value: string, strong = false) => `<div class="flex justify-between gap-3${strong ? ' items-baseline border-t border-border pt-2 mt-1' : ''}"><dt class="${strong ? 'font-bold' : 'text-text-secondary'}">${label}</dt><dd class="num${strong ? ' display text-[1.375rem] font-bold' : ''}">${value}</dd></div>`
+    return `<div class="proposal-card w-full max-w-[40rem] rounded-lg border border-line border-l-[6px] border-l-[rgb(var(--lamp-amber))] bg-bg-card p-4 text-[0.9375rem] sm:p-5" id="proposal-${proposalId}">
+      <div class="flex items-center gap-2 font-bold"><span class="lamp lamp-amber" aria-hidden="true"></span>Draft, not saved yet</div>
+      <div class="display mt-2 text-[1.25rem] font-bold leading-snug">Proposed ${escapeHtml(docType.toLowerCase())} for ${escapeHtml(String(normalized.customer || 'the customer'))}</div>
+      <p class="mt-1 text-text-secondary">Saving keeps it as a draft. It is not sent to the customer.</p>
+      ${parts.length ? `<div class="mt-4 overflow-x-auto"><table class="w-full"><thead><tr><th class="border-b border-line py-1.5 text-left text-[0.8125rem] font-bold text-text-secondary">Part</th><th class="border-b border-line py-1.5 text-right text-[0.8125rem] font-bold text-text-secondary">Qty</th><th class="border-b border-line py-1.5 text-right text-[0.8125rem] font-bold text-text-secondary">Price</th><th class="border-b border-line py-1.5 text-right text-[0.8125rem] font-bold text-text-secondary">Total</th></tr></thead><tbody>${parts.map(p=>`<tr><td class="border-b border-border py-2 pr-2">${escapeHtml(String(p.name || p.description || 'Part'))}</td><td class="num border-b border-border py-2 text-right">${escapeHtml(String(p.qty||1))}</td><td class="num border-b border-border py-2 text-right">${fmt(Number(p.unitPrice)||0)}</td><td class="num border-b border-border py-2 text-right font-bold">${fmt(partLineTotal(p))}</td></tr>`).join('')}</tbody></table></div>` : ''}
+      ${labors.length ? `<div class="mt-4 overflow-x-auto"><table class="w-full"><thead><tr><th class="border-b border-line py-1.5 text-left text-[0.8125rem] font-bold text-text-secondary">Labor</th><th class="border-b border-line py-1.5 text-right text-[0.8125rem] font-bold text-text-secondary">Hours</th><th class="border-b border-line py-1.5 text-right text-[0.8125rem] font-bold text-text-secondary">Total</th></tr></thead><tbody>${labors.map(l=>`<tr><td class="border-b border-border py-2 pr-2">${escapeHtml(String(l.operation || l.description || 'Labor'))}</td><td class="num border-b border-border py-2 text-right">${getLaborFlatAmount(l) !== null ? 'Flat' : escapeHtml(String(l.hours || 0))}</td><td class="num border-b border-border py-2 text-right font-bold">${fmt(laborLineTotal(l))}</td></tr>`).join('')}</tbody></table></div>` : ''}
+      <dl class="mt-4 space-y-1.5">
+        ${row('Parts', fmt(partsTotal))}
+        ${row('Labor', fmt(laborTotal))}
+        ${coreTotal > 0 ? row('Core charges', fmt(coreTotal)) : ''}
+        ${shopSupplies > 0 ? row('Shop supplies', fmt(shopSupplies)) : ''}
+        ${sublet > 0 ? row('Sublet', fmt(sublet)) : ''}
+        ${row(`Tax${applyTax ? ` (${taxRate}%)` : ''}`, fmt(tax))}
+        ${row('Total', fmt(total), true)}
+      </dl>
+      <div class="mt-4 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+        <button type="button" data-ai-action="dismiss-card" class="btn btn-secondary w-full sm:w-auto">Discard</button>
+        <button type="button" data-ai-action="edit-proposal" data-payload="${encodedData}" class="btn btn-secondary w-full sm:w-auto">Change something</button>
+        <button type="button" data-ai-action="save-proposal" data-payload="${encodedData}" class="btn btn-primary w-full sm:w-auto">Save ${escapeHtml(docType.toLowerCase())} as draft</button>
       </div>
     </div>`
   }
@@ -3399,7 +3581,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
     if (action === 'dismiss-card') {
       const card = element.closest('.proposal-card')
       if (card) (card as HTMLElement).style.display = 'none'
-      showToast('Proposal dismissed')
+      showToast('Draft dismissed')
       return
     }
 
@@ -3412,7 +3594,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         const originalText = element.textContent
         element.textContent = 'Saving…'
         const saved = await saveProposal(parsed)
-        element.textContent = saved ? 'Saved — draft' : originalText
+        element.textContent = saved ? 'Saved as draft' : originalText
         if (element instanceof HTMLButtonElement) element.disabled = saved
         return
       }
@@ -3452,7 +3634,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       await navigator.mediaDevices.getUserMedia({ audio: true })
        
       const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-      if (!SR) { alert('Voice input not supported. Please use Chrome or Edge.'); return }
+      if (!SR) { showToast('Voice input is not supported in this browser. Try Chrome or Edge.'); return }
       const recognition = new SR()
       recognitionRef.current = recognition
       recognition.continuous = false
@@ -3466,7 +3648,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         setInput(prev => prev ? prev + ' ' + t : t)
       }
       recognition.start()
-    } catch { alert('Microphone access denied. Please allow microphone access and try again.') }
+    } catch { showToast('Microphone access is blocked. Allow the microphone for this site, then try again.') }
   }
 
   const loadConversation = (entry: HistoryEntry) => {
@@ -3538,357 +3720,325 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
     return groups.filter(g => g.entries.length > 0)
   }
 
-  const suggested = repairOnlyMode ? [
-    "2005 Honda Civic P0420",
-    "2018 Jeep Wrangler brake diagram",
-    "2004 Honda Accord all four brakes procedure",
-    "2016 Cadillac Escalade front lower control arm specs",
-    "P0300 diagnostic checks for a 2012 Chevy Silverado",
-    "Find wiring diagram for turn signal bulbs on a 2018 Wrangler",
+  const suggested: { icon: string; title: string; prompt: string }[] = repairOnlyMode ? [
+    { icon: 'manual', title: 'Look up a trouble code', prompt: '2005 Honda Civic P0420' },
+    { icon: 'manual', title: 'Find a brake diagram', prompt: '2018 Jeep Wrangler brake diagram' },
+    { icon: 'wrench', title: 'Get a brake procedure', prompt: '2004 Honda Accord all four brakes procedure' },
+    { icon: 'inspect', title: 'Check what to test first', prompt: 'P0300 diagnostic checks for a 2012 Chevy Silverado' },
+    { icon: 'parts', title: 'Find a part spec', prompt: '2016 Cadillac Escalade front lower control arm specs' },
   ] : [
-    "What jobs are open right now?",
-    "Build me an estimate for front brakes on a 2019 Toyota Camry",
-    "Who hasn't been in for 90+ days?",
-    "How much revenue this month?",
-    "Create a new customer: John Smith, 555-123-4567",
-    "Open a new job for the white 2020 Honda Civic - AC not blowing cold",
-    "What are today's shop stats?",
-    "Schedule a follow-up text to remind about the oil change",
-    "Draft a follow-up text for customers with unpaid invoices",
-    "Who hasn't paid in over 30 days?",
-    "Which tech has the most open jobs right now?",
-    "Write a supplement request for an insurance job",
-    "Look up everything we have on Maria Garcia",
-    "Generate a slow-day outreach message",
-    "Give me a Google review response",
+    { icon: 'doc', title: 'Write an estimate', prompt: 'Build me an estimate for front brakes on a 2019 Toyota Camry' },
+    { icon: 'dollar', title: 'Find who owes you money', prompt: "Who hasn't paid in over 30 days?" },
+    { icon: 'send', title: 'Text a customer', prompt: 'Draft a follow-up text for customers with unpaid invoices' },
+    { icon: 'customers', title: 'Win back customers', prompt: "Who hasn't been in for 90+ days?" },
+    { icon: 'wrench', title: 'See open jobs', prompt: 'What jobs are open right now?' },
+    { icon: 'growth', title: 'Check this month', prompt: 'How much revenue this month?' },
   ]
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const activeAgent = routeDecision ? AGENTS.find(agent => agent.id === routeDecision.agentId) : null
   const activeSkills = routeDecision ? routeDecision.skillIds.map(id => SKILLS.find(skill => skill.id === id)?.name || id) : []
 
+  const busy = loading || confirmingAction || sendingSms
+  const closeHistory = useCallback(() => setShowHistory(false), [])
+  const closeOptions = useCallback(() => setShowOptions(false), [])
+  const closeAttach = useCallback(() => setShowAttach(false), [])
+  const closeConnectors = useCallback(() => setShowConnectorsPopup(false), [])
+
+  // Start a fresh conversation: new session id, nothing carried over from the last one.
+  const startNewChat = () => {
+    if (busy) return
+    chatSessionIdRef.current = `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    setWorkflowApproval(null)
+    workflowRequestRef.current = null
+    workflowActiveRef.current = false
+    pendingRepairQueryRef.current = null
+    lastRepairContextRef.current = null
+    setPendingAction(null)
+    setPendingSms(null)
+    setToolTimeline([])
+    setRouteDecision(null)
+    setAttachedFile(null)
+    setInput('')
+    setMessages([{ role: 'assistant', content: repairOnlyMode ? REPAIR_GREETING : INTRO_GREETING }])
+    setShowHistory(false)
+  }
+
+  // Retry a failed turn: drop it, then send the same message again. The workflow keeps
+  // its request id, so a retry checks the same operation instead of repeating it.
+  const retryFailed = (index: number) => {
+    if (busy) return
+    let userIndex = -1
+    for (let i = index - 1; i >= 0; i--) { if (messages[i].role === 'user') { userIndex = i; break } }
+    if (userIndex < 0 || messages[userIndex].imageUrl) return
+    const text = messages[userIndex].content
+    setMessages(prev => prev.slice(0, userIndex))
+    setTimeout(() => sendRef.current?.(text), 30)
+  }
+
+  const toggleTalk = () => {
+    if (voiceActive) {
+      closeVoiceMode()
+    } else {
+      setVoiceActive(true)
+      voiceActiveRef.current = true
+      setVoiceStatus('idle')
+      setTimeout(() => voiceStartListening(), 300)
+    }
+  }
+
+  const turnRows = turnTools(toolTimeline, loading).slice(-5)
+  const lastTool = toolTimeline[0]
+  const showStrip = loading || toolTimeline.length > 0
+  const stripLamp = loading ? 'lamp-amber' : lastTool?.status === 'error' ? 'lamp-red' : 'lamp-green'
+  const stripWord = loading ? (status || 'Working…') : lastTool?.status === 'error' ? 'Last step failed' : 'Ready'
+  const voiceWord = voiceStatus === 'listening' ? 'Listening. Go ahead and talk.' : voiceStatus === 'thinking' ? 'Thinking' : voiceStatus === 'speaking' ? 'Speaking' : 'Ready. Tap the mic to talk.'
+  const voiceLamp = voiceStatus === 'listening' ? 'lamp-green' : voiceStatus === 'thinking' ? 'lamp-amber' : voiceStatus === 'speaking' ? 'lamp-blue' : 'lamp-off'
+  const rowWord = 'text-[0.8125rem] font-bold text-text-secondary'
+  const smsLabel = pendingSms?.channel === 'email' ? 'email' : 'text'
+
   return (
-    <div data-testid="chat-layout" className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="shrink-0 p-3 sm:px-6 border-b border-border flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0">
-          <h1 className="text-lg sm:text-xl font-bold">Alpha AI</h1>
-          <p className="text-xs sm:text-sm text-text-muted mt-0.5 truncate">Full shop control - create, update, search, and message from here</p>
-        </div>
-        <div className="flex gap-2 shrink-0">
+    <div
+      data-testid="chat-layout" className="flex h-full min-h-0 flex-col overflow-hidden"
+      style={keyboardInset ? { height: `calc(100% - max(0px, ${keyboardInset}px - (var(--tabbar-h) + env(safe-area-inset-bottom) + 0.5rem)))` } : undefined}
+    >
+      <header className="shrink-0 border-b border-border bg-bg-base">
+        <div className="mx-auto flex w-full max-w-3xl items-center gap-2 px-4 py-2 sm:px-6">
+          <div className="min-w-0 flex-1">
+            <h1 className="display text-[1.375rem] font-bold leading-tight">Ask Alpha</h1>
+            <p className="hidden truncate text-[0.875rem] text-text-secondary sm:block">Ask a question, or tell Alpha what to do.</p>
+          </div>
           {/* Feature 5: History button */}
-          <button disabled={loading || confirmingAction || sendingSms} onClick={() => setShowHistory(!showHistory)} className="btn btn-secondary btn-sm" title="Conversation History">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <button type="button" disabled={busy} onClick={() => setShowHistory(true)} className="btn btn-secondary px-3">
+            <Icon name="clock" className="h-5 w-5" />
             History
           </button>
-          {/* Feature 1: Speaker toggle */}
-          <button
-            onClick={() => { setSpeakEnabled(!speakEnabled); if (speakEnabled) window.speechSynthesis?.cancel() }}
-            className={`btn btn-sm ${speakEnabled ? 'btn-primary' : 'btn-secondary'}`}
-            title={speakEnabled ? 'Voice output ON' : 'Voice output OFF'}
-          >
-            Voice
-          </button>
-          {/* Talk to Alpha voice conversation mode toggle */}
-          <button
-            onClick={() => {
-              if (voiceActive) {
-                closeVoiceMode()
-              } else {
-                setVoiceActive(true)
-                voiceActiveRef.current = true
-                setVoiceStatus('idle')
-                setTimeout(() => voiceStartListening(), 300)
-              }
-            }}
-            className={`btn btn-sm font-semibold text-white ${voiceActive ? 'ring-2 ring-red-400' : ''}`}
-            style={{ background: voiceActive ? 'linear-gradient(135deg, #ef4444, #dc2626)' : 'linear-gradient(135deg, #3b82f6, #8b5cf6)', border: 'none' }}
-            title={voiceActive ? 'Voice mode ON - tap to stop' : 'Start voice conversation'}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="inline mr-1">
-              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-            </svg>
-            <span className="hidden sm:inline">{voiceActive ? 'Voice On' : 'Talk to Alpha'}</span>
-            <span className="sm:hidden">{voiceActive ? 'On' : 'Talk'}</span>
+          <button type="button" disabled={busy} onClick={startNewChat} className="btn btn-secondary px-3">
+            <Icon name="plus" className="h-5 w-5" />
+            New chat
           </button>
         </div>
-      </div>
-
-      {/* Feature 5: History panel */}
-      {showHistory && (
-        <div className="fixed inset-0 z-50 flex">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setShowHistory(false)} />
-          <div className="relative ml-auto w-80 max-w-[85vw] bg-bg-card border-l border-border h-full overflow-y-auto p-4">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="font-bold text-lg">Chat History</h2>
-                                <button onClick={deleteAllConversations} className="btn btn-sm text-xs text-red-400 hover:bg-red-400/10 border border-red-400/30">Delete All</button>
-              <button onClick={() => setShowHistory(false)} className="btn btn-secondary btn-sm">Close</button>
-            </div>
-            {history.length === 0 && <p className="text-sm text-text-muted">No conversations yet.</p>}
-            {groupHistoryByDate().map(group => (
-              <div key={group.label} className="mb-4">
-                <p className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-2">{group.label}</p>
-                {group.entries.map(entry => (
-                  <div key={entry.id} className="flex items-center gap-1 mb-2">
-                    <button onClick={() => loadConversation(entry)}
-                      className="flex-1 text-left p-3 rounded-lg bg-bg-hover hover:bg-blue/10 transition-colors min-w-0">
-                      <p className="text-sm font-medium truncate">{entry.preview}</p>
-                      <p className="text-xs text-text-muted mt-1">{new Date(entry.date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</p>
-                    </button>
-                    <button
-                      onClick={() => deleteConversation(entry.id)}
-                      className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg text-text-muted hover:text-red-400 hover:bg-red-400/10 transition-colors"
-                      title="Delete conversation"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      </header>
 
       {/* Inline Voice Mode Banner */}
       {voiceActive && (
-        <>
-          <style>{`
-            @keyframes vc-glow-idle { 0%, 100% { box-shadow: 0 0 8px 2px rgba(59,130,246,0.3); } 50% { box-shadow: 0 0 14px 4px rgba(59,130,246,0.5); } }
-            @keyframes vc-glow-listening { 0%, 100% { box-shadow: 0 0 8px 3px rgba(239,68,68,0.4); } 50% { box-shadow: 0 0 16px 6px rgba(239,68,68,0.6); } }
-            @keyframes vc-glow-thinking { 0% { box-shadow: 0 0 8px 2px rgba(245,158,11,0.4); } 50% { box-shadow: 0 0 14px 4px rgba(245,158,11,0.6); } 100% { box-shadow: 0 0 8px 2px rgba(245,158,11,0.4); } }
-            @keyframes vc-glow-speaking { 0%, 100% { box-shadow: 0 0 8px 3px rgba(34,197,94,0.3); } 50% { box-shadow: 0 0 16px 6px rgba(34,197,94,0.5); } }
-            .vc-logo-idle { animation: vc-glow-idle 3s ease-in-out infinite; }
-            .vc-logo-listening { animation: vc-glow-listening 1.2s ease-in-out infinite; }
-            .vc-logo-thinking { animation: vc-glow-thinking 1.5s ease-in-out infinite; }
-            .vc-logo-speaking { animation: vc-glow-speaking 1.5s ease-in-out infinite; }
-          `}</style>
-          <div className="shrink-0 px-3 sm:px-6 py-2 border-b border-border flex items-center gap-3" style={{ background: 'linear-gradient(90deg, rgba(59,130,246,0.08), rgba(139,92,246,0.08))' }}>
+        <div role="status" aria-live="polite" className="shrink-0 border-b border-border bg-bg-chrome">
+          <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-4 py-2 sm:px-6">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src="/alpha-bot.jpg"
-              alt="Alpha AI"
-              className={`w-10 h-10 rounded-full object-cover flex-shrink-0 ${
-                voiceStatus === 'listening' ? 'vc-logo-listening' :
-                voiceStatus === 'thinking' ? 'vc-logo-thinking' :
-                voiceStatus === 'speaking' ? 'vc-logo-speaking' :
-                'vc-logo-idle'
-              }`}
-            />
-            <div className="flex-1 min-w-0">
-              <span className="text-sm font-semibold">Alpha AI</span>
-              <span className="mx-2 text-text-muted">-</span>
-              <span className="text-sm font-medium" style={{
-                color: voiceStatus === 'listening' ? '#ef4444' :
-                       voiceStatus === 'thinking' ? '#f59e0b' :
-                       voiceStatus === 'speaking' ? '#22c55e' : '#9ca3af'
-              }}>
-                {voiceStatus === 'listening' ? 'Listening...' :
-                 voiceStatus === 'thinking' ? 'Thinking...' :
-                 voiceStatus === 'speaking' ? 'Speaking...' : 'Ready'}
-              </span>
-            </div>
-            <button
-              onClick={closeVoiceMode}
-              className="flex-shrink-0 w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
-              title="Close voice mode"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            </button>
+            <img src="/alpha-bot.jpg" alt="" className="h-10 w-10 shrink-0 rounded-full border border-border object-cover" />
+            <span className={`lamp ${voiceLamp}`} aria-hidden="true" />
+            <span className="min-w-0 flex-1 text-[0.9375rem] font-bold">{voiceWord}</span>
           </div>
-        </>
+        </div>
       )}
 
       {repairOnlyMode && (
-        <div className="border-b border-green/20 bg-green/10 px-3 py-3 sm:px-6">
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-green/25 bg-bg-card/75 p-3">
-            <div>
-              <div className="text-[11px] font-black uppercase tracking-[0.16em] text-green">Repair Only Mode</div>
-              <p className="mt-1 text-sm text-text-secondary">
-                This chat will stay on diagnostics, repair sources, safety checks, work notes, and estimate-ready repair details.
-              </p>
-            </div>
+        <div className="shrink-0 border-b border-border bg-bg-chrome">
+          <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-4 py-2 sm:px-6">
+            <span className="lamp lamp-green" aria-hidden="true" />
+            <p className="min-w-0 flex-1 text-[0.9375rem] leading-snug"><span className="font-bold">Repair only mode is on.</span> Alpha sticks to diagnostics, repair sources and repair notes.</p>
             <button
-              className="btn btn-secondary btn-sm"
+              className="btn btn-secondary shrink-0 px-3"
               onClick={() => {
                 setRepairOnlyMode(false)
                 localStorage.removeItem('ai_repair_mode')
               }}
             >
-              Exit Repair Mode
+              Turn off
             </button>
           </div>
         </div>
       )}
 
-      <div className="shrink-0 border-b border-border bg-bg-base/70 px-3 py-2 sm:px-6">
-        <button type="button" aria-expanded={showActivity} aria-controls="chat-activity" onClick={() => setShowActivity(value => !value)} className="flex w-full items-center justify-between gap-2 text-left text-xs text-text-secondary">
-          <span className="truncate">{loading ? (status || 'Working…') : toolTimeline[0]?.status === 'error' ? 'Last tool reported an error' : 'Alpha is ready'}</span>
-          <span className="shrink-0 font-semibold text-blue">{showActivity ? 'Hide activity' : 'Show activity'} {showActivity ? '−' : '+'}</span>
-        </button>
-        {showActivity && <div id="chat-activity" className="mt-2 max-h-[25dvh] overflow-y-auto">
-        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(300px,420px)]">
-          <div className="rounded-lg border border-border bg-bg-card/80 p-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[11px] font-black uppercase tracking-[0.16em] text-text-muted">{repairOnlyMode ? 'Repair Command Center' : 'Command Center'}</span>
-              {isDesktop && <span className="rounded-md border border-border px-2 py-1 text-[11px] font-bold">
-                {features.desktopTools ? 'Desktop tools enabled' : 'Desktop tools off'}
-              </span>}
-              {routeDecision?.requiresConfirmation && (
-                <span className="rounded-md border border-amber/30 bg-amber/10 px-2 py-1 text-[11px] font-bold text-amber">confirmation required</span>
-              )}
-              {routeDecision?.requiresToolResult && (
-                <span className="rounded-md border border-blue/30 bg-blue/10 px-2 py-1 text-[11px] font-bold text-blue">tool result required</span>
-              )}
-            </div>
-            <div className="mt-3 grid gap-2 sm:grid-cols-3">
-              <div>
-                <div className="text-[11px] font-bold uppercase text-text-muted">Current Agent</div>
-                <div className="mt-1 truncate text-sm font-bold">{activeAgent?.name || 'Router Agent'}</div>
-              </div>
-              <div>
-                <div className="text-[11px] font-bold uppercase text-text-muted">Active Skill</div>
-                <div className="mt-1 truncate text-sm font-bold">{activeSkills[0] || 'General routing'}</div>
-              </div>
-              <div>
-                <div className="text-[11px] font-bold uppercase text-text-muted">Intent</div>
-                <div className="mt-1 truncate text-sm font-bold">{routeDecision ? `${routeDecision.intent} (${Math.round(routeDecision.confidence * 100)}%)` : 'Waiting'}</div>
-              </div>
-            </div>
-            {routeDecision?.reasons?.length ? (
-              <div className="mt-3 flex flex-wrap gap-1">
-                {routeDecision.reasons.map(reason => (
-                  <span key={reason} className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] text-text-secondary">{reason}</span>
-                ))}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="rounded-lg border border-border bg-bg-card/80 p-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-[11px] font-black uppercase tracking-[0.16em] text-text-muted">Tool Activity</div>
-              <a href="/tools" className="text-xs font-bold text-blue hover:underline">Registry</a>
-            </div>
-            <div className="mt-2 max-h-28 space-y-2 overflow-y-auto pr-1">
-              {toolTimeline.length === 0 ? (
-                <div className="text-xs text-text-muted">No tool calls yet.</div>
-              ) : toolTimeline.slice(0, 5).map((event, index) => (
-                <div key={`${event.time}-${event.tool}-${index}`} className="flex gap-2 text-xs">
-                  <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${event.status === 'ok' ? 'bg-green' : event.status === 'error' ? 'bg-red' : 'bg-amber animate-pulse'}`} />
+      {showStrip && (
+        <div className="shrink-0 border-b border-border bg-bg-base">
+          <div className="mx-auto w-full max-w-3xl px-4 sm:px-6">
+            <button type="button" aria-expanded={showActivity} aria-controls="chat-activity" onClick={() => setShowActivity(value => !value)} className="flex min-h-[44px] w-full items-center gap-2.5 text-left">
+              <span className={`lamp ${stripLamp}`} aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate text-[0.9375rem] font-bold">{stripWord}</span>
+              <span className="flex shrink-0 items-center gap-1 text-[0.9375rem] font-bold text-blue">
+                {showActivity ? 'Hide activity' : 'Show activity'}
+                <Icon name="chevronDown" className={`h-4 w-4 transition-transform ${showActivity ? 'rotate-180' : ''}`} />
+              </span>
+            </button>
+            {showActivity && (
+              <div id="chat-activity" className="max-h-[40dvh] overflow-y-auto border-t border-border pb-3 pt-3">
+                <dl className="grid grid-cols-3 gap-3 text-[0.9375rem]">
                   <div className="min-w-0">
-                    <div className="truncate font-bold">{event.tool} <span className="font-normal text-text-muted">{event.time}</span></div>
-                    <div className="truncate text-text-secondary">{event.agent}{event.skill ? ` - ${event.skill}` : ''}: {event.detail}</div>
+                    <dt className={rowWord}>Handled by</dt>
+                    <dd className="truncate font-bold">{activeAgent?.name || 'Router Agent'}</dd>
                   </div>
+                  <div className="min-w-0">
+                    <dt className={rowWord}>Skill</dt>
+                    <dd className="truncate font-bold">{activeSkills[0] || 'General routing'}</dd>
+                  </div>
+                  <div className="min-w-0">
+                    <dt className={rowWord}>Request type</dt>
+                    <dd className="truncate font-bold">{routeDecision ? `${routeDecision.intent} (${Math.round(routeDecision.confidence * 100)}%)` : 'Waiting'}</dd>
+                  </div>
+                </dl>
+                {(isDesktop || routeDecision?.requiresConfirmation || routeDecision?.requiresToolResult || routeDecision?.reasons?.length) ? (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {isDesktop && <span className="tag tag-gray">{features.desktopTools ? 'Desktop tools on' : 'Desktop tools off'}</span>}
+                    {routeDecision?.requiresConfirmation && <span className="tag tag-amber">Asks before acting</span>}
+                    {routeDecision?.requiresToolResult && <span className="tag tag-gray">Needs a tool result</span>}
+                    {routeDecision?.reasons?.map(reason => <span key={reason} className="tag tag-gray">{reason}</span>)}
+                  </div>
+                ) : null}
+                <div className="mb-1 mt-4 flex items-center justify-between gap-2">
+                  <h2 className="section-title">Steps Alpha took</h2>
+                  <a href="/tools" className="inline-flex min-h-[44px] items-center text-[0.9375rem] font-bold text-blue underline-offset-4 hover:underline">Tool registry</a>
                 </div>
-              ))}
-            </div>
+                {toolTimeline.length === 0
+                  ? <p className="text-[0.9375rem] text-text-secondary">No steps yet.</p>
+                  : <ToolRows events={toolTimeline.slice(0, 8)} label="Steps Alpha took" showTime />}
+              </div>
+            )}
           </div>
         </div>
-        </div>}
-      </div>
+      )}
 
-      <div data-testid="chat-messages" className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3 sm:p-6 space-y-4">
-        {messages.length === 1 && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-2xl">
-            <p className="text-xs text-text-muted font-semibold uppercase tracking-wider mb-1 col-span-full">Try asking:</p>
-            {suggested.slice(0, 4).map(s => (
-              <button key={s} onClick={() => { setInput(s); send(s) }}
-                className="text-left text-sm bg-bg-card border border-border rounded-lg px-4 py-2.5 hover:border-blue/50 hover:bg-bg-hover transition-all">
-                {s}
-              </button>
-            ))}
-          </div>
-        )}
-        {messages.map((m, i) => (
-          <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={m.role === 'browser' ? 'text-sm w-full p-0 bg-transparent' : m.role === 'user' ? 'max-w-[90%] sm:max-w-[80%] rounded-xl px-4 py-3 text-sm bg-blue text-white' : m.repairResult ? 'w-full max-w-5xl rounded-xl px-3 py-3 text-sm bg-bg-card border border-border' : 'max-w-[90%] sm:max-w-[80%] rounded-xl px-4 py-3 text-sm bg-bg-card border border-border'}>
-              {/* Feature 12: Image preview */}
-              {m.imageUrl && (
-                <div className="mb-2">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={m.imageUrl} alt="Uploaded" className="rounded-lg max-w-[200px] max-h-[150px] object-cover" />
+      <div data-testid="chat-messages" className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+        <div className="mx-auto w-full max-w-3xl space-y-5 px-4 py-5 sm:px-6 sm:py-6">
+          {messages.length === 1 && (
+            <section aria-labelledby="chat-empty-title" className="sm:pt-6">
+              <h2 id="chat-empty-title" className="display text-[1.625rem] font-bold leading-tight">{repairOnlyMode ? 'Ask about a repair' : 'What can I help with?'}</h2>
+              <p className="mt-2 max-w-[60ch] text-base leading-relaxed text-text-secondary">
+                {repairOnlyMode
+                  ? 'Give me the year, make and model, then the code, symptom or part. I will pull the manual pages and diagrams.'
+                  : 'Ask me to write an estimate, find who owes you money, text a customer, or look up a customer’s history. I ask before I send a message or change anything.'}
+              </p>
+              <h3 className="mt-6 text-[0.8125rem] font-bold text-text-secondary">Try one of these</h3>
+              <ul className="ledger mt-1.5">
+                {suggested.map((item, n) => (
+                  <li key={item.title} className={n >= 5 ? 'hidden sm:block' : undefined}>
+                    <button type="button" className="ledger-row" disabled={loading} onClick={() => send(item.prompt)}>
+                      <Icon name={item.icon} className="h-5 w-5 shrink-0 text-text-secondary" />
+                      <span className="ledger-main">
+                        <span className="ledger-title block">{item.title}</span>
+                        <span className="ledger-sub block">{item.prompt}</span>
+                      </span>
+                      <Icon name="chevronRight" className="h-5 w-5 shrink-0 text-text-muted" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+          {messages.map((m, i) => {
+            if (isGreeting(m, i)) return null
+            if (m.role === 'user') {
+              return (
+                <div key={i} className="flex justify-end">
+                  <div className="max-w-[88%] rounded-2xl rounded-br-sm bg-blue px-4 py-2.5 text-base leading-6 text-[rgb(var(--c-on-blue))] sm:max-w-[78%]">
+                    {/* Feature 12: Image preview */}
+                    {m.imageUrl && (
+                      <div className="mb-2">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={m.imageUrl} alt="Uploaded" className="max-h-[150px] max-w-[200px] rounded-lg object-cover" />
+                      </div>
+                    )}
+                    <p className="whitespace-pre-wrap break-words">{m.content}</p>
+                  </div>
                 </div>
-              )}
-              {/* Thinking/reasoning collapsible section */}
-              {m.reasoning && (
-                <details className="mb-2 group/think">
-                  <summary className="cursor-pointer text-xs text-text-muted hover:text-text-secondary transition-colors select-none flex items-center gap-1.5 list-none [&::-webkit-details-marker]:hidden">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 transition-transform duration-200 group-open/think:rotate-90"><polyline points="9 18 15 12 9 6"/></svg>
-                    <span>Thought for {m.thinkingSeconds || 0} second{(m.thinkingSeconds || 0) !== 1 ? 's' : ''}</span>
-                  </summary>
-                  <div className="mt-2 pl-4 border-l-2 border-border text-xs text-text-muted italic whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto">
-                    {m.reasoning}
-                  </div>
-                </details>
-              )}
-              {m.repairResult
-                ? <div className="space-y-3">
-                    {m.content && <div className="whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />}
-                    <RepairResultCard result={m.repairResult} onAskNext={(text) => {
-                      // Send the follow-up inline. The router auto-routes it to the
-                      // manuals and carries the vehicle from context — no need to flip
-                      // the whole chat into repair-only mode or leave text in the box.
-                      setTimeout(() => sendRef.current?.(text), 0)
-                    }} />
-                  </div>
-                : m.role === 'browser' && m.browserSteps
-                  ? <BrowserPanel steps={m.browserSteps} />
-                : m.html
-                ? <div onClick={handleGeneratedHtmlClick} dangerouslySetInnerHTML={{ __html: sanitizeGeneratedHtml((m.content ? renderMarkdown(m.content) : '') + m.html) }} />
-                : m.role === 'assistant' && (m.content.includes('[') || m.content.includes('**') || m.content.includes('!['))
-                  ? <div className="whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
-                  : <p className="whitespace-pre-wrap">{m.content}</p>}
-            </div>
-          </div>
-        ))}
-
-        {workflowApproval && <WorkflowReview approval={workflowApproval} busy={loading || confirmingAction} onDecision={confirmWorkflow} />}
-
-        {/* Live AI Voice Call Panel */}
-        {voiceCall && voiceCall.status !== 'ended' && (
-          <div className="flex justify-start">
-            <div className="max-w-[90%] w-full bg-bg-card border border-green/40 rounded-xl px-4 py-3">
-              <div className="flex items-center gap-2 mb-3">
-                <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${voiceCall.status === 'active' ? 'bg-green animate-pulse' : 'bg-yellow-400 animate-pulse'}`} />
-                <span className="font-bold text-sm">AI Voice Call</span>
-                <span className="ml-auto text-xs text-text-muted">{voiceCall.status === 'active' ? 'Live' : 'Dialing...'}</span>
+              )
+            }
+            if (m.role === 'browser') {
+              return m.browserSteps ? <div key={i} className="w-full"><BrowserPanel steps={m.browserSteps} /></div> : null
+            }
+            const failure = !m.html && !m.repairResult ? describeFailure(m.content) : null
+            const canRetry = !!failure && !failure.title.includes('photo')
+            if (!m.content && !m.html && !m.repairResult && !m.reasoning) return null
+            return (
+              <div key={i} className={m.repairResult ? 'w-full' : m.html ? 'max-w-[40rem]' : 'max-w-[70ch]'}>
+                {/* Thinking/reasoning collapsible section */}
+                {m.reasoning && (
+                  <details className="group/think mb-2">
+                    <summary className="flex min-h-[44px] cursor-pointer select-none list-none items-center gap-1.5 text-[0.875rem] text-text-secondary hover:text-text-primary [&::-webkit-details-marker]:hidden">
+                      <Icon name="chevronRight" className="h-4 w-4 shrink-0 transition-transform group-open/think:rotate-90" />
+                      <span>Thought for {m.thinkingSeconds || 0} second{(m.thinkingSeconds || 0) !== 1 ? 's' : ''}</span>
+                    </summary>
+                    <div className="mt-1 max-h-60 overflow-y-auto whitespace-pre-wrap border-l-2 border-border pl-3 text-[0.875rem] leading-relaxed text-text-secondary">
+                      {m.reasoning}
+                    </div>
+                  </details>
+                )}
+                {failure
+                  ? <FailureRow title={failure.title} detail={failure.detail} busy={busy} onRetry={canRetry ? () => retryFailed(i) : undefined} />
+                  : m.repairResult
+                    ? <div className="space-y-4">
+                        {m.content && <div className="max-w-[70ch] break-words text-base leading-[1.7]" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />}
+                        <RepairResultCard result={m.repairResult} onAskNext={(text) => {
+                          // Send the follow-up inline. The router auto-routes it to the
+                          // manuals and carries the vehicle from context — no need to flip
+                          // the whole chat into repair-only mode or leave text in the box.
+                          setTimeout(() => sendRef.current?.(text), 0)
+                        }} />
+                      </div>
+                    : m.html
+                      ? <div className="break-words text-base leading-[1.7]" onClick={handleGeneratedHtmlClick} dangerouslySetInnerHTML={{ __html: sanitizeGeneratedHtml((m.content ? renderMarkdown(m.content) : '') + m.html) }} />
+                      : <div className="break-words text-base leading-[1.7]" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />}
               </div>
-              <div className="text-xs text-text-muted mb-1">Calling: {voiceCall.to}</div>
-              <div className="text-sm mb-3">{voiceCall.task}</div>
+            )
+          })}
+
+          {(loading || status) && (
+            <div role="status" aria-live="polite" className="max-w-[70ch]">
+              <div className="flex items-center gap-2.5">
+                <span className="lamp lamp-amber" aria-hidden="true" />
+                <span className="font-bold">{status || 'Thinking…'}</span>
+                {thinkingElapsed > 0 && <span className="num text-[0.875rem] text-text-secondary">{thinkingElapsed}s</span>}
+              </div>
+              {turnRows.length > 0 && <div className="mt-2"><ToolRows events={turnRows} /></div>}
+            </div>
+          )}
+          {!(loading || status) && turnRows.length > 0 && messages.length > 1 && <ToolRows events={turnRows} />}
+
+          {workflowApproval && <WorkflowReview approval={workflowApproval} busy={loading || confirmingAction} onDecision={confirmWorkflow} />}
+
+          {/* Live AI Voice Call Panel */}
+          {voiceCall && voiceCall.status !== 'ended' && (
+            <section aria-label="AI voice call" className="w-full max-w-[40rem] rounded-lg border border-line bg-bg-card p-4">
+              <div className="flex items-center gap-2.5 font-bold">
+                <span className={`lamp ${voiceCall.status === 'active' ? 'lamp-green' : voiceCall.status === 'error' ? 'lamp-red' : 'lamp-amber'}`} aria-hidden="true" />
+                AI voice call
+                <span className="ml-auto text-[0.9375rem]">{voiceCall.status === 'active' ? 'Live' : voiceCall.status === 'error' ? 'Failed' : 'Dialing…'}</span>
+              </div>
+              <p className="mt-2 text-[0.9375rem] text-text-secondary">Calling {voiceCall.to}</p>
+              <p className="mt-1">{voiceCall.task}</p>
 
               {/* Live Transcript */}
               {voiceCall.transcript && voiceCall.transcript.length > 0 && (
-                <div className="bg-bg-hover rounded-lg p-3 mb-3 max-h-40 overflow-y-auto">
-                  <p className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-2">Live Transcript</p>
+                <div className="mt-3 max-h-40 overflow-y-auto rounded-md bg-bg-base px-3 py-2.5">
+                  <h3 className={`${rowWord} mb-1.5`}>Live transcript</h3>
                   {voiceCall.transcript.map((t, i) => (
-                    <div key={i} className="text-xs mb-1">
-                      <span className={`font-bold ${t.speaker === 'ai' ? 'text-blue-400' : 'text-green-400'}`}>
-                        {t.speaker === 'ai' ? 'AI: ' : 'Person: '}
-                      </span>
+                    <p key={i} className="mt-1 text-[0.9375rem]">
+                      <span className="font-bold">{t.speaker === 'ai' ? 'Alpha: ' : 'Person: '}</span>
                       {t.text}
-                    </div>
+                    </p>
                   ))}
                 </div>
               )}
 
               {/* Jump In */}
               {voiceCall.status === 'active' && (
-                <div>
+                <div className="mt-3">
                   {!showJumpIn ? (
                     <button
                       onClick={() => setShowJumpIn(true)}
-                      className="btn btn-secondary btn-sm text-xs"
+                      className="btn btn-secondary"
                     >
-                      Jump Into Call
+                      Jump into the call
                     </button>
                   ) : (
-                    <div className="flex gap-2 items-center">
+                    <div className="flex flex-wrap items-center gap-2">
                       <input
                         type="tel"
+                        aria-label="Your phone number"
                         placeholder="Your phone number"
                         value={jumpInPhone}
                         onChange={e => setJumpInPhone(e.target.value)}
-                        className="form-input text-sm flex-1"
+                        className="form-input min-w-0 flex-1"
                       />
                       <button
                         onClick={async () => {
@@ -3907,355 +4057,326 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
                           setJumpingIn(false)
                         }}
                         disabled={jumpingIn}
-                        className="btn btn-primary btn-sm text-xs flex-shrink-0"
+                        className="btn btn-primary shrink-0"
                       >
-                        {jumpingIn ? 'Dialing...' : 'Call Me'}
+                        {jumpingIn ? 'Dialing…' : 'Call me'}
                       </button>
-                      <button onClick={() => setShowJumpIn(false)} className="btn btn-secondary btn-sm text-xs">Cancel</button>
+                      <button onClick={() => setShowJumpIn(false)} className="btn btn-secondary">Cancel</button>
                     </div>
                   )}
                 </div>
               )}
-            </div>
-          </div>
-        )}
-
-        {/* Shop action confirmation card */}
-        {pendingAction && (
-          <div className="flex justify-start">
-            <div className="max-w-[90%] bg-bg-card border border-amber-400/40 rounded-xl px-4 py-3">
-              <p className="text-xs font-bold uppercase tracking-wider text-amber-300 mb-2">Confirm shop action</p>
-              <p className="text-sm text-text-secondary mb-2">{pendingAction.action} is ready. No change has happened yet.</p>
-              <pre className="max-h-36 overflow-auto bg-bg-hover rounded-lg p-3 text-xs mb-3 whitespace-pre-wrap">{JSON.stringify(pendingAction.payload, null, 2)}</pre>
-              <div className="flex gap-2">
-                <button onClick={confirmAction} disabled={confirmingAction} className="btn btn-primary btn-sm">{confirmingAction ? 'Running...' : 'Confirm and run'}</button>
-                <button onClick={() => setPendingAction(null)} disabled={confirmingAction} className="btn btn-secondary btn-sm">Cancel</button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* SMS/Email confirmation card */}
-        {pendingSms && (
-          <div className="flex justify-start">
-            <div className="max-w-[80%] bg-bg-card border border-blue/30 rounded-xl px-4 py-3">
-              <p className="text-xs font-bold uppercase tracking-wider text-blue mb-2">
-                Draft {pendingSms.channel === 'email' ? 'Email' : 'SMS'}
-              </p>
-              <p className="text-sm text-text-secondary mb-1">To: {pendingSms.to}</p>
-              {pendingSms.subject && <p className="text-sm text-text-secondary mb-1">Subject: {pendingSms.subject}</p>}
-              <div className="bg-bg-hover rounded-lg p-3 text-sm mb-3">{pendingSms.body}</div>
-              <div className="flex gap-2">
-                <button onClick={confirmSendSms} disabled={sendingSms} className="btn btn-primary btn-sm">{sendingSms ? 'Sending...' : 'Send Now'}</button>
-                <button onClick={() => setPendingSms(null)} className="btn btn-secondary btn-sm">Cancel</button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {(loading || status) && (
-          <div className="flex justify-start">
-            <div className="bg-bg-card border border-border rounded-xl px-4 py-3 text-sm text-text-muted">
-              <div className="flex items-center gap-2">
-                <span className="flex gap-0.5">
-                  <span className="w-1.5 h-1.5 bg-text-muted rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-1.5 h-1.5 bg-text-muted rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-1.5 h-1.5 bg-text-muted rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                </span>
-                <span>{status || 'Thinking...'}</span>
-                {thinkingElapsed > 0 && <span className="text-xs opacity-60">{thinkingElapsed}s</span>}
-              </div>
-            </div>
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
-      <div data-testid="chat-composer" className="shrink-0 p-3 sm:p-4 border-t border-border bg-bg-base pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-        {/* Attached file chip */}
-        {attachedFile && (
-          <div className="flex items-center gap-2 mb-2">
-            <div className="flex items-center gap-1.5 bg-blue/10 border border-blue/30 rounded-full px-3 py-1 text-xs text-blue max-w-xs">
-              <span>{attachedFile.type === 'image' ? 'IMG' : 'FILE'}</span>
-              <span className="truncate max-w-[180px]">{attachedFile.name}</span>
-              <button
-                onClick={() => setAttachedFile(null)}
-                className="ml-1 text-blue/60 hover:text-red-400 transition-colors"
-                title="Remove file"
-              >Remove</button>
-            </div>
-            {attachedFile.content === '[Reading PDF...]' && (
-              <span className="text-xs text-text-muted animate-pulse">Reading...</span>
-            )}
-          </div>
-        )}
-
-        <div className="flex gap-2 items-end">
-          <textarea
-            aria-label="Message Alpha"
-            className="form-input flex-1 resize-none text-sm"
-            rows={2}
-            placeholder={repairOnlyMode ? 'Ask about this repair, diagnostic checks, source verification, or estimate notes...' : 'Ask anything - or tell me to create, update, message, search...'}
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
-          />
-          {/* Feature 12: Photo button */}
-          <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) sendImage(f); e.target.value = '' }} />
-          {/* File attach (hidden input) */}
-          <input ref={attachInputRef} type="file" accept="image/*,.pdf,.txt,.csv,.doc,.docx" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFileAttach(f); e.target.value = '' }} />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            title="Upload photo for analysis"
-            className="flex items-center justify-center w-10 h-10 rounded-xl border bg-bg-card border-border text-text-muted hover:border-blue/50 hover:text-blue transition-all flex-shrink-0"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
-          </button>
-          <button
-            onClick={() => {
-              if (voiceActive) {
-                // In voice mode: pause/resume listening
-                if (voiceStatus === 'listening') {
-                  voiceStopListening()
-                } else if (voiceStatus === 'idle') {
-                  voiceStartListening()
-                }
-              } else {
-                toggleVoice()
-              }
-            }}
-            title={voiceActive ? (voiceStatus === 'listening' ? 'Pause listening' : 'Resume listening') : (listening ? 'Stop listening' : 'Voice input')}
-            className={`flex items-center justify-center w-10 h-10 rounded-xl border transition-all flex-shrink-0 ${
-              voiceActive
-                ? voiceStatus === 'listening'
-                  ? 'border-red-400 text-red-400 animate-pulse'
-                  : 'border-blue-400 text-blue-400'
-                : listening
-                  ? 'border-red-400 text-red-400 animate-pulse'
-                  : 'bg-bg-card border-border text-text-muted hover:border-blue/50 hover:text-blue'
-            }`}
-          >
-            {(listening || (voiceActive && voiceStatus === 'listening')) ? (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-            ) : (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                <line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
-              </svg>
-            )}
-          </button>
-          <button
-            className="btn btn-primary flex items-center justify-center w-10 h-10 rounded-xl flex-shrink-0"
-            aria-label="Send message"
-            onClick={() => send()}
-            disabled={loading || !input.trim()}
-          >
-            {loading
-              ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
-            }
-          </button>
-        </div>
-
-        {/* Feature toggle buttons row */}
-        <div className="flex flex-wrap gap-1.5 mt-2">
-          {/* Search toggle */}
-          <button
-            onClick={() => toggleFeature('search')}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border ${
-              features.search
-                ? 'bg-blue/20 border-blue/50 text-blue'
-                : 'bg-bg-card border-border text-text-muted hover:border-blue/30 hover:text-text-secondary'
-            }`}
-            title={features.search ? 'Web search ON - click to disable' : 'Web search OFF - click to enable'}
-          >
-            {features.search && <span className="w-1.5 h-1.5 rounded-full bg-blue flex-shrink-0" />}
-            Search
-          </button>
-
-          {/* Social toggle */}
-          <button
-            onClick={() => toggleFeature('socialMedia')}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border ${
-              features.socialMedia
-                ? 'bg-blue/20 border-blue/50 text-blue'
-                : 'bg-bg-card border-border text-text-muted hover:border-blue/30 hover:text-text-secondary'
-            }`}
-            title={features.socialMedia ? 'Social media ON - click to disable' : 'Social media OFF - click to enable'}
-          >
-            {features.socialMedia && <span className="w-1.5 h-1.5 rounded-full bg-blue flex-shrink-0" />}
-            Social
-          </button>
-
-                      {/* Thinking toggle */}
-            <button
-              onClick={() => toggleFeature('thinking')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border ${
-                features.thinking
-                  ? 'bg-purple-500/20 border-purple-500/50 text-purple-400'
-                  : 'bg-bg-card border-border text-text-muted hover:border-purple-400/30 hover:text-text-secondary'
-              }`}
-              title={features.thinking ? 'Deep thinking ON' : 'Deep thinking OFF'}
-            >
-              {features.thinking && <span className="w-1.5 h-1.5 rounded-full bg-purple-400 flex-shrink-0" />}
-              Thinking
-            </button>
-
-          {/* Repair mode toggle */}
-          <button
-            onClick={toggleRepairMode}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border ${
-              repairOnlyMode
-                ? 'bg-green/20 border-green/50 text-green'
-                : 'bg-bg-card border-border text-text-muted hover:border-green/30 hover:text-text-secondary'
-            }`}
-            title={repairOnlyMode ? 'Repair mode ON - source-backed repair answers only' : 'Repair mode OFF - click for repair-only chat'}
-          >
-            {repairOnlyMode && <span className="w-1.5 h-1.5 rounded-full bg-green flex-shrink-0" />}
-            Repair
-          </button>
-
-          {/* Desktop Tools toggle - only in Electron */}
-          {isDesktop && (
-            <button
-              onClick={() => toggleFeature('desktopTools')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border ${
-                features.desktopTools
-                  ? 'bg-orange-500/20 border-orange-500/50 text-orange-400'
-                  : 'bg-bg-card border-border text-text-muted hover:border-orange-400/30 hover:text-text-secondary'
-              }`}
-              title={features.desktopTools ? 'Desktop tools ON — click to disable' : 'Desktop tools OFF — click to enable'}
-            >
-              {features.desktopTools && <span className="w-1.5 h-1.5 rounded-full bg-orange-400 flex-shrink-0" />}
-              🖥️ Desktop
-            </button>
+            </section>
           )}
 
-          {/* Connectors button */}
-          <button
-            onClick={() => { setShowConnectorsPopup(true); loadConnectors() }}
-            className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border bg-bg-card border-border text-text-muted hover:border-blue/30 hover:text-text-secondary"
-            title="Open Connectors"
-          >
-            Connectors
-          </button>
+          {/* Shop action confirmation card */}
+          {pendingAction && (
+            <ApprovalFrame
+              ariaLabel="Action to approve"
+              title={humanizeTool(pendingAction.action)}
+              effect="Alpha is ready to do this. Nothing has changed yet."
+              busy={confirmingAction}
+              approveLabel={confirmingAction ? 'Running…' : 'Approve and run'}
+              onApprove={confirmAction}
+              onCancel={() => setPendingAction(null)}
+            >
+              <PayloadList payload={pendingAction.payload} />
+            </ApprovalFrame>
+          )}
 
-          {/* Files button */}
-          <button
-            onClick={() => attachInputRef.current?.click()}
-            className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all border bg-bg-card border-border text-text-muted hover:border-blue/30 hover:text-text-secondary"
-            title="Attach a file"
-          >
-            Files
-          </button>
+          {/* SMS/Email confirmation card */}
+          {pendingSms && (
+            <ApprovalFrame
+              ariaLabel={`${smsLabel === 'email' ? 'Email' : 'Text'} to approve`}
+              title={`Send this ${smsLabel}${pendingSms.customerName ? ` to ${pendingSms.customerName}` : ''}?`}
+              effect={`Alpha will send it exactly as written. It reaches ${pendingSms.customerName || 'the recipient'} right away.`}
+              tags={<span className="tag tag-gray">Sends a message</span>}
+              busy={sendingSms}
+              approveLabel={sendingSms ? 'Sending…' : `Approve and send ${smsLabel}`}
+              onApprove={confirmSendSms}
+              onCancel={() => setPendingSms(null)}
+            >
+              <dl className="space-y-3 text-[0.9375rem]">
+                <div>
+                  <dt className={rowWord}>To</dt>
+                  <dd className="break-words font-bold">{pendingSms.customerName ? `${pendingSms.customerName}, ${pendingSms.to}` : pendingSms.to}</dd>
+                </div>
+                {pendingSms.subject && (
+                  <div>
+                    <dt className={rowWord}>Subject</dt>
+                    <dd className="break-words">{pendingSms.subject}</dd>
+                  </div>
+                )}
+                <div>
+                  <dt className={rowWord}>Message</dt>
+                  <dd className="mt-1 whitespace-pre-wrap break-words rounded-md border border-border bg-bg-base px-3 py-2.5 text-base leading-relaxed">{pendingSms.body}</dd>
+                </div>
+              </dl>
+            </ApprovalFrame>
+          )}
         </div>
-
-        {listening && !voiceActive && <p className="text-xs mt-2 text-red-400 animate-pulse">Listening... speak now</p>}
-        {voiceActive && voiceStatus === 'listening' && <p className="text-xs mt-2 text-red-400 animate-pulse">Voice mode active - speak now</p>}
+        <div ref={bottomRef} />
       </div>
 
-      {/* Connectors Popup Modal */}
-      {showConnectorsPopup && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-bg-card border border-border rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
-            {/* Modal header */}
-            <div className="flex items-center justify-between p-5 border-b border-border">
-              <div>
-                <h2 className="text-lg font-bold">Connectors</h2>
-                <p className="text-xs text-text-muted mt-0.5">Connect social media and calendar accounts for AI to manage</p>
-              </div>
-              <button
-                onClick={() => setShowConnectorsPopup(false)}
-                className="w-8 h-8 flex items-center justify-center rounded-xl bg-bg-hover hover:bg-red-500/10 hover:text-red-400 transition-colors"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
+      <div data-testid="chat-composer" className="shrink-0 border-t border-border bg-bg-base pb-3 pt-3 lg:pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <div className="mx-auto w-full max-w-3xl px-4 sm:px-6">
+          {historySaveError && (
+            <div role="alert" className="mb-2 flex items-center gap-3 rounded-md border border-line border-l-[6px] border-l-[rgb(var(--lamp-red))] bg-bg-card px-3 py-2">
+              <p className="min-w-0 flex-1 text-[0.9375rem] leading-snug"><span className="font-bold">Not saved.</span> This chat could not be saved to the cloud. Keep this tab open until saving works.</p>
+              <button type="button" className="btn btn-secondary btn-sm shrink-0" onClick={() => saveToHistory(historySaveError.messages, historySaveError.id)}>Retry saving</button>
             </div>
+          )}
 
-            {/* Toast inside popup */}
-            {connectorToast && (
-              <div className="mx-5 mt-4 px-4 py-2 rounded-lg bg-green-500/10 border border-green-500/30 text-green-400 text-sm">{connectorToast}</div>
-            )}
-
-            {/* Cards */}
-            <div className="p-5">
-              {connectorsLoading ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {CONNECTOR_ORDER.map(s => (
-                    <div key={s} className="h-28 rounded-xl bg-bg-hover animate-pulse" />
-                  ))}
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {CONNECTOR_ORDER.map(service => {
-                    const info = CONNECTOR_SERVICE_INFO[service]
-                    if (!info) return null
-                    const connector = connectors[service]
-                    const isConnected = connector?.enabled === true
-                    const isLoading = disconnecting === service
-                    const accountName = connector?.metadata?.page_name as string | undefined || (connector?.page_id ? `ID: ${connector.page_id}` : null)
-                    return (
-                      <div key={service} className="rounded-xl border border-border p-4 flex flex-col gap-3" style={{ borderTop: `3px solid ${info.color}` }}>
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl flex-shrink-0" style={{ background: info.bgColor }}>{info.icon}</div>
-                            <div>
-                              <div className="font-semibold text-sm">{info.name}</div>
-                              <div className="text-xs text-text-muted">{info.description}</div>
-                            </div>
-                          </div>
-                          <span className={`shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold ${ isConnected ? 'bg-green-500/15 text-green-400' : 'bg-bg-hover text-text-muted' }`}>
-                            {isConnected ? 'Connected' : 'Not connected'}
-                          </span>
-                        </div>
-                        {isConnected && accountName && (
-                          <div className="text-xs text-text-muted bg-bg-hover rounded-lg px-3 py-1.5 truncate">
-                            <span className="text-text-secondary font-medium">Account:</span> {accountName}
-                          </div>
-                        )}
-                        <div className="flex justify-end">
-                          {isConnected ? (
-                            <button
-                              className="text-sm px-4 py-1.5 rounded-lg border border-red-500/20 text-red-400 hover:bg-red-500/10 transition-colors"
-                              onClick={() => handleConnectorDisconnect(service)}
-                              disabled={isLoading}
-                            >
-                              {isLoading ? 'Disconnecting...' : 'Disconnect'}
-                            </button>
-                          ) : (
-                            <button
-                              className="text-sm px-4 py-1.5 rounded-lg text-white font-medium transition-opacity hover:opacity-90"
-                              style={{ background: info.color }}
-                              onClick={() => { window.location.href = info.oauthPath }}
-                            >
-                              Connect
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
+          {/* Attached file chip */}
+          {attachedFile && (
+            <div className="mb-2 flex items-center gap-2">
+              <div className="flex min-w-0 max-w-full items-center gap-2 rounded-md border border-line bg-bg-card py-1 pl-3 pr-1 text-[0.9375rem]">
+                <Icon name={attachedFile.type === 'image' ? 'image' : 'doc'} className="h-4 w-4 shrink-0 text-text-secondary" />
+                <span className="min-w-0 truncate font-bold">{attachedFile.name}</span>
+                <button
+                  type="button"
+                  onClick={() => setAttachedFile(null)}
+                  className="btn-icon h-9 w-9 shrink-0 sm:h-9 sm:w-9"
+                  aria-label={`Remove ${attachedFile.name}`}
+                  title="Remove file"
+                >
+                  <Icon name="close" className="h-4 w-4" />
+                </button>
+              </div>
+              {attachedFile.content === '[Reading PDF...]' && (
+                <span role="status" className="text-[0.875rem] text-text-secondary">Reading the PDF…</span>
               )}
-
-              <div className="mt-5 p-3 rounded-xl bg-bg-hover border border-border text-xs text-text-muted">
-                <span className="font-medium text-text-secondary">Tip:</span> Facebook and Instagram share one OAuth flow. Google Business and Calendar share one Google login.
-              </div>
             </div>
-          </div>
-        </div>
-      )}
+          )}
 
-      {historySaveError && (
-        <div role="alert" className="fixed bottom-20 right-6 max-w-sm bg-red-900 text-white px-4 py-3 rounded-lg text-sm z-50">
-          <p>This conversation could not be saved to the cloud. Keep this tab open until saving succeeds.</p>
-          <button className="mt-2 underline" onClick={() => saveToHistory(historySaveError.messages, historySaveError.id)}>Retry saving</button>
+          <div className="flex items-end gap-2">
+            {/* Feature 12: Photo button */}
+            <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) sendImage(f); e.target.value = '' }} />
+            {/* File attach (hidden input) */}
+            <input ref={attachInputRef} type="file" accept="image/*,.pdf,.txt,.csv,.doc,.docx" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFileAttach(f); e.target.value = '' }} />
+            <button
+              type="button"
+              onClick={() => setShowAttach(true)}
+              aria-label="Add a photo or file"
+              title="Add a photo or file"
+              className="btn-icon shrink-0 border-line bg-bg-card"
+            >
+              <Icon name="plus" className="h-5 w-5" />
+            </button>
+            <textarea
+              ref={composerRef}
+              aria-label="Message Alpha"
+              className="form-input min-h-[44px] flex-1 resize-none py-2.5 leading-6"
+              rows={1}
+              placeholder={repairOnlyMode ? 'Year, make, model and the problem' : 'Ask Alpha anything'}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (voiceActive) {
+                  // In voice mode: pause/resume listening
+                  if (voiceStatus === 'listening') {
+                    voiceStopListening()
+                  } else if (voiceStatus === 'idle') {
+                    voiceStartListening()
+                  }
+                } else {
+                  toggleVoice()
+                }
+              }}
+              title={voiceActive ? (voiceStatus === 'listening' ? 'Pause listening' : 'Resume listening') : (listening ? 'Stop listening' : 'Dictate a message')}
+              aria-label={voiceActive ? (voiceStatus === 'listening' ? 'Pause listening' : 'Resume listening') : (listening ? 'Stop listening' : 'Dictate a message')}
+              aria-pressed={listening || (voiceActive && voiceStatus === 'listening')}
+              className={`btn-icon shrink-0 border-line ${(listening || (voiceActive && voiceStatus === 'listening')) ? 'border-red bg-red/[0.12] text-red' : 'bg-bg-card'}`}
+            >
+              <Icon name={(listening || (voiceActive && voiceStatus === 'listening')) ? 'chatStop' : 'mic'} className="h-5 w-5" />
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary h-11 w-11 shrink-0 p-0 sm:h-11 sm:w-11"
+              aria-label="Send message"
+              onClick={() => send()}
+              disabled={loading || !input.trim()}
+            >
+              {loading
+                ? <span className="spinner h-5 w-5 rounded-full border-2 border-current border-t-transparent" aria-hidden="true" />
+                : <Icon name="send" className="h-5 w-5" />
+              }
+            </button>
+          </div>
+
+          <div className="mt-2 flex items-center gap-2">
+            <button type="button" onClick={toggleTalk} aria-pressed={voiceActive} className={`btn px-3 ${voiceActive ? 'btn-primary' : 'btn-secondary'}`}>
+              <Icon name="mic" className="h-5 w-5" />
+              {voiceActive ? 'Stop talking' : 'Talk to Alpha'}
+            </button>
+            <button type="button" onClick={() => setShowOptions(true)} className="btn btn-secondary px-3">
+              <Icon name="settings" className="h-5 w-5" />
+              Options
+            </button>
+            <p className="ml-auto hidden text-[0.8125rem] text-text-secondary lg:block">Enter sends. Shift+Enter adds a line.</p>
+          </div>
+
+          {listening && !voiceActive && (
+            <p role="status" className="mt-2 flex items-center gap-2 text-[0.9375rem] font-bold"><span className="lamp lamp-green" aria-hidden="true" />Listening. Speak now.</p>
+          )}
         </div>
-      )}
+      </div>
+
+      {/* History */}
+      <Sheet open={showHistory} onClose={closeHistory} title="Chat history">
+        <button type="button" className="btn btn-primary btn-lg w-full" onClick={startNewChat} disabled={busy}>
+          <Icon name="plus" className="h-5 w-5" />
+          New chat
+        </button>
+        {historyStatus === 'loading' && history.length === 0 && (
+          <div className="mt-5 space-y-3" aria-busy="true" aria-label="Loading chat history">
+            {[0, 1, 2].map(n => <div key={n} className="skeleton h-14 w-full" />)}
+          </div>
+        )}
+        {historyStatus === 'error' && (
+          <div role="alert" className="mt-5">
+            <p className="flex items-center gap-2 font-bold text-red"><span className="lamp lamp-red" aria-hidden="true" />Chat history could not be loaded.</p>
+            {history.length > 0 && <p className="mt-1 text-[0.9375rem] text-text-secondary">Showing the chats from this visit only.</p>}
+            <button type="button" className="btn btn-secondary mt-3" onClick={() => { void loadHistory() }}>Try again</button>
+          </div>
+        )}
+        {historyStatus === 'ready' && history.length === 0 && (
+          <div className="empty-state mt-5">
+            <p className="font-bold text-text-primary">No saved chats yet</p>
+            <p className="mt-1">Your chats with Alpha are saved here so you can pick one back up.</p>
+          </div>
+        )}
+        {groupHistoryByDate().map(group => (
+          <section key={group.label} className="mt-5">
+            <h3 className="mb-1 text-[0.8125rem] font-bold text-text-secondary">{group.label}</h3>
+            <ul className="ledger">
+              {group.entries.map(entry => (
+                <li key={entry.id} className="flex items-center">
+                  <button type="button" onClick={() => loadConversation(entry)} disabled={busy} className="ledger-row min-w-0 flex-1">
+                    <span className="ledger-main">
+                      <span className="ledger-title line-clamp-2 !whitespace-normal">{entry.preview}</span>
+                      <span className="ledger-sub block">{group.label === 'Older' ? new Date(entry.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' : ''}{new Date(entry.date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</span>
+                    </span>
+                    <Icon name="chevronRight" className="h-5 w-5 shrink-0 text-text-muted" />
+                  </button>
+                  <button type="button" onClick={() => deleteConversation(entry.id)} className="btn-icon shrink-0" aria-label={`Delete chat: ${entry.preview}`} title="Delete this chat">
+                    <Icon name="trash" className="h-5 w-5" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
+        {history.length > 0 && (
+          <button type="button" onClick={deleteAllConversations} className="btn btn-danger mt-6 w-full">Delete all chat history</button>
+        )}
+      </Sheet>
+
+      {/* Add a photo or file */}
+      <Sheet open={showAttach} onClose={closeAttach} title="Add to this chat">
+        <ul className="ledger">
+          <li>
+            <button type="button" className="ledger-row" onClick={() => { fileInputRef.current?.click(); setShowAttach(false) }}>
+              <Icon name="camera" className="h-5 w-5 shrink-0 text-text-secondary" />
+              <span className="ledger-main">
+                <span className="ledger-title block">Photo for Alpha to look at</span>
+                <span className="ledger-sub block !whitespace-normal">Alpha studies the picture and answers right away, like a damaged panel or an engine bay.</span>
+              </span>
+            </button>
+          </li>
+          <li>
+            <button type="button" className="ledger-row" onClick={() => { attachInputRef.current?.click(); setShowAttach(false) }}>
+              <Icon name="doc" className="h-5 w-5 shrink-0 text-text-secondary" />
+              <span className="ledger-main">
+                <span className="ledger-title block">File to send with your message</span>
+                <span className="ledger-sub block !whitespace-normal">A PDF, text file, spreadsheet export or picture. It goes along with the next message you send.</span>
+              </span>
+            </button>
+          </li>
+        </ul>
+      </Sheet>
+
+      {/* Options */}
+      <Sheet open={showOptions} onClose={closeOptions} title="Chat options">
+        <ul className="ledger">
+          <SwitchRow label="Search the web" hint="Lets Alpha look things up online, like parts prices." on={features.search} onToggle={() => toggleFeature('search')} />
+          <SwitchRow label="Work with social media" hint="Lets Alpha use your connected Facebook, Instagram and Google pages." on={features.socialMedia} onToggle={() => toggleFeature('socialMedia')} />
+          <SwitchRow label="Think harder" hint="Slower, but better on hard questions. Shows how long it thought." on={features.thinking} onToggle={() => toggleFeature('thinking')} />
+          {/* Repair mode toggle */}
+          <SwitchRow label="Repair only mode" hint="Stay on diagnostics, manuals and repair notes. Source-backed answers only." on={repairOnlyMode} onToggle={toggleRepairMode} />
+          <SwitchRow label="Read answers aloud" hint="Alpha speaks each answer out loud." on={speakEnabled} onToggle={() => { setSpeakEnabled(!speakEnabled); if (speakEnabled) window.speechSynthesis?.cancel() }} />
+          {isDesktop && <SwitchRow label="Use this computer" hint="Lets Alpha open files and apps on this computer." on={features.desktopTools} onToggle={() => toggleFeature('desktopTools')} />}
+          <li>
+            <button type="button" className="ledger-row" onClick={() => { setShowOptions(false); setShowConnectorsPopup(true); loadConnectors() }}>
+              <span className="ledger-main">
+                <span className="ledger-title block">Connected accounts</span>
+                <span className="ledger-sub block !whitespace-normal">Facebook, Instagram, Google Business and Google Calendar.</span>
+              </span>
+              <Icon name="chevronRight" className="h-5 w-5 shrink-0 text-text-muted" />
+            </button>
+          </li>
+        </ul>
+      </Sheet>
+
+      {/* Connected accounts */}
+      <Sheet open={showConnectorsPopup} onClose={closeConnectors} title="Connected accounts" wide>
+        <p className="-mt-2 mb-4 text-[0.9375rem] text-text-secondary">Connect social media and calendar accounts so Alpha can work with them.</p>
+        {connectorToast && <p role="status" className="mb-3 rounded-md bg-bg-hover px-3 py-2 text-[0.9375rem] font-bold">{connectorToast}</p>}
+        {connectorsLoading ? (
+          <div className="space-y-3" aria-busy="true" aria-label="Loading connected accounts">
+            {CONNECTOR_ORDER.map(s => <div key={s} className="skeleton h-[4.5rem] w-full" />)}
+          </div>
+        ) : connectorsFailed ? (
+          <div role="alert">
+            <p className="flex items-center gap-2 font-bold text-red"><span className="lamp lamp-red" aria-hidden="true" />Connected accounts could not be loaded.</p>
+            <p className="mt-1 text-[0.9375rem] text-text-secondary">Your accounts are not changed. Check your connection and try again.</p>
+            <button type="button" className="btn btn-secondary mt-3" onClick={loadConnectors}>Try again</button>
+          </div>
+        ) : (
+          <ul className="ledger">
+            {CONNECTOR_ORDER.map(service => {
+              const info = CONNECTOR_SERVICE_INFO[service]
+              if (!info) return null
+              const connector = connectors[service]
+              const isConnected = connector?.enabled === true
+              const isLoading = disconnecting === service
+              const accountName = connector?.metadata?.page_name as string | undefined || (connector?.page_id ? `ID: ${connector.page_id}` : null)
+              return (
+                <li key={service} className="flex flex-wrap items-center gap-3 px-1 py-3">
+                  <span className="grid h-11 w-11 shrink-0 place-items-center rounded-md border border-border bg-bg-base text-[0.8125rem] font-bold text-text-secondary" aria-hidden="true">{info.icon}</span>
+                  <span className="min-w-0 flex-1 basis-48">
+                    <span className="block font-bold">{info.name}</span>
+                    <span className="block text-[0.875rem] leading-snug text-text-secondary">{info.description}</span>
+                    <span className="mt-1 flex items-center gap-2 text-[0.875rem] font-bold">
+                      <span className={`lamp ${isConnected ? 'lamp-green' : 'lamp-off'}`} aria-hidden="true" />
+                      {isConnected ? 'Connected' : 'Not connected'}
+                      {isConnected && accountName && <span className="min-w-0 truncate font-normal text-text-secondary">{accountName}</span>}
+                    </span>
+                  </span>
+                  {isConnected ? (
+                    <button type="button" className="btn btn-danger shrink-0" onClick={() => handleConnectorDisconnect(service)} disabled={isLoading}>
+                      {isLoading ? 'Disconnecting…' : 'Disconnect'}
+                    </button>
+                  ) : (
+                    <button type="button" className="btn btn-primary shrink-0" onClick={() => { window.location.href = info.oauthPath }}>
+                      Connect
+                    </button>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        )}
+        <p className="mt-5 text-[0.875rem] text-text-secondary">Facebook and Instagram share one sign-in. Google Business and Google Calendar share one Google sign-in.</p>
+      </Sheet>
 
       {/* Toast */}
       {toast && (
-        <div className="fixed bottom-6 right-6 bg-green/90 text-white px-4 py-2 rounded-lg text-sm font-medium z-50 animate-fade-in">
+        <div role="status" aria-live="polite" className="animate-fade-in fixed bottom-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+5.5rem)] left-1/2 z-[65] max-w-[calc(100vw-2rem)] -translate-x-1/2 rounded-lg bg-text-primary px-4 py-3 text-[0.9375rem] font-bold text-bg-base lg:bottom-24">
           {toast}
         </div>
       )}

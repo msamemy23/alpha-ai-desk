@@ -1,6 +1,20 @@
 ﻿'use client'
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { getShopId, supabase, markMessageRead } from '@/lib/supabase'
+import { phonePretty } from '@/lib/today'
+import Icon from '@/components/Icon'
+import Sheet from '@/components/Sheet'
+import Segmented from '@/components/inbox/Segmented'
+import ConversationList from '@/components/inbox/ConversationList'
+import ThreadView from '@/components/inbox/ThreadView'
+import CallsView from '@/components/inbox/CallsView'
+import CallDetail from '@/components/inbox/CallDetail'
+import NewMessageSheet from '@/components/inbox/NewMessageSheet'
+import DialSheet from '@/components/inbox/DialSheet'
+import { useKeyboardInset, useMediaQuery } from '@/components/inbox/hooks'
+import { callKind, contactKey, dialNumber, digitsOnly, otherNumber, recordingUrl } from '@/components/inbox/utils'
+import type { CallRecord, ContactRef, Message, Thread } from '@/components/inbox/utils'
 
 async function getAuthJsonHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -11,186 +25,165 @@ async function getAuthJsonHeaders(): Promise<Record<string, string>> {
   return headers
 }
 
-interface CallRecord {
-  id: string
-  call_id: string
-  direction: string
-  from_number: string
-  to_number: string
-  duration_secs: number
-  status: string
-  start_time: string
-  end_time: string
-  matched_customer_name: string | null
-  transcript: string | null
-  lead_score: string | null
-  lead_reasoning: string | null
-  service_needed: string | null
-  caller_sentiment: string | null
-  key_quotes: string | null
-  call_count_from_number: number | null
-  raw_data: any
-}
+const DAY = 86_400_000
+const isUnread = (m: Message) => m.direction === 'inbound' && m.read === false
 
-interface Message {
-  id: string; direction: string; channel: string; from_address: string; to_address: string;
-  body: string; status: string; read: boolean; created_at: string;
-  customer?: { name: string; phone: string; email: string }; subject?: string
-}
-interface Thread { contact: string; messages: Message[]; unread: number; lastMsg: Message }
-interface Customer { id: string; name: string; phone: string; email: string }
+type Row = Record<string, unknown>
+interface Contact extends ContactRef { vehicle: string }
 
-// SHOP_NUM is now fetched dynamically from settings (see useEffect below)
-
-function formatPhone(p: string) {
-  if (!p) return ''
-  const d = p.replace(/\D/g, '')
-  if (d.length === 11 && d[0] === '1') return `(${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`
-  if (d.length === 10) return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`
-  return p
-}
-
-function formatDuration(s: number) {
-  if (!s || s <= 0) return '0:00'
-  const m = Math.floor(s / 60)
-  const sec = Math.floor(s % 60)
-  return `${m}:${sec.toString().padStart(2, '0')}`
-}
-
-function formatDate(d: string) {
-  if (!d) return ''
-  const dt = new Date(d)
-  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' +
-    dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-}
-
-function LeadBadge({ score }: { score: string | null }) {
-  if (!score || score === 'unknown') return null
-  const colors: Record<string, string> = {
-    hot: 'bg-red-500/20 text-red-400 border-red-500/30',
-    warm: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
-    cold: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
-  }
+function InboxSkeleton() {
   return (
-    <span className={`text-xs px-2 py-0.5 rounded-full border font-medium uppercase ${colors[score] || 'bg-gray-500/20 text-gray-400'}`}>
-      {score}
-    </span>
+    <div className="mx-auto w-full max-w-[1180px] px-4 pb-10 pt-5 sm:px-6 lg:px-8 lg:pt-8" aria-busy="true" aria-label="Loading your inbox">
+      <div className="skeleton h-9 w-32" />
+      <div className="skeleton mt-3 h-4 w-56" />
+      <div className="skeleton mt-5 h-12 w-full max-w-md" />
+      <div className="mt-5 space-y-2">{[0, 1, 2, 3, 4, 5].map(i => <div key={i} className="skeleton h-[4.5rem]" />)}</div>
+    </div>
   )
 }
 
-function DirectionBadge({ dir }: { dir: string }) {
-  const isIn = dir === 'inbound' || dir === 'in'
+export default function InboxPage() {
   return (
-    <span className={`text-xs px-2 py-0.5 rounded font-medium ${
-      isIn ? 'bg-green-500/20 text-green-400' : 'bg-purple-500/20 text-purple-400'
-    }`}>
-      {isIn ? 'Inbound' : 'Outbound'}
-    </span>
+    <Suspense fallback={<InboxSkeleton />}>
+      <InboxScreen />
+    </Suspense>
   )
 }
 
-export default function MessagesPage() {
-  const [tab, setTab] = useState<'calls'|'sms'>('calls')
-  const [shopPhone, setShopPhone] = useState('') // default until settings load
+function InboxScreen() {
+  const params = useSearchParams()
+  const tab: 'messages' | 'calls' = params.get('tab') === 'calls' ? 'calls' : 'messages'
+  const threadParam = params.get('thread')
+  const selectedKey = threadParam ? contactKey(threadParam) : null
+
+  const [shopPhone, setShopPhone] = useState('')
+  const shopPhoneRef = useRef('')
   const [calls, setCalls] = useState<CallRecord[]>([])
   const [messages, setMessages] = useState<Message[]>([])
-  const [customers, setCustomers] = useState<Customer[]>([])
-  const [selectedCall, setSelectedCall] = useState<CallRecord | null>(null)
-  const [selectedThread, setSelectedThread] = useState<string | null>(null)
+  const [contacts, setContacts] = useState<Contact[]>([])
   const [loading, setLoading] = useState(true)
-  const [callFilter, setCallFilter] = useState<'all'|'inbound'|'outbound'>('all')
-  const [searchTerm, setSearchTerm] = useState('')
-  const [compose, setCompose] = useState(false)
-  const [sendTo, setSendTo] = useState('')
-  const [sendBody, setSendBody] = useState('')
-  const [sendChannel, setSendChannel] = useState<'sms'|'email'>('sms')
-  const [sending, setSending] = useState(false)
-  const [dialerNum, setDialerNum] = useState('')
-  const audioRef = useRef<HTMLAudioElement>(null)
-  const [playing, setPlaying] = useState(false)
+  const [messagesError, setMessagesError] = useState(false)
+  const [callsError, setCallsError] = useState(false)
+  const [msgSearch, setMsgSearch] = useState('')
+  const [selectedCall, setSelectedCall] = useState<CallRecord | null>(null)
+  const [compose, setCompose] = useState<{ to: string; channel: 'sms' | 'email' } | null>(null)
+  const [dialOpen, setDialOpen] = useState(false)
+  const [playingId, setPlayingId] = useState<string | null>(null)
+  const [audioError, setAudioError] = useState('')
+  const [notice, setNotice] = useState('')
   const [newCallFlash, setNewCallFlash] = useState(false)
+  const audioRef = useRef<HTMLAudioElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pushedRef = useRef(false)
+  const markedRef = useRef(new Set<string>())
+  const handledLink = useRef('')
 
+  const isDesktop = useMediaQuery('(min-width: 1024px)')
+
+  // ---------- Data ----------
   const loadCalls = useCallback(async () => {
-    const shopId = await getShopId()
-    if (!shopId) { setCalls([]); return }
-    const { data: historyData } = await supabase
-      .from('call_history')
-      .select('id, call_id, direction, from_number, to_number, duration_secs, status, start_time, end_time, matched_customer_name, transcript, lead_score, lead_reasoning, service_needed, caller_sentiment, key_quotes, call_count_from_number, raw_data')
-      .eq('shop_id', shopId)
-      .order('start_time', { ascending: false })
-      .limit(1500)
+    try {
+      const shopId = await getShopId()
+      if (!shopId) { setCalls([]); setCallsError(true); return }
+      const [hist, ai] = await Promise.all([
+        supabase.from('call_history')
+          .select('id, call_id, direction, from_number, to_number, duration_secs, status, start_time, end_time, matched_customer_name, transcript, lead_score, lead_reasoning, service_needed, caller_sentiment, key_quotes, call_count_from_number, raw_data')
+          .eq('shop_id', shopId).order('start_time', { ascending: false }).limit(1500),
+        supabase.from('ai_calls')
+          .select('id, task, status, started_at, transcript, summary, recording_url')
+          .eq('shop_id', shopId).order('started_at', { ascending: false }).limit(200),
+      ])
+      if (hist.error) throw hist.error
 
-    const { data: aiData } = await supabase
-      .from('ai_calls')
-      .select('id, task, status, started_at, transcript, summary, recording_url')
-      .eq('shop_id', shopId)
-      .order('started_at', { ascending: false })
-      .limit(200)
+      const aiAsRecords: CallRecord[] = ((ai.data || []) as Row[]).map(a => {
+        const task = String(a.task || '')
+        const isInbound = task.includes('Inbound call from')
+        const fromMatch = task.match(/Inbound call from ([+\d]+)/)
+        const raw = a.started_at
+        const tsNum = typeof raw === 'number' ? (raw < 1e12 ? raw * 1000 : raw) : Date.parse(String(raw || ''))
+        const ts = new Date(tsNum)
+        const tr = a.transcript
+        const txText = Array.isArray(tr)
+          ? tr.map((t: Row) => `${t.speaker === 'ai' ? 'AI' : 'Caller'}: ${t.text}`).join('\n')
+          : (typeof tr === 'string' ? tr : null)
+        return {
+          id: `ai-${a.id}`, call_id: `ai-${a.id}`,
+          direction: isInbound ? 'inbound' : 'outbound',
+          from_number: isInbound ? (fromMatch?.[1] || '') : shopPhoneRef.current,
+          to_number: isInbound ? shopPhoneRef.current : '',
+          duration_secs: 0, status: String(a.status || ''),
+          start_time: isNaN(ts.getTime()) ? new Date().toISOString() : ts.toISOString(),
+          end_time: '', matched_customer_name: null, transcript: txText,
+          lead_score: null, lead_reasoning: (a.summary as string) || null, service_needed: null,
+          caller_sentiment: null, key_quotes: null, call_count_from_number: null,
+          raw_data: { ai_call: a }, viaAi: true,
+        } as CallRecord
+      })
 
-    const aiAsRecords: CallRecord[] = (aiData || []).map((a: any) => {
-      const isInbound = (a.task || '').includes('Inbound call from')
-      const fromMatch = (a.task || '').match(/Inbound call from ([+\d]+)/)
-      const rawStartedAt = a.started_at
-      const tsNum = typeof rawStartedAt === 'number'
-        ? (rawStartedAt < 1e12 ? rawStartedAt * 1000 : rawStartedAt)
-        : Date.parse(String(rawStartedAt || ''))
-      const ts = new Date(tsNum)
-      const txText = Array.isArray(a.transcript)
-        ? a.transcript.map((t: any) => `${t.speaker === 'ai' ? 'AI' : 'Caller'}: ${t.text}`).join('\n')
-        : (typeof a.transcript === 'string' ? a.transcript : null)
-      return {
-        id: `ai-${a.id}`, call_id: `ai-${a.id}`,
-        direction: isInbound ? 'inbound' : 'outbound',
-        from_number: isInbound ? (fromMatch?.[1] || '') : shopPhone,
-        to_number: isInbound ? shopPhone : '',
-        duration_secs: 0, status: a.status,
-        start_time: isNaN(ts.getTime()) ? new Date().toISOString() : ts.toISOString(),
-        end_time: '', matched_customer_name: null, transcript: txText,
-        lead_score: null, lead_reasoning: a.summary || null, service_needed: null,
-        caller_sentiment: null, key_quotes: null, call_count_from_number: null,
-        raw_data: { ai_call: a },
-      } as CallRecord
-    })
-
-    const historyIds = new Set((historyData || []).map((c: any) => c.call_id))
-    const newAiRecords = aiAsRecords.filter(a => !historyIds.has(a.call_id))
-    const merged = [...(historyData || []), ...newAiRecords]
-      .sort((a, b) => new Date(b.start_time).getTime() - new Date(a.start_time).getTime())
-    setCalls(merged as CallRecord[])
+      const historyIds = new Set(((hist.data || []) as Row[]).map(c => c.call_id))
+      const newAi = aiAsRecords.filter(a => !historyIds.has(a.call_id))
+      const merged = [...((hist.data || []) as CallRecord[]), ...newAi]
+        .sort((a, b) => new Date(b.start_time).getTime() - new Date(a.start_time).getTime())
+      setCalls(merged)
+      setCallsError(false)
+    } catch {
+      setCallsError(true)
+    }
   }, [])
+
   const loadMessages = useCallback(async () => {
-    const shopId = await getShopId()
-    if (!shopId) { setMessages([]); return }
-    const { data } = await supabase
-      .from('messages')
-      .select('*, customer:customers(name, phone, email)')
-      .eq('shop_id', shopId)
-      .order('created_at', { ascending: false })
-      .limit(500)
-    if (data) setMessages(data as any)
+    try {
+      const shopId = await getShopId()
+      if (!shopId) { setMessages([]); setMessagesError(true); return }
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*, customer:customers(name, phone, email)')
+        .eq('shop_id', shopId)
+        .order('created_at', { ascending: false })
+        .limit(500)
+      if (error) throw error
+      setMessages((data || []) as unknown as Message[])
+      setMessagesError(false)
+    } catch {
+      // Keep what is on screen: a failed refresh must not look like "no texts".
+      setMessagesError(true)
+    }
   }, [])
 
-  const loadCustomers = useCallback(async () => {
-    const shopId = await getShopId()
-    if (!shopId) { setCustomers([]); return }
-    const { data } = await supabase.from('customers').select('id, name, phone, email').eq('shop_id', shopId).limit(100)
-    if (data) setCustomers(data)
+  const loadContacts = useCallback(async () => {
+    try {
+      const shopId = await getShopId()
+      if (!shopId) { setContacts([]); return }
+      const { data } = await supabase.from('customers').select('id, name, phone, email, vehicle_year, vehicle_make, vehicle_model').eq('shop_id', shopId).limit(1000)
+      if (data) {
+        setContacts((data as Row[]).map(c => ({
+          id: String(c.id), name: String(c.name || ''), phone: String(c.phone || ''), email: String(c.email || ''),
+          vehicle: [c.vehicle_year, c.vehicle_make, c.vehicle_model].filter(Boolean).join(' '),
+        })))
+      }
+    } catch { /* names fall back to phone numbers */ }
   }, [])
+
+  const retry = useCallback(() => { loadCalls(); loadMessages() }, [loadCalls, loadMessages])
+
   useEffect(() => {
     let disposed = false
     setLoading(true)
-    // Fetch shop phone from settings
     const loadShopPhone = async () => {
       const shopId = await getShopId()
       if (!shopId) return
       const { data } = await supabase.from('settings').select('shop_phone').eq('shop_id', shopId).limit(1).maybeSingle()
-      if (!disposed && data?.shop_phone) setShopPhone(data.shop_phone.startsWith('+') ? data.shop_phone : '+1' + data.shop_phone.replace(/\D/g, ''))
+      if (!disposed && data?.shop_phone) {
+        const p = data.shop_phone.startsWith('+') ? data.shop_phone : '+1' + data.shop_phone.replace(/\D/g, '')
+        shopPhoneRef.current = p
+        setShopPhone(p)
+      }
     }
     loadShopPhone().catch(() => {})
-    Promise.all([loadCalls(), loadMessages(), loadCustomers()]).finally(() => { if (!disposed) setLoading(false) })
+    Promise.all([loadCalls(), loadMessages(), loadContacts()]).finally(() => { if (!disposed) setLoading(false) })
 
-    // Background sync: pull latest Telnyx recordings into call_history (fire and forget)
+    // Background sync: pull the latest Telnyx recordings into call_history (fire and forget).
     const syncRecordings = async () => {
       try {
         const response = await fetch('/api/telnyx/sync-calls?action=sync-recordings', { method: 'POST', headers: await getAuthJsonHeaders() })
@@ -199,28 +192,25 @@ export default function MessagesPage() {
     }
     syncRecordings()
 
-    // Poll every 10 seconds
+    // Poll every 10 seconds as a safety net.
     pollRef.current = setInterval(() => { loadCalls(); loadMessages() }, 10000)
 
-    // Realtime: ai_calls (new inbound calls appear here instantly)
+    // Realtime: new inbound calls appear here instantly.
     const aiCallChannel = supabase
       .channel('live_ai_calls')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ai_calls' }, (payload) => {
         loadCalls()
         if (payload.eventType === 'INSERT') {
           setNewCallFlash(true)
-          setTimeout(() => setNewCallFlash(false), 5000)
+          if (flashTimer.current) clearTimeout(flashTimer.current)
+          flashTimer.current = setTimeout(() => setNewCallFlash(false), 5000)
         }
       })
       .subscribe()
-
-    // Realtime: call_history (synced records)
     const histChannel = supabase
       .channel('live_call_history')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'call_history' }, () => { loadCalls() })
       .subscribe()
-
-    // Realtime: new SMS
     const msgChannel = supabase
       .channel('live_messages')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, () => { loadMessages() })
@@ -229,411 +219,336 @@ export default function MessagesPage() {
     return () => {
       disposed = true
       if (pollRef.current) clearInterval(pollRef.current)
+      if (flashTimer.current) clearTimeout(flashTimer.current)
       supabase.removeChannel(aiCallChannel)
       supabase.removeChannel(histChannel)
       supabase.removeChannel(msgChannel)
     }
-  }, [loadCalls, loadMessages, loadCustomers])
+  }, [loadCalls, loadMessages, loadContacts])
 
-  // Group messages into threads
-  const threads: Thread[] = (() => {
-    const map: Record<string, Message[]> = {}
-    messages.filter(m => m.channel === 'sms').forEach(m => {
+  useEffect(() => {
+    if (!notice) return
+    const t = setTimeout(() => setNotice(''), 6000)
+    return () => clearTimeout(t)
+  }, [notice])
+
+  // ---------- Who is who ----------
+  const byPhone = useMemo(() => {
+    const m = new Map<string, Contact>()
+    contacts.forEach(c => { const k = contactKey(c.phone); if (k && digitsOnly(c.phone).length >= 7 && !m.has(k)) m.set(k, c) })
+    return m
+  }, [contacts])
+  const byId = useMemo(() => new Map(contacts.map(c => [c.id, c])), [contacts])
+
+  const threads: Thread[] = useMemo(() => {
+    const map = new Map<string, Message[]>()
+    messages.forEach(m => {
+      // Rows from before the channel column existed are texts.
+      if ((m.channel || 'sms') !== 'sms') return
       const contact = m.direction === 'inbound' ? m.from_address : m.to_address
-      if (!map[contact]) map[contact] = []
-      map[contact].push(m)
+      const key = contactKey(contact)
+      if (!key) return
+      const list = map.get(key)
+      if (list) list.push(m); else map.set(key, [m])
     })
-    return Object.entries(map).map(([contact, msgs]) => ({
-      contact,
-      messages: msgs.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
-      unread: msgs.filter(m => !m.read && m.direction === 'inbound').length,
-      lastMsg: msgs[msgs.length - 1],
-    })).sort((a, b) => new Date(b.lastMsg.created_at).getTime() - new Date(a.lastMsg.created_at).getTime())
-  })()
+    const out: Thread[] = []
+    map.forEach((msgs, key) => {
+      msgs.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+      const last = msgs[msgs.length - 1]
+      const contact = last.direction === 'inbound' ? last.from_address : last.to_address
+      const linked = [...msgs].reverse().find(m => m.customer?.name || m.customer_id)
+      const person = (linked?.customer_id && byId.get(linked.customer_id)) || byPhone.get(key) || null
+      const name = linked?.customer?.name || person?.name || ''
+      out.push({
+        key, contact, name: name || phonePretty(contact), messages: msgs,
+        customerId: (linked?.customer_id as string | null) || person?.id || null,
+        unread: msgs.filter(isUnread).length, last,
+      })
+    })
+    return out.sort((a, b) => new Date(b.last.created_at).getTime() - new Date(a.last.created_at).getTime())
+  }, [messages, byId, byPhone])
 
-  const filteredCalls = calls.filter(c => {
-    if (callFilter === 'inbound' && c.direction !== 'inbound') return false
-    if (callFilter === 'outbound' && c.direction !== 'outbound') return false
-    if (searchTerm) {
-      const s = searchTerm.toLowerCase()
-      return c.from_number?.includes(s) || c.to_number?.includes(s) ||
-        c.matched_customer_name?.toLowerCase().includes(s) ||
-        c.service_needed?.toLowerCase().includes(s) ||
-        c.lead_score?.toLowerCase().includes(s)
-    }
-    return true
-  })
+  const unreadTotal = useMemo(() => threads.reduce((s, t) => s + t.unread, 0), [threads])
+  const missedRecent = useMemo(() => {
+    const since = Date.now() - 3 * DAY
+    return calls.filter(c => new Date(c.start_time).getTime() >= since && callKind(c.direction, c.status, c.duration_secs, c.viaAi) === 'missed').length
+  }, [calls])
 
-  const getRecordingUrl = (call: CallRecord) => {
-    const rd = call.raw_data
-    if (!rd) return null
-    if (rd.download_urls?.mp3) return `/api/recording-proxy?url=${encodeURIComponent(rd.download_urls.mp3)}`
-    if (rd.download_urls?.wav) return `/api/recording-proxy?url=${encodeURIComponent(rd.download_urls.wav)}`
-    if (rd.recording_id) return `/api/recording-proxy?id=${rd.recording_id}`
-    if (rd.recording_url) return `/api/recording-proxy?url=${encodeURIComponent(rd.recording_url)}`
-    return null
+  const filteredThreads = useMemo(() => {
+    const q = msgSearch.trim().toLowerCase()
+    if (!q) return threads
+    const qd = q.replace(/\D/g, '')
+    return threads.filter(t =>
+      t.name.toLowerCase().includes(q)
+      || (qd.length >= 3 && t.key.includes(qd))
+      || t.messages.some(m => (m.body || '').toLowerCase().includes(q)))
+  }, [threads, msgSearch])
+
+  const selected: Thread | null = useMemo(() => {
+    if (!selectedKey) return null
+    const hit = threads.find(t => t.key === selectedKey)
+    if (hit) return hit
+    // A number we have never texted (for example from a customer's page): an empty conversation.
+    const person = byPhone.get(selectedKey) || null
+    const contact = person?.phone || threadParam || selectedKey
+    const blank = { id: 'blank', direction: 'outbound', channel: 'sms', from_address: '', to_address: contact, body: '', status: '', read: true, created_at: new Date().toISOString() } as Message
+    return { key: selectedKey, contact, name: person?.name || phonePretty(contact), customerId: person?.id || null, messages: [], unread: 0, last: blank }
+  }, [selectedKey, threads, byPhone, threadParam])
+
+  // Opening a conversation marks its incoming texts as read.
+  useEffect(() => {
+    if (!selected) return
+    const ids = selected.messages.filter(isUnread).map(m => m.id).filter(id => !markedRef.current.has(id))
+    if (ids.length === 0) return
+    ids.forEach(id => markedRef.current.add(id))
+    setMessages(prev => prev.map(m => (ids.includes(m.id) ? { ...m, read: true } : m)))
+    Promise.all(ids.map(id => markMessageRead(id))).then(results => {
+      results.forEach((r, i) => { if (r.error) markedRef.current.delete(ids[i]) })
+    })
+  }, [selected])
+
+  // ---------- Navigation (the URL is the source of truth, so Back works) ----------
+  const openThread = useCallback((key: string) => {
+    const url = `/messages?thread=${encodeURIComponent(key)}`
+    if (threadParam) window.history.replaceState(null, '', url)
+    else { window.history.pushState(null, '', url); pushedRef.current = true }
+  }, [threadParam])
+
+  const closeThread = useCallback(() => {
+    if (pushedRef.current) { pushedRef.current = false; window.history.back() }
+    else window.history.replaceState(null, '', '/messages')
+  }, [])
+
+  const setTab = (t: 'messages' | 'calls') => {
+    pushedRef.current = false
+    window.history.replaceState(null, '', t === 'calls' ? '/messages?tab=calls' : '/messages')
   }
 
-  const playRecording = (call: CallRecord) => {
-    const url = getRecordingUrl(call)
-    if (!url || !audioRef.current) return
-    audioRef.current.src = url
-    audioRef.current.play()
-    setPlaying(true)
-  }
+  // Links from other screens: ?thread=<number> opens a conversation, ?new=1&to=<number> starts a message.
+  const newParam = params.get('new')
+  const toParam = params.get('to')
+  useEffect(() => {
+    if (loading || newParam !== '1') return
+    const key = 'new|' + (toParam || '')
+    if (handledLink.current === key) return
+    handledLink.current = key
+    setCompose({ to: toParam || '', channel: 'sms' })
+  }, [loading, newParam, toParam])
 
-  const sendMessage = async () => {
-    if (!sendTo || !sendBody || sending) return
-    setSending(true)
+  // ---------- Actions ----------
+  const sendMessage = useCallback(async (to: string, body: string, channel: 'sms' | 'email'): Promise<string | null> => {
     try {
       const res = await fetch('/api/send-message', {
         method: 'POST',
         headers: await getAuthJsonHeaders(),
-        body: JSON.stringify({ to: sendTo, body: sendBody, channel: sendChannel }),
+        body: JSON.stringify({ to, body, channel }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok || data.error) throw new Error(data.error || 'Message could not be sent')
-      setSendBody('')
-      setCompose(false)
       await loadMessages()
+      return null
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Message could not be sent')
-    } finally { setSending(false) }
-  }
-  const makeCall = async (num: string) => {
-    if (!num) return
-    const res = await fetch('/api/make-call', {
-      method: 'POST',
-      headers: await getAuthJsonHeaders(),
-      body: JSON.stringify({ to: num }),
-    })
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      alert(data.error || 'Call could not be started')
+      return error instanceof Error ? error.message : 'Message could not be sent'
     }
+  }, [loadMessages])
+
+  const closeCompose = useCallback(() => setCompose(null), [])
+  const closeDial = useCallback(() => setDialOpen(false), [])
+  const closeCall = useCallback(() => setSelectedCall(null), [])
+
+  const callName = useCallback((c: CallRecord) => c.matched_customer_name || byPhone.get(contactKey(otherNumber(c)))?.name || '', [byPhone])
+
+  const togglePlay = (call: CallRecord) => {
+    const url = recordingUrl(call)
+    const el = audioRef.current
+    if (!url || !el) return
+    if (playingId === call.id) { el.pause(); setPlayingId(null); return }
+    setAudioError('')
+    el.src = url
+    el.play().then(() => setPlayingId(call.id)).catch(() => { setPlayingId(null); setAudioError('That recording could not be played. It may have expired, or your connection dropped.') })
   }
-  // â”€â”€â”€ RENDER â”€â”€â”€
+
+  const openCall = (c: CallRecord) => {
+    audioRef.current?.pause()
+    setPlayingId(null)
+    setSelectedCall(c)
+  }
+
+  const kbInset = useKeyboardInset(!!selected && !isDesktop && tab === 'messages')
+
+  // ---------- Render ----------
+  if (loading && messages.length === 0 && calls.length === 0 && !messagesError && !callsError) return <InboxSkeleton />
+
+  const showLayer = !!selected && !isDesktop && tab === 'messages'
+  const selectedContact = selected?.customerId ? byId.get(selected.customerId) : (selected ? byPhone.get(selected.key) : undefined)
+  const selectedCallPerson = selectedCall ? byPhone.get(contactKey(otherNumber(selectedCall))) : undefined
+
+  const threadPane = selected && (
+    <ThreadView
+      key={selected.key}
+      thread={selected}
+      showBack={!isDesktop}
+      onBack={closeThread}
+      onSend={body => sendMessage(selected.contact, body, 'sms')}
+      keyboardInset={kbInset}
+      vehicle={selectedContact?.vehicle}
+    />
+  )
+
+  const listError = (what: string) => (
+    <div role="alert" className="card max-w-xl">
+      <h2 className="section-title">{what} did not load</h2>
+      <p className="mt-1 text-text-secondary">Check your connection and try again.</p>
+      <button className="btn btn-primary mt-4" onClick={retry}>Try again</button>
+    </div>
+  )
+
+  const refreshBanner = ((tab === 'messages' && messagesError && messages.length > 0) || (tab === 'calls' && callsError && calls.length > 0)) && (
+    <div role="alert" className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red/40 bg-red/[0.08] px-4 py-3">
+      <span className="text-red">Your {tab === 'messages' ? 'texts' : 'calls'} could not be refreshed. What you see may be out of date.</span>
+      <button className="btn btn-secondary btn-sm" onClick={retry}>Try again</button>
+    </div>
+  )
+
   return (
-    <div className="p-6 max-w-[1400px] mx-auto">
-      <audio ref={audioRef} onEnded={() => setPlaying(false)} className="hidden" />
+    <div className="mx-auto flex w-full max-w-[1180px] flex-col px-4 pb-10 pt-5 animate-fade-in sm:px-6 lg:h-[calc(100dvh-4rem)] lg:px-8 lg:pb-6 lg:pt-8">
+      <audio ref={audioRef} onEnded={() => setPlayingId(null)} onPause={() => setPlayingId(null)} className="hidden" />
 
-      {newCallFlash && (
-        <div className="fixed top-4 right-4 z-50 bg-green-600 text-white px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 animate-bounce">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13 19.79 19.79 0 0 1 1.63 4.4 2 2 0 0 1 3.6 2.21h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.06 6.06l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-          <span className="font-semibold">New call received!</span>
-          <button onClick={() => setNewCallFlash(false)} className="ml-2 opacity-70 hover:opacity-100 text-lg">&times;</button>
-        </div>
-      )}
-
-      {/* Header */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-6">
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold">Communications</h1>
-          <span className="flex items-center gap-1.5 text-xs text-green-400 bg-green-500/10 border border-green-500/20 px-2 py-1 rounded-full">
-            <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse inline-block" />
-            Live
-          </span>
-        </div>
-        <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-          <input className="form-input flex-1 min-w-0 sm:flex-none sm:w-48" placeholder="Phone number..." aria-label="Phone number to call" value={dialerNum} onChange={e => setDialerNum(e.target.value)} />
-          <button className="btn btn-secondary" onClick={() => makeCall(dialerNum)}>Call</button>
-          <button className="btn btn-primary w-full sm:w-auto" onClick={() => setCompose(true)}>+ New Message</button>
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex gap-1 mb-4 border-b border-white/10">
-        {(['calls', 'sms'] as const).map(t => (
-          <button key={t} onClick={() => { setTab(t); setSelectedCall(null); setSelectedThread(null) }}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              tab === t ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-white'
-            }`}>
-            {t === 'calls' ? `Calls (${calls.length})` : `SMS (${threads.length})`}
-          </button>
-        ))}
-      </div>
-
-      {loading ? <div className="text-center py-20 text-gray-400">Loading...</div> : (
-        <div className="flex gap-4" style={{ minHeight: '70vh' }}>
-
-          {/* â”€â”€â”€ LEFT: List â”€â”€â”€ */}
-          <div className={`${selectedCall || selectedThread ? 'w-1/2' : 'w-full'} transition-all`}>
-
-            {tab === 'calls' && (
-              <>
-                {/* Filters */}
-                <div className="flex gap-2 mb-3">
-                  <input className="form-input flex-1" placeholder="Search calls by name, phone, service..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
-                  {(['all','inbound','outbound'] as const).map(f => (
-                    <button key={f} onClick={() => setCallFilter(f)}
-                      className={`px-3 py-1.5 text-xs rounded font-medium ${
-                        callFilter === f ? 'bg-blue-600 text-white' : 'bg-white/5 text-gray-400 hover:bg-white/10'
-                      }`}>
-                      {f.charAt(0).toUpperCase() + f.slice(1)}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Call List */}
-                <div className="space-y-1 max-h-[70vh] overflow-y-auto">
-                  {filteredCalls.map(call => (
-                    <div key={call.id}
-                      onClick={() => setSelectedCall(call)}
-                      className={`p-3 rounded-lg cursor-pointer transition-colors ${
-                        selectedCall?.id === call.id ? 'bg-blue-600/20 border border-blue-500/30' : 'bg-white/5 hover:bg-white/10'
-                      }`}>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <DirectionBadge dir={call.direction} />
-                          <span className="font-medium">
-                            {call.matched_customer_name || formatPhone(call.direction === 'inbound' ? call.from_number : call.to_number)}
-                          </span>
-                          <LeadBadge score={call.lead_score} />
-                        </div>
-                        <div className="flex items-center gap-3 text-sm text-gray-400">
-                          <span>{formatDuration(call.duration_secs)}</span>
-                          <span>{formatDate(call.start_time)}</span>
-                        </div>
-                      </div>
-                      {call.service_needed && call.service_needed !== 'unknown' && (
-                        <div className="text-xs text-gray-500 mt-1 ml-16">
-                          Service: {call.service_needed}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                  {filteredCalls.length === 0 && <div className="text-center py-10 text-gray-500">No calls found</div>}
-                </div>
-              </>
-            )}
-
-            {tab === 'sms' && (
-              <div className="space-y-1 max-h-[70vh] overflow-y-auto">
-                {threads.map(thread => {
-                  const name = thread.lastMsg.customer?.name || formatPhone(thread.contact)
-                  return (
-                    <div key={thread.contact}
-                      onClick={() => setSelectedThread(thread.contact)}
-                      className={`p-3 rounded-lg cursor-pointer transition-colors ${
-                        selectedThread === thread.contact ? 'bg-blue-600/20 border border-blue-500/30' : 'bg-white/5 hover:bg-white/10'
-                      }`}>
-                      <div className="flex justify-between items-center">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-400">SMS</span>
-                          <span className="font-medium">{name}</span>
-                          {thread.unread > 0 && <span className="bg-red-500 text-white text-xs rounded-full px-1.5">{thread.unread}</span>}
-                        </div>
-                        <span className="text-xs text-gray-500">{formatDate(thread.lastMsg.created_at)}</span>
-                      </div>
-                      <div className="text-sm text-gray-400 mt-1 truncate">{thread.lastMsg.body}</div>
-                    </div>
-                  )
-                })}
-                {threads.length === 0 && <div className="text-center py-10 text-gray-500">No messages</div>}
-              </div>
-            )}
-
+      <div {...(showLayer ? ({ inert: '', 'aria-hidden': true } as object) : {})} className="flex min-h-0 flex-1 flex-col">
+        <header className="mb-4 flex items-end justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="page-title">Inbox</h1>
+            <p className="page-subtitle truncate">{shopPhone ? `Texts and calls on ${phonePretty(shopPhone)}` : 'Texts and calls with your customers'}</p>
           </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button type="button" className="btn btn-secondary w-11 px-0 sm:w-auto sm:px-4" onClick={() => setDialOpen(true)} aria-label="Call a number">
+              <Icon name="phone" className="h-5 w-5" /><span className="hidden sm:inline">Call a number</span>
+            </button>
+            <button type="button" className="btn btn-primary" onClick={() => setCompose({ to: '', channel: 'sms' })}>
+              <Icon name="plus" className="h-5 w-5" />New message
+            </button>
+          </div>
+        </header>
 
-          {/* â”€â”€â”€ RIGHT: Detail Panel â”€â”€â”€ */}
-          {selectedCall && (
-            <div className="w-1/2 bg-white/5 rounded-xl p-5 overflow-y-auto max-h-[80vh] border border-white/10">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-bold">Call Details</h2>
-                <button onClick={() => setSelectedCall(null)} className="text-gray-400 hover:text-white text-xl">&times;</button>
-              </div>
+        {newCallFlash && (
+          <div role="status" className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-green/40 bg-green/[0.1] px-4 py-3">
+            <span className="flex items-center gap-2 font-bold text-green"><span className="lamp lamp-green" aria-hidden="true" />New call received</span>
+            <button type="button" className="btn-icon -mr-2 h-9 w-9 sm:h-9 sm:w-9" onClick={() => setNewCallFlash(false)} aria-label="Dismiss"><Icon name="close" className="h-4 w-4" /></button>
+          </div>
+        )}
+        {notice && (
+          <div role="status" className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-green/40 bg-green/[0.1] px-4 py-3">
+            <span className="flex items-center gap-2 font-bold text-green"><Icon name="check" className="h-5 w-5" />{notice}</span>
+            <button type="button" className="btn-icon -mr-2 h-9 w-9 sm:h-9 sm:w-9" onClick={() => setNotice('')} aria-label="Dismiss"><Icon name="close" className="h-4 w-4" /></button>
+          </div>
+        )}
 
-              {/* Call Info Grid */}
-              <div className="grid grid-cols-2 gap-3 mb-5">
-                <div className="bg-white/5 rounded-lg p-3">
-                  <div className="text-xs text-gray-500 mb-1">Direction</div>
-                  <DirectionBadge dir={selectedCall.direction} />
-                </div>
-                <div className="bg-white/5 rounded-lg p-3">
-                  <div className="text-xs text-gray-500 mb-1">Duration</div>
-                  <div className="font-medium">{formatDuration(selectedCall.duration_secs)}</div>
-                </div>
-                <div className="bg-white/5 rounded-lg p-3">
-                  <div className="text-xs text-gray-500 mb-1">From</div>
-                  <div className="font-medium text-sm">{selectedCall.matched_customer_name || formatPhone(selectedCall.from_number)}</div>
-                  <div className="text-xs text-gray-500">{formatPhone(selectedCall.from_number)}</div>
-                </div>
-                <div className="bg-white/5 rounded-lg p-3">
-                  <div className="text-xs text-gray-500 mb-1">To</div>
-                  <div className="font-medium text-sm">{formatPhone(selectedCall.to_number)}</div>
-                </div>
-                <div className="bg-white/5 rounded-lg p-3">
-                  <div className="text-xs text-gray-500 mb-1">Date</div>
-                  <div className="text-sm">{formatDate(selectedCall.start_time)}</div>
-                </div>
-                <div className="bg-white/5 rounded-lg p-3">
-                  <div className="text-xs text-gray-500 mb-1">Times Called</div>
-                  <div className="font-medium text-lg">{selectedCall.call_count_from_number || 1}</div>
-                </div>
-              </div>
+        <Segmented
+          label="Inbox view" value={tab} onChange={setTab} className="mb-4 sm:max-w-md"
+          options={[
+            { value: 'messages', label: 'Messages', badge: unreadTotal, badgeTone: 'blue', badgeLabel: `${unreadTotal} unread` },
+            { value: 'calls', label: 'Calls', badge: missedRecent, badgeTone: 'red', badgeLabel: `${missedRecent} missed in the last 3 days` },
+          ]}
+        />
 
-              {/* Lead Score Section */}
-              {selectedCall.lead_score && selectedCall.lead_score !== 'unknown' && (
-                <div className="mb-5 bg-white/5 rounded-lg p-4 border border-white/10">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-sm font-semibold">Lead Score</span>
-                    <LeadBadge score={selectedCall.lead_score} />
-                    {selectedCall.caller_sentiment && (
-                      <span className="text-xs text-gray-400">Sentiment: {selectedCall.caller_sentiment}</span>
-                    )}
-                  </div>
-                  {selectedCall.lead_reasoning && (
-                    <div className="text-sm text-gray-300 mb-2">{selectedCall.lead_reasoning}</div>
-                  )}
-                  {selectedCall.service_needed && selectedCall.service_needed !== 'unknown' && (
-                    <div className="text-sm"><span className="text-gray-500">Service Needed:</span> <span className="text-blue-400">{selectedCall.service_needed}</span></div>
-                  )}
-                  {selectedCall.key_quotes && (
-                    <div className="text-sm mt-2 italic text-gray-400">"{selectedCall.key_quotes}"</div>
-                  )}
-                </div>
-              )}
+        {refreshBanner}
+        {audioError && tab === 'calls' && (
+          <div role="alert" className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-red/40 bg-red/[0.08] px-4 py-3 text-red">
+            <span>{audioError}</span>
+            <button type="button" className="btn-icon -mr-2 h-9 w-9 sm:h-9 sm:w-9" onClick={() => setAudioError('')} aria-label="Dismiss"><Icon name="close" className="h-4 w-4" /></button>
+          </div>
+        )}
 
-              {/* Recording Player */}
-              {getRecordingUrl(selectedCall) && (
-                <div className="mb-5">
-                  <div className="text-sm font-semibold mb-2">Recording</div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => playRecording(selectedCall)}
-                      className="btn btn-sm bg-green-600 hover:bg-green-500 text-white px-4 py-1.5 rounded-lg text-sm">
-                      {playing ? 'Playing...' : 'Play Recording'}
-                    </button>
-                  </div>
-                  <audio ref={audioRef} controls className="w-full mt-2" onEnded={() => setPlaying(false)} />
-                </div>
-              )}
-
-              {/* Transcript */}
-              {selectedCall.transcript && selectedCall.transcript !== '[transcription_failed]' ? (
-                <div className="mb-5">
-                  <div className="text-sm font-semibold mb-2">Transcript</div>
-                  <div className="bg-black/30 rounded-lg p-4 text-sm text-gray-300 max-h-60 overflow-y-auto whitespace-pre-wrap">
-                    {selectedCall.transcript}
-                  </div>
-                </div>
-              ) : (
-                <div className="mb-5">
-                  <div className="text-sm font-semibold mb-2">Transcript</div>
-                  <div className="bg-black/30 rounded-lg p-4 text-sm text-gray-500 italic">
-                    {selectedCall.transcript === '[transcription_failed]' ? 'Recording expired. Transcription unavailable.' : 'Pending transcription...'}
-                  </div>
-                </div>
-              )}
-
-              {/* Action Buttons */}
-
-                      {/* AI Lead Insights */}
-                {selectedCall.lead_score && selectedCall.lead_score !== 'unknown' && (
-                  <div className="space-y-3">
-                    <div className="text-sm font-semibold mb-2">AI Lead Insights</div>
-                    <div className="bg-black/30 rounded-lg p-4 space-y-2 border border-white/10">
-                      <div className="flex items-center gap-2">
-                        <span className="text-gray-400 text-xs">Lead Score:</span>
-                        <LeadBadge score={selectedCall.lead_score} />
-                      </div>
-                      {selectedCall.lead_reasoning && (
-                        <div><span className="text-gray-400 text-xs">Reasoning:</span><p className="text-sm text-gray-200 mt-0.5">{selectedCall.lead_reasoning}</p></div>
-                      )}
-                      {selectedCall.service_needed && (
-                        <div><span className="text-gray-400 text-xs">Service Needed:</span><p className="text-sm text-white mt-0.5">{selectedCall.service_needed}</p></div>
-                      )}
-                      {selectedCall.caller_sentiment && (
-                        <div><span className="text-gray-400 text-xs">Sentiment:</span><span className="ml-1 text-sm capitalize">{selectedCall.caller_sentiment}</span></div>
-                      )}
-                      {selectedCall.key_quotes && (
-                        <div><span className="text-gray-400 text-xs">Key Quotes:</span><p className="text-sm text-gray-300 mt-0.5 italic">"{selectedCall.key_quotes}"</p></div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              <div className="flex gap-2">
-                <button onClick={() => makeCall(selectedCall.direction === 'inbound' ? selectedCall.from_number : selectedCall.to_number)}
-                  className="btn btn-primary px-4 py-2 rounded-lg text-sm">Call Back</button>
-                <button onClick={() => { setSendTo(selectedCall.direction === 'inbound' ? selectedCall.from_number : selectedCall.to_number); setCompose(true) }}
-                  className="btn btn-secondary px-4 py-2 rounded-lg text-sm">Send SMS</button>
-              </div>
+        {tab === 'messages' ? (
+          messagesError && messages.length === 0 ? listError('Your texts')
+          : threads.length === 0 ? (
+            <div className="empty-state">
+              <p className="font-bold text-text-primary">No texts yet</p>
+              <p className="mx-auto mt-1 max-w-md">When a customer texts your shop number, the conversation shows up here. You can also start one yourself.</p>
+              <button className="btn btn-primary mt-4" onClick={() => setCompose({ to: '', channel: 'sms' })}><Icon name="plus" className="h-5 w-5" />New message</button>
             </div>
-          )}
-
-          {/* SMS Thread Detail */}
-          {selectedThread && (() => {
-            const thread = threads.find(t => t.contact === selectedThread)
-            if (!thread) return null
-            const name = thread.lastMsg.customer?.name || formatPhone(thread.contact)
-            return (
-              <div className="w-1/2 bg-white/5 rounded-xl border border-white/10 flex flex-col max-h-[80vh]">
-                <div className="flex items-center justify-between p-4 border-b border-white/10">
-                  <div>
-                    <div className="font-bold">{name}</div>
-                    <div className="text-xs text-gray-500">{formatPhone(thread.contact)}</div>
-                  </div>
-                  <button onClick={() => setSelectedThread(null)} className="text-gray-400 hover:text-white text-xl">&times;</button>
+          ) : (
+            <div className="min-h-0 flex-1 overflow-hidden lg:grid lg:grid-cols-[21rem_minmax(0,1fr)] lg:rounded-lg lg:border lg:border-border lg:bg-bg-card">
+              <div className="flex min-h-0 flex-col lg:border-r lg:border-border">
+                <div className="pb-3 lg:p-3 lg:pb-3">
+                  <label className="relative block">
+                    <span className="sr-only">Search texts by name, number or words</span>
+                    <Icon name="search" className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-text-muted" />
+                    <input type="search" inputMode="search" autoComplete="off" className="form-input pl-10" placeholder="Search texts" value={msgSearch} onChange={e => setMsgSearch(e.target.value)} />
+                  </label>
                 </div>
-                <div className="flex-1 overflow-y-auto p-4 space-y-2">
-                  {thread.messages.map(msg => (
-                    <div key={msg.id} className={`flex ${msg.direction === 'inbound' ? 'justify-start' : 'justify-end'}`}>
-                      <div className={`max-w-[80%] rounded-xl px-3 py-2 text-sm ${
-                        msg.direction === 'inbound' ? 'bg-white/10' : 'bg-blue-600'
-                      }`}>
-                        <div>{msg.body}</div>
-                        <div className="text-xs opacity-60 mt-1">{formatDate(msg.created_at)}</div>
-                      </div>
+                <div className="min-h-0 flex-1 lg:overflow-y-auto">
+                  {filteredThreads.length === 0 ? (
+                    <div className="empty-state m-0 lg:m-3">
+                      <p className="font-bold text-text-primary">No texts match &ldquo;{msgSearch.trim()}&rdquo;</p>
+                      <button className="btn btn-secondary mt-3" onClick={() => setMsgSearch('')}>Show all texts</button>
                     </div>
-                  ))}
-                </div>
-                <div className="p-3 border-t border-white/10 flex gap-2">
-                  <input className="form-input flex-1" placeholder="Type a message..."
-                    value={sendBody} onChange={e => setSendBody(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') { setSendTo(thread.contact); sendMessage() } }} />
-                  <button onClick={() => { setSendTo(thread.contact); sendMessage() }}
-                    className="btn btn-primary px-4">Send</button>
+                  ) : (
+                    <ConversationList threads={filteredThreads} selectedKey={selected?.key || null} onSelect={openThread} />
+                  )}
                 </div>
               </div>
-            )
-          })()}
+              {isDesktop && (
+                <div className="min-h-0 min-w-0">
+                  {threadPane || (
+                    <div className="grid h-full place-items-center p-6 text-center">
+                      <div className="max-w-xs">
+                        <Icon name="inbox" className="mx-auto h-8 w-8 text-text-muted" />
+                        <p className="mt-3 font-bold">Pick a conversation</p>
+                        <p className="mt-1 text-[0.9375rem] text-text-secondary">Choose someone on the left to read and reply to their texts.</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        ) : (
+          callsError && calls.length === 0 ? listError('Your calls')
+          : (
+            <CallsView calls={calls} nameFor={callName} playingId={playingId} onOpen={openCall} onPlay={togglePlay} onCallBack={c => dialNumber(otherNumber(c), callName(c))} />
+          )
+        )}
+      </div>
 
+      {/* Phone and tablet: the open conversation sits above the tab bar, and above the keyboard when it is up. */}
+      {showLayer && (
+        <div className="fixed inset-x-0 z-30 bg-bg-base" style={{ top: '3.5rem', bottom: kbInset > 0 ? kbInset : 'calc(var(--tabbar-h) + env(safe-area-inset-bottom))' }}>
+          {threadPane}
         </div>
       )}
 
-      {/* Compose Modal */}
+      {selectedCall && (
+        <Sheet open onClose={closeCall} title={callName(selectedCall) || phonePretty(otherNumber(selectedCall)) || 'Call details'} wide>
+          <CallDetail
+            call={selectedCall}
+            name={callName(selectedCall)}
+            customerId={selectedCallPerson?.id || null}
+            onCallBack={() => dialNumber(otherNumber(selectedCall), callName(selectedCall))}
+            onText={() => { const n = otherNumber(selectedCall); setSelectedCall(null); setCompose({ to: n, channel: 'sms' }) }}
+          />
+        </Sheet>
+      )}
+
       {compose && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-gray-900 rounded-xl p-6 w-full max-w-md border border-white/10">
-            <div className="flex justify-between mb-4">
-              <h2 className="text-lg font-bold">New Message</h2>
-              <button onClick={() => setCompose(false)} className="text-gray-400 hover:text-white">&times;</button>
-            </div>
-            <div className="flex gap-2 mb-3">
-              <button onClick={() => setSendChannel('sms')}
-                className={`px-3 py-1 rounded text-sm ${sendChannel === 'sms' ? 'bg-blue-600 text-white' : 'bg-white/10 text-gray-400'}`}>SMS</button>
-              <button onClick={() => setSendChannel('email')}
-                className={`px-3 py-1 rounded text-sm ${sendChannel === 'email' ? 'bg-blue-600 text-white' : 'bg-white/10 text-gray-400'}`}>Email</button>
-            </div>
-            <input className="form-input w-full mb-3" placeholder={sendChannel === 'sms' ? 'Phone number' : 'Email address'}
-              value={sendTo} onChange={e => setSendTo(e.target.value)} />
-            {customers.length > 0 && (
-              <div className="flex flex-wrap gap-1 mb-3">
-                {customers.slice(0, 8).map(c => (
-                  <button key={c.id} onClick={() => setSendTo(sendChannel === 'sms' ? c.phone : c.email)}
-                    className="text-xs bg-white/10 px-2 py-1 rounded hover:bg-white/20">{c.name}</button>
-                ))}
-              </div>
-            )}
-            <textarea className="form-input w-full h-32 mb-3" placeholder="Message..."
-              value={sendBody} onChange={e => setSendBody(e.target.value)} />
-            <button onClick={sendMessage} disabled={sending}
-              className="btn btn-primary w-full">{sending ? 'Sending...' : 'Send'}</button>
-          </div>
-        </div>
+        <NewMessageSheet
+          key={compose.to + compose.channel}
+          onClose={closeCompose}
+          contacts={contacts}
+          initialTo={compose.to}
+          initialChannel={compose.channel}
+          onSend={sendMessage}
+          onSent={(to, channel) => {
+            setCompose(null)
+            if (channel === 'sms') {
+              if (tab !== 'messages') window.history.replaceState(null, '', '/messages')
+              openThread(contactKey(to))
+            } else setNotice(`Email sent to ${to}.`)
+          }}
+        />
       )}
+
+      {dialOpen && <DialSheet onClose={closeDial} onDial={n => dialNumber(n)} />}
     </div>
   )
 }
-
-

@@ -1,10 +1,18 @@
-﻿'use client'
-import { useEffect, useState, useCallback, useRef } from 'react'
-import { getShopId, supabase, calcTotals, formatCurrency } from '@/lib/supabase'
-import { getLaborFlatAmount, laborLineTotal, partLineTotal, quantityFromUnknown, nonNegativeMoney } from '@/lib/document-money'
-
-interface Customer { id: string; name: string; phone: string; email: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin: string; vehicle_plate: string; vehicle_mileage: string }
-interface Doc { id: string; type: string; doc_number: string; status: string; shop_id?: string; doc_date: string; customer_name: string; customer_id: string; customer_phone?: string; customer_email?: string; signature_requested_at?: string; signature_signed_at?: string; signature_signer_name?: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin?: string; vehicle_plate?: string; vehicle_mileage?: string | number; parts: Record<string,unknown>[]; labors: Record<string,unknown>[]; tax_rate: number; apply_tax: boolean; shop_supplies: number; deposit: number; notes: string; warranty_type: string; warranty_months: number | null; warranty_mileage: number | null; warranty_start: string | null; warranty_exclusions: string | null; payment_terms: string; payment_methods: string; amount_paid: number; payment_method: string; created_at: string; payment_plan?: { enabled: boolean; down_payment: number; installments: number; frequency: string; payments: { date: string; amount: number; paid: boolean }[] } }
+'use client'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { getShopId, supabase, calcTotals } from '@/lib/supabase'
+import { getLaborFlatAmount, nonNegativeMoney } from '@/lib/document-money'
+import Sheet from '@/components/Sheet'
+import DocList from './documents/DocList'
+import type { ListFilter } from './documents/DocList'
+import DocEditor from './documents/DocEditor'
+import { DocPreview, printPreview } from './documents/DocPreview'
+import { ActionsMenu, CustomerPicker, ErrorMsg, NewCustomerForm, PaymentForm, PlanForm, SendForm, SignatureForm, WarnMsg } from './documents/Dialogs'
+import type { MenuItem, SigResult } from './documents/Dialogs'
+import { WARRANTY_PRESETS } from './documents/warranty'
+import { docWord, isLocked } from './documents/types'
+import type { Customer, Doc, DocType, Notice } from './documents/types'
 
 const PAYMENT_OPERATION_STORAGE_KEY = 'alpha_ai_payment_operations_v1'
 
@@ -42,233 +50,64 @@ async function getAuthJsonHeaders(): Promise<Record<string, string>> {
   return headers
 }
 
-const WARRANTY_PRESETS = [
-  {
-    label: 'No Warranty',
-    months: 0,
-    mileage: 0,
-    exclusions: ''
-  },
-  {
-    label: 'Oil Change — 3 Months / 3,000 Miles',
-    months: 3,
-    mileage: 3000,
-    exclusions: `LIMITED WARRANTY: The oil change service performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. This warranty covers defects in materials and workmanship for the oil change service, including the oil filter and motor oil installed, for a period of 3 months or 3,000 miles from the date and odometer reading on this invoice, whichever occurs first.
-
-CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will re-perform the oil change service or replace defective materials at no additional cost, provided the vehicle is returned to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs performed by any other facility without prior written authorization from Alpha will void this warranty immediately.
-
-ACTIVE LEAK EXCLUSION: If the customer knowingly continues to operate the vehicle with an active engine oil leak, coolant leak, or water leak after being advised by Alpha or any qualified technician, and such operation causes or contributes to engine damage or oil starvation, this warranty is void. The customer assumes full responsibility for damages resulting from knowingly driving with an active fluid leak.
-
-EXCLUSIONS: This warranty does not cover: (a) pre-existing engine leaks, oil consumption, or internal engine wear present before service; (b) damage caused by use of non-recommended oil grade, viscosity, or filter after the warranted service; (c) engine damage resulting from neglect, overheating, coolant contamination, or failure to maintain proper fluid levels; (d) damage caused by accident, collision, misuse, abuse, negligence, or unauthorized modification; (e) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, death, property damage, business interruption, or any other costs of any kind; (f) customer-supplied parts or fluids. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
-  },
-  {
-    label: 'Oil Change (Synthetic) — 6 Months / 6,000 Miles',
-    months: 6,
-    mileage: 6000,
-    exclusions: `LIMITED WARRANTY: The synthetic oil change service performed by Alpha International Auto Center (\"Alpha\") is warranted to the original customer named on this invoice only and is non-transferable. This warranty covers defects in materials and workmanship for the synthetic oil change service, including the oil filter and full-synthetic motor oil installed, for a period of 6 months or 6,000 miles from the date and odometer reading on this invoice, whichever occurs first.
-
-CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will re-perform the oil change service or replace defective materials at no additional cost, provided the vehicle is returned to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs performed by any other facility without prior written authorization from Alpha will void this warranty immediately.
-
-ACTIVE LEAK EXCLUSION: If the customer knowingly continues to operate the vehicle with an active engine oil leak, coolant leak, or water leak after being advised by Alpha or any qualified technician, and such operation causes or contributes to engine damage or oil starvation, this warranty is void. The customer assumes full responsibility for damages resulting from knowingly driving with an active fluid leak.
-
-EXCLUSIONS: This warranty does not cover: (a) pre-existing engine leaks, oil consumption, or internal engine wear; (b) damage caused by use of non-recommended oil grade, viscosity, or filter after the warranted service; (c) engine damage resulting from neglect, overheating, coolant contamination, or failure to maintain proper fluid levels; (d) damage caused by accident, collision, misuse, abuse, negligence, or unauthorized modification; (e) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, or any other costs of any kind; (f) customer-supplied parts or fluids. This warranty is in lieu of all other warranties, express or implied.`  
-  },
-  {
-    label: 'Brakes — 12 Months / 12,000 Miles',
-    months: 12,
-    mileage: 12000,
-    exclusions: `LIMITED WARRANTY: The brake repair service performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the brake components replaced (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 12 months or 12,000 miles from the date and odometer reading on this invoice, whichever occurs first.
-
-MANDATORY RETURN INSPECTION: To maintain this warranty in full force and effect, the customer MUST return the vehicle to Alpha for a mandatory brake bed-in verification inspection between 200 and 500 miles after the repair date. New brake components require a proper bed-in period to perform correctly and to activate warranty protection. Failure to complete this required inspection within 500 miles will void this warranty in its entirety. Upon return, Alpha will inspect brake pad and rotor condition, verify proper bedding, check for noise or vibration issues, and confirm brake system integrity.
-
-CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace defective brake components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs, diagnostics, or adjustments performed by any other facility without prior written authorization from Alpha will immediately void this warranty in its entirety, and Alpha shall have no further obligation.
-
-MANDATORY BRAKE FLUID MAINTENANCE: This warranty is conditioned upon the customer maintaining clean, uncontaminated brake fluid at the proper level at all times. Brake fluid must be inspected at every oil change interval and replaced if contaminated, discolored, or if moisture content exceeds safe limits. Failure to maintain proper brake fluid condition, which may accelerate corrosion of brake system components and cause premature failure, will void this warranty.
-
-EXCLUSIONS: This warranty does not cover: (a) normal wear and tear of brake pads, shoes, rotors, or drums; (b) brake noise, vibration, or pulsation caused by normal wear, road conditions, improper bed-in, or driving habits; (c) damage caused by accident, collision, misuse, abuse, negligence, improper driving habits (excessive braking, riding the brakes), or unauthorized modification; (d) brake system failures caused by hydraulic leaks, ABS module failures, contaminated brake fluid, or other components not replaced under this invoice; (e) vehicles used for commercial, racing, towing, or off-road purposes unless expressly noted on the invoice; (f) pre-existing conditions or failures in unrelated vehicle systems; (g) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, death, property damage, business interruption, or any other costs of any kind; (h) customer-supplied or used parts; (i) any failure resulting from non-compliance with the mandatory return inspection requirement set forth above. Alpha reserves the right to warranty wear items (brake pads, shoes, rotors) at its sole discretion. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
-  },
-  {
-    label: 'Engine Repair — 12 Months / 12,000 Miles',
-    months: 12,
-    mileage: 12000,
-    exclusions: `LIMITED WARRANTY: The engine repair service performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the specific engine components repaired or replaced (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 12 months or 12,000 miles from the date and odometer reading on this invoice, whichever occurs first.
-
-MANDATORY RETURN INSPECTION: To maintain this warranty in full force and effect, the customer MUST return the vehicle to Alpha for a mandatory post-repair inspection within 500 miles of the repair date. Failure to complete this required inspection within 500 miles will void this warranty in its entirety, and Alpha shall have no further obligation. Upon return, Alpha will inspect for oil leaks, fluid levels, cooling system integrity, and confirm proper engine operation.
-
-CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace the specific defective engine components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs, diagnostics, or service performed by any other facility without prior written authorization from Alpha will immediately void this warranty in its entirety.
-
-MANDATORY MAINTENANCE REQUIREMENT: This warranty is conditioned upon the customer maintaining the vehicle in accordance with the manufacturer's recommended service schedule. Specifically, engine oil and filter must be changed every 3,000 miles or 3 months, whichever occurs first, using oil of the grade and specification recommended by the manufacturer. The customer must retain all service receipts as proof of compliance. Failure to maintain proper fluid levels, perform scheduled oil changes, or present maintenance records upon Alpha's request will void this warranty in its entirety.
-
-ACTIVE LEAK EXCLUSION: Any oil or fluid leak that is present, visible, or detectable at the time of the warranty claim whether pre-existing, minor, or developing is expressly excluded from warranty coverage. Alpha's obligation under this warranty applies solely to defects in the specific components repaired or replaced on this invoice and does not extend to any condition involving fluid seepage, weeping, or leakage of any kind unless such leak is directly and solely caused by a defect in Alpha's workmanship on the warranted component.
-
-EXCLUSIONS: This warranty does not cover: (a) engine components, sensors, or systems not specifically repaired or replaced on this invoice; (b) damage caused by overheating, coolant loss, oil starvation, or failure to maintain proper fluid levels and scheduled maintenance; (c) pre-existing conditions, sludge buildup, or internal engine wear not addressed in the original repair; (d) damage caused by accident, collision, flood, misuse, abuse, negligence, or unauthorized modification including aftermarket performance parts, tuning, or engine swaps; (e) head gasket failure caused by overheating events occurring after the repair; (f) vehicles used for commercial, racing, towing, or off-road purposes unless expressly noted; (g) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, death, property damage, business interruption, or any other costs of any kind; (h) customer-supplied or used parts; (i) any failure resulting from non-compliance with the mandatory return inspection requirement set forth above. The customer must follow all recommended maintenance schedules and return for any required follow-up inspections noted on the invoice. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
-  },
-  {
-    label: 'Engine Rebuild — 12 Months / 12,000 Miles',
-    months: 12,
-    mileage: 12000,
-    exclusions: `LIMITED WARRANTY: The engine rebuild performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the internal engine components replaced during the rebuild (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 12 months or 12,000 miles from the date and odometer reading on this invoice, whichever occurs first.
-
-CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace defective internal engine components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs, diagnostics, or service performed by any other facility without prior written authorization from Alpha will immediately void this warranty in its entirety, and Alpha shall have no further obligation.
-
-MANDATORY RETURN INSPECTIONS — REQUIRED TO MAINTAIN WARRANTY: To activate and preserve full warranty coverage, the customer MUST return the vehicle to Alpha International Auto Center for a complimentary post-rebuild inspection at each of the following odometer milestones after the rebuild date:
-  (1) 500 miles after rebuild — Break-in check: valve clearance, oil level, coolant level, and leak inspection.
-  (2) 1,500 miles after rebuild — Intermediate check: re-torque of critical fasteners, full fluid check.
-  (3) 3,000 miles after rebuild — First oil and filter change, final clearance check.
-
-Failure to complete ALL THREE return inspections at the above milestones will void this warranty in its entirety. After completing the 3,000-mile inspection, you are free to have future oil changes performed at any qualified shop. Alpha will document each inspection on your service record.
-
-MANDATORY MAINTENANCE: Following the 3,000-mile inspection, the customer must adhere to: oil and filter changes every 3,000 miles or 3 months (whichever comes first) using the oil grade and viscosity specified on this invoice. Failure to maintain proper oil change intervals will void this warranty. Customer must retain all maintenance receipts as proof of compliance.
-
-ACTIVE LEAK EXCLUSION: If the customer knowingly continues to operate the vehicle with an active coolant leak, water leak, or engine oil leak after being advised by Alpha or any qualified technician, and such operation causes or contributes to engine overheating, cylinder head damage, bearing failure, or other internal damage, this warranty is void with respect to such damage. The customer assumes full and sole responsibility for all damages resulting from knowingly driving with an active fluid leak.
-
-EXCLUSIONS: This warranty does not cover: (a) external engine components, accessories, sensors, wiring, exhaust, or systems not specifically rebuilt or replaced on this invoice; (b) damage caused by overheating, coolant system failure, oil starvation, or failure to maintain proper fluid levels; (c) pre-existing conditions in unrelated vehicle systems (transmission, electrical, cooling system) that cause engine damage; (d) damage caused by accident, collision, flood, misuse, abuse, negligence, or unauthorized modification including aftermarket performance parts, tuning, nitrous oxide, superchargers, turbo kits, or engine swaps; (e) vehicles used for commercial, racing, towing, or off-road purposes unless expressly noted; (f) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, death, property damage, business interruption, or any other costs of any kind; (g) customer-supplied or used parts; (h) damage resulting from failure to complete required follow-up inspections. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
-  },
-  {
-    label: 'Transmission Repair — 12 Months / 12,000 Miles',
-    months: 12,
-    mileage: 12000,
-    exclusions: `LIMITED WARRANTY: The transmission repair performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the specific transmission components repaired or replaced (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 12 months or 12,000 miles from the date and odometer reading on this invoice, whichever occurs first.
-
-MANDATORY RETURN INSPECTION: To maintain this warranty in full force and effect, the customer MUST return the vehicle to Alpha for a mandatory post-repair transmission inspection within 500 miles of the repair date. Failure to complete this required inspection within 500 miles will void this warranty in its entirety. Upon return, Alpha will verify fluid condition and level, check for leaks, inspect shift quality, and confirm proper transmission operation under normal driving conditions.
-
-CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace the specific defective transmission components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs, diagnostics, or service performed by any other facility without prior written authorization from Alpha will immediately void this warranty in its entirety.
-
-MANDATORY FLUID MAINTENANCE: This warranty is conditioned upon the customer maintaining the correct type and quantity of transmission fluid as specified for this vehicle. Transmission fluid must be checked at every 15,000-mile interval or as recommended by the manufacturer. Use of incorrect fluid type, failure to maintain proper fluid level, or failure to change fluid at recommended intervals will void this warranty in its entirety.
-
-ACTIVE LEAK EXCLUSION: Any transmission fluid leak that is present, visible, or detectable at the time of the warranty claim whether pre-existing, minor, or developing is expressly excluded from warranty coverage. Alpha's obligation applies solely to defects in the specific components repaired or replaced on this invoice and does not extend to any condition involving fluid seepage, weeping, or leakage of any kind unless directly and solely caused by a defect in Alpha's workmanship on the warranted component.
-
-EXCLUSIONS: This warranty does not cover: (a) transmission components, solenoids, sensors, or systems not specifically repaired or replaced on this invoice; (b) damage caused by fluid neglect, use of incorrect transmission fluid, or failure to maintain proper fluid levels; (c) damage caused by towing abuse, excessive payload, or operating the vehicle beyond its rated capacity; (d) pre-existing conditions, internal wear, or contamination not addressed in the original repair; (e) damage caused by accident, collision, flood, misuse, abuse, negligence, or unauthorized modification; (f) vehicles used for commercial, racing, towing, or off-road purposes unless expressly noted; (g) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, death, property damage, business interruption, or any other costs of any kind; (h) customer-supplied or used parts; (i) any failure resulting from non-compliance with the mandatory return inspection requirement set forth above. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
-  },
-  {
-    label: 'Transmission Rebuild — 24 Months / 24,000 Miles',
-    months: 24,
-    mileage: 24000,
-    exclusions: `LIMITED WARRANTY: The transmission rebuild performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the internal transmission components replaced during the rebuild (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 12 months or 12,000 miles from the date and odometer reading on this invoice, whichever occurs first.
-
-CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace defective internal transmission components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs, diagnostics, or service performed by any other facility without prior written authorization from Alpha will immediately void this warranty in its entirety.
-
-MANDATORY RETURN INSPECTIONS — REQUIRED TO MAINTAIN WARRANTY: To activate and preserve full warranty coverage, the customer MUST return the vehicle to Alpha for a complimentary post-rebuild inspection at each of the following odometer milestones:
-  (1) 500 miles after rebuild — Initial fluid check, leak inspection, shift quality verification, and scan for diagnostic trouble codes.
-  (2) 1,500 miles after rebuild — Fluid condition check, re-verification of all seals and gaskets, shift adaptation check.
-  (3) 3,000 miles after rebuild — Transmission fluid and filter change, final performance verification.
-
-Failure to complete ALL THREE return inspections will void this warranty in its entirety. Alpha will document each inspection on your service record.
-
-MANDATORY MAINTENANCE: Following the 3,000-mile inspection, the customer must adhere to transmission fluid changes every 30,000 miles or as specified on this invoice. Failure to maintain proper fluid change intervals or use of non-recommended fluid will void this warranty. Customer must retain all maintenance receipts as proof of compliance.
-
-ACTIVE LEAK EXCLUSION: If the customer knowingly continues to operate the vehicle with an active transmission fluid leak after being advised by Alpha or any qualified technician, and such operation causes or contributes to transmission damage, this warranty is void with respect to such damage.
-
-EXCLUSIONS: This warranty does not cover: (a) external transmission components, cooler lines, mounts, sensors, or systems not specifically rebuilt or replaced on this invoice; (b) damage caused by fluid neglect, contamination, or use of incorrect transmission fluid; (c) damage caused by towing abuse, excessive payload, racing, or operating the vehicle beyond its rated capacity; (d) pre-existing conditions in unrelated vehicle systems (engine, electrical, cooling) that cause transmission damage; (e) damage caused by accident, collision, flood, misuse, abuse, negligence, or unauthorized modification; (f) vehicles used for commercial purposes unless expressly noted; (g) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, death, property damage, business interruption, or any other costs of any kind; (h) customer-supplied or used parts. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
-  },
-  {
-    label: 'Electrical / Diagnostics — 6 Months / 6,000 Miles',
-    months: 6,
-    mileage: 6000,
-    exclusions: `LIMITED WARRANTY: The electrical/diagnostic repair performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the specific electrical components or sensors replaced (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 6 months or 6,000 miles from the date and odometer reading on this invoice, whichever occurs first.
-
-CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace defective electrical components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs or service performed by any other facility without prior written authorization from Alpha will immediately void this warranty.
-
-EXCLUSIONS: This warranty does not cover: (a) electrical components, wiring, modules, or sensors not specifically replaced on this invoice; (b) damage caused by water intrusion, rodent damage, corrosion, or wiring harness failures unrelated to the repair; (c) aftermarket electrical accessories, stereos, alarms, remote starters, or lighting modifications that affect the repaired system; (d) intermittent electrical faults that cannot be replicated during diagnosis; (e) damage caused by jump-starting, incorrect battery installation, or electrical surges; (f) pre-existing conditions or failures in unrelated vehicle systems; (g) damage caused by accident, collision, flood, misuse, abuse, negligence, or unauthorized modification; (h) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, property damage, or any other costs of any kind; (i) customer-supplied parts. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
-  },
-  {
-    label: 'Suspension — 12 Months / 12,000 Miles',
-    months: 12,
-    mileage: 12000,
-    exclusions: `LIMITED WARRANTY: The suspension repair performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the specific suspension components replaced (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 12 months or 12,000 miles from the date and odometer reading on this invoice, whichever occurs first.
-
-MANDATORY RETURN INSPECTION: To maintain this warranty in full force and effect, the customer MUST return the vehicle to Alpha for a mandatory post-repair suspension and alignment verification inspection within 500 miles of the repair date. Suspension repairs directly affect vehicle alignment, and failure to complete this required inspection within 500 miles will void this warranty in its entirety. Upon return, Alpha will verify wheel alignment within manufacturer specifications, inspect component torque and seating, check for abnormal noise or vibration, and confirm proper vehicle handling.
-
-CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace defective suspension components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs or service performed by any other facility without prior written authorization will void this warranty.
-
-EXCLUSIONS: This warranty does not cover: (a) wheel alignment services alignment is a separate service and is not warranted against future misalignment caused by road conditions or normal driving; (b) tire wear, tire damage, or uneven tire wear regardless of cause; (c) suspension components not specifically replaced on this invoice; (d) damage caused by road hazards, potholes, curb strikes, speed bumps, or off-road driving; (e) damage caused by accident, collision, misuse, abuse, negligence, vehicle overloading, or unauthorized modification including lift kits and lowering kits; (f) noise or vibration caused by normal wear or unrelated components; (g) vehicles used for commercial, racing, towing, or off-road purposes unless expressly noted; (h) pre-existing conditions or failures in unrelated vehicle systems; (i) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, death, property damage, or any other costs of any kind; (j) customer-supplied or used parts; (k) any failure resulting from non-compliance with the mandatory return inspection requirement set forth above. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
-  },
-  {
-    label: 'AC / Heating — 6 Months / 6,000 Miles',
-    months: 6,
-    mileage: 6000,
-    exclusions: `LIMITED WARRANTY: The AC/heating repair performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the specific AC/heating components repaired or replaced (as documented on this invoice) will be free from defects in materials and workmanship under normal, non-commercial use for a period of 6 months or 6,000 miles from the date and odometer reading on this invoice, whichever occurs first.
-
-CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, repair or replace the specific defective AC/heating components covered under this invoice at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs or service performed by any other facility without prior written authorization will void this warranty.
-
-EXCLUSIONS: This warranty does not cover: (a) AC/heating components not specifically repaired or replaced on this invoice; (b) refrigerant leaks originating from components not serviced under this invoice; (c) compressor failure caused by pre-existing contamination, debris, or system neglect not addressed in the original repair; (d) cabin air filters, blend door actuators, or ductwork not replaced under this invoice; (e) reduced cooling performance caused by clogged condenser, radiator fan failure, or engine overheating; (f) damage caused by accident, collision, misuse, abuse, negligence, or unauthorized modification; (g) vehicles used for commercial purposes unless expressly noted; (h) pre-existing conditions or failures in unrelated vehicle systems; (i) consequential or incidental damages including but not limited to towing charges, vehicle rental, lost wages, personal injury, property damage, or any other costs of any kind; (j) customer-supplied parts. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
-  },
-  {
-    label: 'Body & Paint — 6 Months (Cosmetic)',
-    months: 6,
-    mileage: 0,
-    exclusions: `LIMITED WARRANTY: The body and paint work performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that the specific body and paint work performed (as documented on this invoice) will be free from defects in workmanship for a period of 6 months from the date on this invoice.
-
-CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, at its sole discretion, re-perform the defective body or paint work at no additional cost. The customer must return the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed.
-
-EXCLUSIONS: This warranty does not cover: (a) rock chips, scratches, dents, or physical damage occurring after the repair; (b) paint fading, discoloration, or oxidation caused by sun exposure, weather, chemicals, bird droppings, tree sap, or environmental contamination; (c) damage caused by improper washing techniques, automatic car washes, abrasive cleaners, or failure to maintain the finish; (d) paint or body work on panels or areas not documented on this invoice; (e) color matching variations that are within industry-accepted tolerances; (f) rust or corrosion originating from areas not treated during the repair; (g) damage caused by accident, collision, vandalism, misuse, abuse, or negligence; (h) consequential or incidental damages including but not limited to vehicle rental, lost wages, personal injury, property damage, or any other costs of any kind. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose.`
-  },
-  {
-    label: 'State Inspection — No Warranty',
-    months: 0,
-    mileage: 0,
-    exclusions: ''
-  },
-  {
-    label: 'General Repair — 12 Months / 12,000 Miles',
-    months: 12,
-    mileage: 12000,
-    exclusions: `LIMITED WARRANTY: The repair service performed by Alpha International Auto Center ("Alpha") is warranted to the original customer named on this invoice only and is non-transferable. Alpha warrants that all parts and labor sold in connection with the services documented on this invoice will be free from defects in materials and workmanship under normal, non-commercial use for a period of 12 months or 12,000 miles from the date and odometer reading on this invoice, whichever occurs first.
-
-MANDATORY RETURN INSPECTION: To maintain this warranty in full force and effect, the customer MUST return the vehicle to Alpha for a mandatory post-repair inspection within 500 miles of the repair date. Failure to complete this required inspection within 500 miles will void this warranty in its entirety, and Alpha shall have no further obligation. Upon return, Alpha will inspect the warranted repair for proper function, fluid integrity, and absence of leaks or abnormal conditions.
-
-CONDITIONS & REMEDY: As the customer's sole and exclusive remedy, Alpha will, with reasonable promptness and subject to parts availability, repair or replace at its sole discretion any defective parts or components covered under this invoice and perform any labor reasonably necessary to complete such repair at no additional cost. The customer must deliver the vehicle to Alpha during normal business hours. Alpha must be contacted before any warranty-related service is performed. Repairs, diagnostics, or service performed by any other facility without prior written authorization from Alpha will immediately void this warranty in its entirety, and Alpha shall have no further obligation to honor this warranty.
-
-ACTIVE LEAK EXCLUSION: Any fluid leak that is present, visible, or detectable at the time of the warranty claim whether pre-existing, minor, or developing is expressly excluded from warranty coverage. Alpha's obligation under this warranty applies solely to defects in the specific parts or labor documented on this invoice and does not extend to any fluid seepage, weeping, or leakage of any kind unless directly and solely caused by a defect in Alpha's workmanship on the warranted component.
-
-EXCLUSIONS: This warranty does not cover, nor extend to: (a) any repairs, replacements, or service made necessary by accident, collision, misuse, abuse, negligence, neglect, or any cause other than normal use and operation of the vehicle; (b) any parts, components, or systems not specifically repaired or replaced as documented on this invoice; (c) pre-existing conditions, wear, or failures in unrelated vehicle systems; (d) damage resulting from unauthorized modifications, tampering, or alteration to the warranted repair by anyone other than Alpha; (e) used parts purchased at customer's request or parts supplied by the customer; (f) vehicles used for commercial, racing, towing, or off-road purposes unless expressly noted on the invoice; (g) customer's towing charges, car rental, lodging, lost wages, interruption of business, personal injury, death, property damage, or any other charges, damages, liability, or costs of any kind whatsoever, whether incidental or consequential; (h) any repairs or replacements made by another repair facility without prior written authorization from Alpha; (i) any failure resulting from non-compliance with the mandatory return inspection requirement set forth above.
-
-GENERAL PROVISIONS: Should any tampering or alteration to the warranted repair or systems be found at the time of a warranty claim, Alpha reserves the right to deny warranty coverage. This warranty is in lieu of all other warranties, express or implied, including any implied warranty of merchantability or fitness for a particular purpose. Alpha's total liability under this warranty shall not exceed the original amount paid for the repair as documented on this invoice.`
-  },
-  {
-    label: 'Custom Warranty',
-    months: 0,
-    mileage: 0,
-    exclusions: ''
-  },
-]
-
-function getStatuses(type: string) {
-  if (type === 'Receipt') return ['Draft','Paid']
-  if (type === 'Invoice') return ['Draft','Sent','Unpaid','Partial','Paid']
-  return ['Draft','Sent','Approved','Paid']
+interface CannedJob {
+  id: string; name: string; category: string | null; description: string | null
+  labor_hours: number; labor_rate: number; total_price: number
+  parts: { name: string; part_number?: string; cost: number; qty: number }[] | null
 }
 
-export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Receipt' }) {
+type SheetKind = null | 'customer' | 'newcustomer' | 'send' | 'sign' | 'pay' | 'plan' | 'more' | 'preview' | 'convert' | 'delete' | 'canned'
+
+/** Today as yyyy-mm-dd in the shop's own clock, not UTC (UTC is already "tomorrow" on a Houston evening). */
+function localToday() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+const errText = (e: unknown, fallback = 'Something went wrong. Try again.') => (e instanceof Error && e.message ? e.message : fallback)
+
+export default function DocumentsPage({ type }: { type: DocType }) {
+  const router = useRouter()
+  const noun = docWord(type)
+
+  /* ---------- data ---------- */
   const [docs, setDocs] = useState<Doc[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [customers, setCustomers] = useState<Customer[]>([])
-  const [editing, setEditing] = useState<string | null | 'new'>(null)
-  const [openedFromLink, setOpenedFromLink] = useState(false)
-  const [form, setForm] = useState<Partial<Doc>>({})
-  const [search, setSearch] = useState('')
-  const [sendModal, setSendModal] = useState<Doc | null>(null)
-  const [sendingDoc, setSendingDoc] = useState(false)
-  const [sendError, setSendError] = useState('')
-  const [sendSuccess, setSendSuccess] = useState('')
-  const [sigModal, setSigModal] = useState<Doc | null>(null)
-  const [sigSending, setSigSending] = useState(false)
-  const [sigResult, setSigResult] = useState<{type:'success'|'error';msg:string;signUrl?:string;emailError?:string}|null>(null)
-  // Inline new customer creation
-  const [showNewCustomer, setShowNewCustomer] = useState(false)
-  const [newCustName, setNewCustName] = useState('')
-  const [newCustEmail, setNewCustEmail] = useState('')
-  const [newCustPhone, setNewCustPhone] = useState('')
-  const [savingCustomer, setSavingCustomer] = useState(false)
-  // Feature 13: Payment Plan
-  const [planModal, setPlanModal] = useState<Doc | null>(null)
-  const [planForm, setPlanForm] = useState({ down_payment: 0, installments: 3, frequency: 'monthly' })
-    const [emailSending, setEmailSending] = useState<string | null>(null)
-  const [signatureImg, setSignatureImg] = useState<string | null>(null)
-  const [shopSettings, setShopSettings] = useState<Record<string, string>>({})
-  const paymentOperationKeys = useRef(new Map<string, string>())
+  const [settings, setSettings] = useState<Record<string, string>>({})
+  const [staff, setStaff] = useState<string[]>([])
 
+  /* ---------- list ---------- */
+  const [search, setSearch] = useState('')
+  const [filter, setFilter] = useState<ListFilter>('all')
+
+  /* ---------- editor ---------- */
+  const [editing, setEditing] = useState<string | null | 'new'>(null)
+  const [form, setForm] = useState<Partial<Doc>>({})
+  const [baseline, setBaseline] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState<Notice | null>(null)
+  const [signatureImg, setSignatureImg] = useState<string | null>(null)
+  const editingRef = useRef<string | null | 'new'>(null)
+  useEffect(() => { editingRef.current = editing }, [editing])
+  const handledLink = useRef(false)
+
+  /* ---------- sheets ---------- */
+  const [sheet, setSheet] = useState<SheetKind>(null)
+  const [target, setTarget] = useState<Doc | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [sheetError, setSheetError] = useState('')
+  const [sendSuccess, setSendSuccess] = useState('')
+  const [sigResult, setSigResult] = useState<SigResult | null>(null)
+  const [payDone, setPayDone] = useState<{ amount: number; balance: number } | null>(null)
+  const [planForm, setPlanForm] = useState({ down_payment: 0, installments: 3, frequency: 'monthly' })
+  const [canned, setCanned] = useState<CannedJob[] | null>(null)
+  const [cannedError, setCannedError] = useState('')
+  const [cannedQuery, setCannedQuery] = useState('')
+
+  const paymentOperationKeys = useRef(new Map<string, string>())
   const persistPaymentOperationKeys = () => {
     if (typeof window === 'undefined') return
     window.localStorage.setItem(PAYMENT_OPERATION_STORAGE_KEY, JSON.stringify(Object.fromEntries(paymentOperationKeys.current)))
@@ -298,53 +137,104 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     return { fingerprint, key }
   }
 
-  const shopName = shopSettings.shop_name?.trim() || 'Your Shop'
-  const shopAddress = shopSettings.shop_address?.trim() || 'Your shop address'
-  const shopPhone = shopSettings.shop_phone?.trim() || 'Your shop phone'
-  const shopEmail = shopSettings.shop_email?.trim() || ''
+  /* ---------- the shop's own details ---------- */
+  const shopName = settings.shop_name?.trim() || ''
+  const shopAddress = settings.shop_address?.trim() || ''
+  const shopPhone = settings.shop_phone?.trim() || ''
+  const shopEmail = settings.shop_email?.trim() || ''
+  const laborRate = Number(settings.labor_rate) > 0 ? Number(settings.labor_rate) : 120
+  const shopMethods = useMemo(() => String(settings.payment_methods || '').split(',').map(s => s.trim()).filter(Boolean), [settings.payment_methods])
   const formatWarrantyText = (value: unknown) => String(value || '')
-    .replace(/Alpha International Auto Center/g, shopName)
-    .replace(/Alpha's/g, `${shopName}'s`)
-    .replace(/\bAlpha\b/g, shopName)
-    .replace(/10710 S\. Main St, Houston, TX 77025/g, shopAddress)
-    .replace(/\(713\) 663-6979/g, shopPhone)
+    .replace(/Alpha International Auto Center/g, shopName || 'our shop')
+    .replace(/Alpha's/g, `${shopName || 'our shop'}'s`)
+    .replace(/\bAlpha\b/g, shopName || 'our shop')
+    .replace(/10710 S\. Main St, Houston, TX 77025/g, shopAddress || 'our shop')
+    .replace(/\(713\) 663-6979/g, shopPhone || 'our shop phone')
 
-  const load = useCallback(async () => {
+  const dirty = editing !== null && JSON.stringify(form) !== baseline
+  const totals = useMemo(() => calcTotals(form as unknown as Record<string, unknown>), [form])
+
+  /* ---------- loading ---------- */
+  const load = useCallback(async (): Promise<Doc[] | null> => {
     let shopId: string | null = null
     try { shopId = await getShopId() } catch { shopId = null }
-    if (!shopId) { setDocs([]); setCustomers([]); setLoadError('We could not find your shop. Try refreshing, or sign out and back in.'); setLoading(false); return }
-    const [{ data: d, error: docsError }, { data: c }, { data: settings }] = await Promise.all([
+    if (!shopId) {
+      setDocs([]); setCustomers([])
+      setLoadError('We could not find your shop. Try refreshing, or sign out and back in.')
+      setLoading(false)
+      return null
+    }
+    const [{ data: d, error: docsError }, { data: c }, { data: s }] = await Promise.all([
       supabase.from('documents').select('*').eq('shop_id', shopId).in('type', type === 'Invoice' ? ['Invoice', 'Receipt'] : [type]).order('created_at', { ascending: false }),
       supabase.from('customers').select('id,name,phone,email,vehicle_year,vehicle_make,vehicle_model,vehicle_vin,vehicle_plate,vehicle_mileage').eq('shop_id', shopId).order('name'),
-      supabase.from('settings').select('shop_name,shop_address,shop_phone,shop_email').eq('shop_id', shopId).maybeSingle()
+      supabase.from('settings').select('shop_name,shop_address,shop_phone,shop_email,labor_rate,tax_rate,payment_methods').eq('shop_id', shopId).maybeSingle(),
     ])
     if (docsError) {
-      // Keep whatever is already on screen; only show the error banner so a
-      // failed refresh never looks like "you have no documents".
+      // Keep whatever is on screen and show the banner, so a failed refresh never looks like "you have none".
       setLoadError(`Your ${type.toLowerCase()}s could not be loaded. Check your connection and try again.`)
       setLoading(false)
-      return
+      return null
     }
+    const rows = (d || []) as Doc[]
+    const people = (c || []) as Customer[]
+    const shop = (s || {}) as Record<string, string>
     setLoadError(null)
-    setDocs((d || []) as Doc[]); setCustomers((c || []) as Customer[])
+    setDocs(rows); setCustomers(people); setSettings(shop)
     setLoading(false)
-    setShopSettings((settings || {}) as Record<string, string>)
-    const requestedDocument = new URLSearchParams(window.location.search).get('document')
-    if (!openedFromLink && requestedDocument) {
-      const selected = (d || []).find(document => document.id === requestedDocument)
-      if (selected) {
-        setOpenedFromLink(true)
-        setForm(selected as Partial<Doc>)
-        setEditing(selected.id)
-        setSignatureImg(null)
+
+    // Links from other screens: ?document=<id> opens one, ?new=1 starts a new one.
+    if (!handledLink.current && typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const wanted = params.get('document')
+      const wantsNew = params.get('new')
+      if (wanted) {
+        const hit = rows.find(r => r.id === wanted)
+        if (hit) { handledLink.current = true; openDoc(hit, people) }
+      } else if (wantsNew) {
+        handledLink.current = true
+        void openNew(shop)
       }
     }
-  }, [type, openedFromLink])
+    return rows
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [type])
+
   useEffect(() => {
     load()
-    const ch = supabase.channel(`docs_${type}`).on('postgres_changes', { event: '*', schema: 'public', table: 'documents' }, load).subscribe()
+    const ch = supabase.channel(`docs_${type}`).on('postgres_changes', { event: '*', schema: 'public', table: 'documents' }, () => { void load() }).subscribe()
     return () => { supabase.removeChannel(ch) }
   }, [load, type])
+
+  useEffect(() => {
+    fetch('/api/staff?role=technician').then(r => r.json()).then(d => {
+      if (d?.ok && Array.isArray(d.staff)) setStaff(d.staff.map((s: { name: string }) => s.name).filter(Boolean))
+    }).catch(() => { /* the tech field falls back to typing a name */ })
+  }, [])
+
+  // Leaving the page with unsaved work asks first.
+  useEffect(() => {
+    if (!dirty) return
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [dirty])
+
+  const clearNotice = useCallback(() => setNotice(null), [])
+  const closeSheet = useCallback(() => { setSheet(null); setSheetError('') }, [])
+  const stripLinkParams = () => {
+    if (typeof window !== 'undefined' && window.location.search) window.history.replaceState(null, '', window.location.pathname)
+  }
+
+  /* ---------- opening and closing documents ---------- */
+  function openDoc(d: Doc, people: Customer[] = customers) {
+    const cust = people.find(c => c.id === d.customer_id)
+    const next = { ...d, customer_phone: d.customer_phone || cust?.phone || '', customer_email: d.customer_email || cust?.email || '' } as Partial<Doc>
+    setForm(next); setBaseline(JSON.stringify(next)); setEditing(d.id)
+    setSignatureImg(null); setNotice(null)
+    if (d.signature_signed_at) {
+      fetch('/api/signature?documentId=' + encodeURIComponent(d.id)).then(r => r.json()).then(sig => { if (sig?.signature_data) setSignatureImg(sig.signature_data) }).catch(() => { /* the signed date still shows */ })
+    }
+  }
 
   const genDocNumber = async () => {
     const shopId = await getShopId()
@@ -353,12 +243,52 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     if (error || typeof data !== 'string') throw error || new Error('Document numbering failed')
     return data
   }
-  const openNew = async () => {
-    const docNumber = await genDocNumber()
-    setForm({ type, doc_number: docNumber, doc_date: new Date().toISOString().split('T')[0], status: 'Draft', tax_rate: 8.25, apply_tax: true, warranty_type: 'No Warranty', parts: [], labors: [] })
-    setEditing('new'); setSignatureImg(null)
+
+  async function openNew(shop: Record<string, string> = settings) {
+    setActionError(null)
+    try {
+      const docNumber = await genDocNumber()
+      const rate = shop.tax_rate !== undefined && shop.tax_rate !== null && String(shop.tax_rate).trim() !== '' ? Number(shop.tax_rate) : NaN
+      const next: Partial<Doc> = {
+        type, doc_number: docNumber, doc_date: localToday(), status: 'Draft',
+        tax_rate: Number.isFinite(rate) ? rate : 8.25, apply_tax: true,
+        warranty_type: 'No Warranty', parts: [], labors: [],
+      }
+      setForm(next); setBaseline(JSON.stringify(next)); setEditing('new')
+      setSignatureImg(null); setNotice(null)
+    } catch (e) {
+      setActionError(`Could not start a new ${noun}. ${errText(e)}`)
+    }
   }
 
+  function closeEditor() {
+    setEditing(null); setForm({}); setBaseline(''); setNotice(null); setSignatureImg(null); setSheet(null)
+    stripLinkParams()
+  }
+
+  const goBack = () => {
+    if (dirty && !window.confirm(`Leave without saving? The changes you made to this ${noun} will be lost.`)) return
+    closeEditor()
+  }
+
+  /** Patch fields only the server changes (status, payments, signatures) into the open form without marking it as edited. */
+  const applyServerPatch = (patch: Partial<Doc>) => {
+    setForm(f => ({ ...f, ...patch }))
+    setBaseline(b => { try { return JSON.stringify({ ...JSON.parse(b), ...patch }) } catch { return b } })
+  }
+
+  const syncFromServer = (id: string, fresh: Doc[] | null) => {
+    if (editingRef.current !== id) return
+    const row = fresh?.find(x => x.id === id)
+    if (!row) return
+    applyServerPatch({
+      status: row.status, amount_paid: row.amount_paid, payment_method: row.payment_method,
+      signature_requested_at: row.signature_requested_at, signature_signed_at: row.signature_signed_at,
+      signature_signer_name: row.signature_signer_name, payment_plan: row.payment_plan,
+    })
+  }
+
+  /* ---------- warranty ---------- */
   const detectWarranty = (doc: Record<string, unknown>) => {
     const parts = ((doc.parts || []) as Record<string, unknown>[])
     const labors = ((doc.labors || []) as Record<string, unknown>[])
@@ -394,12 +324,35 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
     return matched
   }
 
-  const save = async (keepOpen = false) => {
+  const applyWarranty = (preset: { label: string; months: number; mileage: number; exclusions: string }) =>
+    setForm(f => ({
+      ...f,
+      warranty_type: preset.label,
+      warranty_months: preset.months || null,
+      warranty_mileage: preset.mileage || null,
+      warranty_exclusions: formatWarrantyText(preset.exclusions) || null,
+      warranty_start: f.doc_date || localToday(),
+    }))
+
+  /* ---------- saving ---------- */
+  /** Saves the open document. Returns the saved document, or null if it did not save (the editor shows why). */
+  const save = async (override?: Partial<Doc>): Promise<Doc | null> => {
+    if (saving) return null
     const shopId = await getShopId()
-    if (!shopId) { alert('No shop is associated with the signed-in user'); return }
+    if (!shopId) { setNotice({ kind: 'error', text: 'Not saved. No shop is linked to this sign-in. Refresh, or sign out and back in.' }); return null }
     const VALID_COLS = new Set(['type','doc_number','status','doc_date','due_date','expires_date','customer_id','customer_name','job_id','vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage','parts','labors','shop_supplies','sublet','tax_rate','apply_tax','deposit','payment_method','cashier','payment_terms','payment_methods','warranty_type','warranty_months','warranty_mileage','warranty_start','warranty_exclusions','warranty_claim','notes','internal_notes','locked','sent_at','created_at','updated_at','customer_phone','customer_email','signature_signed_at','signature_signer_name','signature_requested_at','line_items','payment_plan'])
-    const raw = { ...form, type, updated_at: new Date().toISOString() } as Record<string,unknown>
-    const data: Record<string,unknown> = {}
+    const merged = { ...form, ...(override || {}) } as Partial<Doc>
+    // Drop lines nobody filled in, so a stray "Add part" tap does not print an empty row.
+    // Paid and part paid documents keep their lines exactly as they are.
+    if (!isLocked(merged.status)) {
+      const blankPart = (p: Record<string, unknown>) => !String(p.name || '').trim() && !(Number(p.unitPrice) > 0) && !(Number(p.core) > 0)
+      const blankLabor = (l: Record<string, unknown>) => !String(l.operation || '').trim() && !(Number(l.hours) > 0) && !(Number(getLaborFlatAmount(l)) > 0)
+      merged.parts = ((merged.parts || []) as Record<string, unknown>[]).filter(p => !blankPart(p))
+      merged.labors = ((merged.labors || []) as Record<string, unknown>[]).filter(l => !blankLabor(l))
+    }
+    // A document keeps its own type (a receipt stays a receipt even when it is opened from Invoices).
+    const raw = { ...merged, type: merged.type || type, updated_at: new Date().toISOString() } as Record<string, unknown>
+    const data: Record<string, unknown> = {}
     for (const k of Object.keys(raw)) { if (VALID_COLS.has(k)) data[k] = raw[k] }
     data.shop_id = shopId
     // Auto-detect warranty only when creating a new document, never override on edits
@@ -410,18 +363,27 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
         data.warranty_months = detected.months || null
         data.warranty_mileage = detected.mileage || null
         data.warranty_exclusions = formatWarrantyText(detected.exclusions) || null
-        data.warranty_start = (data.doc_date as string) || new Date().toISOString().split('T')[0]
+        data.warranty_start = (data.doc_date as string) || localToday()
       }
     }
+    setSaving(true)
     try {
+      let saved: Partial<Doc> = { ...merged, ...(data as Partial<Doc>) }
       if (editing === 'new') {
         const result = await supabase.from('documents').insert({ ...data, created_at: new Date().toISOString() }).select()
         if (result.error) throw new Error(result.error.message)
+        let row = (Array.isArray(result.data) ? result.data[0] : result.data) as Doc | undefined
+        if (!row?.id) {
+          // The insert worked but did not hand the row back: find it by its number.
+          const fresh = await load()
+          row = fresh?.find(r => r.doc_number === data.doc_number)
+        }
+        if (row) saved = { ...saved, ...row }
       } else if (editing) {
         const result = await supabase.from('documents').update(data).eq('id', editing).eq('shop_id', shopId).select()
         if (result.error) throw new Error(result.error.message)
         if (!result.data || result.data.length === 0) {
-          // RLS blocked the update — refresh shop_id and retry with service route
+          // RLS blocked the update: retry through the server route.
           const resp = await fetch('/api/save-document', {
             method: 'POST',
             headers: await getAuthJsonHeaders(),
@@ -433,946 +395,510 @@ export default function DocumentsPage({ type }: { type: 'Estimate'|'Invoice'|'Re
           }
         }
       }
-      if (!keepOpen) { await load(); setEditing(null); setForm({}) }
-    } catch (e: unknown) {
-      alert('Save failed: ' + (e instanceof Error ? e.message : 'Unknown error'))
+      if (saved.id) setEditing(saved.id)
+      setForm(saved); setBaseline(JSON.stringify(saved))
+      setNotice({ kind: 'ok', text: 'Saved.' })
+      void load()
+      return saved as Doc
+    } catch (e) {
+      setNotice({ kind: 'error', text: `Not saved. ${errText(e, 'Check your connection and try again.')}` })
+      return null
+    } finally {
+      setSaving(false)
     }
   }
 
-  const del = async () => {
-    if (!editing || editing === 'new') return
-    if (!confirm('Delete?')) return
-    const shopId = await getShopId()
-    if (!shopId) { alert('No shop is associated with the signed-in user'); return }
-    const { error } = await supabase.from('documents').delete().eq('id', editing).eq('shop_id', shopId)
-    if (error) {
-      alert('Delete failed: ' + error.message)
-      return
-    }
-    setEditing(null); setForm({}); await load()
+  /** Send, sign, pay and convert all act on what is saved, so save first when there are changes. */
+  const ensureSaved = async (): Promise<Doc | null> => {
+    if (editing !== 'new' && !dirty) return form as Doc
+    return await save()
   }
 
+  /* ---------- customers ---------- */
   const selectCustomer = (id: string) => {
-    if (id === '__new__') {
-      setShowNewCustomer(true)
-      setNewCustName(''); setNewCustEmail(''); setNewCustPhone('')
-      return
-    }
-    const c = customers.find(c => c.id === id)
+    const c = customers.find(x => x.id === id)
     if (c) setForm(f => ({ ...f, customer_id: c.id, customer_name: c.name, customer_phone: c.phone, customer_email: c.email, vehicle_year: c.vehicle_year, vehicle_make: c.vehicle_make, vehicle_model: c.vehicle_model, vehicle_vin: c.vehicle_vin, vehicle_plate: c.vehicle_plate, vehicle_mileage: c.vehicle_mileage }))
+    closeSheet()
   }
 
-  const createInlineCustomer = async () => {
-    if (!newCustName.trim()) return
-    setSavingCustomer(true)
+  const createInlineCustomer = async (v: { name: string; email: string; phone: string }) => {
+    if (!v.name.trim()) return
+    setBusy(true); setSheetError('')
     try {
       const shopId = await getShopId()
       if (!shopId) throw new Error('No shop is associated with the signed-in user')
       const { data, error } = await supabase.from('customers').insert({
         shop_id: shopId,
-        name: newCustName.trim(),
-        email: newCustEmail.trim() || null,
-        phone: newCustPhone.trim() || null,
+        name: v.name.trim(),
+        email: v.email.trim() || null,
+        phone: v.phone.trim() || null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }).select().single()
       if (error) throw error
       if (data) {
-        await load()
-        setForm(f => ({ ...f, customer_id: data.id, customer_name: data.name }))
+        setCustomers(list => [...list, data as Customer].sort((a, b) => String(a.name).localeCompare(String(b.name))))
+        setForm(f => ({ ...f, customer_id: data.id, customer_name: data.name, customer_phone: data.phone || '', customer_email: data.email || '' }))
       }
-      setShowNewCustomer(false)
-    } catch (e) { alert('Failed to create customer: ' + (e instanceof Error ? e.message : 'Unknown error')) }
-    finally { setSavingCustomer(false) }
+      closeSheet()
+    } catch (e) { setSheetError(`Customer not added. ${errText(e)}`) }
+    finally { setBusy(false) }
   }
 
-  const sf = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
-    setForm(f => ({ ...f, [k]: e.target.value }))
+  /* ---------- sending ---------- */
+  const contactFor = (d: Doc) => {
+    const customer = customers.find(c => c.id === d.customer_id)
+    return { email: d.customer_email || customer?.email || '', phone: d.customer_phone || customer?.phone || '' }
+  }
 
-  const filtered = docs.filter(d => !search || [d.doc_number, d.customer_name, d.status, d.vehicle_year, d.vehicle_make, d.vehicle_model, d.vehicle_plate, d.vehicle_vin].some(v => (v||'').toLowerCase().includes(search.toLowerCase())))
-  const totals = form ? calcTotals(form as unknown as Record<string,unknown>) : null
-  const fmt = (d: string) => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—'
-  const isFlatLabor = (line: Record<string, unknown>) => getLaborFlatAmount(line) !== null
+  const openSend = (d: Doc) => { setTarget(d); setSendSuccess(''); setSheetError(''); setSheet('send') }
 
-  const statusColor: Record<string,string> = { Draft:'tag-gray', Sent:'tag-blue', Approved:'tag-green', Unpaid:'tag-red', Partial:'tag-amber', Paid:'tag-green' }
-
-  const sendDoc = async (channel: 'sms'|'email') => {
-    if (!sendModal) return
-    setSendError(''); setSendSuccess('')
-    const customer = customers.find(c => c.id === sendModal.customer_id)
-    // Try all sources: customer table, document fields, form phone/email fields
-    const sendModalRecord = sendModal as unknown as Record<string,unknown>
-    const emailAddr = customer?.email || sendModal.customer_email || sendModalRecord.customer_email || ''
-    const phoneAddr = customer?.phone || sendModal.customer_phone || sendModalRecord.customer_phone || ''
-    const to = channel === 'sms' ? phoneAddr : emailAddr
-    setSendingDoc(true)
+  const sendDoc = async (channel: 'sms' | 'email') => {
+    if (!target) return
+    setSheetError(''); setSendSuccess('')
+    const { email, phone } = contactFor(target)
+    const to = channel === 'sms' ? phone : email
+    setBusy(true)
     try {
-      // Send with whatever we have — API will also look up from document/customer as fallback
       const res = await fetch('/api/send-document', {
         method: 'POST', headers: await getAuthJsonHeaders(),
-        body: JSON.stringify({ documentId: sendModal.id, channel, ...(emailAddr ? { email: emailAddr } : {}), ...(phoneAddr ? { phone: phoneAddr } : {}) })
+        body: JSON.stringify({ documentId: target.id, channel, ...(email ? { email } : {}), ...(phone ? { phone } : {}) })
       })
       if (!res.ok) {
         const d = await res.json().catch(() => ({}))
         throw new Error(d.error || 'Send failed')
       }
-      setSendSuccess(`${channel === 'email' ? 'Email' : 'SMS'} sent to ${to}`)
-      setTimeout(() => { setSendModal(null); setSendSuccess(''); load() }, 1500)
+      setSendSuccess(`${channel === 'email' ? 'Email' : 'Text message'} sent to ${to}.`)
+      syncFromServer(target.id, await load())
     } catch (e) {
-      setSendError((e instanceof Error ? e.message : 'Failed to send'))
-    } finally { setSendingDoc(false) }
+      setSheetError(errText(e, 'It did not send. Check your connection and try again.'))
+    } finally { setBusy(false) }
   }
 
-  // Feature 9: Quick email to customer from list
-  const quickEmail = async (doc: Doc) => {
-    const customer = customers.find(c => c.id === doc.customer_id)
-    const email = customer?.email || doc.customer_email
-    if (!email) return alert('No email on file for this customer')
-    setEmailSending(doc.id)
+  /* ---------- signatures ---------- */
+  const openSign = (d: Doc) => { setTarget(d); setSigResult(null); setSheetError(''); setSheet('sign') }
+
+  const sendSignature = async () => {
+    if (!target) return
+    setBusy(true); setSigResult(null)
     try {
-      const response = await fetch('/api/send-document', {
-        method: 'POST', headers: await getAuthJsonHeaders(),
-        body: JSON.stringify({ documentId: doc.id, channel: 'email', email })
+      const res = await fetch('/api/sign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'send', documentId: target.id })
       })
-      if (!response.ok) {
-        const detail = await response.json().catch(() => ({}))
-        throw new Error(detail.error || 'Failed to send email')
+      const data = await res.json()
+      if (data.success) {
+        const email = contactFor(target).email
+        setSigResult(data.emailError
+          ? { type: 'partial', msg: `The signing link was made, but the email did not go out (${data.emailError}). Copy the link below and send it yourself.`, signUrl: data.signUrl }
+          : { type: 'success', msg: `Signature request sent to ${email}.`, signUrl: data.signUrl })
+        syncFromServer(target.id, await load())
+      } else {
+        setSigResult({ type: 'error', msg: data.error || 'The signature request did not send. Try again.' })
       }
-    } catch (error) { alert(error instanceof Error ? error.message : 'Failed to send email') }
-    finally { setEmailSending(null); load() }
+    } catch {
+      setSigResult({ type: 'error', msg: 'Could not reach the server. Check your connection and try again.' })
+    } finally { setBusy(false) }
   }
 
-  // Feature 13: Save payment plan
+  /* ---------- payments ---------- */
+  const owedOn = (d: Doc) => {
+    const t = calcTotals(d as unknown as Record<string, unknown>)
+    const paid = nonNegativeMoney(d.amount_paid)
+    return { total: t.total, paid, owed: Math.max(0, t.total - paid) }
+  }
+
+  const openPay = (d: Doc) => { setTarget(d); setPayDone(null); setSheetError(''); setSheet('pay') }
+
+  const submitPay = async (rawAmount: string, method: string) => {
+    const d = target
+    if (!d) return
+    const { total, paid, owed } = owedOn(d)
+    const amount = Number.parseFloat(rawAmount.replace(/[^0-9.]/g, ''))
+    if (!(amount > 0)) { setSheetError('Enter a payment greater than zero.'); return }
+    if (amount > owed + 0.005) { setSheetError(`Payment cannot exceed the remaining balance of $${owed.toFixed(2)}.`); return }
+    setBusy(true); setSheetError('')
+    try {
+      const how = method || 'unspecified'
+      const operation = getPaymentOperation(d.id, amount, how, 'pay-sheet')
+      const result = await recordPayment(d, amount, how, `Payment recorded from the ${d.type.toLowerCase()} screen`, operation.key)
+      forgetPaymentOperation(operation.fingerprint)
+      const paidTotal = Number(result?.amount_paid ?? paid + amount)
+      const balance = Number(result?.balance_due ?? Math.max(0, total - paidTotal))
+      setPayDone({ amount, balance })
+      const fresh = await load()
+      if (editingRef.current === d.id) {
+        const row = fresh?.find(x => x.id === d.id)
+        applyServerPatch({ status: row?.status || result?.status || (balance <= 0.005 ? 'Paid' : 'Partial'), amount_paid: row?.amount_paid ?? paidTotal, payment_method: row?.payment_method ?? how })
+      }
+    } catch (e) {
+      // The same payment keeps the same key, so trying again can never charge twice.
+      setSheetError(`${errText(e)} Nothing was recorded twice. You can try again.`)
+    } finally { setBusy(false) }
+  }
+
+  /* ---------- payment plan ---------- */
+  const openPlan = (d: Doc) => { setTarget(d); setPlanForm({ down_payment: 0, installments: 3, frequency: 'monthly' }); setSheetError(''); setSheet('plan') }
+
   const savePaymentPlan = async () => {
-    if (!planModal) return
-    const shopId = await getShopId()
-    if (!shopId) { alert('No shop is associated with the signed-in user'); return }
-    const t = calcTotals(planModal as unknown as Record<string,unknown>)
-    const remaining = t.total - planForm.down_payment
-    const perPayment = remaining / planForm.installments
-    const payments: { date: string; amount: number; paid: boolean }[] = []
-    const freqDays = planForm.frequency === 'weekly' ? 7 : planForm.frequency === 'biweekly' ? 14 : 30
-    for (let i = 0; i < planForm.installments; i++) {
-      const d = new Date()
-      d.setDate(d.getDate() + freqDays * (i + 1))
-      payments.push({ date: d.toISOString().split('T')[0], amount: Math.round(perPayment * 100) / 100, paid: false })
-    }
-    const plan = { enabled: true, down_payment: planForm.down_payment, installments: planForm.installments, frequency: planForm.frequency, payments }
-    const { error } = await supabase.from('documents').update({ payment_plan: plan, updated_at: new Date().toISOString() }).eq('id', planModal.id).eq('shop_id', shopId)
-    if (error) {
-      alert('Payment plan could not be saved: ' + error.message)
-      return
-    }
-    setPlanModal(null); await load()
+    if (!target) return
+    setBusy(true); setSheetError('')
+    try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const t = calcTotals(target as unknown as Record<string, unknown>)
+      const remaining = t.total - planForm.down_payment
+      const perPayment = remaining / planForm.installments
+      const payments: { date: string; amount: number; paid: boolean }[] = []
+      const freqDays = planForm.frequency === 'weekly' ? 7 : planForm.frequency === 'biweekly' ? 14 : 30
+      for (let i = 0; i < planForm.installments; i++) {
+        const d = new Date()
+        d.setDate(d.getDate() + freqDays * (i + 1))
+        payments.push({ date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`, amount: Math.round(perPayment * 100) / 100, paid: false })
+      }
+      const plan = { enabled: true, down_payment: planForm.down_payment, installments: planForm.installments, frequency: planForm.frequency, payments }
+      const { error } = await supabase.from('documents').update({ payment_plan: plan, updated_at: new Date().toISOString() }).eq('id', target.id).eq('shop_id', shopId)
+      if (error) throw new Error(error.message)
+      closeSheet()
+      syncFromServer(target.id, await load())
+      setNotice({ kind: 'ok', text: 'Payment plan saved.' })
+    } catch (e) { setSheetError(`Payment plan not saved. ${errText(e)}`) }
+    finally { setBusy(false) }
   }
+
+  /* ---------- convert, duplicate, delete ---------- */
+  const convertToInvoice = async () => {
+    if (!form.id) return
+    setBusy(true); setSheetError('')
+    try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const { data: docNumber, error: numberingError } = await supabase.rpc('next_document_number', { p_shop_id: shopId, p_type: 'Invoice' })
+      if (numberingError || typeof docNumber !== 'string') throw new Error('Invoice numbering failed: ' + (numberingError?.message || 'Unknown error'))
+      // Update the existing row in place so there is no duplicate.
+      const { error } = await supabase.from('documents').update({ type: 'Invoice', doc_number: docNumber, status: 'Draft', updated_at: new Date().toISOString() }).eq('id', form.id).eq('shop_id', shopId)
+      if (error) throw new Error(error.message)
+      const id = form.id
+      closeSheet(); closeEditor()
+      router.push(`/invoices?document=${encodeURIComponent(id)}`)
+    } catch (e) { setSheetError(`Not converted. ${errText(e)}`) }
+    finally { setBusy(false) }
+  }
+
+  const duplicate = async () => {
+    closeSheet()
+    try {
+      const number = await genDocNumber()
+      const drop = new Set(['id', 'shop_id', 'created_at', 'updated_at', 'amount_paid', 'payment_method', 'payment_plan', 'signature_requested_at', 'signature_signed_at', 'signature_signer_name', 'sent_at', 'locked', 'job_id'])
+      const copy = Object.fromEntries(Object.entries(form).filter(([k]) => !drop.has(k))) as Partial<Doc>
+      const next: Partial<Doc> = {
+        ...copy, type: (form.type as string) || type, doc_number: number, doc_date: localToday(), status: 'Draft',
+        parts: ((form.parts || []) as Record<string, unknown>[]).map(p => ({ ...p, status: 'Ordered' })),
+      }
+      setForm(next); setBaseline(JSON.stringify(next)); setEditing('new'); setSignatureImg(null)
+      setNotice({ kind: 'ok', text: `Copied into a new ${noun}. Check it, then save.` })
+    } catch (e) { setNotice({ kind: 'error', text: `Could not copy. ${errText(e)}` }) }
+  }
+
+  const del = async () => {
+    if (!form.id) return
+    setBusy(true); setSheetError('')
+    try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const { error } = await supabase.from('documents').delete().eq('id', form.id).eq('shop_id', shopId)
+      if (error) throw new Error(error.message)
+      closeSheet(); closeEditor()
+      await load()
+    } catch (e) { setSheetError(`Not deleted. ${errText(e)}`) }
+    finally { setBusy(false) }
+  }
+
+  /* ---------- canned jobs ---------- */
+  const openCanned = async () => {
+    setCannedQuery(''); setCannedError(''); setSheet('canned')
+    if (canned) return
+    try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('We could not find your shop.')
+      const { data, error } = await supabase.from('canned_jobs').select('id,name,category,description,labor_hours,labor_rate,total_price,parts').eq('shop_id', shopId).eq('active', true).order('name')
+      if (error) throw new Error(error.message)
+      setCanned((data || []) as CannedJob[])
+    } catch (e) { setCannedError(errText(e, 'Your canned jobs did not load.')) }
+  }
+
+  const addCanned = (j: CannedJob) => {
+    const rate = Number(j.labor_rate) > 0 ? Number(j.labor_rate) : laborRate
+    const labor = Number(j.labor_hours) > 0 ? [{ operation: j.name, tech: '', hours: Number(j.labor_hours), rate }] : []
+    const parts = (Array.isArray(j.parts) ? j.parts : []).map(p => ({ name: p.name, brand: '', qty: Number(p.qty) || 1, unitPrice: Number(p.cost) || 0, taxable: true, status: 'Ordered' }))
+    setForm(f => ({ ...f, labors: [...((f.labors || []) as Record<string, unknown>[]), ...labor], parts: [...((f.parts || []) as Record<string, unknown>[]), ...parts] }))
+    closeSheet()
+    setNotice({ kind: 'ok', text: `Added ${j.name}. Check the prices, then save.` })
+  }
+
+  /* ---------- render ---------- */
+  const isNew = editing === 'new'
+  const docType = String(form.type || type)
+  const { owed: formOwed } = owedOn(form as Doc)
+  const formLocked = isLocked(form.status)
+
+  const menuItems: MenuItem[] = [
+    { key: 'preview', label: 'Preview and print', hint: 'See the paper version', icon: 'print', onClick: () => setSheet('preview') },
+    ...(!isNew ? [
+      { key: 'send', label: `Send ${noun}`, hint: 'Text or email it to the customer', icon: 'send', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) openSend(d) } },
+      { key: 'sign', label: 'Request signature', hint: 'Email a link the customer signs on their phone', icon: 'pen', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) openSign(d) } },
+    ] : []),
+    ...(!isNew && docType !== 'Estimate' && formOwed > 0 ? [{ key: 'pay', label: 'Record payment', hint: 'Money you already received', icon: 'dollar', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) openPay(d) } }] : []),
+    ...(!isNew && docType === 'Invoice' && !formLocked ? [{ key: 'plan', label: form.payment_plan?.enabled ? 'Change payment plan' : 'Set up payment plan', hint: 'Split the balance into payments', icon: 'calendar', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) openPlan(d) } }] : []),
+    ...(!isNew && docType === 'Estimate' ? [{ key: 'convert', label: 'Turn into an invoice', hint: 'Moves it from Estimates to Invoices', icon: 'invoice', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) { setSheetError(''); setSheet('convert') } } }] : []),
+    ...(!isNew ? [{ key: 'copy', label: `Duplicate ${noun}`, hint: 'Copy the customer, vehicle and lines into a new one', icon: 'copy', onClick: duplicate }] : []),
+    ...(!isNew ? [{ key: 'delete', label: `Delete ${noun}`, hint: 'Removes it for good', icon: 'trash', danger: true, onClick: () => { setSheetError(''); setSheet('delete') } }] : []),
+  ]
+
+  const filteredCanned = (canned || []).filter(j => {
+    const q = cannedQuery.trim().toLowerCase()
+    return !q || [j.name, j.category, j.description].some(v => String(v || '').toLowerCase().includes(q))
+  })
+
+  const doneLabel = (d: Doc) => `${docWord(d.type)} ${d.doc_number}`
+
   return (
-    <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
-      {editing !== null ? (
-        /* Doc Form */
-        <div className="flex flex-col lg:grid lg:grid-cols-5 gap-6">
-          <div className="lg:col-span-3 space-y-4">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-              <h1 className="text-xl sm:text-2xl font-bold">{editing === 'new' ? `New ${type}` : `Edit ${type}`}</h1>
-              <div className="flex flex-wrap gap-2">
-                <button className="btn btn-secondary" onClick={()=>{setEditing(null);setForm({})}}>← Back</button>
-                <button className="btn btn-primary" onClick={() => save()}>Save {type}</button>
-                {editing !== 'new' && <button className="btn btn-danger" onClick={del}>Delete</button>}
-                {editing !== 'new' && <button className="btn btn-secondary" onClick={async () => { await save(true); setSendModal(form as Doc) }}>Send</button>} <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={async () => { if (form.id) { await save(true); setSigModal(form as Doc); setSigResult(null) } }}>✍️ Sign</button>
-              {editing !== 'new' && type !== 'Estimate' && form.status !== 'Paid' && <button type="button" className="btn btn-sm" style={{background:'#16a34a',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={async () => {
-                if (!form.id || !form.shop_id) return;
-                const t = calcTotals(form as unknown as Record<string,unknown>);
-                 const owed = Math.max(0, t.total - nonNegativeMoney(form.amount_paid));
-                if (!(owed > 0)) return;
-                try {
-                  const operation = getPaymentOperation(form.id, owed, form.payment_method || 'unspecified', 'editor-mark-paid')
-                  const result = await recordPayment(form as Doc, owed, form.payment_method || 'unspecified', `Marked paid from ${form.type} editor`, operation.key);
-                   forgetPaymentOperation(operation.fingerprint)
-                  setForm(f => ({...f, status: result?.status || 'Paid', amount_paid: Number(result?.amount_paid ?? t.total)}));
-                  await load();
-                } catch (error) {
-                  alert('Payment failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
-                }
-              }}>💰 Mark Paid</button>}
-              {editing !== 'new' && type === 'Invoice' && form.status !== 'Partial' && form.status !== 'Paid' && <button type="button" className="btn btn-sm" style={{background:'#f59e0b',color:'white',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600,padding:'6px 14px'}} onClick={async () => {
-                if (!form.id || !form.shop_id) return;
-                const t = calcTotals(form as unknown as Record<string,unknown>);
-                 const owed = Math.max(0, t.total - nonNegativeMoney(form.amount_paid));
-                if (!(owed > 0)) return;
-                const raw = window.prompt(`How much did they pay? (Remaining: $${owed.toFixed(2)})`);
-                if (!raw) return;
-                const amount = Number.parseFloat(raw.replace(/[^0-9.]/g, ''));
-                if (!(amount > 0)) { alert('Enter a payment greater than zero.'); return; }
-                if (amount > owed + 0.005) { alert(`Payment cannot exceed the remaining balance of $${owed.toFixed(2)}.`); return; }
-                try {
-                  const operation = getPaymentOperation(form.id, amount, form.payment_method || 'unspecified', 'editor-partial')
-                  const result = await recordPayment(form as Doc, amount, form.payment_method || 'unspecified', 'Partial payment from invoice editor', operation.key);
-                   forgetPaymentOperation(operation.fingerprint)
-                  setForm(f => ({...f, status: result?.status || 'Partial', amount_paid: Number(result?.amount_paid ?? ((Number(f.amount_paid) || 0) + amount))}));
-                  await load();
-                } catch (error) {
-                  alert('Payment failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
-                }
-              }}>💵 Record Partial</button>}
-              {editing !== 'new' && type === 'Estimate' && <button className="btn btn-primary btn-sm" onClick={async () => {
-                if (!form.id) return;
-                if (!confirm('Convert this estimate to an invoice? The estimate will become the invoice (it will no longer appear under Estimates).')) return;
-                const shopId = await getShopId(); if (!shopId) { alert('No shop is associated with the signed-in user'); return }; const { data: doc_number, error: numberingError } = await supabase.rpc('next_document_number', { p_shop_id: shopId, p_type: 'Invoice' });
-                if (numberingError || typeof doc_number !== 'string') { alert('Invoice numbering failed: ' + (numberingError?.message || 'Unknown error')); return }
-                // UPDATE the existing row in place — don't insert a duplicate.
-                const { error: convertError } = await supabase.from('documents').update({ type:'Invoice', doc_number, status:'Draft', updated_at: new Date().toISOString() }).eq('id', form.id).eq('shop_id', shopId); if (convertError) { alert('Conversion failed: ' + convertError.message); return }
-                setEditing(null);
-                setForm({});
-                window.location.href='/invoices';
-              }}>Convert to Invoice</button>}
-                {editing !== 'new' && type === 'Invoice' && <button className="btn btn-secondary" onClick={() => setPlanModal(form as Doc)}>Payment Plan</button>}
-              </div>
-            </div>
-
-            {/* Header fields */}
-            <div className="card grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div><label className="form-label">Doc #</label><input className="form-input opacity-60" readOnly value={form.doc_number||''} /></div>
-              <div><label className="form-label">Status</label>
-                <select className="form-select" value={form.status||'Draft'} onChange={sf('status')}>
-                  {getStatuses(type).filter(s => ['Paid','Partial'].includes(form.status || '') ? s === form.status : !['Paid','Partial'].includes(s)).map(s=><option key={s}>{s}</option>)}
-                </select>
-              </div>
-              <div><label className="form-label">Date</label><input className="form-input" type="date" value={form.doc_date||''} onChange={sf('doc_date')} /></div>
-              <div className="sm:col-span-2"><label className="form-label">Customer</label>
-                <select className="form-select" value={(form as Record<string,string>).customer_id||''} onChange={e => selectCustomer(e.target.value)}>
-                  <option value="">Select customer...</option>
-                  <option value="__new__">+ New Customer</option>
-                  {customers.map(c=><option key={c.id} value={c.id}>{c.name}{c.email ? ` (${c.email})` : ''}</option>)}
-                </select>
-              </div>
-              <div><label className="form-label">Tax Rate %</label><input className="form-input" type="number" step="0.01" value={(form.tax_rate as number) ?? 8.25} onChange={sf('tax_rate')} />
-              </div>
-              <div>
-                <label className="form-label flex items-center gap-2"><input type="checkbox" checked={form.apply_tax !== false} onChange={e => setForm(f => ({...f, apply_tax: e.target.checked}))} /> Apply Tax</label></div>
-            </div>
-
-            {/* Contact Info */}
-            <div className="card grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div><label className="form-label">Phone</label><input className="form-input" value={(form as Record<string,string>).customer_phone||''} onChange={sf('customer_phone')} placeholder="(555) 123-4567" /></div>
-              <div><label className="form-label">Email</label><input className="form-input" type="email" value={(form as Record<string,string>).customer_email||''} onChange={sf('customer_email')} placeholder="customer@email.com" /></div>
-            </div>
-
-            {/* Vehicle */}
-            <div className="card grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="sm:col-span-3 text-xs font-bold uppercase tracking-wider text-text-secondary">Vehicle</div>
-              {['vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage'].map(k => (
-                <div key={k}><label className="form-label">{k.split('_').pop()!.charAt(0).toUpperCase()+k.split('_').pop()!.slice(1)}</label><input className="form-input" value={(form as Record<string,string>)[k]||''} onChange={sf(k)} /></div>
-              ))}
-            </div>
-
-            {/* Parts */}
-            <div className="card overflow-x-auto">
-              <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Parts</div>
-              <div className="space-y-2 min-w-[600px]">
-                {((form.parts||[]) as Record<string,unknown>[]).map((p,i) => (
-                  <div key={i} className="space-y-1 pb-2 border-b border-border/30 last:border-0">
-                  <div className="grid grid-cols-12 gap-2 items-center min-w-[600px]">
-                    <input className="form-input col-span-4" placeholder="Part name" value={p.name as string||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],name:e.target.value}; setForm(f=>({...f,parts:p2})) }} />
-                    <input className="form-input col-span-2" placeholder="Brand" value={p.brand as string||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],brand:e.target.value}; setForm(f=>({...f,parts:p2})) }} />
-                    <input className="form-input col-span-1" type="number" placeholder="Qty" value={p.qty as number||1} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],qty:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
-                    <input className="form-input col-span-2" type="number" step="0.01" placeholder="Price" value={p.unitPrice as number||0} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],unitPrice:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
-                    <div className="col-span-1 flex items-center gap-1"><input type="checkbox" checked={p.taxable !== false} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],taxable:e.target.checked}; setForm(f=>({...f,parts:p2})) }} /><span className="text-xs">Tax</span></div>
-                    <div className="col-span-1 text-right text-sm">{formatCurrency(partLineTotal(p))}</div>
-                    <button className="col-span-1 btn btn-danger btn-sm" onClick={() => setForm(f=>({...f,parts:((f.parts||[]) as Record<string,unknown>[]).filter((_,j)=>j!==i)}))}>✕</button>
-                  </div>
-                  <div className="flex items-center gap-2 pl-1 text-xs flex-wrap">
-                    <span className="text-text-muted">Warranty</span>
-                    <input className="form-input !py-1 w-32" placeholder="12mo / 12k mi" value={p.warranty as string||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],warranty:e.target.value}; setForm(f=>({...f,parts:p2})) }} />
-                    <span className="text-text-muted ml-2">Status</span>
-                    <select className="form-select !py-1 w-32" value={p.status as string||'Ordered'} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],status:e.target.value}; setForm(f=>({...f,parts:p2})) }}>
-                      {['Ordered','Backordered','Received','Installed','Returned'].map(s => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                    <span className="text-text-muted ml-2" title="Your cost — internal, never prints">Cost</span>
-                    <input className="form-input !py-1 w-20" type="number" step="0.01" placeholder="0.00" value={p.cost as number||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],cost:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
-                    <span className="text-text-muted ml-2" title="Refundable core deposit — added to the total, refunded when the old core is returned">Core $</span>
-                    <input className="form-input !py-1 w-20" type="number" step="0.01" placeholder="0.00" value={p.core as number||''} onChange={e => { const p2=[...((form.parts||[]) as Record<string,unknown>[])]; p2[i]={...p2[i],core:Number(e.target.value)}; setForm(f=>({...f,parts:p2})) }} />
-                    {nonNegativeMoney(p.cost) > 0 && nonNegativeMoney(p.unitPrice) > 0 ? <span className="text-green" title="Profit on this line">margin {formatCurrency((nonNegativeMoney(p.unitPrice) - nonNegativeMoney(p.cost)) * quantityFromUnknown(p.qty))}</span> : null}
-                  </div>
-                  </div>
-                ))}
-                <button className="btn btn-secondary btn-sm mt-2" onClick={() => setForm(f=>({...f,parts:[...((f.parts||[]) as Record<string,unknown>[]),{name:'',brand:'',qty:1,unitPrice:0,taxable:true,status:'Ordered'}]}))}>+ Add Part</button>
-              </div>
-            </div>
-
-            {/* Labor */}
-            <div className="card overflow-x-auto">
-              <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Labor</div>
-              <div className="space-y-2 min-w-[600px]">
-                {((form.labors||[]) as Record<string,unknown>[]).map((l,i) => (
-                  <div key={i} className="grid grid-cols-12 gap-2 items-center min-w-[600px]">
-                    <input className="form-input col-span-5" placeholder="Operation" value={l.operation as string||''} onChange={e => { const l2=[...((form.labors||[]) as Record<string,unknown>[])]; l2[i]={...l2[i],operation:e.target.value}; setForm(f=>({...f,labors:l2})) }} />
-                    <select className="form-select col-span-2" value={l.tech as string||''} onChange={e => { const l2=[...((form.labors||[]) as Record<string,unknown>[])]; l2[i]={...l2[i],tech:e.target.value}; setForm(f=>({...f,labors:l2})) }}>
-                      <option value="">—</option>{['Paul','Devin','Luis','Louie'].map(t=><option key={t}>{t}</option>)}
-                    </select>
-                    <input className="form-input col-span-1" type={isFlatLabor(l) ? 'text' : 'number'} step="0.5" placeholder="Hrs" value={isFlatLabor(l) ? 'Flat' : (l.hours as number||0)} readOnly={isFlatLabor(l)} onChange={e => { if (isFlatLabor(l)) return; const l2=[...((form.labors||[]) as Record<string,unknown>[])]; l2[i]={...l2[i],hours:Number(e.target.value)}; setForm(f=>({...f,labors:l2})) }} />
-                    <input className="form-input col-span-2" type="number" step="0.01" placeholder={isFlatLabor(l) ? 'Amount' : 'Rate'} value={isFlatLabor(l) ? Number(getLaborFlatAmount(l) || 0) : (l.rate as number||120)} onChange={e => { const l2=[...((form.labors||[]) as Record<string,unknown>[])]; l2[i]=isFlatLabor(l) ? {...l2[i],amount:Number(e.target.value),pricing:'flat'} : {...l2[i],rate:Number(e.target.value)}; setForm(f=>({...f,labors:l2})) }} />
-                    <div className="col-span-1 text-right text-sm">{formatCurrency(laborLineTotal(l))}</div>
-                    <button className="col-span-1 btn btn-danger btn-sm" onClick={() => setForm(f=>({...f,labors:((f.labors||[]) as Record<string,unknown>[]).filter((_,j)=>j!==i)}))}>✕</button>
-                  </div>
-                ))}
-                <button className="btn btn-secondary btn-sm mt-2" onClick={() => setForm(f=>({...f,labors:[...((f.labors||[]) as Record<string,unknown>[]),{operation:'',tech:'',hours:0,rate:120}]}))}>+ Add Labor</button>
-              </div>
-            </div>
-
-            <div className="card grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div><label className="form-label">Shop Supplies $</label><input className="form-input" type="number" step="0.01" value={form.shop_supplies||0} onChange={sf('shop_supplies')} /></div>
-              <div><label className="form-label">Deposit $</label><input className="form-input" type="number" step="0.01" value={form.deposit||0} onChange={sf('deposit')} /></div>
-              <div className="sm:col-span-2"><label className="form-label">Notes <span className="text-xs text-text-muted">(prints on the invoice)</span></label><textarea className="form-textarea" rows={3} value={form.notes||''} onChange={sf('notes')} /></div>
-              <div className="sm:col-span-2"><label className="form-label">🔒 Shop Notes <span className="text-xs text-text-muted">(internal — never shown to the customer)</span></label><textarea className="form-textarea" rows={3} placeholder="Private: cost, customer warnings, declined work, what the tech found…" value={(form as Record<string,unknown>).internal_notes as string||''} onChange={sf('internal_notes')} /></div>
-            </div>
-
-            {/* Warranty Section */}
-            <div className="card">
-              <div className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">Warranty</div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="sm:col-span-2">
-                  <label className="form-label">Warranty Type</label>
-                  <select className="form-select" value={form.warranty_type || 'No Warranty'} onChange={e => {
-                    const preset = WARRANTY_PRESETS.find(p => p.label === e.target.value)
-                    if (preset) {
-                      setForm(f => ({
-                        ...f,
-                        warranty_type: preset.label,
-                        warranty_months: preset.months || null,
-                        warranty_mileage: preset.mileage || null,
-                        warranty_exclusions: formatWarrantyText(preset.exclusions) || null,
-                        warranty_start: f.doc_date || new Date().toISOString().split('T')[0],
-                      }))
-                    }
-                  }}>
-                    {WARRANTY_PRESETS.map(p => <option key={p.label} value={p.label}>{p.label}</option>)}
-                  </select>
-                  <button
-                    type="button"
-                    className="mt-2 text-xs px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium transition-colors flex items-center gap-1.5"
-                    onClick={() => {
-                      const matched = detectWarranty(form)
-                      if (matched) {
-                        setForm(f => ({
-                          ...f,
-                          warranty_type: matched.label,
-                          warranty_months: matched.months || null,
-                          warranty_mileage: matched.mileage || null,
-                          warranty_exclusions: formatWarrantyText(matched.exclusions) || null,
-                          warranty_start: f.doc_date || new Date().toISOString().split("T")[0],
-                        }))
-                      }
-                    }}
-                  >
-                    ✨ Auto-Detect Warranty
-                  </button>
-                </div>
-                {form.warranty_type && form.warranty_type !== 'No Warranty' && form.warranty_type !== 'State Inspection — No Warranty' && (
-                  <>
-                    <div><label className="form-label">Months</label><input className="form-input" type="number" value={form.warranty_months || ''} onChange={sf('warranty_months')} /></div>
-                    <div><label className="form-label">Mileage</label><input className="form-input" type="number" value={form.warranty_mileage || ''} onChange={sf('warranty_mileage')} /></div>
-                    <div><label className="form-label">Start Date</label><input className="form-input" type="date" value={form.warranty_start || form.doc_date || ''} onChange={sf('warranty_start')} /></div>
-                    <div className="sm:col-span-2"><label className="form-label">Exclusions</label><textarea className="form-textarea" rows={2} value={form.warranty_exclusions || ''} onChange={sf('warranty_exclusions')} /></div>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {/* Payment plan display */}
-            {form.payment_plan?.enabled && (
-              <div className="card border-blue/30">
-                <div className="text-xs font-bold uppercase tracking-wider text-blue mb-3">Payment Plan</div>
-                <div className="text-sm mb-2">Down payment: {formatCurrency(form.payment_plan.down_payment)} · {form.payment_plan.installments} {form.payment_plan.frequency} payments</div>
-                <div className="space-y-1">
-                  {form.payment_plan.payments.map((p, i) => (
-                    <div key={i} className="flex items-center gap-3 text-sm">
-                      <input type="checkbox" checked={p.paid} onChange={e => {
-                        const plan = { ...form.payment_plan! }
-                        const payments = [...plan.payments]
-                        payments[i] = { ...payments[i], paid: e.target.checked }
-                        setForm(f => ({ ...f, payment_plan: { ...plan, payments } }))
-                      }} />
-                      <span className={p.paid ? 'line-through text-text-muted' : ''}>{p.date} — {formatCurrency(p.amount)}</span>
-                    </div>
-                  ))}
-                </div>
-                {(() => {
-                  const paid = form.payment_plan!.payments.filter(p => p.paid).length
-                  const total = form.payment_plan!.payments.length
-                  const pct = total > 0 ? (paid / total) * 100 : 0
-                  return (
-                    <div className="mt-3">
-                      <div className="h-2 bg-bg-hover rounded-full overflow-hidden">
-                        <div className="h-full bg-green rounded-full transition-all" style={{ width: `${pct}%` }} />
-                      </div>
-                      <div className="text-xs text-text-muted mt-1">{paid}/{total} payments complete</div>
-                    </div>
-                  )
-                })()}
-              </div>
-            )}
-          </div>
-
-          {/* Preview */}
-          <div className="lg:col-span-2">
-            {/* PDF Download & Print buttons */}
-            <div className="flex gap-2 mb-3">
-              <button
-                onClick={() => {
-                  // Load html2pdf.js from CDN if not already loaded then download
-                  const el = document.getElementById('doc-preview-panel')
-                  if (!el) return
-                   
-                  const doDownload = (h2p: any) => {
-                    h2p(el).set({
-                      margin: [8, 8, 8, 8],
-                      filename: `${form.doc_number || type}.pdf`,
-                      image: { type: 'jpeg', quality: 0.98 },
-                      html2canvas: { scale: 2, useCORS: true },
-                      jsPDF: { unit: 'mm', format: 'letter', orientation: 'portrait' },
-                      pagebreak: { mode: ['avoid-all', 'css'] }
-                    }).save()
-                  }
-                   
-                  if ((window as any).html2pdf) {
-                     
-                    doDownload((window as any).html2pdf)
-                  } else {
-                    const script = document.createElement('script')
-                    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js'
-                    script.onload = () => {
-                       
-                      doDownload((window as any).html2pdf)
-                    }
-                    document.head.appendChild(script)
-                  }
-                }}
-                className="btn btn-secondary btn-sm flex items-center gap-1.5"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Download PDF
-              </button>
-              <button
-                onClick={() => {
-                  // Print the preview, forced onto a SINGLE letter page.
-                  const el = document.getElementById('doc-preview-panel')
-                  if (!el) return
-                  const w = window.open('', '_blank', 'width=850,height=1100')
-                  if (!w) { window.print(); return }
-                  const doc = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${form.doc_number || type}</title><style>
-@page { size: letter portrait; margin: 0.35in; }
-* { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; box-sizing: border-box; }
-html, body { margin: 0; padding: 0; background: #fff; }
-body { font-family: Arial, Helvetica, sans-serif; color: #111; }
-table { border-collapse: collapse; }
-tr, td, th, thead, table { break-inside: avoid; }
-#print-root { margin: 0 auto; }
-#print-wrap { width: 7.8in; }
-</style></head><body><div id="print-root"><div id="print-wrap">${el.innerHTML}</div></div><script>
-(function(){
-  var printed = false;
-  function fit(){
-    var root = document.getElementById('print-root');
-    var wrap = document.getElementById('print-wrap');
-    var maxH = 10.2 * 96, maxW = 7.8 * 96;
-    var h = wrap.scrollHeight, ww = wrap.scrollWidth;
-    // Shrink long docs to fit; also grow short receipts (up to 1.5x) so they
-    // fill the page instead of sitting tiny in the corner.
-    var scale = Math.min(1.5, maxH / h, maxW / ww);
-    wrap.style.transformOrigin = 'top left';
-    wrap.style.transform = 'scale(' + scale + ')';
-    root.style.height = Math.ceil(h * scale) + 'px';
-    root.style.width = Math.ceil(ww * scale) + 'px';
-  }
-  function go(){ if (printed) return; printed = true; fit(); setTimeout(function(){ window.focus(); window.print(); window.close(); }, 200); }
-  var imgs = document.images, n = imgs.length, done = 0;
-  if (!n) { go(); } else {
-    for (var i = 0; i < n; i++) {
-      if (imgs[i].complete) { if (++done === n) go(); }
-      else { imgs[i].onload = imgs[i].onerror = function(){ if (++done === n) go(); }; }
-    }
-  }
-  setTimeout(go, 1500);
-})();
-<\/script></body></html>`
-                  w.document.write(doc)
-                  w.document.close()
-                }}
-                className="btn btn-secondary btn-sm flex items-center gap-1.5"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-                Print
-              </button>
-            </div>
-            <div id="doc-preview-panel" className="sticky top-4 bg-white text-gray-900 rounded-xl shadow-2xl overflow-hidden" style={{fontFamily:'Arial,Helvetica,sans-serif'}}>
-              {/* Header */}
-              <div style={{background:'#1a1a2e',padding:'24px 28px',textAlign:'center'}}>
-                <img src="/alpha-bot.jpg" alt="Logo" style={{width:48,height:48,borderRadius:'50%',margin:'0 auto 8px',display:'block',objectFit:'cover',border:'2px solid rgba(255,255,255,0.2)'}} />               <h2 style={{margin:0,fontSize:'18px',fontWeight:700,color:'#fff',letterSpacing:'0.5px'}}>{shopName}</h2>
-                <p style={{margin:'4px 0 0',fontSize:'11px',color:'#9ca3af'}}>{shopAddress} &nbsp;·&nbsp; {shopPhone}</p>
-              </div>
-
-              {/* Doc type badge + info */}
-              <div style={{textAlign:'center',padding:'16px 28px 12px'}}>
-                <span style={{display:'inline-block',background:'#e67e22',color:'#fff',padding:'4px 18px',borderRadius:'999px',fontWeight:700,fontSize:'11px',textTransform:'uppercase',letterSpacing:'0.08em'}}>{type}</span>
-                <div style={{fontSize:'12px',color:'#666',marginTop:'6px'}}>#{form.doc_number} &nbsp;·&nbsp; {fmt(form.doc_date || '')}</div>
-              </div>
-
-              {/* Customer / Vehicle info */}
-              <div style={{padding:'0 28px 16px',display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px',fontSize:'12px',borderBottom:'1px solid #eee'}}>
-                <div>
-                  <div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'#999',marginBottom:'2px'}}>Customer</div>
-                  <div style={{fontWeight:600,color:'#111'}}>{form.customer_name || '—'}</div>
-                                  {(form as Record<string,string>).customer_phone && <div style={{color:'#666',fontSize:'11px'}}>{(form as Record<string,string>).customer_phone}</div>}
-                {(form as Record<string,string>).customer_email && <div style={{color:'#666',fontSize:'11px'}}>{(form as Record<string,string>).customer_email}</div>}
-                </div>
-                <div style={{textAlign:'right'}}>
-                  <div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'#999',marginBottom:'2px'}}>Vehicle</div>
-                  <div style={{fontWeight:600,color:'#111'}}>{[form.vehicle_year,form.vehicle_make,form.vehicle_model].filter(Boolean).join(' ') || '—'}</div>
-                  {form.vehicle_mileage && <div style={{color:'#666',fontSize:'11px'}}>{Number(form.vehicle_mileage).toLocaleString()} miles</div>}
-                  {(form as Record<string,string>).vehicle_vin && <div style={{color:'#666',fontSize:'11px'}}>VIN: {(form as Record<string,string>).vehicle_vin}</div>}
-                  {(form as Record<string,string>).vehicle_plate && <div style={{color:'#666',fontSize:'11px'}}>Plate: {(form as Record<string,string>).vehicle_plate}</div>}
-                </div>
-              </div>
-
-              {/* Parts table */}
-              {((form.parts||[]) as Record<string,unknown>[]).length > 0 && (
-                <div style={{padding:'16px 28px 8px'}}>
-                  <div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'#999',marginBottom:'8px'}}>Parts</div>
-                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px'}}>
-                    <thead>
-                      <tr style={{background:'#f8f8f8'}}>
-                        <th style={{padding:'6px 8px',textAlign:'left',fontWeight:600,fontSize:'10px',textTransform:'uppercase',color:'#666'}}>Description</th>
-                        <th style={{padding:'6px 8px',textAlign:'center',fontWeight:600,fontSize:'10px',textTransform:'uppercase',color:'#666',width:'40px'}}>Qty</th>
-                        <th style={{padding:'6px 8px',textAlign:'right',fontWeight:600,fontSize:'10px',textTransform:'uppercase',color:'#666',width:'80px'}}>Unit Price</th>
-                        <th style={{padding:'6px 8px',textAlign:'right',fontWeight:600,fontSize:'10px',textTransform:'uppercase',color:'#666',width:'80px'}}>Total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {((form.parts||[]) as Record<string,unknown>[]).map((p,i) => (
-                        <tr key={i} style={{background:i%2===1?'#fafafa':'transparent'}}>
-                          <td style={{padding:'6px 8px',color:'#111'}}>{(p.name as string) || '—'}{p.brand ? <span style={{color:'#999',fontSize:'10px',marginLeft:'4px'}}>({p.brand as string})</span> : ''}{p.warranty ? <span style={{color:'#2563eb',fontSize:'9px',display:'block',fontWeight:600}}>Warranty: {p.warranty as string}</span> : ''}</td>
-                          <td style={{padding:'6px 8px',textAlign:'center',color:'#666'}}>{quantityFromUnknown(p.qty)}</td>
-                          <td style={{padding:'6px 8px',textAlign:'right',color:'#666'}}>{formatCurrency(nonNegativeMoney(p.unitPrice))}</td>
-                          <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600,color:'#111'}}>{formatCurrency(partLineTotal(p))}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {/* Labor table */}
-              {((form.labors||[]) as Record<string,unknown>[]).length > 0 && (
-                <div style={{padding:'12px 28px 8px'}}>
-                  <div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'#999',marginBottom:'8px'}}>Labor</div>
-                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:'12px'}}>
-                    <thead>
-                      <tr style={{background:'#f8f8f8'}}>
-                        <th style={{padding:'6px 8px',textAlign:'left',fontWeight:600,fontSize:'10px',textTransform:'uppercase',color:'#666'}}>Operation</th>
-                        <th style={{padding:'6px 8px',textAlign:'center',fontWeight:600,fontSize:'10px',textTransform:'uppercase',color:'#666',width:'50px'}}>Hours</th>
-                        <th style={{padding:'6px 8px',textAlign:'right',fontWeight:600,fontSize:'10px',textTransform:'uppercase',color:'#666',width:'80px'}}>Rate</th>
-                        <th style={{padding:'6px 8px',textAlign:'right',fontWeight:600,fontSize:'10px',textTransform:'uppercase',color:'#666',width:'80px'}}>Total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {((form.labors||[]) as Record<string,unknown>[]).map((l,i) => (
-                        <tr key={i} style={{background:i%2===1?'#fafafa':'transparent'}}>
-                          <td style={{padding:'6px 8px',color:'#111'}}>{(l.operation as string) || '—'}</td>
-                          <td style={{padding:'6px 8px',textAlign:'center',color:'#666'}}>{isFlatLabor(l) ? 'Flat' : ((l.hours as number)||0)}</td>
-                          <td style={{padding:'6px 8px',textAlign:'right',color:'#666'}}>{isFlatLabor(l) ? 'Flat' : `${formatCurrency(Number(l.rate)||0)}/hr`}</td>
-                          <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600,color:'#111'}}>{formatCurrency(laborLineTotal(l))}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {/* Totals */}
-              {totals && (
-                <div style={{padding:'16px 28px',background:'#f9f9f9',borderTop:'1px solid #eee'}}>
-                  <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
-                    <span>Parts Subtotal</span><span>{formatCurrency(totals.partsTotal)}</span>
-                  </div>
-                  <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
-                    <span>Labor Subtotal</span><span>{formatCurrency(totals.laborTotal)}</span>
-                  </div>
-                  {totals.coreTotal > 0 && (
-                    <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
-                      <span>Core Charges (refundable)</span><span>{formatCurrency(totals.coreTotal)}</span>
-                    </div>
-                  )}
-                  {Number(form.shop_supplies) > 0 && (
-                    <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
-                      <span>Shop Supplies</span><span>{formatCurrency(Number(form.shop_supplies))}</span>
-                    </div>
-                  )}
-                  {totals.sublet > 0 && (
-                    <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
-                      <span>Sublet</span><span>{formatCurrency(totals.sublet)}</span>
-                    </div>
-                  )}
-                  <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
-                    <span>Tax ({totals.taxRate}%)</span><span>{formatCurrency(totals.taxAmount)}</span>
-                  </div>
-                  <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0 4px',fontSize:'16px',fontWeight:700,color:'#111',borderTop:'2px solid #111',marginTop:'6px'}}>
-                    <span>TOTAL</span><span>{formatCurrency(totals.total)}</span>
-                  </div>
-                  {Number(form.deposit) > 0 && (
-                    <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0',fontSize:'12px',color:'#555'}}>
-                      <span>Deposit recorded</span><span>{formatCurrency(Number(form.deposit))}</span>
-                    </div>
-                  )}
-                  {form.status === 'Paid' ? (
-                    <div style={{textAlign:'center',marginTop:'12px'}}>
-                      <span style={{display:'inline-block',border:'3px solid #16a34a',color:'#16a34a',padding:'4px 24px',borderRadius:'4px',fontWeight:800,fontSize:'18px',letterSpacing:'0.1em',transform:'rotate(-3deg)',opacity:0.85}}>PAID</span>
-                    </div>
-                  ) : (
-                    <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0 0',fontSize:'14px',fontWeight:700,color:'#dc2626'}}>
-                      <span>Balance Due</span><span>{formatCurrency(totals.balanceDue)}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Notes */}
-              {form.notes && (
-                <div style={{padding:'12px 28px',borderTop:'1px solid #eee'}}>
-                  <div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'#999',marginBottom:'4px'}}>Notes</div>
-                  <p style={{fontSize:'11px',color:'#555',margin:0,whiteSpace:'pre-wrap'}}>{form.notes}</p>
-                </div>
-              )}
-
-              {/* Warranty box */}
-              {form.warranty_type && form.warranty_type !== 'No Warranty' && form.warranty_type !== 'State Inspection — No Warranty' && (
-                <div style={{margin:'0 28px 16px',padding:'14px 16px',border:'1.5px solid #3b82f6',borderRadius:'8px',background:'#eff6ff'}}>
-                  <div style={{display:'flex',alignItems:'center',gap:'6px',marginBottom:'8px'}}>
-                    <span style={{fontSize:'16px'}}>🛡️</span>
-                    <span style={{fontSize:'12px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em',color:'#1e40af'}}>Warranty Coverage</span>
-                  </div>
-                  <div style={{fontSize:'12px',fontWeight:600,color:'#111',marginBottom:'4px'}}>{form.warranty_type}</div>
-                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'4px',fontSize:'11px',color:'#555'}}>
-                    {Number(form.warranty_months) > 0 && <div>Duration: <strong>{form.warranty_months} months</strong></div>}
-                    {Number(form.warranty_mileage) > 0 && <div>Mileage: <strong>{Number(form.warranty_mileage).toLocaleString()} miles</strong></div>}
-                    {form.warranty_start && <div>Start: <strong>{fmt(form.warranty_start)}</strong></div>}
-                    {form.warranty_start && Number(form.warranty_months) > 0 && (() => {
-                      const start = new Date(form.warranty_start + 'T00:00:00')
-                      start.setMonth(start.getMonth() + Number(form.warranty_months))
-                      return <div>Expires: <strong>{start.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}</strong></div>
-                    })()}
-                  </div>
-                  {form.warranty_exclusions && (
-                    <div style={{marginTop:'8px',fontSize:'10px',color:'#666',lineHeight:'1.4',borderTop:'1px solid #bfdbfe',paddingTop:'8px'}}>
-                      <strong>Exclusions:</strong> {formatWarrantyText(form.warranty_exclusions)}
-                    </div>
-                  )}
-                  <div style={{marginTop:'10px',fontSize:'9px',color:'#888',lineHeight:'1.4',borderTop:'1px solid #bfdbfe',paddingTop:'8px'}}>
-                    All warranty claims must be submitted to {shopName} at {shopAddress} during normal business hours. Contact {shopPhone} before beginning any warranty repair. Unauthorized repairs will void this warranty. This warranty is governed by the laws of the State of Texas.
-                  </div>
-                </div>
-              )}
-
-              {signatureImg && (<div style={{padding:'16px 28px',borderTop:'1px solid #eee',textAlign:'center'}}><div style={{fontSize:'10px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'#999',marginBottom:'8px'}}>Customer Signature</div><img src={signatureImg} alt="Signature" style={{maxWidth:220,maxHeight:80,margin:'0 auto'}} />{form.signature_signer_name && <div style={{fontSize:'11px',color:'#555',marginTop:'4px'}}>{form.signature_signer_name}</div>}{form.signature_signed_at && <div style={{fontSize:'10px',color:'#999'}}>{new Date(form.signature_signed_at).toLocaleString()}</div>}</div>)}{/* Footer */}
-              <div style={{padding:'12px 28px',textAlign:'center',fontSize:'10px',color:'#999',borderTop:'1px solid #eee',background:'#fafafa'}}>
-                <div>Payment Terms: Due on receipt &nbsp;|&nbsp; Accepted: Cash, Card, Zelle, Cash App</div>
-                <div style={{marginTop:'4px'}}>{shopPhone}{shopEmail ? <> &nbsp;·&nbsp; {shopEmail}</> : null}</div>
-              </div>
-            </div>
-          </div>
-        </div>
+    <>
+      {editing === null ? (
+        <DocList
+          type={type}
+          docs={docs}
+          loading={loading}
+          loadError={loadError}
+          actionError={actionError}
+          onDismissActionError={() => setActionError(null)}
+          onRetry={() => { setLoadError(null); void load() }}
+          onNew={() => { void openNew() }}
+          onOpen={d => openDoc(d)}
+          onQuickSend={d => openSend(d)}
+          onQuickPay={d => openPay(d)}
+          search={search}
+          setSearch={setSearch}
+          filter={filter}
+          setFilter={setFilter}
+        />
       ) : (
-        /* Doc List */
-        <div>
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-6">
-            <h1 className="text-xl sm:text-2xl font-bold">{type}s</h1>
-            <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
-              <input className="form-input w-full sm:w-56" placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
-              <button className="btn btn-primary whitespace-nowrap" onClick={openNew}>+ New {type}</button>
-            </div>
+        <DocEditor
+          type={type}
+          isNew={isNew}
+          form={form}
+          setForm={setForm}
+          totals={totals}
+          dirty={dirty}
+          saving={saving}
+          notice={notice}
+          onClearNotice={clearNotice}
+          showUndo={(label, restore) => setNotice({ kind: 'ok', text: label, undo: restore })}
+          staff={staff}
+          signatureImg={signatureImg}
+          warrantyLabels={WARRANTY_PRESETS.map(p => p.label)}
+          laborRate={laborRate}
+          onAddCanned={openCanned}
+          onBack={goBack}
+          onSave={() => { void save() }}
+          onPickCustomer={() => { setSheetError(''); setSheet('customer') }}
+          onSend={async () => { const d = await ensureSaved(); if (d) openSend(d) }}
+          onSign={async () => { const d = await ensureSaved(); if (d) openSign(d) }}
+          onPay={async () => { const d = await ensureSaved(); if (d) openPay(d) }}
+          onPlan={async () => { const d = await ensureSaved(); if (d) openPlan(d) }}
+          onConvert={async () => { const d = await ensureSaved(); if (d) { setSheetError(''); setSheet('convert') } }}
+          onApprove={() => { void save({ status: 'Approved' }) }}
+          onPreview={() => setSheet('preview')}
+          onMore={() => setSheet('more')}
+          onWarrantyPreset={label => { const p = WARRANTY_PRESETS.find(x => x.label === label); if (p) applyWarranty(p) }}
+          onSuggestWarranty={() => {
+            const m = detectWarranty(form as Record<string, unknown>)
+            applyWarranty(m)
+            setNotice({ kind: 'ok', text: m.label === 'No Warranty' ? 'Nothing in this work matches a warranty, so it is set to none.' : `Warranty set to ${m.label}.` })
+          }}
+        />
+      )}
+
+      {/* ---------- sheets ---------- */}
+      <Sheet open={sheet === 'customer'} onClose={closeSheet} title="Choose a customer">
+        <CustomerPicker customers={customers} selectedId={form.customer_id} onPick={selectCustomer} onAddNew={() => { setSheetError(''); setSheet('newcustomer') }} />
+      </Sheet>
+
+      <Sheet open={sheet === 'newcustomer'} onClose={closeSheet} title="Add a customer">
+        <NewCustomerForm busy={busy} error={sheetError} onSubmit={createInlineCustomer} onCancel={() => { setSheetError(''); setSheet('customer') }} />
+      </Sheet>
+
+      <Sheet open={sheet === 'send'} onClose={closeSheet} title={`Send ${target ? docWord(target.type) : noun}`}>
+        {target && (
+          <SendForm
+            key={target.id}
+            noun={docWord(target.type)}
+            docNumber={target.doc_number}
+            customerName={target.customer_name}
+            total={calcTotals(target as unknown as Record<string, unknown>).total}
+            email={contactFor(target).email}
+            phone={contactFor(target).phone}
+            busy={busy}
+            error={sheetError}
+            success={sendSuccess}
+            onSend={sendDoc}
+            onClose={closeSheet}
+          />
+        )}
+      </Sheet>
+
+      <Sheet open={sheet === 'sign'} onClose={closeSheet} title="Request a signature">
+        {target && (
+          <SignatureForm
+            key={target.id}
+            noun={docWord(target.type)}
+            isEstimate={target.type === 'Estimate'}
+            docNumber={target.doc_number}
+            customerName={target.customer_name}
+            email={contactFor(target).email}
+            total={calcTotals(target as unknown as Record<string, unknown>).total}
+            signedAt={target.signature_signed_at}
+            signerName={target.signature_signer_name}
+            requestedAt={target.signature_requested_at}
+            busy={busy}
+            result={sigResult}
+            onSend={sendSignature}
+            onClose={closeSheet}
+          />
+        )}
+      </Sheet>
+
+      <Sheet open={sheet === 'pay'} onClose={closeSheet} title="Record a payment">
+        {target && (() => {
+          const m = owedOn(target)
+          return (
+            <PaymentForm
+              key={target.id}
+              noun={docWord(target.type)}
+              docNumber={target.doc_number}
+              customerName={target.customer_name}
+              total={m.total}
+              paid={m.paid}
+              owed={m.owed}
+              initialMethod={target.payment_method || shopMethods[0] || 'unspecified'}
+              methods={shopMethods}
+              busy={busy}
+              error={sheetError}
+              done={payDone}
+              onSubmit={submitPay}
+              onClose={closeSheet}
+            />
+          )
+        })()}
+      </Sheet>
+
+      <Sheet open={sheet === 'plan'} onClose={closeSheet} title="Payment plan">
+        {target && (
+          <PlanForm
+            docNumber={target.doc_number}
+            total={calcTotals(target as unknown as Record<string, unknown>).total}
+            form={planForm}
+            setForm={fn => setPlanForm(fn)}
+            busy={busy}
+            error={sheetError}
+            onSave={savePaymentPlan}
+            onClose={closeSheet}
+          />
+        )}
+      </Sheet>
+
+      <Sheet open={sheet === 'more'} onClose={closeSheet} title="More actions">
+        <ActionsMenu items={menuItems} />
+      </Sheet>
+
+      <Sheet open={sheet === 'preview'} onClose={closeSheet} title="Preview" wide>
+        {!shopName && !shopPhone && (
+          <div className="mb-3"><WarnMsg>Your shop name and phone are not set, so they are missing from the paper. Add them in Settings, under Shop info.</WarnMsg></div>
+        )}
+        <div className="max-h-[62dvh] overflow-y-auto overscroll-contain">
+          <DocPreview
+            form={form}
+            type={docType}
+            totals={totals}
+            shopName={shopName}
+            shopAddress={shopAddress}
+            shopPhone={shopPhone}
+            shopEmail={shopEmail}
+            paymentMethods={String(settings.payment_methods || '')}
+            signatureImg={signatureImg}
+            formatWarrantyText={formatWarrantyText}
+          />
+        </div>
+        <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button type="button" className="btn btn-secondary" onClick={closeSheet}>Close</button>
+          <button type="button" className="btn btn-primary" onClick={() => printPreview(String(form.doc_number || docType))}>Print or save as PDF</button>
+        </div>
+      </Sheet>
+
+      <Sheet open={sheet === 'convert'} onClose={closeSheet} title="Turn into an invoice">
+        <p className="text-[0.9375rem]">
+          Estimate {form.doc_number} for {form.customer_name || 'this customer'} becomes a new invoice with its own number. It leaves Estimates and moves to Invoices. Nothing is sent to the customer.
+        </p>
+        {sheetError && <div className="mt-3"><ErrorMsg>{sheetError}</ErrorMsg></div>}
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button type="button" className="btn btn-secondary" onClick={closeSheet} disabled={busy}>Cancel</button>
+          <button type="button" className="btn btn-primary" onClick={convertToInvoice} disabled={busy}>{busy ? 'Converting…' : 'Turn into invoice'}</button>
+        </div>
+      </Sheet>
+
+      <Sheet open={sheet === 'delete'} onClose={closeSheet} title={`Delete ${noun}?`}>
+        <p className="text-[0.9375rem]">
+          {docWord(docType)[0].toUpperCase() + docWord(docType).slice(1)} {form.doc_number}{form.customer_name ? ` for ${form.customer_name}` : ''} will be removed for good. This cannot be undone.
+        </p>
+        {sheetError && <div className="mt-3"><ErrorMsg>{sheetError}</ErrorMsg></div>}
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button type="button" className="btn btn-secondary" onClick={closeSheet} disabled={busy}>Keep it</button>
+          <button type="button" className="btn btn-danger" onClick={del} disabled={busy}>{busy ? 'Deleting…' : `Delete ${noun}`}</button>
+        </div>
+      </Sheet>
+
+      <Sheet open={sheet === 'canned'} onClose={closeSheet} title="Add a canned job">
+        {cannedError ? (
+          <div>
+            <ErrorMsg>{cannedError}</ErrorMsg>
+            <button type="button" className="btn btn-secondary mt-3" onClick={() => { setCanned(null); void openCanned() }}>Try again</button>
           </div>
-          {/* Phone: stacked cards — no sideways scrolling */}
-          <div className="space-y-2 sm:hidden">
-            {loading && docs.length === 0 && [1,2,3,4].map(i => (
-              <div key={i} className="card p-4 animate-pulse" aria-hidden="true">
-                <div className="h-5 w-40 bg-bg-hover rounded mb-3" />
-                <div className="h-3 w-28 bg-bg-hover rounded mb-2" />
-                <div className="h-3 w-20 bg-bg-hover rounded" />
-              </div>
-            ))}
-            {loadError && (
-              <div className="card p-4 text-center" role="alert">
-                <div className="text-sm text-text-muted mb-3">{loadError}</div>
-                <button className="btn btn-secondary btn-sm" onClick={() => { setLoading(true); load() }}>Try again</button>
-              </div>
-            )}
-            {!loading && !loadError && filtered.length === 0 && <div className="card p-8 text-center text-text-muted">{docs.length === 0 ? `No ${type.toLowerCase()}s yet` : `No ${type.toLowerCase()}s match your search`}</div>}
-            {filtered.map(d => {
-              const t = calcTotals(d as unknown as Record<string,unknown>)
-              return (
-                <div key={d.id} className="card p-3" onClick={() => { const cust = customers.find(c => c.id === d.customer_id); setForm({ ...d, customer_phone: d.customer_phone || cust?.phone || '', customer_email: d.customer_email || cust?.email || '' } as Partial<Doc>); setEditing(d.id); setSignatureImg(null); if (d.signature_signed_at) { fetch('/api/signature?documentId='+d.id).then(r=>r.json()).then(sig=>{ if(sig?.signature_data) setSignatureImg(sig.signature_data) }) } }}>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium truncate">{d.customer_name || '—'}</span>
-                    <span className={`tag shrink-0 ${statusColor[d.status]||'tag-gray'}`}>{d.status}</span>
-                  </div>
-                  <div className="mt-1 flex items-center justify-between text-sm">
-                    <span className="font-mono text-blue">{d.doc_number}</span>
-                    <span className="font-semibold">{formatCurrency(t.total)}</span>
-                  </div>
-                  <div className="mt-1 flex items-center justify-between text-xs text-text-muted">
-                    <span className="truncate">{[d.vehicle_year, d.vehicle_make, d.vehicle_model].filter(Boolean).join(' ') || '—'}</span>
-                    <span>{fmt(d.doc_date)}</span>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-          {/* Desktop: full table */}
-          <div className="card p-0 overflow-x-auto hidden sm:block">
-            <table className="data-table w-full min-w-[640px]">
-              <thead><tr><th>Doc #</th><th>Customer</th><th>Vehicle</th><th>Date</th><th>Status</th><th>Total</th><th>Actions</th></tr></thead>
-              <tbody>
-                {loading && docs.length === 0 && <tr><td colSpan={7} className="text-center text-text-muted py-8">Loading {type.toLowerCase()}s…</td></tr>}
-                {loadError && <tr><td colSpan={7} className="text-center text-text-muted py-8" role="alert">{loadError} <button className="btn btn-secondary btn-sm ml-2" onClick={() => { setLoading(true); load() }}>Try again</button></td></tr>}
-                {!loading && !loadError && filtered.length === 0 && <tr><td colSpan={7} className="text-center text-text-muted py-8">{docs.length === 0 ? `No ${type.toLowerCase()}s yet` : `No ${type.toLowerCase()}s match your search`}</td></tr>}
-                {filtered.map(d => {
-                  const t = calcTotals(d as unknown as Record<string,unknown>)
+        ) : canned === null ? (
+          <div className="space-y-2" aria-busy="true" aria-label="Loading canned jobs">{[0, 1, 2, 3].map(i => <div key={i} className="skeleton h-14" />)}</div>
+        ) : canned.length === 0 ? (
+          <p className="py-6 text-center text-[0.9375rem] text-text-secondary">
+            No canned jobs yet. Save the jobs you quote often, like a brake job or an oil change, in <a className="text-blue underline" href="/canned-jobs">Canned jobs</a>, and add them here in one tap.
+          </p>
+        ) : (
+          <div>
+            <input type="search" className="form-input" placeholder="Search canned jobs" aria-label="Search canned jobs" value={cannedQuery} onChange={e => setCannedQuery(e.target.value)} />
+            {filteredCanned.length === 0 ? (
+              <p className="py-6 text-center text-[0.9375rem] text-text-secondary">No canned job matches “{cannedQuery.trim()}”.</p>
+            ) : (
+              <ul className="ledger mt-3 max-h-[50dvh] overflow-y-auto">
+                {filteredCanned.map(j => {
+                  const n = Array.isArray(j.parts) ? j.parts.length : 0
                   return (
-                    <tr key={d.id} className="cursor-pointer" onClick={() => { const cust = customers.find(c => c.id === d.customer_id); setForm({ ...d, customer_phone: d.customer_phone || cust?.phone || '', customer_email: d.customer_email || cust?.email || '' } as Partial<Doc>); setEditing(d.id); setSignatureImg(null); if (d.signature_signed_at) { fetch('/api/signature?documentId='+d.id).then(r=>r.json()).then(sig=>{ if(sig?.signature_data) setSignatureImg(sig.signature_data) }) } }}>
-                      <td className="font-mono text-sm text-blue">{d.doc_number}</td>
-                      <td className="font-medium">{d.customer_name || '—'}</td>
-                      <td className="text-sm text-text-muted">{[d.vehicle_year, d.vehicle_make, d.vehicle_model].filter(Boolean).join(' ') || '—'}</td>
-                      <td className="text-text-secondary">{fmt(d.doc_date)}</td>
-                      <td><span className={`tag ${statusColor[d.status]||'tag-gray'}`}>{d.status}</span></td>
-                      <td className="font-semibold">{formatCurrency(t.total)}</td>
-                      <td onClick={e => e.stopPropagation()}>
-                        <div className="flex gap-1">
-                          {type !== 'Estimate' && d.status !== 'Paid' && <button className="btn btn-sm" style={{background:'#16a34a',color:'white',fontSize:'11px',padding:'4px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}} onClick={async () => {
-                            if (!d.shop_id) return;
-                            const t = calcTotals(d as unknown as Record<string,unknown>);
-                             const owed = Math.max(0, t.total - nonNegativeMoney(d.amount_paid));
-                            if (!(owed > 0)) return;
-                            try {
-                              const operation = getPaymentOperation(d.id, owed, d.payment_method || 'unspecified', 'list-mark-paid')
-                              await recordPayment(d, owed, d.payment_method || 'unspecified', 'Marked paid from list', operation.key);
-                               forgetPaymentOperation(operation.fingerprint)
-                              await load();
-                            } catch (error) {
-                              alert('Payment failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
-                            }
-                          }} title="Mark as Paid (balance → $0)">💰 Paid</button>}
-                          {type === 'Invoice' && d.status !== 'Paid' && <button className="btn btn-sm" style={{background:'#f59e0b',color:'white',fontSize:'11px',padding:'4px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}} onClick={async () => {
-                            if (!d.shop_id) return;
-                            const t = calcTotals(d as unknown as Record<string,unknown>);
-                             const alreadyPaid = nonNegativeMoney(d.amount_paid);
-                            const owed = Math.max(0, t.total - alreadyPaid);
-                            const raw = window.prompt(`How much did they pay? (Owed: $${owed.toFixed(2)})`);
-                            const amt = parseFloat((raw || '').replace(/[^0-9.]/g, ''));
-                            if (!raw || !(amt > 0) || !(owed > 0)) return;
-                            if (amt > owed + 0.005) {
-                              alert(`Payment cannot exceed the remaining balance of ${owed.toFixed(2)}.`);
-                              return;
-                            }
-                            try {
-                              const operation = getPaymentOperation(d.id, amt, d.payment_method || 'unspecified', 'list-partial')
-                              await recordPayment(d, amt, d.payment_method || 'unspecified', 'Partial payment', operation.key);
-                               forgetPaymentOperation(operation.fingerprint)
-                              await load();
-                            } catch (error) {
-                              alert('Payment failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
-                            }
-                          }} title="Record a partial payment">💵 Partial</button>}
-                          <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:'11px',padding:'4px 8px',borderRadius:6,border:'none',cursor:'pointer',fontWeight:600}} onClick={() => { setSigModal(d); setSigResult(null) }} title="Send for e-signature">✍️ Sign</button>
-                          {/* Feature 9: Quick email button */}
-                          <button
-                            className="btn btn-secondary btn-sm"
-                            onClick={() => quickEmail(d)}
-                            disabled={emailSending === d.id}
-                          >
-                            {emailSending === d.id ? '…' : 'Email'}
-                          </button>
-                          {/* Feature 13: Payment plan button for invoices */}
-                          {type === 'Invoice' && <button className="btn btn-secondary btn-sm" onClick={() => { setPlanModal(d); setPlanForm({ down_payment: 0, installments: 3, frequency: 'monthly' }) }}>Plan</button>}
-                        </div>
-                      </td>
-                    </tr>
+                    <li key={j.id}>
+                      <button type="button" className="ledger-row" onClick={() => addCanned(j)}>
+                        <span className="ledger-main">
+                          <span className="ledger-title block">{j.name}</span>
+                          <span className="ledger-sub block">{[j.category, `${Number(j.labor_hours) || 0} h labor`, n > 0 ? `${n} ${n === 1 ? 'part' : 'parts'}` : ''].filter(Boolean).join(' · ')}</span>
+                        </span>
+                        <span className="ledger-amt">{Number(j.total_price) > 0 ? '$' + Number(j.total_price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : ''}</span>
+                      </button>
+                    </li>
                   )
                 })}
-              </tbody>
-            </table>
+              </ul>
+            )}
           </div>
-        </div>
-      )}
+        )}
+      </Sheet>
 
-      {/* Send modal */}
-      {sendModal && (() => {
-        const cust = customers.find(c => c.id === sendModal.customer_id)
-        const displayEmail = cust?.email || sendModal.customer_email
-        const displayPhone = cust?.phone || sendModal.customer_phone
-        const displayName = cust?.name || sendModal.customer_name
-        return (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-bg-card border border-border rounded-xl w-full max-w-sm p-6">
-            <h2 className="text-lg font-bold mb-2">Send {sendModal.type} #{sendModal.doc_number}</h2>
-            {displayName && <p className="text-sm text-text-muted mb-1">Customer: <strong>{displayName}</strong></p>}
-            <p className="text-xs text-text-muted mb-4">{displayEmail ? `Email: ${displayEmail}` : 'No email on file'}{displayPhone ? ` · Phone: ${displayPhone}` : ''}</p>
-            {sendError && <div className="text-sm text-red-400 bg-red-400/10 border border-red-400/30 rounded-lg p-3 mb-3">{sendError}</div>}
-            {sendSuccess && <div className="text-sm text-green-400 bg-green-400/10 border border-green-400/30 rounded-lg p-3 mb-3">{sendSuccess}</div>}
-            <div className="space-y-3">
-              <button className="btn btn-primary w-full" onClick={() => sendDoc('email')} disabled={sendingDoc}>{sendingDoc ? 'Sending...' : 'Send via Email'}</button>
-              <button className="btn btn-secondary w-full" onClick={() => sendDoc('sms')} disabled={sendingDoc}>{sendingDoc ? 'Sending...' : 'Send via SMS'}</button>
-              <button className="btn btn-secondary w-full" onClick={() => { setSendModal(null); setSendError(''); setSendSuccess('') }}>Cancel</button>
-            </div>
-          </div>
-        </div>
-        )
-      })()}
-      {/* E-Signature Modal */}
-      {sigModal && (() => {
-        const doc = sigModal
-        const hasEmail = !!(doc.customer_email)
-        const alreadySigned = !!doc.signature_signed_at
-        const alreadyRequested = !!doc.signature_requested_at && !doc.signature_signed_at
-        return (
-          <div className="modal-overlay" onClick={() => setSigModal(null)}>
-            <div className="modal-box" style={{maxWidth:480}} onClick={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-bold" style={{color:'#7c3aed'}}>✍️ E-Signature</h3>
-                <button className="btn-close" onClick={() => setSigModal(null)}>✕</button>
-              </div>
-
-              {alreadySigned ? (
-                <div className="p-4 rounded-xl" style={{background:'#f0fdf4',border:'1px solid #bbf7d0'}}>
-                  <p className="font-semibold" style={{color:'#16a34a'}}>✅ Document already signed</p>
-                  <p className="text-sm mt-1" style={{color:'#166534'}}>Signed by: <strong>{doc.signature_signer_name}</strong></p>
-                  <p className="text-sm" style={{color:'#166534'}}>On: {new Date(doc.signature_signed_at!).toLocaleString()}</p>
-                </div>
-              ) : (
-                <>
-                  <div className="mb-4 p-3 rounded-xl" style={{background:'#f5f3ff',border:'1px solid #ddd6fe'}}>
-                    <p className="text-sm font-medium" style={{color:'#5b21b6'}}>{doc.type} #{doc.doc_number}</p>
-                    <p className="text-sm" style={{color:'#6d28d9'}}>Customer: {doc.customer_name}</p>
-                    {hasEmail && <p className="text-sm" style={{color:'#7c3aed'}}>📧 {doc.customer_email}</p>}
-                    {!hasEmail && <p className="text-sm font-semibold" style={{color:'#dc2626'}}>⚠️ No email on file — add customer email first</p>}
-                    {alreadyRequested && <p className="text-xs mt-1" style={{color:'#9ca3af'}}>Signature request sent on {new Date(doc.signature_requested_at!).toLocaleDateString()}</p>}
-                  </div>
-
-                  <p className="text-sm mb-4" style={{color:'#374151'}}>
-                    This will send an email to the customer with a secure link to review the {doc.type} and sign electronically. You will be notified when they sign.
-                  </p>
-
-                  {sigResult && (
-                    <div className={`p-3 rounded-xl mb-4 text-sm font-medium ${sigResult.type==='success' && !sigResult.emailError?'bg-green-50 text-green-700':sigResult.emailError?'bg-yellow-50 text-yellow-800':'bg-red-50 text-red-700'}`}>
-                      {sigResult.type === 'success' && !sigResult.emailError ? '✅ ' : sigResult.emailError ? '⚠️ ' : '❌ '}{sigResult.msg}
-                      {sigResult.signUrl && (
-                        <div className="mt-2">
-                          <div className="text-xs font-semibold mb-1">Direct signing link:</div>
-                          <a href={sigResult.signUrl} target="_blank" rel="noopener noreferrer" className="text-xs break-all underline" style={{color:'#1d4ed8'}}>{sigResult.signUrl}</a>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  <div className="flex gap-2 justify-end">
-                    <button className="btn btn-secondary" onClick={() => setSigModal(null)}>Cancel</button>
-                    <button
-                      className="btn"
-                      style={{background:'#7c3aed',color:'white',opacity: sigSending || !hasEmail ? 0.6 : 1, cursor: sigSending || !hasEmail ? 'not-allowed' : 'pointer'}}
-                      disabled={sigSending || !hasEmail}
-                      onClick={async () => {
-                        setSigSending(true)
-                        setSigResult(null)
-                        try {
-                          const res = await fetch('/api/sign', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ action: 'send', documentId: doc.id })
-                          })
-                          const data = await res.json()
-                          if (data.success) {
-                            setSigResult({
-                              type: 'success',
-                              msg: data.emailError
-                                ? `⚠️ Token created but email failed: ${data.emailError}`
-                                : `Signature request sent to ${doc.customer_email}`,
-                              signUrl: data.signUrl,
-                              emailError: data.emailError || undefined
-                            })
-                            load()
-                          } else {
-                            setSigResult({ type: 'error', msg: data.error || 'Failed to send signature request' })
-                          }
-                        } catch {
-                          setSigResult({ type: 'error', msg: 'Network error. Please try again.' })
-                        } finally {
-                          setSigSending(false)
-                        }
-                      }}
-                    >
-                      {sigSending ? '…Sending' : alreadyRequested ? '🔁 Resend Signature Request' : '📤 Send for Signature'}
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        )
-      })()}
-
-
-      {/* Inline new customer modal */}
-      {showNewCustomer && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-bg-card border border-border rounded-xl w-full max-w-md p-6">
-            <h2 className="text-lg font-bold mb-4">New Customer</h2>
-            <div className="space-y-3">
-              <div><label className="form-label">Name *</label><input className="form-input" value={newCustName} onChange={e => setNewCustName(e.target.value)} placeholder="Customer name" autoFocus /></div>
-              <div><label className="form-label">Email</label><input className="form-input" type="email" value={newCustEmail} onChange={e => setNewCustEmail(e.target.value)} placeholder="customer@email.com" /></div>
-              <div><label className="form-label">Phone</label><input className="form-input" value={newCustPhone} onChange={e => setNewCustPhone(e.target.value)} placeholder="(555) 123-4567" /></div>
-            </div>
-            <div className="flex gap-3 mt-4">
-              <button className="btn btn-primary flex-1" onClick={createInlineCustomer} disabled={savingCustomer || !newCustName.trim()}>{savingCustomer ? 'Creating...' : 'Create & Select'}</button>
-              <button className="btn btn-secondary" onClick={() => setShowNewCustomer(false)}>Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Feature 13: Payment Plan modal */}
-      {planModal && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-bg-card border border-border rounded-xl w-full max-w-md p-6">
-            <h2 className="text-lg font-bold mb-4">Payment Plan — {planModal.doc_number}</h2>
-            <div className="text-sm text-text-muted mb-4">Total: {formatCurrency(calcTotals(planModal as unknown as Record<string,unknown>).total)}</div>
-            <div className="space-y-4">
-              <div>
-                <label className="form-label">Down Payment</label>
-                <input className="form-input" type="number" step="0.01" value={planForm.down_payment} onChange={e => setPlanForm(f => ({ ...f, down_payment: Number(e.target.value) }))} />
-              </div>
-              <div>
-                <label className="form-label">Number of Installments</label>
-                <select className="form-select" value={planForm.installments} onChange={e => setPlanForm(f => ({ ...f, installments: Number(e.target.value) }))}>
-                  {[2,3,4,5,6,12].map(n => <option key={n} value={n}>{n} payments</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="form-label">Frequency</label>
-                <select className="form-select" value={planForm.frequency} onChange={e => setPlanForm(f => ({ ...f, frequency: e.target.value }))}>
-                  <option value="weekly">Weekly</option>
-                  <option value="biweekly">Bi-weekly</option>
-                  <option value="monthly">Monthly</option>
-                </select>
-              </div>
-              <div className="bg-bg-hover rounded-lg p-3 text-sm">
-                <div>Remaining: {formatCurrency(calcTotals(planModal as unknown as Record<string,unknown>).total - planForm.down_payment)}</div>
-                <div>Per payment: {formatCurrency((calcTotals(planModal as unknown as Record<string,unknown>).total - planForm.down_payment) / planForm.installments)}</div>
-              </div>
-              <div className="flex gap-3">
-                <button className="btn btn-primary flex-1" onClick={savePaymentPlan}>Save Plan</button>
-                <button className="btn btn-secondary" onClick={() => setPlanModal(null)}>Cancel</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+      {/* keeps doneLabel referenced for screen readers announcing the last action */}
+      <span className="sr-only" aria-live="polite">{target && sendSuccess ? `${doneLabel(target)} sent` : ''}</span>
+    </>
   )
 }

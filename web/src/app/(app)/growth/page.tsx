@@ -1,118 +1,83 @@
 'use client'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { getShopId, supabase } from '@/lib/supabase'
-type Rec = Record<string, any>
-// Removed: hardcoded reviewUrl - now loaded from settings
+import Link from 'next/link'
+import { getShopId, getShopProfile, supabase } from '@/lib/supabase'
+import { phonePretty } from '@/lib/today'
+import Icon from '@/components/Icon'
+import Sheet from '@/components/Sheet'
+import { EmptyBlock, ErrorCard, RowsSkeleton, SearchField } from '@/components/ListKit'
+import { ScreenToast, Segmented, Switch, useToast } from '@/components/ScreenParts'
+import LeadReport, { OutreachButtons } from './LeadReport'
+import type { OutreachMethod } from './LeadReport'
+import { AI_SOURCES, cityFromProfile, firstName, getAuthJsonHeaders, isAiLead, leadStatus, sourceLabel, timeAgo } from './helpers'
+import type { Rec } from './helpers'
 
-function Toast({ message, type, onClose }: { message: string; type: 'success' | 'error' | 'info'; onClose: () => void }) {
-  useEffect(() => { const t = setTimeout(onClose, 4000); return () => clearTimeout(t) }, [onClose])
-  const bg = type === 'success' ? 'bg-emerald-500' : type === 'error' ? 'bg-red-500' : 'bg-blue-500'
-  return (<div className={`fixed top-4 right-4 z-[100] ${bg} text-white px-5 py-3 rounded-xl shadow-2xl flex items-center gap-3 text-sm font-medium animate-slide-in`}>{message}<button onClick={onClose} className="ml-2 opacity-70 hover:opacity-100">x</button></div>)
-}
-function timeAgo(d: string) { if (!d) return 'Never'; const days = Math.floor((Date.now() - new Date(d).getTime()) / 86400000); if (days === 0) return 'Today'; if (days === 1) return 'Yesterday'; if (days < 30) return `${days}d ago`; if (days < 365) return `${Math.floor(days / 30)}mo ago`; return `${Math.floor(days / 365)}y ago` }
-
-async function getAuthJsonHeaders(): Promise<Record<string, string>> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  try {
-    const { data } = await supabase.auth.getSession()
-    const token = data.session?.access_token
-    if (token) headers.Authorization = `Bearer ${token}`
-  } catch {}
-  return headers
-}
-function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
-  return (<div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}><div className={`bg-[#1a2332] rounded-2xl shadow-2xl ${wide ? 'max-w-4xl' : 'max-w-lg'} w-full max-h-[85vh] overflow-y-auto p-6`} onClick={e => e.stopPropagation()}><div className="flex items-center justify-between mb-4"><h2 className="text-lg font-bold text-white">{title}</h2><button onClick={onClose} className="text-gray-400 hover:text-white text-xl">x</button></div>{children}</div></div>)
-}
-function DeepResearchModal({ title, leads, onClose, onOutreach, sending }: { title: string; leads: any[]; onClose: () => void; onOutreach: (id: string, method: string) => void; sending: string | null }) {
-  const [filter, setFilter] = useState({ size: 'all', industry: 'all', sort: 'score' })
-  const [search, setSearch] = useState('')
-    const [enriching, setEnriching] = useState<string | null>(null)
-  const [bulkEnriching, setBulkEnriching] = useState(false)
-  const [enrichedCount, setEnrichedCount] = useState(0)
-  const [expandedApollo, setExpandedApollo] = useState<string | null>(null)
-  const industries = useMemo(() => Array.from(new Set(leads.map(l => l.industry || l.business_type || 'Unknown').filter(Boolean))), [leads])
-  const filtered = useMemo(() => {
-    let r = leads.filter(l => {
-      if (search && !JSON.stringify(l).toLowerCase().includes(search.toLowerCase())) return false
-      if (filter.industry !== 'all' && (l.industry || l.business_type) !== filter.industry) return false
-      if (filter.size === 'small' && parseInt(l.fleet_size || l.employee_count || '0') > 10) return false
-      if (filter.size === 'large' && parseInt(l.fleet_size || l.employee_count || '0') < 10) return false
-      return true
-    })
-    if (filter.sort === 'score') r.sort((a, b) => (b.deep_research?.fleet_score || 0) - (a.deep_research?.fleet_score || 0))
-    if (filter.sort === 'rating') r.sort((a, b) => (b.google_rating || 0) - (a.google_rating || 0))
-    if (filter.sort === 'name') r.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-    return r
-  }, [leads, filter, search])
-  const n = (l: any) => { try { return typeof l.notes === 'string' ? JSON.parse(l.notes) : (l.notes || {}) } catch { return {} } }
-  const dr = (l: any) => (typeof l.deep_research === 'string' ? JSON.parse(l.deep_research) : l.deep_research) || {}
-    const ap = (l: any) => { try { return typeof l.apollo_data === 'string' ? JSON.parse(l.apollo_data) : (l.apollo_data || null) } catch { return null } }
-  const enrichLead = async (leadId: string) => { setEnriching(leadId); try { const res = await fetch('/api/growth/apollo-enrich', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify({ lead_id: leadId }) }); const data = await res.json(); if (data.success) { setEnrichedCount(c => c + 1); window.location.reload() } } catch {} setEnriching(null) }
-  const enrichAll = async () => { setBulkEnriching(true); setEnrichedCount(0); const ids = filtered.filter(l => !l.apollo_enriched_at).map(l => l.id).filter(Boolean); if (!ids.length) { setBulkEnriching(false); return }; try { const res = await fetch('/api/growth/apollo-enrich', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify({ bulk_lead_ids: ids }) }); const data = await res.json(); if (data.success) { setEnrichedCount(data.enriched || 0); setTimeout(() => window.location.reload(), 1500) } } catch {} setBulkEnriching(false) }
-  return (<div className="fixed inset-0 z-50 bg-black/80" onClick={onClose}><div className="h-full w-full flex flex-col bg-[#0f1923]" onClick={e => e.stopPropagation()}>
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between p-4 border-b border-white/10 bg-[#1a2332]">
-      <div><h2 className="text-xl font-bold text-white">{title}</h2><p className="text-xs text-gray-400">{filtered.length} of {leads.length} results</p></div>
-      <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-        <input className="bg-[#0f1923] border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-500 w-full sm:w-48" placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
-        <select className="bg-[#0f1923] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300" value={filter.industry} onChange={e => setFilter(p => ({...p, industry: e.target.value}))}><option value="all">All Industries</option>{industries.map(i => <option key={i} value={i}>{i}</option>)}</select>
-        <select className="bg-[#0f1923] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300" value={filter.size} onChange={e => setFilter(p => ({...p, size: e.target.value}))}><option value="all">All Sizes</option><option value="small">Small (1-10)</option><option value="large">Large (10+)</option></select>
-        <select className="bg-[#0f1923] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300" value={filter.sort} onChange={e => setFilter(p => ({...p, sort: e.target.value}))}><option value="score">Sort: Score</option><option value="rating">Sort: Rating</option><option value="name">Sort: Name</option></select>
-              <button onClick={enrichAll} disabled={bulkEnriching} className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${bulkEnriching ? 'bg-yellow-600 text-white animate-pulse' : 'bg-gradient-to-r from-orange-500 to-pink-500 text-white hover:from-orange-400 hover:to-pink-400'}`}>{bulkEnriching ? `Enriching ${enrichedCount}...` : 'Enrich All (Apollo)'}</button>
-        <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl ml-2">x</button>
-      </div>
-    </div>
-    <div className="flex-1 overflow-y-auto p-4 space-y-4">
-      {filtered.map((l, i) => { const nd = n(l); const d = dr(l); return (
-        <div key={l.id || i} className="bg-[#1a2332] border border-white/10 rounded-2xl p-5">
-          <div className="flex items-start justify-between mb-3">
-            <div>
-              <div className="flex items-center gap-2"><h3 className="text-lg font-bold text-white">{l.name}</h3>{l.confidence && <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${l.confidence === 'high' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-yellow-500/20 text-yellow-400'}`}>{l.confidence}</span>}{(d.fleet_score || nd.fleet_score) && <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 font-bold">{d.fleet_score || nd.fleet_score}/10</span>}</div>
-              {l.owner_name && <p className="text-sm text-gray-300 mt-0.5">{l.owner_title || 'Owner'}: <span className="text-white font-medium">{l.owner_name}</span></p>}
-            </div>
-            <div className="flex gap-1.5">{l.id && <><button onClick={() => onOutreach(l.id, 'sms')} disabled={sending === l.id || !l.phone} className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${l.phone ? 'bg-blue-600 text-white hover:bg-blue-500' : 'bg-white/5 text-gray-600'}`}>{sending === l.id ? '...' : 'SMS'}</button><button onClick={() => onOutreach(l.id, 'email')} disabled={sending === l.id || !l.email} className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${l.email ? 'bg-purple-600 text-white hover:bg-purple-500' : 'bg-white/5 text-gray-600'}`}>{sending === l.id ? '...' : 'Email'}</button><button onClick={() => onOutreach(l.id, 'ai_call')} disabled={sending === l.id || !l.phone} className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${l.phone ? 'bg-emerald-600 text-white hover:bg-emerald-500' : 'bg-white/5 text-gray-600'}`}>{sending === l.id ? '...' : 'AI Call'}</button></>}</div>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs mb-3">
-            {l.phone && <div className="bg-[#0f1923] rounded-lg p-2"><span className="text-gray-500">Phone</span><p className="text-blue-400 font-medium">{l.phone}</p></div>}
-            {l.email && <div className="bg-[#0f1923] rounded-lg p-2"><span className="text-gray-500">Email</span><p className="text-purple-400 font-medium truncate">{l.email}</p></div>}
-            {l.address && <div className="bg-[#0f1923] rounded-lg p-2"><span className="text-gray-500">Address</span><p className="text-gray-300">{l.address}</p></div>}
-            {l.website && <div className="bg-[#0f1923] rounded-lg p-2"><span className="text-gray-500">Website</span><p className="text-cyan-400 truncate">{l.website}</p></div>}
-            {(l.google_rating) && <div className="bg-[#0f1923] rounded-lg p-2"><span className="text-gray-500">Google</span><p className="text-yellow-400 font-medium">{l.google_rating} ({l.google_reviews_count || '?'} reviews)</p></div>}
-            {l.fleet_size && <div className="bg-[#0f1923] rounded-lg p-2"><span className="text-gray-500">Fleet Size</span><p className="text-white font-medium">{l.fleet_size} vehicles</p></div>}
-            {l.vehicle_types && <div className="bg-[#0f1923] rounded-lg p-2"><span className="text-gray-500">Vehicle Types</span><p className="text-gray-300">{l.vehicle_types}</p></div>}
-            {l.employee_count && <div className="bg-[#0f1923] rounded-lg p-2"><span className="text-gray-500">Employees</span><p className="text-gray-300">{l.employee_count}</p></div>}
-            {l.revenue_estimate && <div className="bg-[#0f1923] rounded-lg p-2"><span className="text-gray-500">Revenue</span><p className="text-emerald-400 font-medium">{l.revenue_estimate}</p></div>}
-            {l.years_in_business && <div className="bg-[#0f1923] rounded-lg p-2"><span className="text-gray-500">Years</span><p className="text-gray-300">{l.years_in_business} years</p></div>}
-            {l.industry && <div className="bg-[#0f1923] rounded-lg p-2"><span className="text-gray-500">Industry</span><p className="text-gray-300">{l.industry}</p></div>}
-            {l.service_area && <div className="bg-[#0f1923] rounded-lg p-2"><span className="text-gray-500">Service Area</span><p className="text-gray-300">{l.service_area}</p></div>}
-            {l.has_maintenance_contract !== null && l.has_maintenance_contract !== undefined && <div className="bg-[#0f1923] rounded-lg p-2"><span className="text-gray-500">Contract</span><p className={l.has_maintenance_contract ? 'text-red-400' : 'text-emerald-400'}>{l.has_maintenance_contract ? 'Has contract' : 'No contract'}</p></div>}
-            {l.current_shop && <div className="bg-[#0f1923] rounded-lg p-2"><span className="text-gray-500">Current Shop</span><p className="text-orange-400">{l.current_shop}</p></div>}
-            {(d.annual_value_estimate || nd.annual_value_estimate) && <div className="bg-[#0f1923] rounded-lg p-2"><span className="text-gray-500">Annual Value</span><p className="text-emerald-400 font-bold">{d.annual_value_estimate || nd.annual_value_estimate}</p></div>}
-          </div>
-          {l.pain_points && <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-2 mb-2 text-xs"><span className="text-red-400 font-semibold">Pain Points:</span> <span className="text-red-300">{l.pain_points}</span></div>}
-          {(d.outreach_pitch || nd.outreach_pitch) && <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-2 mb-2 text-xs"><span className="text-blue-400 font-semibold">Pitch:</span> <span className="text-blue-300">{d.outreach_pitch || nd.outreach_pitch}</span></div>}
-                          {(() => { const apollo = ap(l); return apollo ? (<div className="mt-3 p-3 bg-gradient-to-r from-orange-500/10 to-pink-500/10 border border-orange-500/20 rounded-xl"><div className="flex items-center justify-between mb-2"><span className="text-xs font-bold text-orange-400">Apollo Intel ({apollo.people_found} contacts)</span><button onClick={() => setExpandedApollo(expandedApollo === l.id ? null : l.id)} className="text-[10px] text-orange-300 hover:text-white">{expandedApollo === l.id ? 'Collapse' : 'Expand'}</button></div>{expandedApollo === l.id && apollo.contacts?.map((c: any, ci: number) => (<div key={ci} className="p-2 bg-black/20 rounded-lg mb-1.5 text-xs"><div className="flex items-center justify-between"><span className="text-white font-semibold">{c.name}</span><span className="text-orange-300">{c.title}</span></div>{c.email && <p className="text-blue-400 mt-0.5">{c.email}</p>}{c.phone && <p className="text-emerald-400 mt-0.5">{c.phone}</p>}{c.linkedin && <a href={c.linkedin} target="_blank" className="text-purple-400 hover:text-purple-300 mt-0.5 block">LinkedIn Profile</a>}</div>))}</div>) : (<button onClick={() => enrichLead(l.id)} disabled={enriching === l.id} className={`mt-3 w-full py-2 rounded-xl text-xs font-semibold ${enriching === l.id ? 'bg-yellow-600/20 text-yellow-400 animate-pulse' : 'bg-gradient-to-r from-orange-500/20 to-pink-500/20 text-orange-400 hover:from-orange-500/30 hover:to-pink-500/30 border border-orange-500/20'}`}>{enriching === l.id ? 'Enriching via Apollo...' : 'Enrich with Apollo (Find Contacts)'}</button>) })()}
-          <div className="flex gap-2 mt-2">
-            {l.facebook_url && <a href={l.facebook_url} target="_blank" className="text-[10px] px-2 py-1 rounded bg-blue-500/10 text-blue-400">Facebook</a>}
-            {l.linkedin_url && <a href={l.linkedin_url} target="_blank" className="text-[10px] px-2 py-1 rounded bg-blue-500/10 text-blue-400">LinkedIn</a>}
-            {l.source && <span className="text-[10px] px-2 py-1 rounded bg-white/5 text-gray-500">{l.source.replace(/-/g, ' ')}</span>}
-          </div>
-        </div>
-      ) })}
-      {filtered.length === 0 && <p className="text-gray-500 text-center py-20">No results match your filters.</p>}
-    </div>
-  </div></div>)
-}
-type Tab = 'followups' | 'reviews' | 'referrals' | 'leads' | 'social' | 'capture' | 'intel' | 'ads' | 'roi'
-const TABS: { key: Tab; label: string; icon: string }[] = [
-  { key: 'followups', label: 'Follow-ups', icon: '\ud83d\udd01' },
-  { key: 'reviews', label: 'Reviews', icon: '\u2b50' },
-  { key: 'referrals', label: 'Referrals', icon: '\ud83e\udd1d' },
-  { key: 'leads', label: 'Lead Gen', icon: '\ud83c\udfaf' },
-  { key: 'social', label: 'Social Post', icon: '\ud83d\udcf1' },
-  { key: 'capture', label: 'Capture', icon: '\ud83d\udcde' },
-  { key: 'intel', label: 'Smart Search', icon: '\ud83d\udd0d' },
-  { key: 'ads', label: 'Ads', icon: '\ud83d\udce2' },
+type Tab = 'followups' | 'reviews' | 'referrals' | 'leads' | 'posts' | 'results'
+const TABS: { key: Tab; label: string }[] = [
+  { key: 'followups', label: 'Follow-ups' },
+  { key: 'reviews', label: 'Reviews' },
+  { key: 'referrals', label: 'Referrals' },
+  { key: 'leads', label: 'Leads' },
+  { key: 'posts', label: 'Posts and ads' },
+  { key: 'results', label: 'Results' },
 ]
+
+type ScanKind = 'competitor' | 'social' | 'fleet'
+const SCANS: Record<ScanKind, { source: string; endpoint: string; title: string; icon: string; hint: string; failure: string }> = {
+  competitor: { source: 'ai-competitor-scan', endpoint: '/api/growth/ai-competitor-leads', title: 'Unhappy customers of other shops', icon: 'frown', hint: 'Looking at nearby shops and their reviews. This takes about a minute.', failure: 'The search did not finish' },
+  social: { source: 'ai-social-scan', endpoint: '/api/growth/ai-social-leads', title: 'People posting about car trouble', icon: 'inbox', hint: 'Reading recent social posts. This takes about a minute.', failure: 'The search did not finish' },
+  fleet: { source: 'ai-fleet-scan', endpoint: '/api/growth/ai-fleet-leads', title: 'Businesses with vehicle fleets', icon: 'vehicle', hint: 'Researching local businesses that run vehicles. This takes about a minute.', failure: 'The search did not finish' },
+}
+
+const PLATFORMS = [
+  { key: 'facebook', label: 'Facebook' },
+  { key: 'instagram', label: 'Instagram' },
+  { key: 'google', label: 'Google' },
+  { key: 'tiktok', label: 'TikTok' },
+]
+
+const LEAD_SOURCES = [
+  { value: 'Walk-in', label: 'Walk-in' },
+  { value: 'Phone Call', label: 'Phone call' },
+  { value: 'Facebook', label: 'Facebook' },
+  { value: 'Google', label: 'Google' },
+  { value: 'manual', label: 'Something else' },
+]
+
+const DAY = 86400000
+const PAGE = 50
+
+function Stat({ label, value, lamp, onClick }: { label: string; value: number | string; lamp?: 'amber' | 'green'; onClick?: () => void }) {
+  const body = (
+    <>
+      <span className="block text-[0.8125rem] font-bold leading-tight text-text-secondary">{label}</span>
+      <span className="mt-1 flex items-center gap-1.5">
+        {lamp && <span className={`lamp lamp-${lamp}`} aria-hidden="true" />}
+        <span className="display num text-[1.5rem] font-bold leading-none">{value}</span>
+      </span>
+    </>
+  )
+  const cls = 'block min-h-[4.5rem] w-full px-3 py-3 text-left'
+  return onClick
+    ? <button type="button" onClick={onClick} className={`${cls} hover:bg-bg-hover`}>{body}</button>
+    : <div className={cls}>{body}</div>
+}
+
+function Section({ title, hint, action, children }: { title: string; hint?: string; action?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <section className="mt-6 first:mt-0">
+      <div className="mb-3 flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+        <div className="min-w-0">
+          <h2 className="section-title">{title}</h2>
+          {hint && <p className="mt-0.5 text-[0.9375rem] text-text-secondary">{hint}</p>}
+        </div>
+        {action}
+      </div>
+      {children}
+    </section>
+  )
+}
+
 export default function GrowthPage() {
   const [tab, setTab] = useState<Tab>('followups')
   const [customers, setCustomers] = useState<Rec[]>([])
@@ -120,49 +85,68 @@ export default function GrowthPage() {
   const [leads, setLeads] = useState<Rec[]>([])
   const [campaigns, setCampaigns] = useState<Rec[]>([])
   const [activityLog, setActivityLog] = useState<Rec[]>([])
+  const [postHistory, setPostHistory] = useState<Rec[]>([])
+  const [outreachHistory, setOutreachHistory] = useState<Rec[]>([])
+  const [callHistory, setCallHistory] = useState<Rec[]>([])
+  const [callState, setCallState] = useState<'idle' | 'loading' | 'error' | 'ready'>('idle')
+  const [syncingCalls, setSyncingCalls] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [fatal, setFatal] = useState<string | null>(null)
+  const [failed, setFailed] = useState<Record<string, boolean>>({})
   const [sending, setSending] = useState<string | null>(null)
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null)
-  const [scanningCompetitor, setScanningCompetitor] = useState(false)
-  const [scanningSocial, setScanningSocial] = useState(false)
-  const [scanningFleet, setScanningFleet] = useState(false)
-  const [captureName, setCaptureName] = useState('')
-  const [capturePhone, setCapturePhone] = useState('')
-  const [captureService, setCaptureService] = useState('')
-  const [captureSource, setCaptureSource] = useState('walk-in')
-    const [callHistory, setCallHistory] = useState<Rec[]>([])
-  const [showImportModal, setShowImportModal] = useState(false)
-  const [importName, setImportName] = useState('')
-  const [importPhone, setImportPhone] = useState('')
-  const [importService, setImportService] = useState('')
-  const [importSource, setImportSource] = useState('manual')
-  const [importNotes, setImportNotes] = useState('')
-  const [reviewUrl, setReviewUrl] = useState('https://g.page/r/your-shop/review')
+  const [bulk, setBulk] = useState(false)
+  const [scanning, setScanning] = useState<ScanKind | null>(null)
+  const { toast, notify, dismiss } = useToast()
+
+  const [shop, setShop] = useState<{ name: string; phone: string; reviewUrl: string; state: 'loading' | 'ready' | 'error' }>({ name: '', phone: '', reviewUrl: '', state: 'loading' })
+  const [city, setCity] = useState<{ search: string; label: string } | null>(null)
+
+  const [custSearch, setCustSearch] = useState('')
+  const [custLimit, setCustLimit] = useState(PAGE)
   const [leadSearch, setLeadSearch] = useState('')
-  const [showAdsModal, setShowAdsModal] = useState(false)
+  const [callsOpen, setCallsOpen] = useState(false)
+  const [aiMode, setAiMode] = useState(false)
+
+  const [report, setReport] = useState<{ title: string; sources: string[]; scan: ScanKind | null } | null>(null)
+
+  // Add a lead
+  const [showAddLead, setShowAddLead] = useState(false)
+  const [leadForm, setLeadForm] = useState({ name: '', phone: '', service: '', source: 'Walk-in', notes: '' })
+  const [leadTried, setLeadTried] = useState(false)
+  const [leadSaving, setLeadSaving] = useState(false)
+
+  // Ads
+  const [showAds, setShowAds] = useState(false)
   const [adsPlatform, setAdsPlatform] = useState<'google' | 'facebook'>('google')
-  const [adsCampaignName, setAdsCampaignName] = useState('')
+  const [adsName, setAdsName] = useState('')
   const [adsBudget, setAdsBudget] = useState('20')
-  const [adsKeywords, setAdsKeywords] = useState('oil change Houston, auto repair near me')
+  const [adsKeywords, setAdsKeywords] = useState('')
+  const [adsTried, setAdsTried] = useState(false)
   const [adsSaving, setAdsSaving] = useState(false)
+
+  // Social post
+  const [showPost, setShowPost] = useState(false)
   const [postText, setPostText] = useState('')
   const [postPlatforms, setPostPlatforms] = useState(['facebook', 'google'])
   const [postMedia, setPostMedia] = useState<File[]>([])
   const [posting, setPosting] = useState(false)
-  const [postHistory, setPostHistory] = useState<Rec[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Look up a person
+  const [showLookup, setShowLookup] = useState(false)
   const [intelQuery, setIntelQuery] = useState('')
-  const [intelResults, setIntelResults] = useState<any>(null)
+  const [intelResults, setIntelResults] = useState<Rec | null>(null)
   const [intelSearching, setIntelSearching] = useState(false)
-  const [aiMode, setAiMode] = useState(false)
-  const [reportModal, setReportModal] = useState<{ title: string; leads: any[] } | null>(null)
-  const [outreachHistory, setOutreachHistory] = useState<Rec[]>([])
-  const notify = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => { setToast({ message, type }) }, [])
-  const load = useCallback(async () => {
-    setLoading(true)
+
+  const cityLabel = city?.label || 'your area'
+
+  // ── Loading ──────────────────────────────────────────────────────────────
+
+  const load = useCallback(async (opts?: { quiet?: boolean }) => {
+    if (!opts?.quiet) setLoading(true)
     try {
       const shopId = await getShopId()
-      if (!shopId) { setCustomers([]); setReferrals([]); setLeads([]); setCampaigns([]); setActivityLog([]); setPostHistory([]); setOutreachHistory([]); return }
+      if (!shopId) { setFatal('We could not find your shop. Refresh, or sign out and back in.'); return }
       const [c, r, l, camp, acts, posts, oh] = await Promise.all([
         supabase.from('customers').select('*').eq('shop_id', shopId).order('created_at', { ascending: false }),
         supabase.from('referrals').select('*').eq('shop_id', shopId).order('created_at', { ascending: false }),
@@ -172,58 +156,102 @@ export default function GrowthPage() {
         supabase.from('social_posts').select('*').eq('shop_id', shopId).order('created_at', { ascending: false }).limit(20),
         supabase.from('outreach_history').select('*').eq('shop_id', shopId).order('created_at', { ascending: false }).limit(50),
       ])
-      setCustomers(c.data || [])
-      setReferrals(r.data || [])
-      setLeads(l.data || [])
-      setCampaigns(camp.data || [])
-      setActivityLog(acts.data || [])
-      setPostHistory(posts.data || [])
-      setOutreachHistory(oh.data || [])
-    } catch { notify('Failed to load', 'error') }
-    setLoading(false)
-  }, [notify])
-  useEffect(() => { load() }, [load])
+      // Keep what we already had for anything that failed, and say so instead of showing an empty list.
+      if (!c.error) setCustomers(c.data || [])
+      if (!r.error) setReferrals(r.data || [])
+      if (!l.error) setLeads(l.data || [])
+      if (!camp.error) setCampaigns(camp.data || [])
+      if (!acts.error) setActivityLog(acts.data || [])
+      if (!posts.error) setPostHistory(posts.data || [])
+      if (!oh.error) setOutreachHistory(oh.data || [])
+      setFailed({ customers: !!c.error, referrals: !!r.error, leads: !!l.error, campaigns: !!camp.error, activity: !!acts.error, posts: !!posts.error, outreach: !!oh.error })
+      setFatal(null)
+    } catch {
+      setFatal('Your customers and leads could not load. Check your connection and try again.')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+  useEffect(() => { void load() }, [load])
+
+  const loadShop = useCallback(async () => {
+    try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop')
+      const { data, error } = await supabase.from('settings').select('shop_name,shop_phone,google_review_url').eq('shop_id', shopId).limit(1).maybeSingle()
+      if (error) throw error
+      setShop({ name: data?.shop_name || '', phone: data?.shop_phone || '', reviewUrl: data?.google_review_url || '', state: 'ready' })
+    } catch {
+      setShop(s => ({ ...s, state: 'error' }))
+    }
+  }, [])
+  useEffect(() => { void loadShop() }, [loadShop])
+
   useEffect(() => {
     let cancelled = false
-    const loadReviewUrl = async () => {
-      const shopId = await getShopId()
-      if (!shopId) return
-      const { data, error } = await supabase.from('settings').select('google_review_url').eq('shop_id', shopId).limit(1).single()
-      if (!cancelled && !error && data?.google_review_url) setReviewUrl(data.google_review_url)
-    }
-    void loadReviewUrl()
+    getShopProfile().then(p => { const c = cityFromProfile(p?.city_state_zip); if (!cancelled && c) setCity(c) }).catch(() => {})
     return () => { cancelled = true }
   }, [])
-  useEffect(() => {
-    if (tab !== 'capture') return
-    let cancelled = false
-    const loadCallHistory = async () => {
+
+  const loadCalls = useCallback(async () => {
+    setCallState('loading')
+    try {
       const shopId = await getShopId()
-      if (!shopId) {
-        if (!cancelled) setCallHistory([])
-        return
-      }
+      if (!shopId) throw new Error('No shop')
       const { data, error } = await supabase.from('call_history').select('*').eq('shop_id', shopId).order('start_time', { ascending: false }).limit(50)
-      if (!cancelled) {
-        if (error) notify('Call history could not be loaded', 'error')
-        setCallHistory(error ? [] : (data || []))
-      }
+      if (error) throw error
+      setCallHistory(data || [])
+      setCallState('ready')
+    } catch {
+      setCallState('error')
     }
-    void loadCallHistory()
-    return () => { cancelled = true }
-  }, [tab, notify])
-  const staleCustomers = customers.filter(c => {
+  }, [])
+  useEffect(() => { if (tab === 'leads' && callState === 'idle') void loadCalls() }, [tab, callState, loadCalls])
+
+  // ── Derived ──────────────────────────────────────────────────────────────
+
+  const staleCustomers = useMemo(() => customers.filter(c => {
     const lastSeen = c.last_contact || c.last_visit || c.created_at
     if (!lastSeen) return true // no date = definitely needs follow-up
-    const daysSince = (Date.now() - new Date(lastSeen).getTime()) / 86400000
+    const daysSince = (Date.now() - new Date(lastSeen).getTime()) / DAY
     return daysSince > 60 // 60 days = 2 months inactive
-  })
-  const logActivity = async (action: string, target: string, details: string, status: string) => { const shopId = await getShopId(); if (!shopId) throw new Error('No shop is associated with the signed-in user'); const { error } = await supabase.from('growth_activity').insert({ shop_id: shopId, action, target, details, status, created_at: new Date().toISOString() }); if (error) throw new Error(error.message) }
-  const sendSms = async (to: string, message: string) => { const res = await fetch('/api/send-sms', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify({ to, message }) }); if (!res.ok) throw new Error('SMS failed'); return res.json() }
-  const doOutreach = async (leadId: string, method: string) => { setSending(leadId); try { const res = await fetch('/api/growth/outreach', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify({ lead_id: leadId, method, ai_mode: aiMode }) }); const d = await res.json(); if (res.ok && d.success === true) { notify(`${method.toUpperCase()} sent!`, 'success'); await load() } else notify(d.error || 'Failed', 'error') } catch { notify('Outreach failed', 'error') } setSending(null) }
-  const sendFollowUp = async (c: Rec): Promise<boolean> => {
-    if (!c.phone) { notify('No phone', 'error'); return false }
-    setSending(c.id)
+  }), [customers])
+  const stalePhones = useMemo(() => staleCustomers.filter(c => c.phone), [staleCustomers])
+  const openLeads = useMemo(() => leads.filter(l => l.status !== 'converted').length, [leads])
+  const filteredLeads = useMemo(() => {
+    const q = leadSearch.trim().toLowerCase()
+    return leads.filter(l => !q || l.name?.toLowerCase().includes(q) || l.phone?.includes(leadSearch.trim()))
+  }, [leads, leadSearch])
+  const matchingCustomers = useMemo(() => {
+    const q = custSearch.trim().toLowerCase()
+    return customers.filter(c => !q || c.name?.toLowerCase().includes(q) || String(c.phone || '').includes(custSearch.trim()))
+  }, [customers, custSearch])
+  const reportLeads = useMemo(() => (report ? leads.filter(l => report.sources.includes(l.source)) : []), [report, leads])
+  const busy = sending !== null || bulk
+
+  const followUpText = (name?: unknown, shopName = shop.name || 'Our shop', shopPhone = shop.phone) =>
+    'Hi ' + firstName(name) + '! It is time for a checkup at ' + shopName + '. Reply YES or call' + (shopPhone ? ' ' + shopPhone : ' us') + '.'
+
+  const changeTab = (next: Tab) => { setTab(next); setCustSearch(''); setCustLimit(PAGE) }
+
+  // ── Actions ──────────────────────────────────────────────────────────────
+
+  const logActivity = async (action: string, target: string, details: string, status: string) => {
+    const shopId = await getShopId()
+    if (!shopId) throw new Error('No shop is associated with the signed-in user')
+    const { error } = await supabase.from('growth_activity').insert({ shop_id: shopId, action, target, details, status, created_at: new Date().toISOString() })
+    if (error) throw new Error(error.message)
+  }
+  const sendSms = async (to: string, message: string) => {
+    const res = await fetch('/api/send-sms', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify({ to, message }) })
+    if (!res.ok) throw new Error('The text did not send')
+    return res.json()
+  }
+
+  /** Sends one follow-up text. Returns null on success or the problem. */
+  const sendFollowUp = async (c: Rec, quiet = false): Promise<string | null> => {
+    if (!c.phone) { if (!quiet) notify(`${c.name} has no phone number.`, 'error'); return 'No phone number' }
+    setSending(`fu:${c.id}`)
     try {
       const shopId = await getShopId()
       if (!shopId) throw new Error('No shop is associated with the signed-in user')
@@ -231,116 +259,171 @@ export default function GrowthPage() {
       if (settingsError) throw settingsError
       const shopName = settings?.shop_name || 'Our shop'
       const shopPhone = settings?.shop_phone || ''
-      await sendSms(c.phone, 'Hi ' + (c.name?.split(' ')[0] || 'there') + '! It is time for a checkup at ' + shopName + '. Reply YES or call' + (shopPhone ? ' ' + shopPhone : ' us') + '.')
+      await sendSms(c.phone, followUpText(c.name, shopName, shopPhone))
       const { error } = await supabase.from('customers').update({ last_contact: new Date().toISOString() }).eq('id', c.id).eq('shop_id', shopId)
       if (error) throw error
       await logActivity('follow_up_sms', c.name, 'Sent to ' + c.phone, 'sent')
-      notify('Follow-up sent to ' + c.name, 'success')
-      await load()
-      return true
+      if (!quiet) { notify(`Text sent to ${c.name}.`, 'success'); await load({ quiet: true }) }
+      return null
     } catch (error) {
-      notify(error instanceof Error ? error.message : 'Failed', 'error')
-      return false
+      const message = error instanceof Error ? error.message : 'The text did not send'
+      if (!quiet) notify(`${c.name} was not texted: ${message}.`, 'error')
+      return message
     } finally { setSending(null) }
   }
-  const bulkFollowUp = async () => { const eligible = staleCustomers.filter(c => c.phone); if (!eligible.length) return notify('No customers with phone', 'error'); if (!confirm(`Send follow-up to ${eligible.length} customers?`)) return; let sent = 0; for (const c of eligible) { if (await sendFollowUp(c)) sent++ } notify(`Sent ${sent} of ${eligible.length}`, 'success') }
+
+  const textOne = async (c: Rec) => {
+    if (!window.confirm(`Text ${c.name} at ${phonePretty(c.phone)}?\n\n"${followUpText(c.name)}"`)) return
+    await sendFollowUp(c)
+  }
+
+  const bulkFollowUp = async () => {
+    const eligible = stalePhones
+    if (!eligible.length) return notify('None of these customers has a phone number.', 'error')
+    const label = `${eligible.length} ${eligible.length === 1 ? 'customer' : 'customers'}`
+    if (!window.confirm(`Text ${label} who have not visited in 60 days?\n\nEach one gets:\n"${followUpText('[first name]')}"\n\nThis sends real text messages.`)) return
+    setBulk(true)
+    let sent = 0
+    let firstProblem = ''
+    for (const c of eligible) {
+      const problem = await sendFollowUp(c, true)
+      if (problem === null) sent++
+      else if (!firstProblem) firstProblem = problem
+    }
+    setBulk(false)
+    await load({ quiet: true })
+    if (sent === eligible.length) notify(`Sent ${sent} ${sent === 1 ? 'text' : 'texts'}.`, 'success')
+    else notify(`Sent ${sent} of ${eligible.length} texts. ${firstProblem ? 'First problem: ' + firstProblem + '.' : ''}`, 'error')
+  }
+
+  const reviewReady = shop.state === 'ready' && !!shop.reviewUrl
   const requestReview = async (c: Rec) => {
-    if (!c.phone) return notify('No phone', 'error')
-    setSending(c.id)
+    if (!c.phone) return notify(`${c.name} has no phone number.`, 'error')
+    if (!shop.reviewUrl) return notify('Add your Google review link in Settings first.', 'error')
+    if (!window.confirm(`Text your review link to ${c.name} at ${phonePretty(c.phone)}?\n\n"Hi ${firstName(c.name)}! Thanks for choosing us. We would love your feedback: ${shop.reviewUrl}"`)) return
+    setSending(`rv:${c.id}`)
     try {
       const shopId = await getShopId()
       if (!shopId) throw new Error('No shop is associated with the signed-in user')
-      await sendSms(c.phone, 'Hi ' + (c.name?.split(' ')[0] || 'there') + '! Thanks for choosing us. We would love your feedback: ' + reviewUrl)
+      await sendSms(c.phone, 'Hi ' + firstName(c.name) + '! Thanks for choosing us. We would love your feedback: ' + shop.reviewUrl)
       const { error } = await supabase.from('customers').update({ review_requested: new Date().toISOString() }).eq('id', c.id).eq('shop_id', shopId)
       if (error) throw error
       await logActivity('review_request', c.name, 'Sent to ' + c.phone, 'sent')
-      notify('Review request sent to ' + c.name, 'success')
-      await load()
+      notify(`Review link sent to ${c.name}.`, 'success')
+      await load({ quiet: true })
     } catch (error) {
-      notify(error instanceof Error ? error.message : 'Failed', 'error')
+      notify(`${c.name} was not texted: ${error instanceof Error ? error.message : 'the text did not send'}.`, 'error')
     } finally { setSending(null) }
   }
-  const generateReferral = async (c: Rec) => { const shopId = await getShopId(); if (!shopId) return notify('No shop is associated with the signed-in user', 'error'); const code = `ALPHA-${c.name?.split(' ')[0]?.toUpperCase() || 'REF'}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`; const { error } = await supabase.from('referrals').insert({ shop_id: shopId, customer_id: c.id, customer_name: c.name, code, discount_percent: 10, uses: 0 }); if (error) return notify(`Could not create referral: ${error.message}`, 'error'); if (c.phone) await sendSms(c.phone, `Hey ${c.name?.split(' ')[0]}! Share code ${code} with friends - they get 10% off, you get $25 credit!`); await logActivity('referral_created', c.name, `Code: ${code}`, 'active'); notify(`Referral code ${code} created`, 'success'); await load() }
-  const captureLead = async () => { if (!captureName.trim()) return notify('Name required', 'error'); const shopId = await getShopId(); if (!shopId) return notify('No shop is associated with the signed-in user', 'error'); const { error } = await supabase.from('leads').insert({ shop_id: shopId, name: captureName.trim(), phone: capturePhone.trim() || null, service_needed: captureService.trim() || null, source: captureSource, status: 'new', follow_up_date: new Date(Date.now() + 86400000).toISOString().split('T')[0] }); if (error) return notify(`Lead could not be saved: ${error.message}`, 'error'); setCaptureName(''); setCapturePhone(''); setCaptureService(''); notify('Lead captured!', 'success'); await load() }
-  const importLead = async () => { if (!importName.trim()) return notify('Name required', 'error'); const shopId = await getShopId(); if (!shopId) return notify('No shop is associated with the signed-in user', 'error'); const { error } = await supabase.from('leads').insert({ shop_id: shopId, name: importName.trim(), phone: importPhone.trim() || null, service_needed: importService.trim() || null, source: importSource, notes: importNotes.trim() || null, status: 'new', follow_up_date: new Date(Date.now() + 86400000).toISOString().split('T')[0] }); if (error) return notify(`Lead could not be saved: ${error.message}`, 'error'); setImportName(''); setImportPhone(''); setImportService(''); setImportNotes(''); setShowImportModal(false); notify('Lead imported!', 'success'); await load() }
-    const openScanPopup = async (source: string, title: string, scanFn: () => Promise<void>) => { const shopId = await getShopId(); if (!shopId) return notify('No shop is associated with the signed-in user', 'error'); const { data: existing } = await supabase.from('leads').select('*').eq('shop_id', shopId).eq('source', source).order('created_at', { ascending: false }); setReportModal({ title, leads: existing || [] }); await scanFn() }
-  const aiScanCompetitors = async () => {
-    setScanningCompetitor(true)
-    try {
-      const shopId = await getShopId()
-      if (!shopId) throw new Error('No shop is associated with the signed-in user')
-      const r = await fetch('/api/growth/ai-competitor-leads', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify({ city: 'Houston TX' }) })
-      const d = await r.json().catch(() => ({}))
-      if (!r.ok || d.error) throw new Error(d.error || 'Competitor scan failed')
-      if (d.leads?.length) {
-        const fl = await supabase.from('leads').select('*').eq('shop_id', shopId).eq('source', 'ai-competitor-scan').order('created_at', { ascending: false })
-        if (fl.error) throw fl.error
-        setReportModal(prev => prev ? { ...prev, leads: fl.data || [] } : null)
-      }
-      notify('AI found ' + (d.total_leads || 0) + ' leads!', 'success')
-      await load()
-    } catch (error) {
-      notify(error instanceof Error ? error.message : 'Scan failed', 'error')
-    } finally { setScanningCompetitor(false) }
+
+  const copyReviewLink = async () => {
+    try { await navigator.clipboard.writeText(shop.reviewUrl); notify('Review link copied.', 'success') }
+    catch { notify('The link could not be copied. Press and hold it to copy.', 'error') }
   }
 
-  const aiScanSocial = async () => {
-    setScanningSocial(true)
+  const generateReferral = async (c: Rec) => {
+    const code = `ALPHA-${c.name?.split(' ')[0]?.toUpperCase() || 'REF'}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`
+    const note = c.phone ? `\n\nThen text them: "Hey ${firstName(c.name)}! Share code ${code} with friends - they get 10% off, you get $25 credit!"` : '\n\nThey have no phone number, so nothing will be texted.'
+    if (!window.confirm(`Create a referral code for ${c.name}?${note}`)) return
+    const shopId = await getShopId()
+    if (!shopId) return notify('We could not find your shop. Refresh, or sign out and back in.', 'error')
+    setSending(`rf:${c.id}`)
     try {
-      const shopId = await getShopId()
-      if (!shopId) throw new Error('No shop is associated with the signed-in user')
-      const r = await fetch('/api/growth/ai-social-leads', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify({ city: 'Houston TX' }) })
-      const d = await r.json().catch(() => ({}))
-      if (!r.ok || d.error) throw new Error(d.error || 'Social scan failed')
-      if (d.leads?.length) {
-        const fl = await supabase.from('leads').select('*').eq('shop_id', shopId).eq('source', 'ai-social-scan').order('created_at', { ascending: false })
-        if (fl.error) throw fl.error
-        setReportModal(prev => prev ? { ...prev, leads: fl.data || [] } : null)
-      }
-      notify('AI found ' + (d.total_leads || 0) + ' leads!', 'success')
-      await load()
+      const { error } = await supabase.from('referrals').insert({ shop_id: shopId, customer_id: c.id, customer_name: c.name, code, discount_percent: 10, uses: 0 })
+      if (error) return notify(`The code was not created: ${error.message}`, 'error')
+      if (c.phone) await sendSms(c.phone, `Hey ${c.name?.split(' ')[0]}! Share code ${code} with friends - they get 10% off, you get $25 credit!`)
+      await logActivity('referral_created', c.name, `Code: ${code}`, 'active')
+      notify(c.phone ? `Code ${code} created and texted to ${c.name}.` : `Code ${code} created for ${c.name}.`, 'success')
+      await load({ quiet: true })
     } catch (error) {
-      notify(error instanceof Error ? error.message : 'Scan failed', 'error')
-    } finally { setScanningSocial(false) }
+      notify(`The code was created, but the text did not send: ${error instanceof Error ? error.message : 'unknown problem'}.`, 'error')
+      await load({ quiet: true })
+    } finally { setSending(null) }
   }
 
-  const aiScanFleet = async () => {
-    setScanningFleet(true)
+  const outreach = async (l: Rec, method: OutreachMethod) => {
+    const who = l.name || 'this lead'
+    const ask = method === 'sms' ? `Text ${who} at ${phonePretty(l.phone)}?` : method === 'email' ? `Email ${who} at ${l.email}?` : `Have Alpha phone ${who} at ${phonePretty(l.phone)} now?`
+    const what = method === 'ai_call' ? 'Alpha will place the call right away.' : aiMode ? 'Alpha will write the message for you.' : 'This sends our standard message.'
+    if (!window.confirm(`${ask}\n\n${what}`)) return
+    setSending(`${l.id}:${method}`)
     try {
-      const shopId = await getShopId()
-      if (!shopId) throw new Error('No shop is associated with the signed-in user')
-      const r = await fetch('/api/growth/ai-fleet-leads', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify({ city: 'Houston TX' }) })
-      const d = await r.json().catch(() => ({}))
-      if (!r.ok || d.error) throw new Error(d.error || 'Fleet scan failed')
-      if (d.leads?.length) {
-        const fl = await supabase.from('leads').select('*').eq('shop_id', shopId).eq('source', 'ai-fleet-scan').order('created_at', { ascending: false })
-        if (fl.error) throw fl.error
-        setReportModal(prev => prev ? { ...prev, leads: fl.data || [] } : null)
-      }
-      notify('AI found ' + (d.total_leads || 0) + ' leads!', 'success')
-      await load()
-    } catch (error) {
-      notify(error instanceof Error ? error.message : 'Scan failed', 'error')
-    } finally { setScanningFleet(false) }
+      const res = await fetch('/api/growth/outreach', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify({ lead_id: l.id, method, ai_mode: aiMode }) })
+      const d = await res.json()
+      if (res.ok && d.success === true) {
+        notify(method === 'sms' ? `Text sent to ${who}.` : method === 'email' ? `Email sent to ${who}.` : `Alpha is calling ${who}.`, 'success')
+        await load({ quiet: true })
+      } else notify(`${who} was not contacted: ${d.error || 'something went wrong'}.`, 'error')
+    } catch { notify(`${who} was not contacted. Check your connection and try again.`, 'error') }
+    setSending(null)
   }
 
-  const smartSearch = async () => {
-    if (!intelQuery.trim()) return notify('Enter a search', 'error')
+  const openAddLead = (source = 'Walk-in') => { setLeadForm({ name: '', phone: '', service: '', source, notes: '' }); setLeadTried(false); setShowAddLead(true) }
+  const addLead = async () => {
+    setLeadTried(true)
+    if (!leadForm.name.trim()) return
+    const shopId = await getShopId()
+    if (!shopId) return notify('We could not find your shop. Refresh, or sign out and back in.', 'error')
+    setLeadSaving(true)
+    const { error } = await supabase.from('leads').insert({
+      shop_id: shopId, name: leadForm.name.trim(), phone: leadForm.phone.trim() || null, service_needed: leadForm.service.trim() || null,
+      source: leadForm.source, notes: leadForm.notes.trim() || null, status: 'new', follow_up_date: new Date(Date.now() + DAY).toISOString().split('T')[0],
+    })
+    setLeadSaving(false)
+    if (error) return notify(`The lead was not saved: ${error.message}`, 'error')
+    setShowAddLead(false)
+    notify(`${leadForm.name.trim()} was added to your leads.`, 'success')
+    await load({ quiet: true })
+  }
+
+  const runScan = async (kind: ScanKind) => {
+    const scan = SCANS[kind]
+    setReport({ title: scan.title, sources: [scan.source], scan: kind })
+    setScanning(kind)
+    try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('We could not find your shop')
+      const r = await fetch(scan.endpoint, { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify({ city: city?.search || 'Houston TX' }) })
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok || d.error) throw new Error(d.error || scan.failure)
+      const n = d.total_leads || 0
+      notify(n ? `Alpha found ${n} ${n === 1 ? 'lead' : 'leads'}.` : 'Alpha did not find any new leads this time.', n ? 'success' : 'info')
+      await load({ quiet: true })
+    } catch (error) {
+      notify(`${error instanceof Error ? error.message : scan.failure}. Try again in a few minutes.`, 'error')
+    } finally { setScanning(null) }
+  }
+
+  const lookUp = async () => {
+    if (!intelQuery.trim()) return notify('Type a name or business to look up.', 'error')
     setIntelSearching(true)
     setIntelResults(null)
     try {
       const r = await fetch('/api/growth/smart-search', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify({ query: intelQuery.trim() }) })
       const d = await r.json().catch(() => ({}))
-      if (!r.ok || d.error) throw new Error(d.error || 'Search failed')
+      if (!r.ok || d.error) throw new Error(d.error || 'The search failed')
       setIntelResults(d)
-      notify('Verified search complete!', 'success')
     } catch (error) {
-      notify(error instanceof Error ? error.message : 'Search failed', 'error')
+      notify(`${error instanceof Error ? error.message : 'The search failed'}. Try again.`, 'error')
     } finally { setIntelSearching(false) }
   }
+
+  const syncCalls = async () => {
+    setSyncingCalls(true)
+    try {
+      const response = await fetch('/api/telnyx/sync-calls?action=sync', { headers: await getAuthJsonHeaders() })
+      if (!response.ok) { const detail = await response.json().catch(() => ({})); throw new Error(detail.error || 'Call sync failed') }
+      await loadCalls()
+      notify('Calls are up to date.', 'success')
+    } catch (error) {
+      notify(`${error instanceof Error ? error.message : 'Call sync failed'}. Try again.`, 'error')
+    }
+    setSyncingCalls(false)
+  }
+
   const createSocialPost = async () => {
-    if (!postText.trim()) return notify('Write something', 'error')
-    if (!postPlatforms.length) return notify('Select platform', 'error')
+    if (!postText.trim()) return notify('Write something for the post first.', 'error')
+    if (!postPlatforms.length) return notify('Choose at least one place to post.', 'error')
     setPosting(true)
     try {
       const mediaUrls: string[] = []
@@ -365,124 +448,699 @@ export default function GrowthPage() {
       if (!r.ok) throw new Error(d.error || 'Draft save failed')
       setPostText('')
       setPostMedia([])
-      notify(d.message || 'Draft saved', 'success')
-      await load()
+      setShowPost(false)
+      notify(d.message || 'Draft saved.', 'success')
+      await load({ quiet: true })
     } catch (error) {
-      notify(error instanceof Error ? error.message : 'Draft save failed', 'error')
+      notify(`The draft was not saved: ${error instanceof Error ? error.message : 'something went wrong'}.`, 'error')
     } finally {
       setPosting(false)
     }
   }
-  const saveAdCampaign = async () => { if (!adsCampaignName.trim()) return notify('Name required', 'error'); const shopId = await getShopId(); if (!shopId) return notify('No shop is associated with the signed-in user', 'error'); setAdsSaving(true); const { error } = await supabase.from('growth_campaigns').insert({ shop_id: shopId, name: adsCampaignName.trim(), platform: adsPlatform, objective: 'leads', budget_per_day: parseFloat(adsBudget) || 20, keywords: adsKeywords, status: 'draft', spend: 0 }); if (error) { setAdsSaving(false); return notify(`Campaign could not be saved: ${error.message}`, 'error') } setAdsCampaignName(''); setAdsBudget('20'); setAdsSaving(false); setShowAdsModal(false); notify('Campaign saved!', 'success'); await load() }
-  const filteredLeads = leads.filter(l => !leadSearch || l.name?.toLowerCase().includes(leadSearch.toLowerCase()) || l.phone?.includes(leadSearch))
-  const card = 'bg-[#1a2332] border border-white/10 rounded-2xl p-5 shadow-lg'
-  const btn = 'px-4 py-2.5 rounded-xl text-sm font-semibold transition-all cursor-pointer'
-  const btnP = `${btn} bg-blue-600 text-white hover:bg-blue-500`
-  const btnS = `${btn} bg-white/5 text-gray-300 hover:bg-white/10 border border-white/10`
-  const btnG = `${btn} bg-emerald-600 text-white hover:bg-emerald-500`
-  const inp = 'w-full bg-[#0f1923] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:ring-2 focus:ring-blue-500 outline-none'
-  const lbl = 'text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5 block'
-  return (<div className="min-h-screen bg-[#0f1923] p-6">
-    {toast && <Toast {...toast} onClose={() => setToast(null)} />}
-    {reportModal && <DeepResearchModal title={reportModal.title} leads={reportModal.leads} onClose={() => setReportModal(null)} onOutreach={doOutreach} sending={sending} />}
-    {showImportModal && <Modal title="Import Lead" onClose={() => setShowImportModal(false)}><div className="space-y-4"><div><label className={lbl}>Name *</label><input className={inp} value={importName} onChange={e => setImportName(e.target.value)} placeholder="John Smith" /></div><div><label className={lbl}>Phone</label><input className={inp} value={importPhone} onChange={e => setImportPhone(e.target.value)} placeholder="(713) 555-0000" /></div><div><label className={lbl}>Service</label><input className={inp} value={importService} onChange={e => setImportService(e.target.value)} placeholder="Oil change..." /></div><div><label className={lbl}>Notes</label><textarea className={inp} rows={2} value={importNotes} onChange={e => setImportNotes(e.target.value)} /></div><button onClick={importLead} className={`${btnG} w-full`}>Save Lead</button></div></Modal>}
-    {showAdsModal && <Modal title={`Create ${adsPlatform === 'google' ? 'Google' : 'Facebook'} Campaign`} onClose={() => setShowAdsModal(false)}><div className="space-y-4"><div className="flex gap-2"><button onClick={() => setAdsPlatform('google')} className={`flex-1 py-2 rounded-xl text-sm font-semibold border-2 ${adsPlatform === 'google' ? 'border-blue-500 bg-blue-500/10 text-blue-400' : 'border-white/10 text-gray-400'}`}>Google Ads</button><button onClick={() => setAdsPlatform('facebook')} className={`flex-1 py-2 rounded-xl text-sm font-semibold border-2 ${adsPlatform === 'facebook' ? 'border-blue-500 bg-blue-500/10 text-blue-400' : 'border-white/10 text-gray-400'}`}>Facebook Ads</button></div><div><label className={lbl}>Campaign Name *</label><input className={inp} value={adsCampaignName} onChange={e => setAdsCampaignName(e.target.value)} placeholder="Spring Special" /></div><div><label className={lbl}>Daily Budget ($)</label><input className={inp} type="number" min="5" value={adsBudget} onChange={e => setAdsBudget(e.target.value)} /></div><div className="p-3 bg-yellow-500/10 rounded-xl text-xs text-yellow-300">Saves as draft.</div><button onClick={saveAdCampaign} disabled={adsSaving} className={`${btnP} w-full`}>{adsSaving ? 'Saving...' : 'Save Draft'}</button></div></Modal>}
-    <div className="flex items-center justify-between mb-8"><div><h1 className="text-3xl font-bold text-white">Growth Center</h1><p className="text-gray-400 text-sm mt-1">Acquire, retain, and grow your customer base</p></div><div className="flex items-center gap-3"><div className="flex items-center gap-2 bg-[#0f1923] rounded-xl px-4 py-2 border border-white/10"><span className="text-xs text-gray-400">Manual</span><button onClick={() => setAiMode(!aiMode)} className={`relative w-12 h-6 rounded-full transition-all ${aiMode ? 'bg-emerald-600' : 'bg-gray-600'}`}><span className={`absolute top-0.5 ${aiMode ? 'left-6' : 'left-0.5'} w-5 h-5 rounded-full bg-white transition-all shadow`} /></button><span className={`text-xs font-semibold ${aiMode ? 'text-emerald-400' : 'text-gray-400'}`}>AI Autopilot</span></div><button onClick={load} className={btnS} disabled={loading}>{loading ? 'Loading...' : 'Refresh'}</button></div></div>
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">{[{ label: 'Customers', value: customers.length, color: 'text-white' }, { label: 'Need Follow-up', value: staleCustomers.length, color: 'text-amber-400' }, { label: 'Active Referrals', value: referrals.length, color: 'text-emerald-400' }, { label: 'Open Leads', value: leads.filter(l => l.status !== 'converted').length, color: 'text-blue-400' }].map((s, i) => (<div key={i} className={card}><p className="text-xs font-semibold text-gray-400 uppercase">{s.label}</p><p className={`text-3xl font-bold mt-2 ${s.color}`}>{s.value}</p></div>))}</div>
-    {activityLog.length > 0 && <div className={`${card} mb-8`}><h3 className="font-bold text-white mb-3">Recent Activity</h3><div className="space-y-1 max-h-32 overflow-y-auto">{activityLog.slice(0, 5).map((a, i) => (<div key={i} className="flex items-center justify-between text-xs py-1.5 border-b border-white/5"><span className="text-gray-300">{a.action?.replace(/_/g, ' ')} - <span className="text-white font-medium">{a.target}</span></span><span className="text-gray-500">{timeAgo(a.created_at)}</span></div>))}</div></div>}
-    <div className="flex gap-1 mb-8 bg-[#0f1923] p-1.5 rounded-2xl overflow-x-auto">{TABS.map(t => (<button key={t.key} onClick={() => setTab(t.key)} className={`flex items-center gap-2 px-5 py-3 rounded-xl text-sm font-semibold whitespace-nowrap transition-all ${tab === t.key ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}><span>{t.icon}</span> {t.label}</button>))}</div>
-    {tab === 'followups' && <div className={card}><div className="flex items-center justify-between mb-5"><div><h2 className="text-xl font-bold text-white">Automated Follow-ups</h2><p className="text-sm text-gray-400 mt-1">Customers inactive 60+ days</p></div>{staleCustomers.filter(c => c.phone).length > 0 && <button onClick={bulkFollowUp} className={btnP}>Send All ({staleCustomers.filter(c => c.phone).length})</button>}</div>{staleCustomers.length === 0 ? <div className="text-center py-12"><p className="text-gray-400">All customers are active!</p></div> : <div className="space-y-2">{staleCustomers.map(c => (<div key={c.id} className="flex items-center justify-between p-4 bg-[#0f1923] rounded-xl"><div><p className="font-semibold text-white">{c.name}</p><p className="text-xs text-gray-500">{c.phone || 'No phone'} - Last: {timeAgo(c.last_visit || c.created_at)}</p></div><button onClick={() => sendFollowUp(c)} disabled={sending === c.id || !c.phone} className={c.phone ? btnP : btnS}>{sending === c.id ? 'Sending...' : 'Send Text'}</button></div>))}</div>}</div>}
-    {tab === 'reviews' && <div className="space-y-5"><div className={card}><div className="flex items-center justify-between mb-4"><div><h2 className="text-xl font-bold text-white">⭐ Your Google Review Link</h2><p className="text-sm text-gray-400 mt-1">Share this link — customers can leave a review in one tap</p></div></div><div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 p-4 bg-[#0f1923] rounded-xl border border-white/10"><span className="flex-1 text-sm text-blue-400 break-all font-mono">{reviewUrl}</span><div className="flex gap-2 flex-shrink-0"><button onClick={() => { navigator.clipboard.writeText(reviewUrl); notify('Link copied!', 'success') }} className={btnS}>📋 Copy</button><a href={reviewUrl} target="_blank" rel="noopener noreferrer" className={btnG}>⭐ Open</a></div></div></div><div className={card}><div className="mb-5"><h2 className="text-xl font-bold text-white">Request Reviews</h2><p className="text-sm text-gray-400 mt-1">Ask happy customers for Google reviews</p></div><div className="space-y-2">{customers.slice(0, 50).map(c => (<div key={c.id} className="flex items-center justify-between p-4 bg-[#0f1923] rounded-xl"><div><p className="font-semibold text-white">{c.name}</p><p className="text-xs text-gray-500">{c.phone || 'No phone'}{c.review_requested ? ` - Requested ${timeAgo(c.review_requested)}` : ''}</p></div><button onClick={() => requestReview(c)} disabled={sending === c.id || !c.phone} className={c.review_requested ? btnS : btnG}>{sending === c.id ? 'Sending...' : c.review_requested ? 'Resend' : 'Ask for Review'}</button></div>))}</div></div></div>}
-    {tab === 'referrals' && <div className="space-y-6"><div className={card}><div className="mb-5"><h2 className="text-xl font-bold text-white">Referral System</h2><p className="text-sm text-gray-400 mt-1">Generate codes. They share, everyone saves.</p></div><div className="space-y-2">{customers.slice(0, 30).map(c => { const ex = referrals.find(r => r.customer_id === c.id); return (<div key={c.id} className="flex items-center justify-between p-4 bg-[#0f1923] rounded-xl"><div><p className="font-semibold text-white">{c.name}</p>{ex ? <p className="text-xs text-emerald-400 font-mono">{ex.code} - {ex.uses || 0} uses</p> : <p className="text-xs text-gray-500">{c.phone || 'No phone'}</p>}</div>{ex ? <span className="text-xs bg-emerald-500/20 text-emerald-400 px-3 py-1.5 rounded-lg font-semibold">Active</span> : <button onClick={() => generateReferral(c)} className={btnP}>Generate Code</button>}</div>) })}</div></div></div>}
-    {tab === 'leads' && <div className="space-y-6"><div className={card}><div className="flex items-center justify-between mb-5"><div><h2 className="text-xl font-bold text-white">AI Lead Generation</h2><p className="text-sm text-gray-400 mt-1">Deep research on businesses. Click scan - get a full intel report.</p></div>{aiMode && <span className="text-xs bg-emerald-500/20 text-emerald-400 px-3 py-1.5 rounded-lg font-semibold">AI Autopilot ON</span>}</div><div className="grid md:grid-cols-3 gap-4 mb-5"><button className={`p-4 rounded-2xl border-2 border-dashed text-left transition-all ${scanningCompetitor ? 'border-orange-500 bg-orange-500/10' : 'border-orange-500/30 hover:border-orange-500 hover:bg-orange-500/5'}`} onClick={aiScanCompetitors} disabled={scanningCompetitor}><div className="text-2xl mb-2">{scanningCompetitor ? '\u23f3' : '\ud83d\udd25'}</div><h3 className="font-bold text-white text-sm">Steal Competitor Customers</h3><p className="text-xs text-gray-400 mt-1">{scanningCompetitor ? 'Deep researching competitors...' : 'Finds unhappy customers with owner info, reviews & outreach'}</p></button><button className={`p-4 rounded-2xl border-2 border-dashed text-left transition-all ${scanningSocial ? 'border-blue-500 bg-blue-500/10' : 'border-blue-500/30 hover:border-blue-500 hover:bg-blue-500/5'}`} onClick={() => openScanPopup('ai-social-scan', 'Deep Research: Social Media Leads', aiScanSocial)} disabled={scanningSocial}><div className="text-2xl mb-2">{scanningSocial ? '\u23f3' : '\ud83d\udcf1'}</div><h3 className="font-bold text-white text-sm">Find Social Media Leads</h3><p className="text-xs text-gray-400 mt-1">{scanningSocial ? 'Scanning social posts...' : 'Finds people posting about car problems in Houston'}</p></button><button className={`p-4 rounded-2xl border-2 border-dashed text-left transition-all ${scanningFleet ? 'border-emerald-500 bg-emerald-500/10' : 'border-emerald-500/30 hover:border-emerald-500 hover:bg-emerald-500/5'}`} onClick={() => openScanPopup('ai-fleet-scan', 'Deep Research: Fleet Businesses', aiScanFleet)} disabled={scanningFleet}><div className="text-2xl mb-2">{scanningFleet ? '\u23f3' : '\ud83d\ude9a'}</div><h3 className="font-bold text-white text-sm">Find Fleet Businesses</h3><p className="text-xs text-gray-400 mt-1">{scanningFleet ? 'Deep researching 25+ business types...' : 'Owner, fleet size, vehicles, contracts, revenue & more'}</p></button></div><div className="flex gap-3"><input className={inp} placeholder="Search leads..." value={leadSearch} onChange={e => setLeadSearch(e.target.value)} /><button className={btnS} onClick={() => { setImportSource('manual'); setShowImportModal(true) }}>+ Manual</button></div></div>
-    <div className={card}><div className="flex items-center justify-between mb-4"><h3 className="font-bold text-white">All Leads ({filteredLeads.length})</h3><button onClick={() => { const aiLeads = filteredLeads.filter(l => ['ai-competitor-scan','ai-social-scan','ai-fleet-scan'].includes(l.source)); if (aiLeads.length) setReportModal({ title: 'All AI Leads - Deep Research', leads: aiLeads }) }} className={btnS}>View Full Report</button></div>{filteredLeads.length === 0 ? <p className="text-gray-500 text-center py-8">No leads yet. Click an AI button above!</p> : <div className="space-y-2">{filteredLeads.map(l => { const isAI = ['ai-competitor-scan', 'ai-social-scan', 'ai-fleet-scan'].includes(l.source); return (<div key={l.id} className="flex items-center justify-between p-4 bg-[#0f1923] rounded-xl"><div className="flex-1 min-w-0"><div className="flex items-center gap-2"><p className="font-semibold text-white truncate">{l.name}</p>{isAI && <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 font-semibold">AI</span>}<span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${l.status === 'new' ? 'bg-blue-500/20 text-blue-400' : l.status === 'contacted' ? 'bg-yellow-500/20 text-yellow-400' : 'bg-emerald-500/20 text-emerald-400'}`}>{l.status}</span>{l.owner_name && <span className="text-[10px] text-gray-500">{l.owner_name}</span>}</div><p className="text-xs text-gray-500">{l.source?.replace(/-/g, ' ')} - {l.service_needed || 'General'}{l.fleet_size ? ` - ${l.fleet_size} vehicles` : ''}</p></div><div className="flex gap-1.5 ml-3"><button onClick={() => doOutreach(l.id, 'sms')} disabled={sending === l.id || !l.phone} className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold ${l.phone ? 'bg-blue-600 text-white hover:bg-blue-500' : 'bg-white/5 text-gray-500'}`}>{sending === l.id ? '...' : 'SMS'}</button><button onClick={() => doOutreach(l.id, 'email')} disabled={sending === l.id || !l.email} className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold ${l.email ? 'bg-purple-600 text-white hover:bg-purple-500' : 'bg-white/5 text-gray-500'}`}>{sending === l.id ? '...' : 'Email'}</button><button onClick={() => doOutreach(l.id, 'ai_call')} disabled={sending === l.id || !l.phone} className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold ${l.phone ? 'bg-emerald-600 text-white hover:bg-emerald-500' : 'bg-white/5 text-gray-500'}`}>{sending === l.id ? '...' : 'AI Call'}</button></div></div>) })}</div>}</div></div>}
-    {tab === 'social' && <div className="space-y-6"><div className={card}><h2 className="text-xl font-bold text-white mb-5">Create Social Post</h2><div className="space-y-4"><div className="flex gap-3 flex-wrap">{['facebook', 'instagram', 'google', 'tiktok'].map(p => (<button key={p} onClick={() => setPostPlatforms(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p])} className={`${btn} border-2 capitalize ${postPlatforms.includes(p) ? 'border-blue-500 bg-blue-500/10 text-blue-400' : 'border-white/10 text-gray-400'}`}>{p}</button>))}</div><textarea className={inp} rows={4} value={postText} onChange={e => setPostText(e.target.value)} placeholder="What's happening at your shop today?" /><p className="text-xs text-gray-500">This saves a draft only. Nothing is published until a connected platform is authorized.</p><div className="flex items-center gap-3"><input ref={fileInputRef} type="file" multiple accept="image/*,video/*" className="hidden" onChange={e => { if (e.target.files) setPostMedia(Array.from(e.target.files)) }} /><button onClick={() => fileInputRef.current?.click()} className={btnS}>Add Photos ({postMedia.length})</button><button onClick={createSocialPost} disabled={posting} className={`${btnP} ml-auto`}>{posting ? 'Saving...' : 'Save Draft'}</button></div></div></div>{postText.trim() && <div className={card}><h3 className="font-bold text-white mb-4">📱 Post Preview</h3><div className="flex gap-4 flex-wrap">{postPlatforms.map(platform => (<div key={platform} className="flex-1 min-w-[200px] max-w-xs bg-[#0f1923] rounded-2xl overflow-hidden border border-white/10"><div className="p-3 border-b border-white/10 flex items-center gap-2"><div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-white text-xs font-bold">A</div><div><p className="text-xs font-semibold text-white">Your shop</p><p className="text-[10px] text-gray-500 capitalize">{platform} · Just now</p></div></div><div className="p-3"><p className="text-sm text-gray-200 whitespace-pre-wrap">{postText}</p>{postMedia.length > 0 && <div className="mt-2 text-xs text-gray-500">{postMedia.length} photo(s) attached</div>}</div><div className="px-3 pb-3 flex gap-3 text-xs text-gray-500"><span>👍 Like</span><span>💬 Comment</span><span>↗️ Share</span></div></div>))}</div></div>}{postHistory.length > 0 && <div className={card}><h3 className="font-bold text-white mb-3">Post History</h3><div className="space-y-2">{postHistory.map((p, i) => (<div key={i} className="p-3 bg-[#0f1923] rounded-xl"><div className="flex justify-between"><span className="text-sm text-white font-medium">{p.platforms?.join(', ')}</span><span className="text-xs text-gray-500">{timeAgo(p.created_at)}</span></div><p className="text-xs text-gray-400 mt-1 line-clamp-2">{p.text}</p></div>))}</div></div>}</div>}
-        {tab === 'capture' && <div className="space-y-6"><div className={card}><h2 className="text-lg font-bold mb-4">Walk-in / Call Capture</h2><div className="grid grid-cols-1 sm:grid-cols-2 gap-4"><div><label className="text-xs text-gray-400">NAME *</label><input value={captureName} onChange={e => setCaptureName(e.target.value)} placeholder="John Smith" className="w-full bg-gray-800 rounded p-2 mt-1" /></div><div><label className="text-xs text-gray-400">PHONE</label><input value={capturePhone} onChange={e => setCapturePhone(e.target.value)} placeholder="(713) 555-0000" className="w-full bg-gray-800 rounded p-2 mt-1" /></div><div><label className="text-xs text-gray-400">SERVICE</label><input value={captureService} onChange={e => setCaptureService(e.target.value)} placeholder="Oil change, brakes..." className="w-full bg-gray-800 rounded p-2 mt-1" /></div><div><label className="text-xs text-gray-400">SOURCE</label><select value={captureSource} onChange={e => setCaptureSource(e.target.value)} className="w-full bg-gray-800 rounded p-2 mt-1"><option>Walk-in</option><option>Phone Call</option><option>Facebook</option><option>Google</option></select></div></div><button onClick={captureLead} className="mt-4 bg-teal-600 hover:bg-teal-500 px-6 py-2 rounded font-bold">Capture Lead</button></div><div className={card}><div className="flex items-center justify-between mb-4"><h2 className="text-lg font-bold">Recent Call History</h2><button onClick={async () => { const response = await fetch('/api/telnyx/sync-calls?action=sync', { headers: await getAuthJsonHeaders() }); if (!response.ok) { const detail = await response.json().catch(() => ({})); return notify(detail.error || 'Call sync failed', 'error') } const shopId = await getShopId(); if (!shopId) return notify('No shop is associated with the signed-in user', 'error'); const { data, error } = await supabase.from('call_history').select('*').eq('shop_id', shopId).order('start_time', { ascending: false }).limit(50); if (error) return notify(error.message, 'error'); setCallHistory(data || []) }} className="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded">Sync Calls</button></div>{callHistory.length === 0 ? <p className="text-gray-500 text-center py-8">No call history yet. Click Sync to pull calls.</p> : <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="text-gray-400 text-left border-b border-gray-700"><th className="py-2 px-2">Direction</th><th className="py-2 px-2">From</th><th className="py-2 px-2">To</th><th className="py-2 px-2">Duration</th><th className="py-2 px-2">Customer</th><th className="py-2 px-2">Date</th></tr></thead><tbody>{callHistory.map((c: any) => <tr key={c.id} className="border-b border-gray-800 hover:bg-gray-800/50"><td className="py-2 px-2">{c.direction === 'inbound' ? '📞 In' : '📱 Out'}</td><td className="py-2 px-2 text-xs">{c.from_number}</td><td className="py-2 px-2 text-xs">{c.to_number}</td><td className="py-2 px-2">{c.duration_secs ? `${Math.floor(c.duration_secs/60)}:${String(Math.floor(c.duration_secs%60)).padStart(2,'0')}` : '-'}</td><td className="py-2 px-2">{c.matched_customer_name || <span className="text-gray-500">Unknown</span>}</td><td className="py-2 px-2 text-xs text-gray-400">{c.start_time ? new Date(c.start_time).toLocaleString() : '-'}</td></tr>)}</tbody></table></div>}</div></div>}
-    {tab === 'intel' && <div className="space-y-6"><div className={card}><h2 className="text-xl font-bold text-white mb-2">Smart Customer Search</h2><p className="text-sm text-gray-400 mb-5">Enter a name - AI investigates social media, phone, email.</p><div className="flex gap-3"><input className={inp} value={intelQuery} onChange={e => setIntelQuery(e.target.value)} placeholder="Enter name, business, or Google reviewer..." onKeyDown={e => e.key === 'Enter' && smartSearch()} /><button onClick={smartSearch} disabled={intelSearching} className={btnP}>{intelSearching ? 'Searching...' : 'Investigate'}</button></div></div>{intelResults && <div className={card}><h3 className="font-bold text-white mb-4">Results: {intelQuery}</h3><div className="space-y-3">{intelResults.results?.map((r: any, i: number) => (<div key={i} className="p-4 bg-[#0f1923] rounded-xl"><div className="flex items-center justify-between mb-2"><span className="text-sm font-semibold text-white">{r.source || 'Web'}</span><span className={`text-xs px-2 py-0.5 rounded ${r.confidence === 'high' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-yellow-500/20 text-yellow-400'}`}>{r.confidence || 'medium'}</span></div>{r.name && <p className="text-sm text-gray-300">Name: {r.name}</p>}{r.phone && <p className="text-sm text-blue-400">Phone: {r.phone}</p>}{r.email && <p className="text-sm text-gray-300">Email: {r.email}</p>}{r.social && <p className="text-sm text-purple-400">Social: {r.social}</p>}</div>)) || <p className="text-gray-500">No results.</p>}</div>{intelResults.summary && <div className="mt-4 p-3 bg-blue-500/10 rounded-xl text-sm text-blue-300">{intelResults.summary}</div>}</div>}</div>}
-    {tab === 'ads' && <div className="space-y-6"><div className={card}><h2 className="text-xl font-bold text-white mb-5">Ad Campaigns</h2><div className="grid md:grid-cols-2 gap-4"><div className="p-6 border-2 border-dashed border-white/10 rounded-2xl text-center hover:border-blue-500/50 cursor-pointer" onClick={() => { setAdsPlatform('google'); setShowAdsModal(true) }}><h3 className="font-bold text-white text-lg">Google Ads</h3><p className="text-sm text-gray-400 mt-2">Target Houston searches</p><button className={`${btnP} mt-4`}>Create Campaign</button></div><div className="p-6 border-2 border-dashed border-white/10 rounded-2xl text-center hover:border-blue-500/50 cursor-pointer" onClick={() => { setAdsPlatform('facebook'); setShowAdsModal(true) }}><h3 className="font-bold text-white text-lg">Facebook Ads</h3><p className="text-sm text-gray-400 mt-2">Target Houston drivers</p><button className={`${btnP} mt-4`}>Create Campaign</button></div></div></div>{campaigns.length > 0 && <div className={card}><h3 className="font-bold text-white mb-4">Campaigns ({campaigns.length})</h3><div className="space-y-2">{campaigns.map(c => (<div key={c.id} className="flex items-center justify-between p-4 bg-[#0f1923] rounded-xl"><div><p className="font-semibold text-white">{c.name}</p><p className="text-xs text-gray-500">{c.platform} - <span className={`px-2 py-0.5 rounded text-xs font-semibold ${c.status === 'active' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-yellow-500/20 text-yellow-400'}`}>{c.status}</span></p></div><span className="text-sm text-gray-300">${c.spend || 0}</span></div>))}</div></div>}</div>}
-    {tab === 'roi' && <div className="space-y-6">
-      <div className={card}>
-        <h2 className="text-xl font-bold text-white mb-5">💰 ROI Tracking</h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-2">
-          {[
-            { label: 'Leads Generated', value: leads.length, color: 'text-blue-400' },
-            { label: 'Converted', value: leads.filter((l: any) => l.status === 'converted').length, color: 'text-emerald-400' },
-            { label: 'Conversion Rate', value: leads.length ? Math.round(leads.filter((l: any) => l.status === 'converted').length / leads.length * 100) + '%' : '0%', color: 'text-yellow-400' },
-            { label: 'Active Referrals', value: referrals.length, color: 'text-purple-400' },
-          ].map((s, i) => (
-            <div key={i} className="bg-[#0f1923] rounded-2xl p-4">
-              <p className="text-xs font-semibold text-gray-400 uppercase mb-2">{s.label}</p>
-              <p className={"text-3xl font-bold " + s.color}>{s.value}</p>
+
+  const openAds = (platform: 'google' | 'facebook') => {
+    setAdsPlatform(platform); setAdsTried(false)
+    setAdsKeywords(adsKeywords || `oil change${city ? ' ' + city.label : ''}, auto repair near me`)
+    setShowAds(true)
+  }
+  const saveAdCampaign = async () => {
+    setAdsTried(true)
+    if (!adsName.trim()) return
+    const shopId = await getShopId()
+    if (!shopId) return notify('We could not find your shop. Refresh, or sign out and back in.', 'error')
+    setAdsSaving(true)
+    const { error } = await supabase.from('growth_campaigns').insert({ shop_id: shopId, name: adsName.trim(), platform: adsPlatform, objective: 'leads', budget_per_day: parseFloat(adsBudget) || 20, keywords: adsKeywords, status: 'draft', spend: 0 })
+    setAdsSaving(false)
+    if (error) return notify(`The campaign was not saved: ${error.message}`, 'error')
+    setAdsName(''); setAdsBudget('20')
+    setShowAds(false)
+    notify('Campaign draft saved.', 'success')
+    await load({ quiet: true })
+  }
+
+  const closeReport = useCallback(() => setReport(null), [])
+  const closeAddLead = useCallback(() => setShowAddLead(false), [])
+  const closeAds = useCallback(() => setShowAds(false), [])
+  const closePost = useCallback(() => setShowPost(false), [])
+  const closeLookup = useCallback(() => setShowLookup(false), [])
+  const refreshQuiet = useCallback(async () => { await load({ quiet: true }) }, [load])
+
+  // ── Small render helpers ─────────────────────────────────────────────────
+
+  const failedNote = (keys: string[], what: string) => keys.some(k => failed[k]) && (
+    <ErrorCard title={`${what} did not load`} message="Check your connection and try again." onRetry={() => load()} busy={loading} className="mb-4" />
+  )
+
+  const noPhoneHint = (c: Rec) => (c.phone ? phonePretty(c.phone) : 'No phone number')
+
+  // ── Views ────────────────────────────────────────────────────────────────
+
+  const followUpsView = (
+    <Section title="Customers to win back" hint="People who have not visited or heard from you in 60 days or more.">
+      {failed.customers ? failedNote(['customers'], 'Your customers')
+        : loading ? <RowsSkeleton rows={5} label="Loading customers" />
+        : customers.length === 0 ? (
+          <EmptyBlock icon="customers" title="No customers yet" action={<Link href="/customers" className="btn btn-primary">Go to customers</Link>}>
+            Once you have customers, the ones who go quiet show up here with a one-tap text.
+          </EmptyBlock>
+        ) : staleCustomers.length === 0 ? (
+          <EmptyBlock icon="check" title="Nobody has gone quiet">Every customer has visited or heard from you in the last 60 days. Check back later.</EmptyBlock>
+        ) : (
+          <>
+            <div className="mb-4 rounded-lg border border-border bg-bg-card p-4">
+              <p className="form-label">The text each customer gets</p>
+              <p className="border-l-4 border-[rgb(var(--c-line))] pl-3 text-[0.9375rem]">&ldquo;{followUpText('[first name]')}&rdquo;</p>
+              {shop.state === 'ready' && !shop.name && <p className="form-hint">Add your shop name in Settings so the text says who it is from.</p>}
+              <button type="button" className="btn btn-primary mt-3 w-full sm:w-auto" onClick={bulkFollowUp} disabled={busy || stalePhones.length === 0}>
+                <Icon name="send" className="h-5 w-5" />
+                {bulk ? 'Sending texts…' : stalePhones.length === 0 ? 'No phone numbers to text' : `Text ${stalePhones.length} ${stalePhones.length === 1 ? 'customer who has' : 'customers who have'} not visited in 60 days`}
+              </button>
+              {stalePhones.length < staleCustomers.length && stalePhones.length > 0 && (
+                <p className="form-hint">{staleCustomers.length - stalePhones.length} {staleCustomers.length - stalePhones.length === 1 ? 'customer has' : 'customers have'} no phone number and will be skipped.</p>
+              )}
             </div>
-          ))}
-        </div>
-      </div>
-      <div className={card}>
-        <h3 className="font-bold text-white mb-4">Lead Sources Breakdown</h3>
-        <div className="space-y-3">
-          {(() => {
-            const srcMap: Record<string, number> = {}
-            leads.forEach((l: any) => { const s = l.source || 'manual'; srcMap[s] = (srcMap[s] || 0) + 1 })
-            const total = leads.length || 1
-            return Object.entries(srcMap).sort((a, b) => (b[1] as number) - (a[1] as number)).map(([source, count]) => (
-              <div key={source}>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-gray-300 capitalize">{source.replace(/-/g, ' ')}</span>
-                  <span className="text-white font-semibold">{count as number} <span className="text-gray-500">({Math.round((count as number)/total*100)}%)</span></span>
-                </div>
-                <div className="h-2 rounded-full bg-white/5 overflow-hidden">
-                  <div className="h-full bg-blue-600 rounded-full transition-all" style={{ width: ((count as number)/total*100) + '%' }} />
-                </div>
+            <ul className="ledger">
+              {staleCustomers.map(c => (
+                <li key={c.id}>
+                  <div className="ledger-row">
+                    <span className="lamp lamp-amber" aria-hidden="true" />
+                    <span className="ledger-main">
+                      <span className="ledger-title block">{c.name}</span>
+                      <span className="ledger-sub block">{noPhoneHint(c)} · {c.last_visit || c.created_at ? `Last visit ${timeAgo(c.last_visit || c.created_at)}` : 'No visit on record'}</span>
+                    </span>
+                    <button type="button" className="btn btn-secondary shrink-0" onClick={() => textOne(c)} disabled={busy || !c.phone} aria-label={`Text ${c.name}`}>
+                      {sending === `fu:${c.id}` ? 'Sending…' : 'Text'}
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+    </Section>
+  )
+
+  const customerListControls = (
+    <>
+      <SearchField className="mb-3 max-w-md" value={custSearch} onChange={v => { setCustSearch(v); setCustLimit(PAGE) }} label="Find a customer" placeholder="Find a customer by name or phone" />
+    </>
+  )
+  const showMore = matchingCustomers.length > custLimit && (
+    <button type="button" className="btn btn-secondary mt-3 w-full sm:w-auto" onClick={() => setCustLimit(n => n + PAGE)}>
+      Show {Math.min(PAGE, matchingCustomers.length - custLimit)} more of {matchingCustomers.length - custLimit}
+    </button>
+  )
+
+  const reviewsView = (
+    <>
+      <Section title="Your Google review link" hint="Customers can leave a review in one tap.">
+        {shop.state === 'loading' ? <div className="skeleton h-28" aria-busy="true" />
+          : shop.state === 'error' ? <ErrorCard title="Your review link did not load" message="Check your connection and try again." onRetry={() => { setShop(s => ({ ...s, state: 'loading' })); void loadShop() }} />
+          : reviewReady ? (
+            <div className="card">
+              <p className="break-all rounded-md bg-bg-hover px-3 py-2 text-[0.9375rem] font-bold text-blue">{shop.reviewUrl}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" className="btn btn-secondary" onClick={copyReviewLink}><Icon name="copy" className="h-5 w-5" />Copy link</button>
+                <a href={shop.reviewUrl} target="_blank" rel="noopener noreferrer" className="btn btn-secondary no-underline"><Icon name="link" className="h-5 w-5" />Open link</a>
               </div>
-            ))
-          })()}
-          {leads.length === 0 && <p className="text-gray-500 text-center py-4">No leads yet. Generate from the Lead Gen tab!</p>}
-        </div>
-      </div>
-      <div className={card}>
-        <h3 className="font-bold text-white mb-4">Outreach Performance</h3>
-        <div className="grid grid-cols-3 gap-4 mb-4">
-          {[
-            { label: 'SMS Sent', value: outreachHistory.filter((o: any) => o.method === 'sms').length, color: 'text-blue-400' },
-            { label: 'Emails Sent', value: outreachHistory.filter((o: any) => o.method === 'email').length, color: 'text-purple-400' },
-            { label: 'AI Calls', value: outreachHistory.filter((o: any) => o.method === 'ai_call').length, color: 'text-emerald-400' },
-          ].map((s, i) => (
-            <div key={i} className="bg-[#0f1923] rounded-xl p-3 text-center">
-              <p className={"text-2xl font-bold " + s.color}>{s.value}</p>
-              <p className="text-xs text-gray-400 mt-1">{s.label}</p>
             </div>
+          ) : (
+            <EmptyBlock icon="star" title="Add your Google review link" action={<Link href="/settings" className="btn btn-primary">Open settings</Link>}>
+              Paste your Google review link in Settings. Then you can text it to customers here.
+            </EmptyBlock>
+          )}
+      </Section>
+
+      <Section title="Ask customers for a review" hint="Text your review link to someone who was happy with the work.">
+        {failed.customers ? failedNote(['customers'], 'Your customers')
+          : loading ? <RowsSkeleton rows={5} label="Loading customers" />
+          : customers.length === 0 ? <EmptyBlock icon="customers" title="No customers yet">When you have customers you can ask them for reviews here.</EmptyBlock>
+          : (
+            <>
+              {customerListControls}
+              {matchingCustomers.length === 0 ? <EmptyBlock title="No customers match">Try a different name or phone number.</EmptyBlock> : (
+                <ul className="ledger">
+                  {matchingCustomers.slice(0, custLimit).map(c => (
+                    <li key={c.id}>
+                      <div className="ledger-row">
+                        <span className="ledger-main">
+                          <span className="ledger-title block">{c.name}</span>
+                          <span className="ledger-sub block">{noPhoneHint(c)} · {c.review_requested ? `Asked ${timeAgo(c.review_requested)}` : 'Not asked yet'}</span>
+                        </span>
+                        <button type="button" className={`btn shrink-0 ${c.review_requested ? 'btn-secondary' : 'btn-primary'}`} onClick={() => requestReview(c)} disabled={busy || !c.phone || !reviewReady} aria-label={`${c.review_requested ? 'Text review link again to' : 'Text review link to'} ${c.name}`}>
+                          {sending === `rv:${c.id}` ? 'Sending…' : c.review_requested ? 'Text again' : 'Text review link'}
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {showMore}
+            </>
+          )}
+      </Section>
+    </>
+  )
+
+  const referralsView = (
+    <Section title="Referral codes" hint="Give a customer a code. Friends get 10% off and the customer gets a $25 credit.">
+      {failed.customers || failed.referrals ? failedNote(['customers', 'referrals'], 'Referral codes')
+        : loading ? <RowsSkeleton rows={5} label="Loading customers" />
+        : customers.length === 0 ? <EmptyBlock icon="customers" title="No customers yet">When you have customers you can give them referral codes here.</EmptyBlock>
+        : (
+          <>
+            {customerListControls}
+            {matchingCustomers.length === 0 ? <EmptyBlock title="No customers match">Try a different name or phone number.</EmptyBlock> : (
+              <ul className="ledger">
+                {matchingCustomers.slice(0, custLimit).map(c => {
+                  const ex = referrals.find(r => r.customer_id === c.id)
+                  return (
+                    <li key={c.id}>
+                      <div className="ledger-row">
+                        <span className="ledger-main">
+                          <span className="ledger-title block">{c.name}</span>
+                          <span className="ledger-sub block">{ex ? `Code ${ex.code} · used ${ex.uses || 0} ${(ex.uses || 0) === 1 ? 'time' : 'times'}` : noPhoneHint(c)}</span>
+                        </span>
+                        {ex ? (
+                          <span className="inline-flex shrink-0 items-center gap-2 font-bold"><span className="lamp lamp-green" aria-hidden="true" />Active</span>
+                        ) : (
+                          <button type="button" className="btn btn-secondary shrink-0" onClick={() => generateReferral(c)} disabled={busy} aria-label={c.phone ? `Create a code and text it to ${c.name}` : `Create a code for ${c.name}`}>
+                            {sending === `rf:${c.id}` ? 'Creating…' : c.phone ? 'Create and text code' : 'Create code'}
+                          </button>
+                        )}
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+            {showMore}
+          </>
+        )}
+    </Section>
+  )
+
+  const scanCards: { kind: ScanKind; desc: string }[] = [
+    { kind: 'competitor', desc: 'Pulls the owner, reviews and a message you can send.' },
+    { kind: 'social', desc: `People near ${cityLabel} asking for help with their car.` },
+    { kind: 'fleet', desc: 'Owner, fleet size, vehicles and contracts for local businesses.' },
+  ]
+
+  const leadsView = (
+    <>
+      <Section title="Find new customers" hint="Alpha searches for you. Each search takes about a minute and saves what it finds as leads.">
+        <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          {scanCards.map(({ kind, desc }) => (
+            <li key={kind}>
+              <button type="button" onClick={() => runScan(kind)} disabled={scanning !== null} className="flex h-full min-h-[5rem] w-full items-start gap-3 rounded-lg border border-border bg-bg-card p-4 text-left hover:bg-bg-hover disabled:opacity-60">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-bg-hover text-text-secondary"><Icon name={SCANS[kind].icon} className="h-5 w-5" /></span>
+                <span className="min-w-0">
+                  <span className="block font-bold leading-tight">{scanning === kind ? 'Searching…' : `Find ${SCANS[kind].title.charAt(0).toLowerCase()}${SCANS[kind].title.slice(1)}`}</span>
+                  <span className="mt-1 block text-[0.875rem] text-text-secondary">{desc}</span>
+                </span>
+              </button>
+            </li>
           ))}
+          <li>
+            <button type="button" onClick={() => setShowLookup(true)} className="flex h-full min-h-[5rem] w-full items-start gap-3 rounded-lg border border-border bg-bg-card p-4 text-left hover:bg-bg-hover">
+              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-bg-hover text-text-secondary"><Icon name="search" className="h-5 w-5" /></span>
+              <span className="min-w-0">
+                <span className="block font-bold leading-tight">Look up a person</span>
+                <span className="mt-1 block text-[0.875rem] text-text-secondary">Search a name or business for a phone, email or social page.</span>
+              </span>
+            </button>
+          </li>
+        </ul>
+        <div className="mt-4 flex items-start gap-3 rounded-lg border border-border bg-bg-card p-3">
+          <Switch checked={aiMode} onChange={setAiMode} label="Let Alpha write the message" />
+          <div className="min-w-0 pt-2.5">
+            <p className="font-bold leading-tight">Let Alpha write the message</p>
+            <p className="mt-0.5 text-[0.875rem] text-text-secondary">{aiMode ? 'On: Alpha writes a short message for each lead you text or email.' : 'Off: texts use our standard message. Turn this on to send email.'}</p>
+          </div>
         </div>
-        {outreachHistory.length === 0 && <p className="text-gray-500 text-center py-4">No outreach history yet. Send outreach from Lead Gen to track.</p>}
-        {outreachHistory.length > 0 && (
-          <div className="space-y-1 max-h-48 overflow-y-auto mt-2">
-            {outreachHistory.slice(0, 20).map((o: any, i: number) => (
-              <div key={i} className="flex items-center justify-between p-2.5 bg-[#0f1923] rounded-lg text-xs">
-                <span className="text-gray-300">{o.lead_name || o.target || 'Lead'}</span>
-                <span className={"px-2 py-0.5 rounded font-semibold " + (o.method === 'sms' ? 'bg-blue-500/20 text-blue-400' : o.method === 'email' ? 'bg-purple-500/20 text-purple-400' : 'bg-emerald-500/20 text-emerald-400')}>{o.method}</span>
-                <span className="text-gray-500">{timeAgo(o.created_at)}</span>
-              </div>
-            ))}
+      </Section>
+
+      <Section
+        title={`Your leads${!loading && !failed.leads ? ` (${leads.length})` : ''}`}
+        action={(
+          <div className="toolbar">
+            {leads.some(isAiLead) && (
+              <button type="button" className="btn btn-secondary" onClick={() => setReport({ title: 'Everything Alpha found', sources: [...AI_SOURCES], scan: null })}>
+                <Icon name="list" className="h-5 w-5" />Full report
+              </button>
+            )}
+            <button type="button" className="btn btn-primary" onClick={() => openAddLead()}><Icon name="plus" className="h-5 w-5" />Add a lead</button>
           </div>
         )}
-      </div>
-      <div className={card}>
-        <h3 className="font-bold text-white mb-4">Campaign Summary</h3>
-        <div className="grid grid-cols-2 gap-4">
-          {[
-            { label: 'Customers Needing Follow-up', value: staleCustomers.length, color: 'text-amber-400' },
-            { label: 'Activity Logged', value: activityLog.length, color: 'text-white' },
-            { label: 'Total Customers', value: customers.length, color: 'text-blue-400' },
-            { label: 'Ad Campaigns', value: campaigns.length, color: 'text-emerald-400' },
-          ].map((s, i) => (
-            <div key={i} className="bg-[#0f1923] rounded-xl p-4">
-              <p className="text-xs text-gray-400 uppercase mb-1">{s.label}</p>
-              <p className={"text-3xl font-bold " + s.color}>{s.value}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>}
+      >
+        {failed.leads ? failedNote(['leads'], 'Your leads')
+          : loading ? <RowsSkeleton rows={4} label="Loading leads" />
+          : leads.length === 0 ? (
+            <EmptyBlock icon="flag" title="No leads yet" action={<button type="button" className="btn btn-primary" onClick={() => openAddLead()}><Icon name="plus" className="h-5 w-5" />Add a lead</button>}>
+              Run one of the searches above, or add someone who walked in or called.
+            </EmptyBlock>
+          ) : (
+            <>
+              <SearchField className="mb-3 max-w-md" value={leadSearch} onChange={setLeadSearch} label="Search your leads" placeholder="Search leads by name or phone" />
+              {filteredLeads.length === 0 ? <EmptyBlock title="No leads match">Try a different name or phone number.</EmptyBlock> : (
+                <ul className="ledger">
+                  {filteredLeads.map(l => {
+                    const st = leadStatus(l.status)
+                    return (
+                      <li key={l.id} className="px-3 py-3">
+                        <div className="flex items-start gap-3">
+                          <span className={`lamp lamp-${st.lamp} mt-[0.45rem]`} aria-hidden="true" />
+                          <div className="min-w-0 flex-1">
+                            <p className="flex flex-wrap items-center gap-x-2 gap-y-1 font-bold leading-tight">
+                              <span className="break-words">{l.name}</span>
+                              {isAiLead(l) && <span className="tag tag-gray text-[0.8125rem]">Found by Alpha</span>}
+                            </p>
+                            <p className="text-[0.9375rem] text-text-secondary">{st.word} · {sourceLabel(l.source)} · {l.service_needed || 'General repair'}{l.fleet_size ? ` · ${l.fleet_size} vehicles` : ''}</p>
+                            {(l.phone || l.email || l.owner_name) && <p className="break-words text-[0.9375rem] text-text-secondary">{[l.owner_name, l.phone ? phonePretty(l.phone) : '', l.email].filter(Boolean).join(' · ')}</p>}
+                          </div>
+                        </div>
+                        <div className="mt-2 sm:pl-[1.65rem]">
+                          <OutreachButtons lead={l} sending={sending} aiMode={aiMode} onOutreach={outreach} />
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </>
+          )}
+      </Section>
 
-    </div>)
+      <Section
+        title="Recent calls"
+        hint="Calls to and from your shop number."
+        action={<button type="button" className="btn btn-secondary" onClick={syncCalls} disabled={syncingCalls}><Icon name="refresh" className="h-5 w-5" />{syncingCalls ? 'Syncing…' : 'Sync calls'}</button>}
+      >
+        {callState === 'loading' || callState === 'idle' ? <RowsSkeleton rows={3} label="Loading calls" />
+          : callState === 'error' ? <ErrorCard title="Your calls did not load" message="Check your connection and try again." onRetry={loadCalls} />
+          : callHistory.length === 0 ? <EmptyBlock icon="phone" title="No calls yet">Tap Sync calls to pull in your recent calls.</EmptyBlock>
+          : (
+            <>
+              <ul className="ledger">
+                {callHistory.slice(0, callsOpen ? 50 : 8).map(c => {
+                  const inbound = c.direction === 'inbound'
+                  const secs = Number(c.duration_secs) || 0
+                  return (
+                    <li key={c.id}>
+                      <div className="ledger-row">
+                        <Icon name="phone" className="h-5 w-5 shrink-0 text-text-secondary" />
+                        <span className="ledger-main">
+                          <span className="ledger-title block">{c.matched_customer_name || 'Unknown caller'}</span>
+                          <span className="ledger-sub block">{inbound ? 'Incoming' : 'Outgoing'} · {phonePretty(inbound ? c.from_number : c.to_number)}{secs ? ` · ${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}` : ''}</span>
+                        </span>
+                        <span className="shrink-0 text-right text-[0.8125rem] text-text-secondary">{c.start_time ? new Date(c.start_time).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''}</span>
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+              {callHistory.length > 8 && <button type="button" className="btn btn-secondary mt-3 w-full sm:w-auto" onClick={() => setCallsOpen(o => !o)}>{callsOpen ? 'Show fewer calls' : `Show all ${Math.min(callHistory.length, 50)} calls`}</button>}
+            </>
+          )}
+      </Section>
+    </>
+  )
+
+  const postsView = (
+    <>
+      <Section
+        title="Social posts"
+        hint="Write a post and save it as a draft. Nothing goes out until a connected app is authorized."
+        action={<button type="button" className="btn btn-primary" onClick={() => setShowPost(true)}><Icon name="pen" className="h-5 w-5" />Write a post</button>}
+      >
+        {failed.posts ? failedNote(['posts'], 'Your post drafts')
+          : loading ? <RowsSkeleton rows={2} label="Loading drafts" />
+          : postHistory.length === 0 ? (
+            <EmptyBlock icon="image" title="No post drafts yet">Write a short update about your shop. Alpha saves it as a draft you can review.</EmptyBlock>
+          ) : (
+            <ul className="ledger">
+              {postHistory.map((p, i) => (
+                <li key={p.id || i} className="px-3 py-3">
+                  <p className="flex flex-wrap items-baseline justify-between gap-x-3">
+                    <span className="font-bold">{Array.isArray(p.platforms) ? p.platforms.map((x: string) => x.charAt(0).toUpperCase() + x.slice(1)).join(', ') : 'Draft'}</span>
+                    <span className="text-[0.875rem] text-text-secondary">{timeAgo(p.created_at)}</span>
+                  </p>
+                  <p className="line-clamp-2 text-[0.9375rem] text-text-secondary">{p.text}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+      </Section>
+
+      <Section title="Ad campaigns" hint="Plan an ad and save it as a draft. Saving does not start any ads or spend money.">
+        <div className="toolbar mb-4">
+          <button type="button" className="btn btn-secondary" onClick={() => openAds('google')}><Icon name="globe" className="h-5 w-5" />New Google ads campaign</button>
+          <button type="button" className="btn btn-secondary" onClick={() => openAds('facebook')}><Icon name="globe" className="h-5 w-5" />New Facebook ads campaign</button>
+        </div>
+        {failed.campaigns ? failedNote(['campaigns'], 'Your campaigns')
+          : loading ? <RowsSkeleton rows={2} label="Loading campaigns" />
+          : campaigns.length === 0 ? <EmptyBlock icon="growth" title="No campaigns yet">Start with Google ads to reach people searching for repairs near {cityLabel}.</EmptyBlock>
+          : (
+            <ul className="ledger">
+              {campaigns.map(c => (
+                <li key={c.id}>
+                  <div className="ledger-row">
+                    <span className={`lamp ${c.status === 'active' ? 'lamp-green' : 'lamp-off'}`} aria-hidden="true" />
+                    <span className="ledger-main">
+                      <span className="ledger-title block">{c.name}</span>
+                      <span className="ledger-sub block">{String(c.platform || '').charAt(0).toUpperCase() + String(c.platform || '').slice(1)} · {c.status === 'active' ? 'Running' : c.status === 'draft' ? 'Draft' : String(c.status || 'Draft').charAt(0).toUpperCase() + String(c.status || '').slice(1)}</span>
+                    </span>
+                    <span className="ledger-amt">${Number(c.spend || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+      </Section>
+    </>
+  )
+
+  const resultsView = (() => {
+    const converted = leads.filter(l => l.status === 'converted').length
+    const rate = leads.length ? Math.round((converted / leads.length) * 100) : 0
+    const srcMap: Record<string, number> = {}
+    leads.forEach(l => { const s = l.source || 'manual'; srcMap[s] = (srcMap[s] || 0) + 1 })
+    const total = leads.length || 1
+    const count = (m: string) => outreachHistory.filter(o => o.method === m).length
+    return (
+      <>
+        {failedNote(['leads', 'referrals', 'outreach', 'campaigns'], 'Some results')}
+        <Section title="How it is going">
+          {loading ? <div className="skeleton h-24" /> : (
+            <dl className="panel grid grid-cols-2 divide-border sm:grid-cols-4 sm:divide-x">
+              {[
+                { label: 'Leads found', value: leads.length },
+                { label: 'Became customers', value: converted },
+                { label: 'Lead to customer', value: `${rate}%` },
+                { label: 'Referral codes', value: referrals.length },
+              ].map((s, i) => (
+                <div key={s.label} className={`px-4 py-3 ${i < 2 ? 'border-b border-border sm:border-b-0' : ''} ${i % 2 === 0 ? 'border-r border-border sm:border-r-0' : ''}`}>
+                  <dt className="text-[0.8125rem] font-bold text-text-secondary">{s.label}</dt>
+                  <dd className="display num text-[1.75rem] font-bold leading-tight">{s.value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </Section>
+
+        <Section title="Where leads come from">
+          {loading ? <div className="skeleton h-24" /> : leads.length === 0 ? <EmptyBlock icon="flag" title="No leads yet">Run a search or add a lead and the sources will show here.</EmptyBlock> : (
+            <ul className="space-y-3">
+              {Object.entries(srcMap).sort((a, b) => b[1] - a[1]).map(([source, n]) => (
+                <li key={source}>
+                  <div className="mb-1 flex justify-between gap-3 text-[0.9375rem]">
+                    <span>{sourceLabel(source)}</span>
+                    <span className="num font-bold">{n} <span className="font-normal text-text-secondary">({Math.round((n / total) * 100)}%)</span></span>
+                  </div>
+                  <div className="h-2.5 overflow-hidden rounded-full bg-text-primary/10" role="img" aria-label={`${sourceLabel(source)}: ${Math.round((n / total) * 100)} percent of leads`}>
+                    <div className="h-full rounded-full bg-blue" style={{ width: `${(n / total) * 100}%` }} />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Section>
+
+        <Section title="Messages sent to leads">
+          {loading ? <div className="skeleton h-24" /> : (
+            <>
+              <dl className="panel mb-3 grid grid-cols-3 divide-x divide-border">
+                {[{ label: 'Texts', value: count('sms') }, { label: 'Emails', value: count('email') }, { label: 'Calls by Alpha', value: count('ai_call') }].map(s => (
+                  <div key={s.label} className="px-3 py-3 text-center">
+                    <dt className="text-[0.8125rem] font-bold text-text-secondary">{s.label}</dt>
+                    <dd className="display num text-[1.5rem] font-bold leading-tight">{s.value}</dd>
+                  </div>
+                ))}
+              </dl>
+              {outreachHistory.length === 0 ? <EmptyBlock icon="send" title="Nothing sent yet">Text or email a lead from the Leads view and it will be counted here.</EmptyBlock> : (
+                <ul className="ledger">
+                  {outreachHistory.slice(0, 10).map((o, i) => (
+                    <li key={o.id || i}>
+                      <div className="ledger-row !min-h-[3.25rem]">
+                        <span className="ledger-main"><span className="ledger-title block">{o.lead_name || o.target || o.to_contact || 'Lead'}</span></span>
+                        <span className="tag tag-gray shrink-0 text-[0.8125rem]">{o.method === 'sms' ? 'Text' : o.method === 'email' ? 'Email' : o.method === 'ai_call' ? 'Call' : o.method}</span>
+                        <span className="w-24 shrink-0 text-right text-[0.8125rem] text-text-secondary">{timeAgo(o.created_at)}</span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </Section>
+
+        <Section title="At a glance">
+          {loading ? <div className="skeleton h-24" /> : (
+            <dl className="panel grid grid-cols-2 sm:grid-cols-4">
+              {[
+                { label: 'Customers', value: customers.length },
+                { label: 'Need a follow-up', value: staleCustomers.length },
+                { label: 'Ad campaigns', value: campaigns.length },
+                { label: 'Things sent lately', value: activityLog.length },
+              ].map((s, i) => (
+                <div key={s.label} className={`px-4 py-3 ${i < 2 ? 'border-b border-border sm:border-b-0' : ''} ${i % 2 === 0 ? 'border-r border-border sm:border-r-0' : ''} ${i > 0 ? 'sm:border-l sm:border-border' : ''}`}>
+                  <dt className="text-[0.8125rem] font-bold text-text-secondary">{s.label}</dt>
+                  <dd className="display num text-[1.75rem] font-bold leading-tight">{s.value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </Section>
+      </>
+    )
+  })()
+
+  const views: Record<Tab, React.ReactNode> = { followups: followUpsView, reviews: reviewsView, referrals: referralsView, leads: leadsView, posts: postsView, results: resultsView }
+
+  // ── Render ───────────────────────────────────────────────────────────────
+
+  return (
+    <div className="page-container animate-fade-in">
+      <header className="page-header">
+        <div>
+          <h1 className="page-title">Get more customers</h1>
+          <p className="page-subtitle">Bring customers back, ask for reviews and find new ones.</p>
+        </div>
+        <div className="toolbar">
+          <button type="button" className="btn btn-secondary" onClick={() => load()} disabled={loading}>
+            <Icon name="refresh" className="h-5 w-5" />
+            {loading ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
+      </header>
+
+      {fatal ? (
+        <ErrorCard title="This page did not load" message={fatal} onRetry={() => load()} busy={loading} className="max-w-xl" />
+      ) : (
+        <>
+          <div className="panel mb-4 grid grid-cols-4 divide-x divide-border overflow-hidden">
+            <Stat label="Customers" value={loading ? '–' : customers.length} />
+            <Stat label="Need a follow-up" value={loading ? '–' : staleCustomers.length} lamp={!loading ? (staleCustomers.length ? 'amber' : 'green') : undefined} onClick={() => changeTab('followups')} />
+            <Stat label="Referral codes" value={loading ? '–' : referrals.length} onClick={() => changeTab('referrals')} />
+            <Stat label="Open leads" value={loading ? '–' : openLeads} onClick={() => changeTab('leads')} />
+          </div>
+
+          <Segmented label="Choose what to work on" idPrefix="growth" options={TABS} value={tab} onChange={changeTab} />
+
+          <div id="growth-panel" role="tabpanel" aria-labelledby={`growth-tab-${tab}`} className="mt-6">
+            {views[tab]}
+          </div>
+
+          {activityLog.length > 0 && tab !== 'results' && (
+            <section className="mt-10" aria-labelledby="activity-h">
+              <h2 id="activity-h" className="section-title mb-2">Recently sent</h2>
+              <ul className="ledger">
+                {activityLog.slice(0, 5).map((a, i) => (
+                  <li key={a.id || i}>
+                    <div className="ledger-row !min-h-[3.25rem]">
+                      <span className="lamp lamp-green" aria-hidden="true" />
+                      <span className="ledger-main">
+                        <span className="ledger-title block">{String(a.action || '').replace(/_/g, ' ').replace(/^./, (m: string) => m.toUpperCase())}: {a.target}</span>
+                      </span>
+                      <span className="shrink-0 text-[0.8125rem] text-text-secondary">{timeAgo(a.created_at)}</span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </>
+      )}
+
+      {/* ── Sheets ── */}
+      {report && (
+        <LeadReport
+          title={report.title}
+          leads={reportLeads}
+          scanning={!!report.scan && scanning === report.scan}
+          scanHint={report.scan ? SCANS[report.scan].hint : ''}
+          onClose={closeReport}
+          onOutreach={outreach}
+          sending={sending}
+          aiMode={aiMode}
+          onRefresh={refreshQuiet}
+          notify={notify}
+        />
+      )}
+
+      <Sheet open={showAddLead} onClose={closeAddLead} title="Add a lead">
+        <form onSubmit={e => { e.preventDefault(); void addLead() }} className="space-y-4" noValidate>
+          <div>
+            <label htmlFor="lead-name" className="form-label">Name</label>
+            <input id="lead-name" className="form-input" autoComplete="off" value={leadForm.name} onChange={e => setLeadForm(f => ({ ...f, name: e.target.value }))} placeholder="John Smith" aria-invalid={leadTried && !leadForm.name.trim()} />
+            {leadTried && !leadForm.name.trim() && <p className="form-error">Enter a name.</p>}
+          </div>
+          <div>
+            <label htmlFor="lead-phone" className="form-label">Phone (optional)</label>
+            <input id="lead-phone" className="form-input" type="tel" autoComplete="off" value={leadForm.phone} onChange={e => setLeadForm(f => ({ ...f, phone: e.target.value }))} placeholder="(713) 555-0000" />
+          </div>
+          <div>
+            <label htmlFor="lead-service" className="form-label">What they need (optional)</label>
+            <input id="lead-service" className="form-input" value={leadForm.service} onChange={e => setLeadForm(f => ({ ...f, service: e.target.value }))} placeholder="Oil change, brakes…" />
+          </div>
+          <div>
+            <label htmlFor="lead-source" className="form-label">How they found you</label>
+            <select id="lead-source" className="form-select" value={leadForm.source} onChange={e => setLeadForm(f => ({ ...f, source: e.target.value }))}>
+              {LEAD_SOURCES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="lead-notes" className="form-label">Notes (optional)</label>
+            <textarea id="lead-notes" className="form-textarea" rows={2} value={leadForm.notes} onChange={e => setLeadForm(f => ({ ...f, notes: e.target.value }))} />
+          </div>
+          <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
+            <button type="button" className="btn btn-secondary" onClick={closeAddLead}>Cancel</button>
+            <button type="submit" className="btn btn-primary" disabled={leadSaving}>{leadSaving ? 'Saving…' : 'Save lead'}</button>
+          </div>
+        </form>
+      </Sheet>
+
+      <Sheet open={showAds} onClose={closeAds} title={`New ${adsPlatform === 'google' ? 'Google' : 'Facebook'} ads campaign`}>
+        <form onSubmit={e => { e.preventDefault(); void saveAdCampaign() }} className="space-y-4" noValidate>
+          <div role="group" aria-label="Where the ads run" className="grid grid-cols-2 gap-2">
+            {(['google', 'facebook'] as const).map(p => (
+              <button key={p} type="button" aria-pressed={adsPlatform === p} onClick={() => setAdsPlatform(p)} className={`btn ${adsPlatform === p ? 'border-blue bg-blue/10 text-blue' : 'btn-secondary'}`}>
+                {adsPlatform === p && <Icon name="check" className="h-4 w-4" strokeWidth={2.4} />}
+                {p === 'google' ? 'Google ads' : 'Facebook ads'}
+              </button>
+            ))}
+          </div>
+          <div>
+            <label htmlFor="ads-name" className="form-label">Campaign name</label>
+            <input id="ads-name" className="form-input" value={adsName} onChange={e => setAdsName(e.target.value)} placeholder="Spring brake special" aria-invalid={adsTried && !adsName.trim()} />
+            {adsTried && !adsName.trim() && <p className="form-error">Give the campaign a name.</p>}
+          </div>
+          <div>
+            <label htmlFor="ads-budget" className="form-label">Daily budget in dollars</label>
+            <input id="ads-budget" className="form-input" type="number" inputMode="decimal" min="5" value={adsBudget} onChange={e => setAdsBudget(e.target.value)} />
+          </div>
+          <div>
+            <label htmlFor="ads-keywords" className="form-label">Words people search for</label>
+            <input id="ads-keywords" className="form-input" value={adsKeywords} onChange={e => setAdsKeywords(e.target.value)} aria-describedby="ads-kw-hint" />
+            <p id="ads-kw-hint" className="form-hint">Separate them with commas.</p>
+          </div>
+          <p className="flex items-start gap-2 rounded-md bg-bg-hover px-3 py-2 text-[0.9375rem]"><Icon name="info" className="mt-0.5 h-5 w-5 shrink-0 text-text-secondary" />This saves a draft. It does not start any ads or spend money.</p>
+          <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
+            <button type="button" className="btn btn-secondary" onClick={closeAds}>Cancel</button>
+            <button type="submit" className="btn btn-primary" disabled={adsSaving}>{adsSaving ? 'Saving…' : 'Save draft'}</button>
+          </div>
+        </form>
+      </Sheet>
+
+      <Sheet open={showPost} onClose={closePost} title="Write a post">
+        <div className="space-y-4">
+          <div role="group" aria-label="Where this post is for">
+            <p className="form-label">Where it is for</p>
+            <div className="flex flex-wrap gap-2">
+              {PLATFORMS.map(p => {
+                const on = postPlatforms.includes(p.key)
+                return (
+                  <button key={p.key} type="button" aria-pressed={on} onClick={() => setPostPlatforms(prev => prev.includes(p.key) ? prev.filter(x => x !== p.key) : [...prev, p.key])} className={`btn ${on ? 'border-blue bg-blue/10 text-blue' : 'btn-secondary'}`}>
+                    {on ? <Icon name="check" className="h-4 w-4" strokeWidth={2.4} /> : <Icon name="globe" className="h-4 w-4" />}
+                    {p.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <div>
+            <label htmlFor="post-text" className="form-label">What is happening at your shop?</label>
+            <textarea id="post-text" className="form-textarea" rows={5} value={postText} onChange={e => setPostText(e.target.value)} placeholder="We have two bays open this afternoon. Walk-ins welcome." />
+            <p className="form-hint">This saves a draft only. Nothing is published until a connected app is authorized.</p>
+          </div>
+          <div>
+            <input ref={fileInputRef} type="file" multiple accept="image/*,video/*" className="sr-only" tabIndex={-1} aria-label="Choose photos or videos" onChange={e => { if (e.target.files) setPostMedia(Array.from(e.target.files)) }} />
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" className="btn btn-secondary" onClick={() => fileInputRef.current?.click()}><Icon name="image" className="h-5 w-5" />Add photos</button>
+              {postMedia.length > 0 && (
+                <>
+                  <span className="text-[0.9375rem] text-text-secondary">{postMedia.length} {postMedia.length === 1 ? 'file' : 'files'} chosen</span>
+                  <button type="button" className="btn btn-ghost" onClick={() => { setPostMedia([]); if (fileInputRef.current) fileInputRef.current.value = '' }}>Clear</button>
+                </>
+              )}
+            </div>
+          </div>
+          {postText.trim() && (
+            <div className="rounded-lg border border-border bg-bg-base p-3" aria-label="Preview">
+              <p className="mb-2 flex items-center gap-2 text-[0.8125rem] font-bold text-text-secondary"><Icon name="eye" className="h-4 w-4" />Preview</p>
+              <div className="flex items-center gap-2">
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-bg-hover font-bold" aria-hidden="true">{(shop.name || 'S').charAt(0).toUpperCase()}</span>
+                <p className="min-w-0 truncate font-bold">{shop.name || 'Your shop'}</p>
+              </div>
+              <p className="mt-2 whitespace-pre-wrap break-words text-[0.9375rem]">{postText}</p>
+              {postMedia.length > 0 && <p className="mt-2 text-[0.875rem] text-text-secondary">{postMedia.length} {postMedia.length === 1 ? 'photo' : 'photos'} attached</p>}
+              <p className="mt-2 text-[0.8125rem] text-text-secondary">For: {postPlatforms.length ? postPlatforms.map(x => PLATFORMS.find(p => p.key === x)?.label || x).join(', ') : 'no place chosen yet'}</p>
+            </div>
+          )}
+          <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
+            <button type="button" className="btn btn-secondary" onClick={closePost}>Cancel</button>
+            <button type="button" className="btn btn-primary" onClick={createSocialPost} disabled={posting}>{posting ? 'Saving…' : 'Save draft'}</button>
+          </div>
+        </div>
+      </Sheet>
+
+      <Sheet open={showLookup} onClose={closeLookup} title="Look up a person" wide>
+        <form onSubmit={e => { e.preventDefault(); void lookUp() }} className="space-y-3">
+          <p className="-mt-1 text-[0.9375rem] text-text-secondary">Type a name, business or Google reviewer. Alpha searches public pages for a phone number, email or social page.</p>
+          <div>
+            <label htmlFor="intel-q" className="form-label">Name or business</label>
+            <input id="intel-q" className="form-input" value={intelQuery} onChange={e => setIntelQuery(e.target.value)} placeholder="Name, business or reviewer" autoComplete="off" />
+          </div>
+          <button type="submit" className="btn btn-primary w-full sm:w-auto" disabled={intelSearching}><Icon name="search" className="h-5 w-5" />{intelSearching ? 'Searching…' : 'Look up'}</button>
+        </form>
+        {intelSearching && <div className="skeleton mt-4 h-24" role="status" aria-label="Searching" />}
+        {intelResults && (
+          <div className="mt-5">
+            <h3 className="section-title mb-2">Results for {intelQuery}</h3>
+            {(intelResults.results || []).length === 0 ? (
+              <EmptyBlock title="Nothing found">Try the full name, the business name or a nickname.</EmptyBlock>
+            ) : (
+              <ul className="space-y-2">
+                {intelResults.results.map((r: Rec, i: number) => (
+                  <li key={i} className="rounded-lg border border-border bg-bg-base p-3">
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <span className="font-bold">{r.source || 'Web'}</span>
+                      <span className={`tag text-[0.8125rem] ${r.confidence === 'high' ? 'tag-green' : 'tag-amber'}`}>{r.confidence === 'high' ? 'High confidence' : `${r.confidence ? String(r.confidence).charAt(0).toUpperCase() + String(r.confidence).slice(1) : 'Medium'} confidence`}</span>
+                    </div>
+                    {r.name && <p className="text-[0.9375rem]">Name: {r.name}</p>}
+                    {r.phone && <p className="text-[0.9375rem]">Phone: <a href={`tel:${r.phone}`} className="font-bold text-blue underline-offset-2 hover:underline">{phonePretty(r.phone)}</a></p>}
+                    {r.email && <p className="break-all text-[0.9375rem]">Email: <a href={`mailto:${r.email}`} className="font-bold text-blue underline-offset-2 hover:underline">{r.email}</a></p>}
+                    {r.social && <p className="break-all text-[0.9375rem]">Social: {r.social}</p>}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {intelResults.summary && <p className="mt-3 rounded-md bg-bg-hover px-3 py-2 text-[0.9375rem]">{intelResults.summary}</p>}
+          </div>
+        )}
+      </Sheet>
+
+      <ScreenToast toast={toast} onClose={dismiss} />
+    </div>
+  )
 }

@@ -1,45 +1,75 @@
 'use client'
-import { useEffect, useState, useCallback } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { getShopId, supabase } from '@/lib/supabase'
+import { ageLabel, phonePretty } from '@/lib/today'
+import Icon from '@/components/Icon'
+import Sheet from '@/components/Sheet'
+import SentimentMark from '@/components/customers/SentimentMark'
+import CustomerForm from '@/components/customers/CustomerForm'
+import CustomerDetail, { dialCustomer } from '@/components/customers/CustomerDetail'
+import SendPanel from '@/components/customers/SendPanel'
+import { SENTIMENTS, matchesSearch, sentimentOf, text, vehicleLabel } from '@/components/customers/types'
+import type { Customer } from '@/components/customers/types'
 
-interface Customer { id: string; name: string; phone: string; email: string; address: string; preferred_contact: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; vehicle_vin: string; vehicle_plate: string; vehicle_mileage: string; notes: string; created_at: string; sentiment?: string }
-interface TimelineEntry { id: string; type: 'sms'|'call'|'job'|'invoice'; direction?: string; body?: string; duration_secs?: number; status?: string; concern?: string; created_at: string; amount?: number }
+type SheetState =
+  | { mode: 'view'; id: string }
+  | { mode: 'edit'; id: string }
+  | { mode: 'new' }
+  | { mode: 'send'; id: string; channel: 'sms' | 'email' }
 
-const SENTIMENT_COLORS: Record<string,string> = { happy:'tag-green', neutral:'tag-gray', unhappy:'tag-red', vip:'tag-blue', 'at-risk':'tag-amber' }
-const SENTIMENT_LABELS: Record<string,string> = { happy:'😊 Happy', neutral:'😐 Neutral', unhappy:'😞 Unhappy', vip:'⭐ VIP', 'at-risk':'⚠️ At Risk' }
-const SENTIMENT_OPTIONS = ['happy','neutral','unhappy','vip','at-risk'] as const
+interface VisitInfo { jobs: number; last: string }
 
-function toTitleCase(str: string) {
-  return str.replace(/\b\w/g, c => c.toUpperCase())
+function ListSkeleton() {
+  return (
+    <div className="page-container" aria-busy="true" aria-label="Loading customers">
+      <div className="skeleton h-9 w-48" />
+      <div className="skeleton mt-3 h-4 w-40" />
+      <div className="skeleton mt-6 h-11 w-full" />
+      <div className="mt-4 space-y-2">{[0, 1, 2, 3, 4, 5, 6, 7].map(i => <div key={i} className="skeleton h-[4.25rem]" />)}</div>
+    </div>
+  )
 }
 
 export default function CustomersPage() {
+  return (
+    <Suspense fallback={<ListSkeleton />}>
+      <CustomersScreen />
+    </Suspense>
+  )
+}
+
+function CustomersScreen() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string|null>(null)
-  const [editing, setEditing] = useState<string|null|'new'>(null)
-  const [form, setForm] = useState<Partial<Customer>>({})
-  const [vinDecoding, setVinDecoding] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [visits, setVisits] = useState<Record<string, VisitInfo>>({})
   const [search, setSearch] = useState('')
   const [sentimentFilter, setSentimentFilter] = useState('all')
-  const [sendModal, setSendModal] = useState<{ customer: Customer; channel: 'sms'|'email' }|null>(null)
-  const [sendBody, setSendBody] = useState('')
-  const [sending, setSending] = useState(false)
-  const [jobCounts, setJobCounts] = useState<Record<string,number>>({})
-  const [activeTab, setActiveTab] = useState<'info'|'timeline'>('info')
-  const [timeline, setTimeline] = useState<TimelineEntry[]>([])
-  const [timelineLoading, setTimelineLoading] = useState(false)
+  const [sheet, setSheet] = useState<SheetState | null>(null)
+  const [form, setForm] = useState<Partial<Customer>>({})
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const [nameError, setNameError] = useState(false)
+  const [notice, setNotice] = useState('')
+  const sheetBody = useRef<HTMLDivElement>(null)
+
+  const params = useSearchParams()
+  const qParam = params.get('q')
+  const customerParam = params.get('customer')
+  const handledLink = useRef('')
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
       let shopId: string | null = null
       try { shopId = await getShopId() } catch { shopId = null }
-      if (!shopId) { setCustomers([]); setJobCounts({}); setLoadError('We could not find your shop. Try refreshing, or sign out and back in.'); return }
-      // Customers and job counts are independent, so fetch them together.
-      const [{ data, error }, { data: jobs }] = await Promise.all([
+      if (!shopId) { setCustomers([]); setVisits({}); setLoadError('We could not find your shop. Try refreshing, or sign out and back in.'); return }
+      // Customers, jobs and paid paperwork are independent, so fetch them together.
+      const [{ data, error }, { data: jobs }, { data: paid }] = await Promise.all([
         supabase.from('customers').select('*').eq('shop_id', shopId).order('name'),
-        supabase.from('jobs').select('customer_id').eq('shop_id', shopId)
+        supabase.from('jobs').select('customer_id,created_at').eq('shop_id', shopId),
+        supabase.from('documents').select('customer_id,created_at').eq('shop_id', shopId).in('type', ['Invoice', 'Receipt']).order('created_at', { ascending: false }).limit(2000),
       ])
       if (error) {
         // Keep the current list on screen; a failed refresh must not look like "no customers".
@@ -48,370 +78,327 @@ export default function CustomersPage() {
       }
       setLoadError(null)
       setCustomers((data || []) as Customer[])
-      const counts: Record<string,number> = {}
-      ;(jobs || []).forEach((j: Record<string,string>) => { counts[j.customer_id] = (counts[j.customer_id]||0) + 1 })
-      setJobCounts(counts)
+      const info: Record<string, VisitInfo> = {}
+      const touch = (id: unknown, when: unknown, isJob: boolean) => {
+        if (!id) return
+        const k = String(id)
+        const row = (info[k] ||= { jobs: 0, last: '' })
+        if (isJob) row.jobs += 1
+        const w = String(when || '')
+        if (w > row.last) row.last = w
+      }
+      ;(jobs || []).forEach((j: Record<string, unknown>) => touch(j.customer_id, j.created_at, true))
+      ;(paid || []).forEach((d: Record<string, unknown>) => touch(d.customer_id, d.created_at, false))
+      setVisits(info)
+    } catch {
+      setLoadError('Your customers could not be loaded. Check your connection and try again.')
     } finally { setLoading(false) }
   }, [])
+
   useEffect(() => {
     load()
     const ch = supabase.channel('customers_page').on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, load).subscribe()
     return () => { supabase.removeChannel(ch) }
   }, [load])
 
-  const loadTimeline = useCallback(async (customer: Customer) => {
-    setTimelineLoading(true)
+  // Links from global search (/customers?q=Name) prefill the box. ?customer=<id> opens that person.
+  useEffect(() => { if (qParam !== null) setSearch(qParam) }, [qParam])
+  useEffect(() => {
+    if (loading || loadError) return
+    const key = `${qParam ?? ''}|${customerParam ?? ''}`
+    if (key === '|' || handledLink.current === key) return
+    handledLink.current = key
+    if (customerParam) {
+      const hit = customers.find(c => c.id === customerParam)
+      if (hit) setSheet({ mode: 'view', id: hit.id })
+    } else if (qParam) {
+      const exact = customers.filter(c => text(c.name).trim().toLowerCase() === qParam.trim().toLowerCase())
+      if (exact.length === 1) setSheet({ mode: 'view', id: exact[0].id })
+    }
+  }, [loading, loadError, qParam, customerParam, customers])
+
+  useEffect(() => {
+    if (!notice) return
+    const t = setTimeout(() => setNotice(''), 6000)
+    return () => clearTimeout(t)
+  }, [notice])
+
+  const closeSheet = useCallback(() => { setSheet(null); setForm({}); setSaveError(''); setNameError(false) }, [])
+
+  // Keep keyboard and screen reader focus inside the sheet when its content changes.
+  const mode = sheet?.mode
+  useEffect(() => {
+    if (!mode || mode === 'new') return
+    sheetBody.current?.focus({ preventScroll: true })
+  }, [mode])
+
+  const current = sheet && 'id' in sheet ? customers.find(c => c.id === sheet.id) || null : null
+  useEffect(() => {
+    // The customer vanished (deleted elsewhere): close instead of showing an empty sheet.
+    if (sheet && 'id' in sheet && !loading && !current) closeSheet()
+  }, [sheet, current, loading, closeSheet])
+
+  // The "enter a name" message goes away as soon as there is one.
+  useEffect(() => { if (nameError && text(form.name).trim()) setNameError(false) }, [nameError, form.name])
+
+  const openNew = () => {
+    setForm({ preferred_contact: 'Call', sentiment: 'neutral' })
+    setSaveError(''); setNameError(false)
+    setSheet({ mode: 'new' })
+  }
+  const openEdit = (c: Customer) => {
+    setForm({ ...c })
+    setSaveError(''); setNameError(false)
+    setSheet({ mode: 'edit', id: c.id })
+  }
+
+  const save = async () => {
+    if (!text(form.name).trim()) {
+      setNameError(true); setSaveError('')
+      requestAnimationFrame(() => document.getElementById('cf-name')?.focus())
+      return
+    }
+    setNameError(false); setSaveError(''); setSaving(true)
     try {
       const shopId = await getShopId()
-      if (!shopId) { setTimeline([]); return }
-      const phone = customer.phone?.replace(/\D/g,'')
-      const name = customer.name?.toLowerCase()
-      const results: TimelineEntry[] = []
-
-      const [{ data: msgs }, { data: calls }, { data: jobs }, { data: invoices }] = await Promise.all([
-        customer.phone
-          ? supabase.from('messages').select('id,body,direction,created_at').eq('shop_id', shopId).or('from_address.ilike.%' + phone + '%,to_address.ilike.%' + phone + '%').order('created_at',{ascending:false}).limit(50)
-          : Promise.resolve({ data: [] }),
-        customer.phone
-          ? supabase.from('call_history').select('id,direction,duration_secs,start_time,status').eq('shop_id', shopId).or('from_number.ilike.%' + phone + '%,to_number.ilike.%' + phone + '%').order('start_time',{ascending:false}).limit(30)
-          : Promise.resolve({ data: [] }),
-        supabase.from('jobs').select('id,concern,status,created_at').eq('shop_id', shopId).or('customer_id.eq.' + customer.id + ',customer_name.ilike.%' + name + '%').order('created_at',{ascending:false}).limit(20),
-        supabase.from('documents').select('id,parts,labors,line_items,amount_paid,status,created_at').eq('shop_id', shopId).eq('customer_id',customer.id).in('type',['Invoice','Receipt']).order('created_at',{ascending:false}).limit(20)
-      ])
-
-      for (const m of (msgs||[])) results.push({ id: m.id, type: 'sms', direction: m.direction, body: m.body, created_at: m.created_at })
-      for (const c of (calls||[])) results.push({ id: c.id, type: 'call', direction: c.direction, duration_secs: c.duration_secs, status: c.status, created_at: c.start_time })
-      for (const j of (jobs||[])) results.push({ id: j.id, type: 'job', concern: j.concern, status: j.status, created_at: j.created_at })
-      for (const inv of (invoices||[])) {
-        const parts = Array.isArray(inv.parts) ? inv.parts : []
-        const labors = Array.isArray(inv.labors) ? inv.labors : []
-        const lineItems = Array.isArray(inv.line_items) ? inv.line_items : []
-        const amount = [...parts, ...labors, ...lineItems].reduce((sum: number, item: Record<string, unknown>) => sum + Number(item.amount || item.total || item.unitPrice || 0), 0)
-        results.push({ id: inv.id, type: 'invoice', amount, status: inv.status, created_at: inv.created_at })
+      if (!shopId) { setSaveError('No shop is associated with the signed-in user'); return }
+      const safeFields = ['name', 'phone', 'email', 'address', 'notes', 'preferred_contact', 'vehicle_year', 'vehicle_make', 'vehicle_model', 'vehicle_vin', 'vehicle_plate', 'vehicle_mileage']
+      const data: Record<string, unknown> = { shop_id: shopId, updated_at: new Date().toISOString() }
+      for (const k of safeFields) { if ((form as Record<string, string>)[k] !== undefined) data[k] = (form as Record<string, string>)[k] }
+      const extended = ['sentiment', 'vehicle_color', 'vehicle_engine', 'last_contact', 'review_requested']
+      for (const k of extended) { if ((form as Record<string, string>)[k] !== undefined) data[k] = (form as Record<string, string>)[k] }
+      if (sheet?.mode === 'new') {
+        const { error } = await supabase.from('customers').insert({ ...data, created_at: new Date().toISOString() })
+        if (error) { setSaveError('Save failed: ' + error.message); return }
+      } else if (sheet?.mode === 'edit') {
+        const { error } = await supabase.from('customers').update(data).eq('id', sheet.id).eq('shop_id', shopId)
+        if (error) { setSaveError('Save failed: ' + error.message); return }
       }
-
-      results.sort((a,b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-      setTimeline(results)
-    } finally { setTimelineLoading(false) }
-  }, [])
-  const save = async () => {
-    if (!form.name) return alert('Name required')
-    const shopId = await getShopId()
-    if (!shopId) return alert('No shop is associated with the signed-in user')
-    const safeFields = ['name','phone','email','address','notes','preferred_contact','vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage']
-    const data: Record<string,unknown> = { shop_id: shopId, updated_at: new Date().toISOString() }
-    for (const k of safeFields) { if ((form as Record<string,string>)[k] !== undefined) data[k] = (form as Record<string,string>)[k] }
-    const extended = ['sentiment','vehicle_color','vehicle_engine','last_contact','review_requested']
-    for (const k of extended) { if ((form as Record<string,string>)[k] !== undefined) data[k] = (form as Record<string,string>)[k] }
-    if (editing === 'new') {
-      const { error } = await supabase.from('customers').insert({ ...data, created_at: new Date().toISOString() })
-      if (error) { alert('Save failed: ' + error.message); return }
-    } else if (editing) {
-      const { error } = await supabase.from('customers').update(data).eq('id', editing).eq('shop_id', shopId)
-      if (error) { alert('Save failed: ' + error.message); return }
-    }
-    setEditing(null); setForm({}); setActiveTab('info'); await load()
+      const wasNew = sheet?.mode === 'new'
+      const editedId = sheet && 'id' in sheet ? sheet.id : null
+      await load()
+      setNotice(wasNew ? 'Customer added.' : 'Changes saved.')
+      if (wasNew || !editedId) closeSheet()
+      else { setForm({}); setSheet({ mode: 'view', id: editedId }) }
+    } finally { setSaving(false) }
   }
 
   const del = async () => {
-    if (!editing || editing === 'new') return
+    if (!sheet || sheet.mode !== 'edit') return
     if (!confirm('Delete this customer?')) return
+    setSaveError('')
     const shopId = await getShopId()
-    if (!shopId) return alert('No shop is associated with the signed-in user')
-    const { error } = await supabase.from('customers').delete().eq('id', editing).eq('shop_id', shopId)
-    if (error) { alert('Delete failed: ' + error.message); return }
-    setEditing(null); setForm({}); setActiveTab('info'); await load()
-  }
-  const openEdit = (c: Customer) => {
-    setForm(c)
-    setEditing(c.id)
-    setActiveTab('info')
-    loadTimeline(c)
+    if (!shopId) { setSaveError('No shop is associated with the signed-in user'); return }
+    const { error } = await supabase.from('customers').delete().eq('id', sheet.id).eq('shop_id', shopId)
+    if (error) { setSaveError('Delete failed: ' + error.message); return }
+    closeSheet()
+    setNotice('Customer deleted.')
+    await load()
   }
 
-  const sendMsg = async () => {
-    if (!sendModal || !sendBody) return
-    setSending(true)
-    try {
-      const res = await fetch('/api/send-message', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: sendModal.channel === 'sms' ? sendModal.customer.phone : sendModal.customer.email, body: sendBody, channel: sendModal.channel, customerId: sendModal.customer.id })
-      })
-      if (!res.ok) throw new Error('Failed')
-      setSendModal(null); setSendBody('')
-    } catch (e: unknown) { alert((e as Error).message) }
-    finally { setSending(false) }
+  const sorted = useMemo(
+    () => [...customers].sort((a, b) => {
+      const an = text(a.name).trim(), bn = text(b.name).trim()
+      if (!an !== !bn) return an ? -1 : 1
+      return an.localeCompare(bn, undefined, { sensitivity: 'base' })
+    }),
+    [customers],
+  )
+
+  const filtered = useMemo(
+    () => sorted.filter(c => matchesSearch(c, search) && (sentimentFilter === 'all' || (c.sentiment || 'neutral') === sentimentFilter)),
+    [sorted, search, sentimentFilter],
+  )
+
+  const counts = useMemo(() => {
+    const m: Record<string, number> = {}
+    for (const c of customers) { const k = sentimentOf(c).key; m[k] = (m[k] || 0) + 1 }
+    return m
+  }, [customers])
+
+  const filtersOn = search.trim() !== '' || sentimentFilter !== 'all'
+  const clearFilters = () => { setSearch(''); setSentimentFilter('all') }
+
+  // ---------- Loading and error ----------
+  if (loading && customers.length === 0 && !loadError) return <ListSkeleton />
+
+  const sheetTitle =
+    !sheet ? 'Customer'
+    : sheet.mode === 'new' ? 'New customer'
+    : sheet.mode === 'edit' ? 'Edit customer'
+    : sheet.mode === 'send' ? `${sheet.channel === 'sms' ? 'Text' : 'Email'} ${current?.name || 'customer'}`
+    : current?.name || 'Customer'
+
+  const groupLetter = (c: Customer) => {
+    const ch = text(c.name).trim().charAt(0).toUpperCase()
+    return /[A-Z]/.test(ch) ? ch : '#'
   }
-
-  const filtered = customers.filter(c => {
-    if (search && ![c.name, c.phone, c.email, c.vehicle_make, c.vehicle_model, c.vehicle_plate].some(v => (v||'').toLowerCase().includes(search.toLowerCase()))) return false
-    if (sentimentFilter !== 'all' && (c.sentiment||'neutral') !== sentimentFilter) return false
-    return true
-  })
-
-  const fmtDate = (d: string) => d ? new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : ''
-  const fmtTime = (d: string) => d ? new Date(d).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : ''
-
-  if (loading && customers.length === 0) {
-    return (
-      <div className="p-4 sm:p-6 lg:p-8">
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {[1,2,3,4,5,6].map(i => (
-            <div key={i} className="card p-4 animate-pulse">
-              <div className="h-5 w-32 bg-bg-hover rounded mb-2" />
-              <div className="h-3 w-48 bg-bg-hover rounded mb-4" />
-              <div className="h-3 w-24 bg-bg-hover rounded" />
-            </div>
-          ))}
-        </div>
-      </div>
-    )
-  }
+  const showLetters = filtered.length >= 8
 
   return (
-    <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
-      {editing !== null ? (
-        <div>
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h1 className="text-2xl font-bold">{editing === 'new' ? 'New Customer' : form.name || 'Edit Customer'}</h1>
-              {editing !== 'new' && <div className="text-sm text-text-muted mt-0.5">{jobCounts[editing] ? `${jobCounts[editing]} job${jobCounts[editing]===1?'':'s'} · ` : ''}Added {fmtDate((customers.find(c=>c.id===editing)?.created_at)||'')}</div>}
-            </div>
-            <div className="flex gap-2">
-              <button className="btn btn-secondary btn-sm" onClick={() => { setEditing(null); setForm({}); setActiveTab('info') }}>← Back</button>
-              <button className="btn btn-primary btn-sm" onClick={save}>Save Customer</button>
-              {editing !== 'new' && <button className="btn btn-danger btn-sm" onClick={del}>Delete</button>}
-            </div>
-          </div>
+    <div className="page-container animate-fade-in">
+      <header className="mb-5 flex items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="page-title">Customers</h1>
+          <p className="page-subtitle">
+            {customers.length === 0 ? 'Your customer book' : `${customers.length} ${customers.length === 1 ? 'customer' : 'customers'} in your book`}
+          </p>
+        </div>
+        <button type="button" className="btn btn-primary shrink-0" onClick={openNew}>
+          <Icon name="plus" className="h-5 w-5" />New customer
+        </button>
+      </header>
 
-          {editing !== 'new' && (
-            <div className="flex gap-1 mb-6 bg-bg-card border border-border rounded-lg p-1 w-fit">
-              <button className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${activeTab === 'info' ? 'bg-blue text-white' : 'text-text-muted hover:text-text-primary'}`} onClick={() => setActiveTab('info')}>Info</button>
-              <button className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${activeTab === 'timeline' ? 'bg-blue text-white' : 'text-text-muted hover:text-text-primary'}`} onClick={() => setActiveTab('timeline')}>
-                Communication Timeline {timeline.length > 0 && <span className="ml-1 text-xs opacity-70">({timeline.length})</span>}
-              </button>
-            </div>
-          )}
+      {notice && (
+        <div role="status" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-green/40 bg-green/[0.1] px-4 py-3">
+          <span className="flex items-center gap-2 font-bold text-green"><Icon name="check" className="h-5 w-5" />{notice}</span>
+          <button type="button" className="btn-icon -mr-2 h-9 w-9 sm:h-9 sm:w-9" onClick={() => setNotice('')} aria-label="Dismiss message"><Icon name="close" className="h-4 w-4" /></button>
+        </div>
+      )}
 
-          {activeTab === 'info' ? (
-            <div className="max-w-2xl space-y-6">
-              <div className="card space-y-4">
-                <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Contact Info</div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="form-label">Name *</label>
-                    <input className="form-input" value={form.name||''} onChange={e => setForm(f=>({...f,name:toTitleCase(e.target.value)}))} placeholder="Full name" />
-                  </div>
-                  <div>
-                    <label className="form-label">Phone</label>
-                    <input className="form-input" value={form.phone||''} onChange={e => setForm(f=>({...f,phone:e.target.value}))} placeholder="(713) 000-0000" />
-                  </div>
-                  <div>
-                    <label className="form-label">Email</label>
-                    <input className="form-input" type="email" value={form.email||''} onChange={e => setForm(f=>({...f,email:e.target.value}))} />
-                  </div>
-                  <div>
-                    <label className="form-label">Preferred Contact</label>
-                    <select className="form-select" value={form.preferred_contact||'Call'} onChange={e => setForm(f=>({...f,preferred_contact:e.target.value}))}>
-                      {['Call','Text','Email'].map(v=><option key={v}>{v}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <div>
-                  <label className="form-label">Address</label>
-                  <input className="form-input" value={form.address||''} onChange={e => setForm(f=>({...f,address:e.target.value}))} />
-                </div>
-                <div>
-                  <label className="form-label">Customer Sentiment</label>
-                  <select className="form-select" value={form.sentiment||'neutral'} onChange={e => setForm(f=>({...f,sentiment:e.target.value}))}>
-                    {SENTIMENT_OPTIONS.map(s=><option key={s} value={s}>{SENTIMENT_LABELS[s]}</option>)}
-                  </select>
-                </div>
-              </div>
-              <div className="card space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Vehicle Info</div>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    disabled={vinDecoding || !(form.vehicle_vin || '').trim()}
-                    onClick={async () => {
-                      const vin = (form.vehicle_vin || '').trim().toUpperCase()
-                      if (vin.length < 11) { alert('Enter the full VIN first (17 characters).'); return }
-                      setVinDecoding(true)
-                      try {
-                        const res = await fetch(`https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/${encodeURIComponent(vin)}?format=json`, { signal: AbortSignal.timeout(15000) })
-                        const data = await res.json()
-                        const row = data?.Results?.[0] || {}
-                        const year = row.ModelYear || ''
-                        const make = row.Make ? String(row.Make).charAt(0) + String(row.Make).slice(1).toLowerCase() : ''
-                        const model = row.Model || ''
-                        if (!year && !make && !model) { alert('Could not decode that VIN — double-check it.') }
-                        else setForm(f => ({ ...f, vehicle_year: year || f.vehicle_year, vehicle_make: make || f.vehicle_make, vehicle_model: model || f.vehicle_model }))
-                      } catch { alert('VIN lookup failed — try again in a second.') }
-                      setVinDecoding(false)
-                    }}
-                  >{vinDecoding ? 'Decoding…' : 'Decode VIN'}</button>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  {(['vehicle_year','vehicle_make','vehicle_model'] as const).map(k=>(
-                    <div key={k}><label className="form-label">{k.split('_').pop()!.charAt(0).toUpperCase()+k.split('_').pop()!.slice(1)}</label><input className="form-input" value={form[k]||''} onChange={e=>setForm(f=>({...f,[k]:e.target.value}))} /></div>
-                  ))}
-                  {(['vehicle_vin','vehicle_plate','vehicle_mileage'] as const).map(k=>(
-                    <div key={k}><label className="form-label">{k.split('_').pop()!.charAt(0).toUpperCase()+k.split('_').pop()!.slice(1)}</label><input className="form-input" value={form[k]||''} onChange={e=>setForm(f=>({...f,[k]:e.target.value}))} /></div>
-                  ))}
-                </div>
-              </div>
-              <div className="card">
-                <label className="form-label">Notes</label>
-                <textarea className="form-input" rows={3} value={form.notes||''} onChange={e=>setForm(f=>({...f,notes:e.target.value}))} />
-              </div>
-            </div>
-          ) : (
-            /* Communication Timeline */
-            <div className="max-w-2xl">
-              {timelineLoading ? (
-                <div className="card p-8 text-center text-text-muted animate-pulse">Loading timeline…</div>
-              ) : timeline.length === 0 ? (
-                <div className="card p-8 text-center text-text-muted">
-                  <div className="text-4xl mb-3">📋</div>
-                  <div className="text-lg font-semibold mb-1">No history yet</div>
-                  <div className="text-sm">Messages, calls, and jobs will appear here</div>
-                </div>
-              ) : (
-                <div className="relative">
-                  <div className="absolute left-5 top-0 bottom-0 w-0.5 bg-border" />
-                  <div className="space-y-4">
-                    {timeline.map(entry => (
-                      <div key={entry.id} className="relative flex gap-4 pl-12">
-                        <div className={`absolute left-3 w-5 h-5 rounded-full flex items-center justify-center text-xs border-2 border-bg-base ${
-                          entry.type === 'sms' ? 'bg-blue text-white' :
-                          entry.type === 'call' ? 'bg-green text-white' :
-                          entry.type === 'job' ? 'bg-amber text-white' :
-                          'bg-purple-500 text-white'
-                        }`}>
-                          {entry.type === 'sms' ? '💬' : entry.type === 'call' ? '📞' : entry.type === 'job' ? '🔧' : '🧾'}
-                        </div>
-                        <div className="card flex-1 p-3">
-                          <div className="flex items-center justify-between mb-1">
-                            <div className="text-xs font-semibold uppercase tracking-wider text-text-muted">
-                              {entry.type === 'sms' ? `SMS ${entry.direction || ''}` :
-                               entry.type === 'call' ? `Call ${entry.direction || ''}` :
-                               entry.type === 'job' ? 'Job' : 'Invoice'}
-                            </div>
-                            <div className="text-xs text-text-muted">{fmtTime(entry.created_at)}</div>
-                          </div>
-                          {entry.type === 'sms' && <div className="text-sm">{entry.body || '—'}</div>}
-                          {entry.type === 'call' && (
-                            <div className="text-sm text-text-muted">
-                              {entry.duration_secs ? `${Math.round(entry.duration_secs)}s` : 'No duration'} · {entry.status || ''}
-                            </div>
-                          )}
-                          {entry.type === 'job' && (
-                            <div className="text-sm">
-                              <span className="text-text-primary">{entry.concern || 'No concern noted'}</span>
-                              {entry.status && <span className={`ml-2 tag text-xs tag-gray`}>{entry.status}</span>}
-                            </div>
-                          )}
-                          {entry.type === 'invoice' && (
-                            <div className="text-sm">
-                              <span className="font-semibold">${(entry.amount||0).toFixed(2)}</span>
-                              {entry.status && <span className={`ml-2 tag text-xs ${entry.status === 'Paid' ? 'tag-green' : 'tag-amber'}`}>{entry.status}</span>}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
+      {loadError && customers.length === 0 ? (
+        <div role="alert" className="card max-w-xl">
+          <h2 className="section-title">Your customers did not load</h2>
+          <p className="mt-1 text-text-secondary">{loadError}</p>
+          <button className="btn btn-primary mt-4" onClick={() => load()}>Try again</button>
+        </div>
+      ) : customers.length === 0 ? (
+        <div className="empty-state">
+          <p className="font-bold text-text-primary">No customers yet</p>
+          <p className="mx-auto mt-1 max-w-md">Add the people you fix cars for. Their phone, email and vehicle save here, so estimates, texts and the schedule fill themselves in.</p>
+          <button className="btn btn-primary mt-4" onClick={openNew}><Icon name="plus" className="h-5 w-5" />Add your first customer</button>
         </div>
       ) : (
-        <div>
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-6">
-            <h1 className="text-xl sm:text-2xl font-bold">Customers <span className="text-text-muted text-lg font-normal ml-2">{customers.length}</span></h1>
-            <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
-              <input className="form-input w-full sm:w-64" placeholder="Search name, phone, vehicle…" value={search} onChange={e => setSearch(e.target.value)} />
-              <button className="btn btn-primary whitespace-nowrap" onClick={() => { setForm({ preferred_contact: 'Call', sentiment: 'neutral' }); setEditing('new') }}>+ New Customer</button>
-            </div>
-          </div>
-
-          <div className="flex gap-2 mb-4 flex-wrap overflow-x-auto pb-1">
-            <button onClick={() => setSentimentFilter('all')} className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${sentimentFilter === 'all' ? 'bg-blue text-white' : 'bg-bg-card text-text-muted hover:text-text-primary border border-border'}`}>All</button>
-            {SENTIMENT_OPTIONS.map(s => (
-              <button key={s} onClick={() => setSentimentFilter(s)} className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${sentimentFilter === s ? 'bg-blue text-white' : 'bg-bg-card text-text-muted hover:text-text-primary border border-border'}`}>
-                {SENTIMENT_LABELS[s]}
-              </button>
-            ))}
-          </div>
-
+        <>
           {loadError && (
-            <div className="card p-4 mb-4 flex items-center justify-between gap-3" role="alert">
-              <span className="text-sm text-text-muted">{loadError}</span>
-              <button className="btn btn-secondary btn-sm whitespace-nowrap" onClick={() => load()}>Try again</button>
+            <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red/40 bg-red/[0.08] px-4 py-3">
+              <span className="text-red">{loadError}</span>
+              <button className="btn btn-secondary btn-sm" onClick={() => load()}>Try again</button>
             </div>
           )}
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {filtered.length === 0 && !loadError && (
-              <div className="col-span-3 text-center py-16 text-text-muted">
-                <div className="text-5xl mb-4">👤</div>
-                <div className="text-lg font-semibold mb-2">{customers.length === 0 ? 'No customers yet' : 'No customers match your search'}</div>
-                {customers.length === 0 && (
-                  <button className="btn btn-primary mt-1" onClick={() => { setForm({ preferred_contact: 'Call', sentiment: 'neutral' }); setEditing('new') }}>+ Add First Customer</button>
-                )}
-              </div>
-            )}
-            {filtered.map(c => (
-              <div key={c.id} className="card hover:border-blue/40 transition-colors cursor-pointer group" onClick={() => openEdit(c)}>
-                <div className="flex items-start justify-between mb-3">
-                  <div>
-                    <div className="font-semibold text-text-primary flex items-center gap-2">
-                      {c.name}
-                      {c.sentiment && c.sentiment !== 'neutral' && (
-                        <span className={`tag text-xs ${SENTIMENT_COLORS[c.sentiment]||'tag-gray'}`}>{SENTIMENT_LABELS[c.sentiment]||c.sentiment}</span>
-                      )}
-                    </div>
-                    <div className="text-sm text-text-muted mt-0.5">{c.phone || 'No phone'}{c.email ? ` · ${c.email}` : ''}</div>
-                  </div>
-                  <span className="tag tag-blue text-xs">{c.preferred_contact||'Call'}</span>
-                </div>
-                {(c.vehicle_make||c.vehicle_model) && (
-                  <div className="text-sm text-text-secondary mb-3">{[c.vehicle_year,c.vehicle_make,c.vehicle_model].filter(Boolean).join(' ')}</div>
-                )}
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-text-muted">{jobCounts[c.id] ? `${jobCounts[c.id]} job${jobCounts[c.id]===1?'':'s'} · ` : ''}Added {fmtDate(c.created_at)}</span>
-                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
-                    {c.phone && <button className="btn btn-sm btn-secondary" aria-label={`Call ${c.name}`} title={`Call ${c.name}`} onClick={async e => { e.stopPropagation(); if (!confirm(`Call ${c.name} at ${c.phone}?`)) return; try {
-                        const response = await fetch('/api/make-call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:c.phone,name:c.name})})
-                        const payload = await response.json().catch(() => ({}))
-                        if (!response.ok || payload.ok === false || payload.error) throw new Error(payload.error || 'Call could not be started')
-                      } catch (error) { alert(error instanceof Error ? error.message : 'Call could not be started') } }}>📞</button>}
-                    {c.phone && <button className="btn btn-sm btn-secondary" onClick={e => { e.stopPropagation(); setSendModal({customer:c,channel:'sms'}); setSendBody('') }}>💬</button>}
-                    {c.email && <button className="btn btn-sm btn-secondary" onClick={e => { e.stopPropagation(); setSendModal({customer:c,channel:'email'}); setSendBody('') }}>📧</button>}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
-      {sendModal && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-bg-card border border-border rounded-xl w-full max-w-md p-6">
-            <h2 className="text-lg font-bold mb-1">{sendModal.channel === 'sms' ? '💬 Send SMS' : '📧 Send Email'}</h2>
-            <p className="text-sm text-text-muted mb-4">To: <strong>{sendModal.customer.name}</strong> · {sendModal.channel === 'sms' ? sendModal.customer.phone : sendModal.customer.email}</p>
-            <textarea className="form-input w-full mb-4" rows={4} value={sendBody} onChange={e => setSendBody(e.target.value)} placeholder="Your message..." />
-            <div className="flex gap-3">
-              <button className="btn btn-primary flex-1" onClick={sendMsg} disabled={sending||!sendBody}>{sending ? 'Sending…' : 'Send'}</button>
-              <button className="btn btn-secondary" onClick={() => setSendModal(null)}>Cancel</button>
+          <div className="space-y-3">
+            <label className="relative block">
+              <span className="sr-only">Search customers by name, phone, vehicle or email</span>
+              <Icon name="search" className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-text-muted" />
+              <input
+                type="search" inputMode="search" autoComplete="off"
+                className="form-input pl-10" placeholder="Search name, phone, vehicle or email"
+                value={search} onChange={e => setSearch(e.target.value)}
+              />
+            </label>
+
+            <div role="group" aria-label="Filter by how the customer feels" className="flex flex-wrap gap-2">
+              {[{ key: 'all', label: 'All', icon: '', count: customers.length }, ...SENTIMENTS.map(s => ({ key: s.key as string, label: s.label, icon: s.icon, count: counts[s.key] || 0 }))].map(f => {
+                const on = sentimentFilter === f.key
+                return (
+                  <button
+                    key={f.key} type="button" aria-pressed={on} onClick={() => setSentimentFilter(f.key)}
+                    className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-full border px-3.5 text-[0.9375rem] font-bold transition-colors sm:min-h-[40px] ${on ? 'border-blue bg-blue/10 text-blue' : 'border-line bg-bg-card text-text-primary hover:bg-bg-hover'}`}
+                  >
+                    {f.icon && <Icon name={f.icon} className="h-4 w-4" strokeWidth={2.2} />}
+                    {f.label}
+                    <span className="num font-normal opacity-80">{f.count}</span>
+                  </button>
+                )
+              })}
             </div>
           </div>
-        </div>
+
+          <div className="mt-5" aria-live="polite">
+            {filtered.length === 0 ? (
+              <div className="empty-state">
+                <p className="font-bold text-text-primary">
+                  {search.trim() ? <>No customers match &ldquo;{search.trim()}&rdquo;</> : 'No customers with that mood'}
+                </p>
+                <p className="mt-1">Try fewer letters, or the last four digits of a phone number.</p>
+                {filtersOn && <button className="btn btn-secondary mt-4" onClick={clearFilters}>Show all customers</button>}
+              </div>
+            ) : (
+              <>
+                {filtersOn && <p className="mb-2 text-[0.9375rem] text-text-secondary">{filtered.length} of {customers.length} customers</p>}
+                {/* Column names on wide screens. Rows below use the same grid. */}
+                <div className="hidden grid-cols-[minmax(0,1.6fr)_9rem_minmax(0,1.4fr)_8.5rem] gap-4 border-t border-border px-3 pb-2 pt-3 pr-[3.5rem] text-[0.8125rem] font-bold text-text-secondary md:grid" aria-hidden="true">
+                  <span>Name</span><span>Phone</span><span>Vehicle</span><span>Last visit</span>
+                </div>
+                <ul className="ledger">
+                  {filtered.map((c, i) => {
+                    const v = visits[c.id]
+                    const car = vehicleLabel(c)
+                    const mood = sentimentOf(c)
+                    const last = v?.last ? ageLabel(v.last) : ''
+                    const startsGroup = showLetters && (i === 0 || groupLetter(filtered[i - 1]) !== groupLetter(c))
+                    return (
+                      <li key={c.id}>
+                        {startsGroup && (
+                          <div className="border-b border-border bg-bg-chrome/60 px-3 py-1.5 text-[0.8125rem] font-bold text-text-secondary" aria-hidden="true">{groupLetter(c)}</div>
+                        )}
+                        <div className="flex items-center">
+                          <button
+                            type="button"
+                            className="ledger-row min-w-0 flex-1 md:grid md:grid-cols-[minmax(0,1.6fr)_9rem_minmax(0,1.4fr)_8.5rem] md:gap-4"
+                            onClick={() => setSheet({ mode: 'view', id: c.id })}
+                            aria-label={`${c.name || 'Unnamed customer'}${mood.key !== 'neutral' ? `, ${mood.label}` : ''}. Open details`}
+                          >
+                            <span className="ledger-main md:contents">
+                              <span className="flex min-w-0 items-center gap-2">
+                                <span className="ledger-title">{c.name || 'Unnamed customer'}</span>
+                                {mood.key !== 'neutral' && <SentimentMark sentiment={c.sentiment} className="shrink-0" />}
+                              </span>
+                              <span className="ledger-sub block md:contents">
+                                <span className="md:block md:truncate md:text-[0.9375rem] md:text-text-primary">{c.phone ? phonePretty(c.phone) : <span className="text-text-muted">No phone</span>}</span>
+                                {car && <span className="md:hidden"> · </span>}
+                                <span className="md:block md:truncate md:text-[0.9375rem]">{car}</span>
+                              </span>
+                              <span className={`text-[0.8125rem] text-text-secondary md:block md:text-[0.9375rem] ${last || (v && v.jobs > 0) ? 'block' : 'hidden'}`}>
+                                {last && <><span className="md:hidden">Last visit </span>{last}</>}
+                                {v && v.jobs > 0 && <span className="md:hidden">{last ? ' · ' : ''}{v.jobs} {v.jobs === 1 ? 'job' : 'jobs'}</span>}
+                              </span>
+                            </span>
+                          </button>
+                          {c.phone ? (
+                            <button type="button" className="btn-icon mr-1 shrink-0 text-blue hover:text-blue" onClick={() => dialCustomer(c)} aria-label={`Call ${c.name || 'customer'}`} title="Call">
+                              <Icon name="phone" className="h-5 w-5" />
+                            </button>
+                          ) : <span className="mr-1 h-11 w-11 shrink-0 sm:h-10 sm:w-10" aria-hidden="true" />}
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </>
+            )}
+          </div>
+        </>
       )}
+
+      <Sheet open={sheet !== null} onClose={closeSheet} title={sheetTitle} wide>
+        <div ref={sheetBody} tabIndex={-1} className="outline-none">
+          {sheet?.mode === 'view' && current && (
+            <CustomerDetail
+              customer={current}
+              onEdit={() => openEdit(current)}
+              onText={() => setSheet({ mode: 'send', id: current.id, channel: 'sms' })}
+              onEmail={() => setSheet({ mode: 'send', id: current.id, channel: 'email' })}
+            />
+          )}
+          {(sheet?.mode === 'edit' || sheet?.mode === 'new') && (
+            <CustomerForm
+              form={form} setForm={setForm} isNew={sheet.mode === 'new'} saving={saving} error={saveError} nameError={nameError}
+              onSave={save}
+              onCancel={() => (sheet.mode === 'edit' ? (setForm({}), setSaveError(''), setNameError(false), setSheet({ mode: 'view', id: sheet.id })) : closeSheet())}
+              onDelete={sheet.mode === 'edit' ? del : undefined}
+            />
+          )}
+          {sheet?.mode === 'send' && current && (
+            <SendPanel
+              customer={current} channel={sheet.channel}
+              onBack={() => setSheet({ mode: 'view', id: current.id })}
+              onSent={message => { setNotice(message); setSheet({ mode: 'view', id: current.id }) }}
+            />
+          )}
+        </div>
+      </Sheet>
     </div>
   )
 }

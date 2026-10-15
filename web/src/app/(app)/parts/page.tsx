@@ -2,6 +2,8 @@
 
 import { useState } from 'react'
 import { formatCurrency, supabase } from '@/lib/supabase'
+import Icon from '@/components/Icon'
+import { EmptyBlock, ErrorCard, hostOf, Pill, safeHref } from '@/components/ListKit'
 
 interface PartResult {
   position: string
@@ -68,6 +70,9 @@ function confidenceLabel(value: PartsLookupResult['sourceConfidence']) {
   return 'Price unavailable'
 }
 
+const confidenceLamp = (value: PartsLookupResult['sourceConfidence'] | undefined) =>
+  value === 'verified_exact_product_page' ? 'green' as const : value === 'search_result_only' ? 'amber' as const : 'off' as const
+
 function buildEstimatePrompt(result: PartsLookupResult) {
   const lines = [
     `Build an estimate from these verified parts for ${result.vehicle || result.query}.`,
@@ -85,6 +90,16 @@ function buildEstimatePrompt(result: PartsLookupResult) {
   return lines.join('\n')
 }
 
+function SourceLink({ url, store }: { url: string; store: string }) {
+  return (
+    <a className="mt-1 inline-flex min-h-[44px] items-center gap-1.5 font-bold text-blue underline-offset-4 hover:underline sm:min-h-[32px]" href={safeHref(url)} target="_blank" rel="noreferrer noopener">
+      View on {store || hostOf(url) || 'the store'}
+      <Icon name="openExternal" className="h-4 w-4" />
+      <span className="sr-only">(opens in a new tab)</span>
+    </a>
+  )
+}
+
 export default function PartsLookupPage() {
   const [query, setQuery] = useState('')
   const [vehicle, setVehicle] = useState({ year: '', make: '', model: '' })
@@ -93,8 +108,10 @@ export default function PartsLookupPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [searched, setSearched] = useState(false)
+  const [handoffError, setHandoffError] = useState('')
 
   const verifiedCount = (result?.options || []).reduce((count, option) => count + option.parts.length, 0) + (result?.kits.length || 0)
+  const canSearch = [vehicle.year, vehicle.make, vehicle.model, query].some(v => v.trim())
 
   const search = async () => {
     const request = [vehicle.year, vehicle.make, vehicle.model, query].filter(Boolean).join(' ').trim()
@@ -102,6 +119,7 @@ export default function PartsLookupPage() {
     setLoading(true)
     setSearched(true)
     setError('')
+    setHandoffError('')
     setResult(null)
     try {
       const res = await fetch('/api/parts-lookup', {
@@ -114,7 +132,8 @@ export default function PartsLookupPage() {
       if (!res.ok || !data.ok) throw new Error(data.error || 'Parts lookup failed')
       setResult(data.data)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Parts lookup failed')
+      if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) setError('The stores took too long to answer. Try again, or pick fewer stores.')
+      else setError(err instanceof Error && err.message ? err.message : 'Parts lookup failed')
     } finally {
       setLoading(false)
     }
@@ -126,136 +145,208 @@ export default function PartsLookupPage() {
 
   const buildEstimate = () => {
     if (!result || verifiedCount === 0) return
-    localStorage.setItem('ai_prefill', buildEstimatePrompt(result))
+    try {
+      localStorage.setItem('ai_prefill', buildEstimatePrompt(result))
+    } catch {
+      setHandoffError('Your browser blocked saving the parts for Ask Alpha. Allow site storage and try again.')
+      return
+    }
     window.location.href = '/ai'
   }
 
   return (
-    <div className="p-4 sm:p-6 lg:p-8 animate-fade-in space-y-5">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+    <div className="page-container animate-fade-in">
+      <header className="page-header">
         <div>
-          <div className="text-xs font-black uppercase tracking-[0.18em] text-blue">Verified Sourcing</div>
-          <h1 className="mt-2 text-2xl font-black tracking-tight">Parts Lookup</h1>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-text-secondary">
-            Prices only show when they are visible in returned source evidence. Otherwise this page shows source links without making up numbers.
-          </p>
+          <h1 className="page-title">Parts lookup</h1>
+          <p className="page-subtitle">Real prices from store pages, or the source link when a price cannot be verified.</p>
         </div>
-        <button className="btn btn-primary btn-sm" onClick={buildEstimate} disabled={!result || verifiedCount === 0}>
-          Build Estimate From Verified Parts
+      </header>
+
+      <form className="card" onSubmit={e => { e.preventDefault(); if (canSearch && !loading) void search() }}>
+        <div className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-3 sm:grid-cols-[6rem_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)]">
+          <div>
+            <label className="form-label" htmlFor="pl-year">Year</label>
+            <input id="pl-year" className="form-input num" inputMode="numeric" maxLength={4} autoComplete="off" placeholder="2016" value={vehicle.year} onChange={e => setVehicle(v => ({ ...v, year: e.target.value }))} />
+          </div>
+          <div>
+            <label className="form-label" htmlFor="pl-make">Make</label>
+            <input id="pl-make" className="form-input" autoComplete="off" placeholder="Toyota" value={vehicle.make} onChange={e => setVehicle(v => ({ ...v, make: e.target.value }))} />
+          </div>
+          <div className="col-span-2 sm:col-span-1">
+            <label className="form-label" htmlFor="pl-model">Model</label>
+            <input id="pl-model" className="form-input" autoComplete="off" placeholder="Camry" value={vehicle.model} onChange={e => setVehicle(v => ({ ...v, model: e.target.value }))} />
+          </div>
+          <div className="col-span-2 sm:col-span-1">
+            <label className="form-label" htmlFor="pl-part">Part or service</label>
+            <input id="pl-part" className="form-input" autoComplete="off" placeholder="Front brake pads" value={query} onChange={e => setQuery(e.target.value)} />
+          </div>
+        </div>
+
+        <fieldset className="mt-4">
+          <legend className="form-label">Stores to check</legend>
+          <div className="flex flex-wrap gap-2">
+            {STORE_CHOICES.map(store => {
+              const on = stores.includes(store.value)
+              return (
+                <button
+                  key={store.value}
+                  type="button"
+                  aria-pressed={on}
+                  className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-full border px-4 text-[0.9375rem] font-bold transition-colors sm:min-h-[38px] ${on ? 'border-blue bg-blue/10 text-blue' : 'border-[rgb(var(--c-line))] bg-bg-card text-text-primary hover:bg-bg-hover'}`}
+                  onClick={() => toggleStore(store.value)}
+                >
+                  {on && <Icon name="check" className="h-4 w-4" strokeWidth={2.4} />}
+                  {store.label}
+                </button>
+              )
+            })}
+          </div>
+          <p className="form-hint">Leave all off to check every store.</p>
+        </fieldset>
+
+        <button type="submit" className="btn btn-primary btn-lg mt-4 w-full sm:w-auto" disabled={loading || !canSearch}>
+          <Icon name="search" className="h-5 w-5" />
+          {loading ? 'Searching…' : 'Search'}
         </button>
-      </div>
+      </form>
 
-      <section className="rounded-lg border border-border bg-bg-card p-4">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
-          <input className="form-input" placeholder="Year" value={vehicle.year} onChange={e => setVehicle(v => ({ ...v, year: e.target.value }))} />
-          <input className="form-input" placeholder="Make" value={vehicle.make} onChange={e => setVehicle(v => ({ ...v, make: e.target.value }))} />
-          <input className="form-input" placeholder="Model" value={vehicle.model} onChange={e => setVehicle(v => ({ ...v, model: e.target.value }))} />
-          <input className="form-input" placeholder="Part or service" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void search() }} />
-        </div>
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          {STORE_CHOICES.map(store => (
-            <button
-              key={store.value}
-              className={`rounded-md border px-3 py-2 text-xs font-bold transition-colors ${stores.includes(store.value) ? 'border-blue/50 bg-blue/15 text-blue' : 'border-border bg-bg-hover text-text-secondary hover:border-blue/40'}`}
-              onClick={() => toggleStore(store.value)}
-            >
-              {store.label}
-            </button>
-          ))}
-          <button className="btn btn-primary btn-sm ml-auto" onClick={search} disabled={loading || (![vehicle.year, vehicle.make, vehicle.model, query].some(Boolean))}>
-            {loading ? 'Searching...' : 'Search'}
-          </button>
-        </div>
-      </section>
+      <div className="mt-6" aria-live="polite">
+        {loading && (
+          <div role="status" aria-busy="true">
+            <p className="mb-3 text-text-secondary">Checking store pages. This can take up to a minute.</p>
+            <div className="space-y-3">
+              <div className="skeleton h-24" />
+              <div className="skeleton h-24" />
+              <div className="skeleton h-24" />
+            </div>
+          </div>
+        )}
 
-      {error && <div className="rounded-lg border border-red/30 bg-red/10 p-4 text-sm text-red">{error}</div>}
+        {!loading && error && <ErrorCard title="Parts lookup did not finish" message={error} onRetry={() => void search()} />}
 
-      {result && (
-        <section className="rounded-lg border border-border bg-bg-card p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-4">
-            <div>
-              <h2 className="text-lg font-black">{result.vehicle || result.query}</h2>
-              <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 font-bold">{confidenceLabel(result.sourceConfidence)}</span>
-                <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 font-bold">{verifiedCount} verified price item{verifiedCount === 1 ? '' : 's'}</span>
-                {result.positions?.length ? <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 font-bold">{result.positions.join(', ')}</span> : null}
+        {!loading && !error && !searched && (
+          <EmptyBlock icon="parts" title="Search for a part">
+            Enter the car and the part or service you need. Alpha checks store pages and only shows prices it can verify.
+          </EmptyBlock>
+        )}
+
+        {!loading && !error && searched && !result && (
+          <EmptyBlock icon="search" title="No sources found">
+            Try fewer words, check the spelling, or turn on more stores.
+          </EmptyBlock>
+        )}
+
+        {result && !loading && (
+          <section className="space-y-5" aria-labelledby="pl-result">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
+                <h2 id="pl-result" className="section-title text-[1.375rem]">{result.vehicle || result.query}</h2>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Pill lamp={confidenceLamp(result.sourceConfidence)}>{confidenceLabel(result.sourceConfidence)}</Pill>
+                  <Pill><span className="num">{verifiedCount}</span>&nbsp;verified price {verifiedCount === 1 ? 'item' : 'items'}</Pill>
+                  {result.positions?.length ? <Pill>{result.positions.join(', ')}</Pill> : null}
+                </div>
+              </div>
+              <div className="flex flex-col gap-2 sm:items-end">
+                <button className="btn btn-primary" onClick={buildEstimate} disabled={verifiedCount === 0}><Icon name="alpha" className="h-5 w-5" />Build estimate from these parts</button>
+                {result.laborHours ? <p className="num text-[0.9375rem] text-text-secondary">Labor reference: {result.laborHours} h × {formatCurrency(result.laborRate)} per hour</p> : null}
               </div>
             </div>
-            {result.laborHours ? (
-              <div className="text-right text-sm">
-                <div className="font-bold">Labor Reference</div>
-                <div className="text-text-secondary">{result.laborHours} hrs x {formatCurrency(result.laborRate)}</div>
+            {handoffError && <p role="alert" className="text-[0.9375rem] font-bold text-red">{handoffError}</p>}
+
+            {verifiedCount === 0 && (
+              <div className="rounded-lg border border-amber/60 bg-amber/[0.1] p-4">
+                <p className="flex items-center gap-2 font-bold text-text-primary"><Icon name="alert" className="h-5 w-5 shrink-0 text-amber" />No exact prices verified</p>
+                <p className="mt-1 text-text-secondary">The lookup found sources, but no price passed verification. Open the source links below and check the price yourself before you build an estimate.</p>
+              </div>
+            )}
+
+            {result.options.map(option => (
+              <section key={`${option.brand}-${option.tier}`} className="panel" aria-label={`${option.brand || 'Option'} ${option.tier}`}>
+                <div className="panel-header">
+                  <h3 className="section-title min-w-0">{option.brand || 'Option'} <span className="font-normal text-text-secondary">{option.tier}</span></h3>
+                  <span className="display num shrink-0 text-[1.25rem] font-bold">{formatCurrency(option.partsTotal)}</span>
+                </div>
+                <ul className="ledger !border-t-0">
+                  {option.parts.map(part => (
+                    <li key={`${part.position}-${part.url}`}>
+                      <div className="ledger-row items-start py-3">
+                        <div className="ledger-main">
+                          <p className="font-bold leading-snug">{part.position}: {part.name}</p>
+                          <p className="text-[0.9375rem] text-text-secondary">{part.store}{part.partNumber ? <> · <span className="num">{part.partNumber}</span></> : null}</p>
+                          <p className="mt-0.5 flex items-center gap-1.5 text-[0.9375rem] text-text-secondary">
+                            <span className={`lamp lamp-${confidenceLamp(part.sourceConfidence)}`} aria-hidden="true" />
+                            {part.sourceConfidence ? confidenceLabel(part.sourceConfidence) : 'Search result only'}
+                          </p>
+                          <SourceLink url={part.url} store={part.store} />
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <p className="ledger-amt">{formatCurrency(part.price)}</p>
+                          <p className="num text-[0.875rem] text-text-secondary">× {part.quantity || 1}</p>
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ))}
+
+            {result.kits.length > 0 && (
+              <section className="panel" aria-label="Kits">
+                <div className="panel-header"><h3 className="section-title">Kits</h3></div>
+                <ul className="ledger !border-t-0">
+                  {result.kits.map(kit => (
+                    <li key={`${kit.name}-${kit.url}`}>
+                      <div className="ledger-row items-start py-3">
+                        <div className="ledger-main">
+                          <p className="font-bold leading-snug">{kit.name}</p>
+                          <p className="text-[0.9375rem] text-text-secondary">{kit.store}{kit.includes ? ` · ${kit.includes}` : ''}</p>
+                          <p className="mt-0.5 flex items-center gap-1.5 text-[0.9375rem] text-text-secondary">
+                            <span className={`lamp lamp-${confidenceLamp(kit.sourceConfidence)}`} aria-hidden="true" />
+                            {kit.sourceConfidence ? confidenceLabel(kit.sourceConfidence) : 'Search result only'}
+                          </p>
+                          <SourceLink url={kit.url} store={kit.store} />
+                        </div>
+                        <p className="ledger-amt shrink-0">{formatCurrency(kit.price)}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {result.searchUrls?.length ? (
+              <section className="panel" aria-label="Source links">
+                <div className="panel-header"><h3 className="section-title">Source links</h3></div>
+                <ul className="ledger !border-t-0">
+                  {result.searchUrls.slice(0, 10).map(item => (
+                    <li key={item.url}>
+                      <a className="ledger-row" href={safeHref(item.url)} target="_blank" rel="noreferrer noopener">
+                        <span className="ledger-main">
+                          <span className="ledger-title block">{item.store}</span>
+                          <span className="ledger-sub block">{hostOf(item.url) || item.url}</span>
+                        </span>
+                        <Icon name="openExternal" className="h-5 w-5 shrink-0 text-text-secondary" />
+                        <span className="sr-only">(opens in a new tab)</span>
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+
+            {result.warnings?.length ? (
+              <div className="rounded-lg border border-amber/60 bg-amber/[0.1] p-4">
+                <p className="flex items-center gap-2 font-bold text-text-primary"><Icon name="info" className="h-5 w-5 shrink-0 text-amber" />Check before you quote</p>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-text-secondary">
+                  {result.warnings.slice(0, 4).map((w, i) => <li key={i}>{w}</li>)}
+                </ul>
               </div>
             ) : null}
-          </div>
-
-          {verifiedCount === 0 && (
-            <div className="py-8">
-              <div className="text-sm font-bold">No exact prices verified.</div>
-              <p className="mt-2 text-sm text-text-secondary">The lookup found sources, but no price passed verification. Use the source links below and verify manually before building an estimate.</p>
-            </div>
-          )}
-
-          <div className="mt-4 space-y-3">
-            {result.options.map(option => (
-              <div key={`${option.brand}-${option.tier}`} className="rounded-lg border border-white/10 bg-white/[0.025] p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="font-black">{option.brand || 'Option'} <span className="text-text-muted">({option.tier})</span></div>
-                  <div className="font-black text-green">{formatCurrency(option.partsTotal)}</div>
-                </div>
-                <div className="mt-3 divide-y divide-border">
-                  {option.parts.map(part => (
-                    <div key={`${part.position}-${part.url}`} className="grid gap-2 py-3 md:grid-cols-[1fr_auto]">
-                      <div>
-                        <div className="font-bold">{part.position}: {part.name}</div>
-                        <div className="mt-1 text-xs text-text-muted">{part.store}{part.partNumber ? ` - ${part.partNumber}` : ''} - {part.sourceConfidence ? confidenceLabel(part.sourceConfidence) : 'Search result only'}</div>
-                        <a className="mt-1 block truncate text-xs text-blue hover:underline" href={part.url} target="_blank" rel="noreferrer">{part.url}</a>
-                      </div>
-                      <div className="text-right font-black text-green">{formatCurrency(part.price)} x{part.quantity || 1}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-
-            {result.kits.map(kit => (
-              <div key={`${kit.name}-${kit.url}`} className="rounded-lg border border-white/10 bg-white/[0.025] p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="font-black">{kit.name}</div>
-                    <div className="mt-1 text-xs text-text-muted">{kit.store}{kit.includes ? ` - ${kit.includes}` : ''}</div>
-                    <a className="mt-1 block truncate text-xs text-blue hover:underline" href={kit.url} target="_blank" rel="noreferrer">{kit.url}</a>
-                  </div>
-                  <div className="font-black text-green">{formatCurrency(kit.price)}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {result.searchUrls?.length ? (
-            <div className="mt-5 rounded-lg border border-white/10 bg-white/[0.025] p-4">
-              <div className="mb-2 text-sm font-black">Source Links</div>
-              <div className="space-y-2">
-                {result.searchUrls.slice(0, 10).map(item => (
-                  <a key={item.url} className="block truncate text-sm text-blue hover:underline" href={item.url} target="_blank" rel="noreferrer">
-                    {item.store}: {item.url}
-                  </a>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {result.warnings?.length ? (
-            <div className="mt-4 rounded-lg border border-amber/30 bg-amber/10 p-3 text-xs text-amber">
-              {result.warnings.slice(0, 4).join(' ')}
-            </div>
-          ) : null}
-        </section>
-      )}
-
-      {searched && !loading && !result && !error && (
-        <div className="rounded-lg border border-border bg-bg-card p-10 text-center text-sm text-text-muted">No sources found.</div>
-      )}
+          </section>
+        )}
+      </div>
     </div>
   )
 }

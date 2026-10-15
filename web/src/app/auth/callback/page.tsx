@@ -4,6 +4,9 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { ensureShopProfile, supabase } from '@/lib/supabase'
 import { getCallbackSession } from '@/lib/auth-callback'
+import Icon from '@/components/Icon'
+import Notice from '@/components/Notice'
+import { Spinner, StatusScreen } from '@/components/PublicChrome'
 
 function isRecoveryUrl() {
   const params = new URLSearchParams(window.location.search)
@@ -53,16 +56,8 @@ async function ensureShopProfileAndRedirect(session: Session) {
   window.location.replace(profile.created ? '/onboarding' : '/dashboard')
 }
 
-function LockIcon() {
-  return (
-    <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none">
-      <path d="M7 11V8a5 5 0 0 1 10 0v3M6 11h12v9H6v-9Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
 export default function AuthCallback() {
-  const [status, setStatus] = useState('Signing you in...')
+  const [status, setStatus] = useState('Signing you in…')
   const [recovery, setRecovery] = useState(false)
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -88,12 +83,12 @@ export default function AuthCallback() {
 
       const desktopHandoff = getDesktopHandoff()
       if (desktopHandoff) {
-        setStatus('Returning sign-in to the desktop app...')
+        setStatus('Returning sign-in to the desktop app…')
         submitDesktopSession(desktopHandoff, session)
         return
       }
 
-      setStatus('Opening your dashboard...')
+      setStatus('Opening Today…')
       await ensureShopProfileAndRedirect(session)
     }
 
@@ -133,7 +128,7 @@ export default function AuthCallback() {
       const { error: updateError } = await supabase.auth.updateUser({ password })
       if (updateError) throw updateError
 
-      setStatus('Password updated. Opening your dashboard...')
+      setStatus('Password updated. Opening Today…')
       const { data } = await supabase.auth.getSession()
       if (!data.session) throw new Error('Your reset session expired. Request a new reset link.')
       await ensureShopProfileAndRedirect(data.session)
@@ -144,192 +139,63 @@ export default function AuthCallback() {
   }
 
   return (
-    <main className="callback-screen">
-      <section className="callback-panel" aria-live="polite">
-        <div className="callback-icon">
-          {recovery || error ? <LockIcon /> : <span className="spinner" />}
+    <StatusScreen>
+      <div aria-live="polite">
+        <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full border border-border bg-bg-base text-text-secondary">
+          {recovery || error ? <Icon name="lock" className="h-6 w-6" /> : <Spinner className="h-6 w-6" />}
         </div>
 
-        <p className="kicker">Alpha AI Desk</p>
-        <h1>{status}</h1>
+        <h1 className="display text-[1.5rem] font-bold leading-tight">{status}</h1>
 
-        {!recovery && !error && <p className="helper">Keep this window open while the secure session finishes.</p>}
-
-        {recovery && (
-          <form className="password-form" onSubmit={updatePassword}>
-            <label>
-              <span>New password</span>
-              <input
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                autoComplete="new-password"
-                minLength={8}
-                required
-              />
-            </label>
-            <label>
-              <span>Confirm password</span>
-              <input
-                type="password"
-                value={confirmPassword}
-                onChange={(event) => setConfirmPassword(event.target.value)}
-                autoComplete="new-password"
-                minLength={8}
-                required
-              />
-            </label>
-            <button type="submit" disabled={updating}>
-              {updating ? 'Updating...' : 'Update password'}
-            </button>
-          </form>
+        {!recovery && !error && (
+          <p className="mt-2 text-[0.9375rem] text-text-secondary">Keep this window open while the secure session finishes.</p>
         )}
+      </div>
 
-        {error && (
-          <div className="callback-error" role="alert">
-            {error}
-            {!recovery && <p><a href="/login">Return to sign in</a></p>}
+      {recovery && (
+        <form className="mt-6 space-y-4 text-left" onSubmit={updatePassword} noValidate>
+          <div>
+            <label htmlFor="new-password" className="form-label">New password</label>
+            <input
+              id="new-password"
+              type="password"
+              className="form-input"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete="new-password"
+              minLength={8}
+              aria-describedby="new-password-hint"
+            />
+            <p id="new-password-hint" className="form-hint">At least 8 characters.</p>
           </div>
-        )}
-      </section>
+          <div>
+            <label htmlFor="confirm-password" className="form-label">Confirm new password</label>
+            <input
+              id="confirm-password"
+              type="password"
+              className={`form-input ${confirmPassword && !passwordsMatch ? 'border-red' : ''}`}
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+              autoComplete="new-password"
+              minLength={8}
+              aria-invalid={confirmPassword && !passwordsMatch ? true : undefined}
+              aria-describedby={confirmPassword && !passwordsMatch ? 'confirm-password-error' : undefined}
+            />
+            {confirmPassword && !passwordsMatch && <p id="confirm-password-error" className="form-error">The passwords do not match.</p>}
+          </div>
+          <button type="submit" className="btn btn-primary btn-lg w-full" disabled={updating} aria-busy={updating}>
+            {updating && <span aria-hidden="true" className="spinner inline-block h-4 w-4 rounded-full border-2 border-current border-t-transparent" />}
+            {updating ? 'Updating…' : 'Update password'}
+          </button>
+        </form>
+      )}
 
-      <style jsx>{`
-        .callback-screen {
-          min-height: 100vh;
-          padding: 24px;
-          display: grid;
-          place-items: center;
-          background:
-            linear-gradient(120deg, rgba(74, 158, 255, 0.12), transparent 34%),
-            linear-gradient(240deg, rgba(34, 197, 94, 0.12), transparent 34%),
-            #080f1c;
-          color: #f8fafc;
-          font-family: Inter, system-ui, sans-serif;
-        }
-
-        .callback-panel {
-          width: min(420px, 100%);
-          border: 1px solid rgba(226, 232, 240, 0.16);
-          border-radius: 18px;
-          padding: 30px;
-          background: rgba(15, 23, 42, 0.92);
-          box-shadow: 0 28px 90px rgba(0, 0, 0, 0.42);
-          text-align: center;
-        }
-
-        .callback-icon {
-          width: 58px;
-          height: 58px;
-          margin: 0 auto 18px;
-          border-radius: 16px;
-          display: grid;
-          place-items: center;
-          color: #7dd3fc;
-          background: rgba(125, 211, 252, 0.12);
-          border: 1px solid rgba(125, 211, 252, 0.22);
-        }
-
-        .spinner {
-          width: 26px;
-          height: 26px;
-          border: 3px solid rgba(125, 211, 252, 0.24);
-          border-top-color: #7dd3fc;
-          border-radius: 50%;
-          animation: spin 800ms linear infinite;
-        }
-
-        .kicker {
-          margin: 0 0 10px;
-          color: #7dd3fc;
-          font-size: 12px;
-          font-weight: 850;
-          letter-spacing: 0.16em;
-          text-transform: uppercase;
-        }
-
-        h1 {
-          margin: 0;
-          font-size: 25px;
-          line-height: 1.18;
-          font-weight: 850;
-          letter-spacing: 0;
-        }
-
-        .helper {
-          margin: 12px 0 0;
-          color: #94a3b8;
-          font-size: 14px;
-          line-height: 1.5;
-        }
-
-        .password-form {
-          display: grid;
-          gap: 14px;
-          margin-top: 22px;
-          text-align: left;
-        }
-
-        label {
-          display: grid;
-          gap: 8px;
-        }
-
-        label span {
-          color: #cbd5e1;
-          font-size: 13px;
-          font-weight: 760;
-        }
-
-        input {
-          width: 100%;
-          min-height: 48px;
-          border: 1px solid rgba(148, 163, 184, 0.2);
-          border-radius: 12px;
-          padding: 0 14px;
-          outline: none;
-          background: rgba(2, 6, 23, 0.42);
-          color: #f8fafc;
-          font-size: 15px;
-        }
-
-        input:focus {
-          border-color: rgba(125, 211, 252, 0.72);
-          box-shadow: 0 0 0 4px rgba(125, 211, 252, 0.1);
-        }
-
-        button {
-          min-height: 48px;
-          border: 0;
-          border-radius: 12px;
-          background: linear-gradient(135deg, #7dd3fc, #22c55e);
-          color: #06121f;
-          font-weight: 850;
-          cursor: pointer;
-        }
-
-        button:disabled {
-          cursor: not-allowed;
-          opacity: 0.68;
-        }
-
-        .callback-error {
-          margin-top: 16px;
-          border: 1px solid rgba(248, 113, 113, 0.36);
-          border-radius: 12px;
-          padding: 12px 14px;
-          background: rgba(127, 29, 29, 0.24);
-          color: #fecaca;
-          font-size: 13px;
-          line-height: 1.45;
-          text-align: left;
-        }
-
-        @keyframes spin {
-          to {
-            transform: rotate(360deg);
-          }
-        }
-      `}</style>
-    </main>
+      {error && (
+        <Notice kind="error" className="mt-5 text-left">
+          <p>{error}</p>
+          {!recovery && <p className="mt-2"><a href="/login" className="font-bold text-blue underline underline-offset-4">Return to sign in</a></p>}
+        </Notice>
+      )}
+    </StatusScreen>
   )
 }

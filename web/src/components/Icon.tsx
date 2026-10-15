@@ -81,7 +81,11 @@ const PATHS: Record<string, ReactNode> = {
   repeat: <><path d="M17 3l4 4-4 4" /><path d="M3 11V9a2 2 0 0 1 2-2h16" /><path d="M7 21l-4-4 4-4" /><path d="M21 13v2a2 2 0 0 1-2 2H3" /></>,
   wifiOff: <><path d="M3 3l18 18" /><path d="M8.5 16.400a5 5 0 0 1 7 0" /><path d="M5 12.900a10 10 0 0 1 5.1-2.7" /><path d="M2 8.800a15 15 0 0 1 4.2-2.6" /><circle cx="12" cy="20" r=".6" /></>,
   thumbsUp: <><path d="M7 10v11H3V10z" /><path d="M7 10l4-7c1.7 0 3 1.3 3 3v4h5.500a2 2 0 0 1 2 2.300l-1.3 7.500a2 2 0 0 1-2 1.700H7" /></>,
+  stepMinus: <path d="M5 12h14" />,
+  openExternal: <><path d="M14 4h6v6" /><path d="M20 4l-9 9" /><path d="M18 14v4.500a1.500 1.500 0 0 1-1.500 1.500h-11A1.500 1.500 0 0 1 4 18.500v-11A1.500 1.500 0 0 1 5.500 6H10" /></>,
   sparkle: <path d="M12 3l1.9 5.6 5.6 1.9-5.6 1.900L12 18l-1.9-5.6-5.6-1.9 5.6-1.900z" />,
+  chatStop: <rect x="6.5" y="6.5" width="11" height="11" rx="2" />,
+  chatVolume: <><path d="M4 9.500v5h3.500L12 18.500v-13L7.500 9.500z" /><path d="M15.500 9a4 4 0 0 1 0 6" /><path d="M18 6.500a8 8 0 0 1 0 11" /></>,
 }
 
 export type IconName = keyof typeof PATHS | (string & {})
