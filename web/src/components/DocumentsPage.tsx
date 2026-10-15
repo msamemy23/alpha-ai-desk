@@ -192,7 +192,7 @@ export default function DocumentsPage({ type }: { type: DocType }) {
         if (hit) { handledLink.current = true; openDoc(hit, people) }
       } else if (wantsNew) {
         handledLink.current = true
-        void openNew(shop)
+        void openNew(shop, params.get('customer') || undefined, people)
       }
     }
     return rows
@@ -244,7 +244,7 @@ export default function DocumentsPage({ type }: { type: DocType }) {
     return data
   }
 
-  async function openNew(shop: Record<string, string> = settings) {
+  async function openNew(shop: Record<string, string> = settings, customerId?: string, people: Customer[] = customers) {
     setActionError(null)
     try {
       const docNumber = await genDocNumber()
@@ -254,6 +254,9 @@ export default function DocumentsPage({ type }: { type: DocType }) {
         tax_rate: Number.isFinite(rate) ? rate : 8.25, apply_tax: true,
         warranty_type: 'No Warranty', parts: [], labors: [],
       }
+      // Started from a customer (for example from the schedule): fill in who and what car.
+      const who = customerId ? people.find(c => c.id === customerId) : undefined
+      if (who) Object.assign(next, { customer_id: who.id, customer_name: who.name, customer_phone: who.phone, customer_email: who.email, vehicle_year: who.vehicle_year, vehicle_make: who.vehicle_make, vehicle_model: who.vehicle_model, vehicle_vin: who.vehicle_vin, vehicle_plate: who.vehicle_plate, vehicle_mileage: who.vehicle_mileage })
       setForm(next); setBaseline(JSON.stringify(next)); setEditing('new')
       setSignatureImg(null); setNotice(null)
     } catch (e) {

@@ -1,338 +1,424 @@
 'use client'
-import { useEffect, useState, useCallback } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { getShopId, supabase } from '@/lib/supabase'
+import Sheet from '@/components/Sheet'
+import Icon from '@/components/Icon'
+import Segmented from '@/components/inbox/Segmented'
+import Timeline from '@/components/schedule/Timeline'
+import type { TimelineColumn } from '@/components/schedule/Timeline'
+import ApptForm from '@/components/schedule/ApptForm'
+import ApptDetail from '@/components/schedule/ApptDetail'
+import ApptRows from '@/components/schedule/ApptRows'
+import {
+  addDays, byTime, dayLong, dayShort, fromMin, hhmm, isClosed, parseYmd, startOfWeek, weekRange, ymd,
+} from '@/components/schedule/types'
+import type { Appointment, ApptCustomer } from '@/components/schedule/types'
 
-interface Appointment {
-  id: string
-  customer_id: string | null
-  customer_name: string
-  phone: string
-  vehicle: string
-  service: string
-  tech: string
-  date: string
-  time: string
-  duration: number
-  status: string
-  notes: string
-  created_at: string
-}
-interface Customer { id: string; name: string; phone: string; vehicle_year: string; vehicle_make: string; vehicle_model: string }
+type View = 'day' | 'week' | 'list'
+const errText = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback)
 
-const TIMES = ['07:00','07:30','08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30','12:00','12:30','13:00','13:30','14:00','14:30','15:00','15:30','16:00','16:30','17:00','17:30','18:00']
-const STATUS_COLOR: Record<string,string> = { Scheduled:'tag-blue', Confirmed:'tag-green', 'In Progress':'tag-amber', Completed:'tag-green', Cancelled:'tag-red', 'No Show':'tag-red' }
-const STATUSES = ['Scheduled','Confirmed','In Progress','Completed','Cancelled','No Show']
+export default function SchedulePage() {
+  // Date-dependent screens wait until the browser knows today's date, so the server and browser never disagree.
+  const [today, setToday] = useState<Date | null>(null)
+  const [desktop, setDesktop] = useState(false)
+  const [view, setView] = useState<View>('day')
+  const [picked, setPicked] = useState<Date | null>(null)
 
-function getWeekDays(base: Date) {
-  const monday = new Date(base)
-  monday.setDate(base.getDate() - ((base.getDay() + 6) % 7))
-  return Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(monday)
-    d.setDate(monday.getDate() + i)
-    return d
-  })
-}
-
-function fmt(d: Date) { return d.toISOString().slice(0, 10) }
-function fmtDisplay(d: Date) { return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) }
-function fmtTime(t: string) {
-  if (!t) return ''
-  const [h, m] = t.split(':').map(Number)
-  const ap = h >= 12 ? 'PM' : 'AM'
-  return `${h % 12 || 12}:${String(m).padStart(2,'0')} ${ap}`
-}
-
-export default function AppointmentsPage() {
   const [appts, setAppts] = useState<Appointment[]>([])
-  const [customers, setCustomers] = useState<Customer[]>([])
+  const [customers, setCustomers] = useState<ApptCustomer[]>([])
   const [techs, setTechs] = useState<string[]>(['Unassigned'])
-  const [weekBase, setWeekBase] = useState(new Date())
-  // Phones default to the list — the 7-day grid needs sideways scrolling there.
-  const [view, setView] = useState<'week'|'list'>(() =>
-    typeof window !== 'undefined' && window.innerWidth < 640 ? 'list' : 'week'
-  )
-  const [editing, setEditing] = useState<string|null|'new'>(null)
-  const [form, setForm] = useState<Partial<Appointment>>({})
-  const [search, setSearch] = useState('')
+  const [serviceIdeas, setServiceIdeas] = useState<string[]>([])
+  const [shop, setShop] = useState({ name: '', phone: '' })
   const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
   const [loadError, setLoadError] = useState('')
+  const [notice, setNotice] = useState('')
 
-  const weekDays = getWeekDays(weekBase)
+  const [sheet, setSheet] = useState<null | 'form' | 'detail' | 'delete'>(null)
+  const [openId, setOpenId] = useState<string | null>(null)
+  const [form, setForm] = useState<Partial<Appointment>>({})
+  const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [detailError, setDetailError] = useState('')
+  const [textSent, setTextSent] = useState('')
+  const [search, setSearch] = useState('')
+
+  useEffect(() => {
+    const t = new Date()
+    setToday(new Date(t.getFullYear(), t.getMonth(), t.getDate()))
+    setPicked(new Date(t.getFullYear(), t.getMonth(), t.getDate()))
+    const mq = window.matchMedia('(min-width: 1024px)')
+    const apply = () => { setDesktop(mq.matches); if (mq.matches) setView(v => (v === 'day' ? 'week' : v)) }
+    apply()
+    mq.addEventListener('change', apply)
+    return () => mq.removeEventListener('change', apply)
+  }, [])
 
   const load = useCallback(async () => {
-    setLoading(true)
     try {
       const shopId = await getShopId()
-      if (!shopId) { setAppts([]); setLoadError('No shop is associated with the signed-in user'); return }
-      const { data, error } = await supabase.from('appointments').select('*').eq('shop_id', shopId).order('date').order('time')
+      if (!shopId) { setAppts([]); setLoadError('We could not find your shop. Refresh, or sign out and back in.'); return }
+      const since = new Date(); since.setDate(since.getDate() - 120)
+      const { data, error } = await supabase.from('appointments').select('*').eq('shop_id', shopId).gte('date', ymd(since)).order('date').order('time')
       if (error) throw error
-      setAppts((data || []) as Appointment[])
+      setAppts(((data || []) as Appointment[]).map(a => ({ ...a, time: hhmm(a.time) })))
       setLoadError('')
-    } catch (error) {
-      setLoadError('Appointments could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    } catch (e) {
+      setLoadError(`The schedule did not load. ${errText(e, 'Check your connection and try again.')}`)
     } finally { setLoading(false) }
   }, [])
 
   useEffect(() => {
     load()
     fetch('/api/staff?role=technician').then(r => r.json()).then(d => {
-      if (d.ok && d.staff) setTechs(['Unassigned', ...d.staff.map((s: {name: string}) => s.name)])
-    }).catch(error => setLoadError('Technicians could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error')))
+      if (d?.ok && Array.isArray(d.staff)) setTechs(['Unassigned', ...d.staff.map((s: { name: string }) => s.name).filter(Boolean)])
+    }).catch(() => { /* typing a tech name still works */ })
     getShopId().then(shopId => {
-      if (!shopId) { setCustomers([]); return }
-      return supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).order('name').then(({ data, error }) => {
-        if (error) throw error
-        setCustomers((data||[]) as Customer[])
+      if (!shopId) return
+      supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).order('name').then(({ data }) => setCustomers((data || []) as ApptCustomer[]))
+      supabase.from('canned_jobs').select('name').eq('shop_id', shopId).eq('active', true).order('name').limit(8).then(({ data }) => setServiceIdeas((data || []).map((r: { name: string }) => r.name)))
+      supabase.from('settings').select('shop_name,shop_phone').eq('shop_id', shopId).maybeSingle().then(({ data }) => {
+        if (data) setShop({ name: String(data.shop_name || ''), phone: String(data.shop_phone || '') })
       })
-    }).catch(error => setLoadError('Customers could not be loaded: ' + (error instanceof Error ? error.message : 'Unknown error')))
-    const ch = supabase.channel('appts').on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, load).subscribe()
+    }).catch(() => { /* the form still works without the customer list */ })
+    const ch = supabase.channel('appts').on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => { void load() }).subscribe()
     return () => { supabase.removeChannel(ch) }
   }, [load])
 
+  /* ---------- opening the booking form ---------- */
+  const openNew = useCallback((date?: string, time?: string, tech?: string, customerId?: string) => {
+    const base: Partial<Appointment> = { status: 'Scheduled', duration: 60, date: date || ymd(picked || new Date()), time: time || '09:00', tech: tech || 'Unassigned' }
+    const c = customerId ? customers.find(x => x.id === customerId) : undefined
+    if (c) Object.assign(base, { customer_id: c.id, customer_name: c.name, phone: c.phone || '', vehicle: [c.vehicle_year, c.vehicle_make, c.vehicle_model].filter(Boolean).join(' ') })
+    setForm(base); setFormError(''); setOpenId(null); setSheet('form')
+  }, [picked, customers])
+
+  // Links from other screens: /appointments?new=1 and ?new=1&customer=<id>.
+  const [linkDone, setLinkDone] = useState(false)
+  useEffect(() => {
+    if (linkDone || !today || loading) return
+    const p = new URLSearchParams(window.location.search)
+    if (p.get('new')) {
+      const wanted = p.get('customer') || undefined
+      if (wanted && customers.length === 0) return // wait for the customer list
+      setLinkDone(true)
+      openNew(undefined, undefined, undefined, wanted)
+      window.history.replaceState(null, '', window.location.pathname)
+    } else setLinkDone(true)
+  }, [linkDone, today, loading, customers, openNew])
+
+  const openAppt = (a: Appointment) => { setOpenId(a.id); setDetailError(''); setTextSent(''); setSheet('detail') }
+  const closeSheet = () => { setSheet(null); setFormError(''); setDetailError('') }
+  const current = appts.find(a => a.id === openId) || null
+
+  /* ---------- saving ---------- */
   const save = async () => {
-    if (!form.customer_name || !form.date || !form.time) return alert('Name, date and time are required')
-    setSaving(true)
+    if (!form.customer_name?.trim()) { setFormError('Add the customer’s name.'); return }
+    if (!form.date) { setFormError('Choose a date.'); return }
+    if (!form.time) { setFormError('Choose a start time.'); return }
+    setSaving(true); setFormError('')
     try {
       const shopId = await getShopId()
       if (!shopId) throw new Error('No shop is associated with the signed-in user')
       const data = { ...form, shop_id: shopId, updated_at: new Date().toISOString() }
-      if (editing === 'new') {
-        const result = await supabase.from('appointments').insert({
-          ...data,
-          status: data.status || 'Scheduled',
-          created_at: new Date().toISOString(),
-        })
-        if (result.error) throw new Error(result.error.message)
-      } else if (editing) {
-        const result = await supabase.from('appointments').update(data).eq('id', editing).eq('shop_id', shopId)
-        if (result.error) throw new Error(result.error.message)
+      if (!openId) {
+        const r = await supabase.from('appointments').insert({ ...data, status: data.status || 'Scheduled', created_at: new Date().toISOString() })
+        if (r.error) throw new Error(r.error.message)
+      } else {
+        const r = await supabase.from('appointments').update(data).eq('id', openId).eq('shop_id', shopId)
+        if (r.error) throw new Error(r.error.message)
       }
-      setEditing(null); setForm({}); await load()
-    } catch (error) {
-      alert('Appointment could not be saved: ' + (error instanceof Error ? error.message : 'Unknown error'))
+      const when = form.date ? parseYmd(form.date) : null
+      if (when) setPicked(when)
+      setSheet(null)
+      setNotice(`${openId ? 'Saved' : 'Booked'}: ${form.customer_name} on ${when ? dayShort(when) : form.date}.`)
+      await load()
+    } catch (e) {
+      setFormError(`Not saved. ${errText(e, 'Check your connection and try again.')}`)
     } finally { setSaving(false) }
   }
 
+  const setStatus = async (status: string) => {
+    if (!current) return
+    setBusy(true); setDetailError('')
+    try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const r = await supabase.from('appointments').update({ status, updated_at: new Date().toISOString() }).eq('id', current.id).eq('shop_id', shopId)
+      if (r.error) throw new Error(r.error.message)
+      await load()
+      if (status === 'Cancelled' || status === 'No Show') { setSheet(null); setNotice(`${current.customer_name} marked ${status === 'No Show' ? 'as a no show' : 'cancelled'}.`) }
+    } catch (e) { setDetailError(`Status not changed. ${errText(e, 'Try again.')}`) }
+    finally { setBusy(false) }
+  }
+
+  const sendText = async (body: string) => {
+    if (!current) return
+    setBusy(true); setDetailError(''); setTextSent('')
+    try {
+      const res = await fetch('/api/send-message', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: current.phone, body, channel: 'sms', ...(current.customer_id ? { customerId: current.customer_id } : {}) }),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok || d.error) throw new Error(d.error || 'The text did not send. Check your connection and try again.')
+      setTextSent(`Text sent to ${current.customer_name}.`)
+    } catch (e) { setDetailError(errText(e, 'The text did not send.')) }
+    finally { setBusy(false) }
+  }
+
   const del = async () => {
-    if (!editing || editing === 'new') return
-    if (!confirm('Delete this appointment?')) return
-    const shopId = await getShopId()
-    if (!shopId) return
-    const { error } = await supabase.from('appointments').delete().eq('id', editing).eq('shop_id', shopId)
-    if (error) {
-      alert('Appointment could not be deleted: ' + error.message)
-      return
-    }
-    setEditing(null); setForm({}); await load()
+    if (!openId) return
+    setBusy(true); setFormError('')
+    try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('No shop is associated with the signed-in user')
+      const r = await supabase.from('appointments').delete().eq('id', openId).eq('shop_id', shopId)
+      if (r.error) throw new Error(r.error.message)
+      setSheet(null); setOpenId(null)
+      setNotice('Appointment deleted.')
+      await load()
+    } catch (e) { setFormError(`Not deleted. ${errText(e, 'Try again.')}`) }
+    finally { setBusy(false) }
   }
 
-  const openNew = (date?: string, time?: string) => {
-    setForm({ status: 'Scheduled', duration: 60, date: date || fmt(new Date()), time: time || '09:00', tech: 'Unassigned' })
-    setEditing('new')
-  }
+  /* ---------- what to show ---------- */
+  const todayKey = today ? ymd(today) : ''
+  const pickedKey = picked ? ymd(picked) : ''
+  const monday = picked ? startOfWeek(picked) : null
+  const weekDays = monday ? Array.from({ length: 7 }, (_, i) => addDays(monday, i)) : []
+  const byDate = useMemo(() => {
+    const m = new Map<string, Appointment[]>()
+    for (const a of appts) m.set(a.date, [...(m.get(a.date) || []), a])
+    for (const [k, v] of m) m.set(k, v.sort(byTime))
+    return m
+  }, [appts])
+  const dayItems = useMemo(() => byDate.get(pickedKey) || [], [byDate, pickedKey])
+  const todayOpen = (byDate.get(todayKey) || []).filter(a => !isClosed(a.status)).length
 
-  const selectCustomer = (id: string) => {
-    const c = customers.find(c => c.id === id)
-    if (c) {
-      const v = [c.vehicle_year, c.vehicle_make, c.vehicle_model].filter(Boolean).join(' ')
-      setForm(f => ({ ...f, customer_id: c.id, customer_name: c.name, phone: c.phone || '', vehicle: v }))
-    }
-  }
+  const step = (dir: number) => { if (!picked) return; setPicked(addDays(picked, view === 'week' ? dir * 7 : dir)) }
 
-  const todayAppts = appts.filter(a => a.date === fmt(new Date()) && !['Cancelled','Completed'].includes(a.status))
-  const weekAppts = (day: Date) => appts.filter(a => a.date === fmt(day))
+  const weekColumns: TimelineColumn[] = weekDays.map(d => ({
+    key: ymd(d), date: ymd(d), label: d.toLocaleDateString('en-US', { weekday: 'short' }), sub: String(d.getDate()), isToday: ymd(d) === todayKey,
+    items: byDate.get(ymd(d)) || [],
+  }))
+  const boardTechs = useMemo(() => {
+    const names = new Set(techs.filter(t => t !== 'Unassigned'))
+    dayItems.forEach(a => { if (a.tech && a.tech !== 'Unassigned') names.add(a.tech) })
+    return [...names]
+  }, [techs, dayItems])
+  const unassignedItems = dayItems.filter(a => !a.tech || a.tech === 'Unassigned')
+  const dayColumns: TimelineColumn[] = [
+    ...boardTechs.map(t => ({ key: t, date: pickedKey, tech: t, label: t, sub: `${dayItems.filter(a => a.tech === t && !isClosed(a.status)).length} booked`, isToday: false, items: dayItems.filter(a => a.tech === t) })),
+    ...(unassignedItems.length > 0 || boardTechs.length === 0 ? [{ key: 'Unassigned', date: pickedKey, tech: 'Unassigned', label: 'Unassigned', sub: `${unassignedItems.filter(a => !isClosed(a.status)).length} booked`, isToday: false, items: unassignedItems }] : []),
+  ]
 
-  if (editing !== null) {
-    return (
-      <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
-        <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold">{editing === 'new' ? 'New Appointment' : 'Edit Appointment'}</h1>
-          <div className="flex gap-2">
-            <button className="btn btn-secondary btn-sm" onClick={() => { setEditing(null); setForm({}) }}>← Back</button>
-            <button className="btn btn-primary btn-sm" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
-            {editing !== 'new' && <button className="btn btn-danger btn-sm" onClick={del}>Delete</button>}
-          </div>
-        </div>
-        <div className="max-w-2xl space-y-5">
-          <div className="card space-y-4">
-            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Customer</div>
-            <div>
-              <label className="form-label">Existing Customer</label>
-              <select className="form-select" value={form.customer_id || ''} onChange={e => selectCustomer(e.target.value)}>
-                <option value="">— Walk-in / New Customer —</option>
-                {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="form-label">Name *</label>
-                <input className="form-input" value={form.customer_name || ''} onChange={e => setForm(f => ({ ...f, customer_name: e.target.value }))} placeholder="Customer name" />
-              </div>
-              <div>
-                <label className="form-label">Phone</label>
-                <input className="form-input" value={form.phone || ''} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="(713) 000-0000" />
-              </div>
-            </div>
-            <div>
-              <label className="form-label">Vehicle</label>
-              <input className="form-input" value={form.vehicle || ''} onChange={e => setForm(f => ({ ...f, vehicle: e.target.value }))} placeholder="2018 Toyota Camry" />
-            </div>
-          </div>
-          <div className="card space-y-4">
-            <div className="text-xs font-bold uppercase tracking-wider text-text-secondary">Appointment Details</div>
-            <div>
-              <label className="form-label">Service</label>
-              <input className="form-input" value={form.service || ''} onChange={e => setForm(f => ({ ...f, service: e.target.value }))} placeholder="Oil change, brakes, diagnosis…" />
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-              <div>
-                <label className="form-label">Date *</label>
-                <input type="date" className="form-input" value={form.date || ''} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} />
-              </div>
-              <div>
-                <label className="form-label">Time *</label>
-                <select className="form-select" value={form.time || ''} onChange={e => setForm(f => ({ ...f, time: e.target.value }))}>
-                  <option value="">Select time</option>
-                  {TIMES.map(t => <option key={t} value={t}>{fmtTime(t)}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="form-label">Duration</label>
-                <select className="form-select" value={form.duration || 60} onChange={e => setForm(f => ({ ...f, duration: Number(e.target.value) }))}>
-                  <option value={30}>30 min</option>
-                  <option value={60}>1 hour</option>
-                  <option value={90}>1.5 hrs</option>
-                  <option value={120}>2 hours</option>
-                  <option value={180}>3 hours</option>
-                  <option value={240}>4 hours</option>
-                  <option value={480}>All day</option>
-                </select>
-              </div>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="form-label">Technician</label>
-                <select className="form-select" value={form.tech || 'Unassigned'} onChange={e => setForm(f => ({ ...f, tech: e.target.value }))}>
-                  {techs.map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="form-label">Status</label>
-                <select className="form-select" value={form.status || 'Scheduled'} onChange={e => setForm(f => ({ ...f, status: e.target.value }))}>
-                  {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-            </div>
-            <div>
-              <label className="form-label">Notes</label>
-              <textarea className="form-input" rows={3} value={form.notes || ''} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Customer concerns, special instructions…" />
-            </div>
-          </div>
-        </div>
-      </div>
-    )
-  }
+  const upcoming = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return appts
+      .filter(a => a.date >= todayKey || !isClosed(a.status) && a.date >= todayKey)
+      .filter(a => !q || [a.customer_name, a.service, a.vehicle, a.tech, a.phone].some(v => String(v || '').toLowerCase().includes(q)))
+      .sort(byTime)
+  }, [appts, todayKey, search])
+  const past = useMemo(() => appts.filter(a => a.date < todayKey).sort((a, b) => byTime(b, a)).slice(0, 30), [appts, todayKey])
+  const [showPast, setShowPast] = useState(false)
+
+  const ready = !!today && !!picked
+  // A failed load is not an empty schedule; never tell the owner nothing is booked when we could not look.
+  const failedEmpty = !!loadError && appts.length === 0
+  const subtitle = !ready || loading ? 'Loading…' : failedEmpty ? 'Could not load the schedule' : todayOpen === 0 ? 'Nothing left on the schedule today' : `${todayOpen} ${todayOpen === 1 ? 'appointment' : 'appointments'} left today`
+  const dateHeading = view === 'week' && monday ? weekRange(monday) : picked ? dayLong(picked) : ''
+  // Phones get a shorter day so it never gets cut off.
+  const dateHeadingShort = view === 'week' && monday ? weekRange(monday) : picked ? dayShort(picked) : ''
 
   return (
-    <div className="p-4 sm:p-6 lg:p-8 animate-fade-in">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
-        <div>
-          <h1 className="text-2xl font-bold">Appointments</h1>
-          <p className="text-sm text-text-muted mt-0.5">{todayAppts.length} scheduled today</p>
+    <div className="page-container animate-fade-in">
+      <header className="page-header">
+        <div className="min-w-0">
+          <h1 className="page-title">Schedule</h1>
+          <p className="page-subtitle num" aria-live="polite">{subtitle}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="flex bg-bg-card border border-border rounded-lg overflow-hidden">
-            <button className={`px-3 py-1.5 text-sm ${view === 'week' ? 'bg-blue text-white' : 'text-text-muted hover:text-text-primary'}`} onClick={() => setView('week')}>Week</button>
-            <button className={`px-3 py-1.5 text-sm ${view === 'list' ? 'bg-blue text-white' : 'text-text-muted hover:text-text-primary'}`} onClick={() => setView('list')}>List</button>
-          </div>
-          <button className="btn btn-primary btn-sm" onClick={() => openNew()}>+ New Appointment</button>
+        <button type="button" className="btn btn-primary w-full sm:w-auto" onClick={() => openNew()} disabled={!ready}>
+          <Icon name="plus" className="h-5 w-5" />New appointment
+        </button>
+      </header>
+
+      {notice && (
+        <div role="status" className="mb-4 flex items-center justify-between gap-3 rounded-md border border-green/40 bg-bg-card px-4 py-2.5 text-[0.9375rem]">
+          <span className="flex min-w-0 items-center gap-2"><Icon name="check" className="h-5 w-5 shrink-0 text-green" /><span className="min-w-0 break-words">{notice}</span></span>
+          <button type="button" className="btn btn-ghost btn-sm shrink-0" onClick={() => setNotice('')}>Dismiss</button>
         </div>
-      </div>
+      )}
 
-      {loadError && <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red/30 bg-red/10 px-4 py-3 text-sm text-red">
-        <span>{loadError}</span>
-        <button className="btn btn-secondary btn-sm" onClick={load}>Retry</button>
-      </div>}
+      {loadError && (
+        <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-md border border-red/50 bg-red/[0.08] px-4 py-3 text-[0.9375rem]">
+          <p className="text-red">{loadError}{appts.length > 0 ? ' What you see may be out of date.' : ''}</p>
+          <button type="button" className="btn btn-secondary btn-sm shrink-0" onClick={() => { setLoadError(''); setLoading(true); void load() }}>Try again</button>
+        </div>
+      )}
 
-      {view === 'week' ? (
+      {!ready || (loading && appts.length === 0 && !loadError) ? (
+        <div className="space-y-2" aria-busy="true" aria-label="Loading the schedule">
+          <div className="skeleton h-12" />
+          {[0, 1, 2, 3].map(i => <div key={i} className="skeleton h-[4.25rem]" />)}
+        </div>
+      ) : (
         <>
-          <div className="flex items-center gap-3 mb-4">
-            <button className="btn btn-secondary btn-sm" onClick={() => { const d = new Date(weekBase); d.setDate(d.getDate() - 7); setWeekBase(d) }}>← Prev</button>
-            <button className="btn btn-secondary btn-sm" onClick={() => setWeekBase(new Date())}>Today</button>
-            <button className="btn btn-secondary btn-sm" onClick={() => { const d = new Date(weekBase); d.setDate(d.getDate() + 7); setWeekBase(d) }}>Next →</button>
-            <span className="text-sm text-text-muted">{fmtDisplay(weekDays[0])} – {fmtDisplay(weekDays[6])}</span>
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <button type="button" className="btn btn-secondary" onClick={() => setPicked(today)} disabled={pickedKey === todayKey && view !== 'week'}>Today</button>
+            {view !== 'list' && (
+              <>
+                <button type="button" className="btn-icon" onClick={() => step(-1)} aria-label={view === 'week' ? 'Previous week' : 'Previous day'}><Icon name="chevronLeft" className="h-6 w-6" /></button>
+                <button type="button" className="btn-icon" onClick={() => step(1)} aria-label={view === 'week' ? 'Next week' : 'Next day'}><Icon name="chevronRight" className="h-6 w-6" /></button>
+                <h2 className="display min-w-0 flex-1 truncate text-[1.125rem] font-bold sm:text-[1.25rem]" aria-live="polite"><span className="sm:hidden">{dateHeadingShort}</span><span className="hidden sm:inline">{dateHeading}</span></h2>
+              </>
+            )}
+            <Segmented
+              className={view === 'list' ? 'ml-auto' : 'w-full sm:ml-auto sm:w-auto'}
+              label="Schedule view"
+              value={view}
+              onChange={setView}
+              options={[
+                { value: 'day', label: 'Day' },
+                ...(desktop ? [{ value: 'week' as View, label: 'Week' }] : []),
+                { value: 'list', label: 'List' },
+              ]}
+            />
           </div>
-          <div className="overflow-x-auto">
-            <div className="grid grid-cols-7 gap-1 min-w-[700px]">
-              {weekDays.map(day => {
-                const isToday = fmt(day) === fmt(new Date())
-                const dayAppts = weekAppts(day)
+
+          {view !== 'list' && !desktop && (
+            <div className="mb-4 grid grid-cols-7 gap-1" role="group" aria-label="Days this week">
+              {weekDays.map(d => {
+                const k = ymd(d); const n = (byDate.get(k) || []).filter(a => !isClosed(a.status)).length
+                const on = k === pickedKey
                 return (
-                  <div key={fmt(day)} className={`card p-2 min-h-[200px] ${isToday ? 'border-blue/50' : ''}`}>
-                    <div className={`text-xs font-bold mb-2 ${isToday ? 'text-blue' : 'text-text-muted'}`}>
-                      {day.toLocaleDateString('en-US', { weekday: 'short' })}
-                      <br />
-                      <span className={`text-lg font-extrabold ${isToday ? 'text-blue' : 'text-text-primary'}`}>{day.getDate()}</span>
-                    </div>
-                    <div className="space-y-1">
-                      {dayAppts.map(a => (
-                        <button key={a.id} className={`w-full text-left px-1.5 py-1 rounded text-[11px] leading-tight cursor-pointer hover:opacity-80 transition-opacity ${a.status === 'Cancelled' ? 'bg-red/20 text-red' : a.status === 'Completed' ? 'bg-green/20 text-green' : a.status === 'Confirmed' ? 'bg-green/30 text-green' : 'bg-blue/20 text-blue'}`} onClick={() => { setForm(a); setEditing(a.id) }}>
-                          <div className="font-semibold">{fmtTime(a.time)}</div>
-                          <div className="truncate">{a.customer_name}</div>
-                          <div className="truncate opacity-75">{a.service}</div>
-                        </button>
-                      ))}
-                    </div>
-                    <button className="w-full mt-1 text-xs text-text-muted hover:text-blue py-0.5 rounded hover:bg-blue/10 transition-colors" onClick={() => openNew(fmt(day))}>+ add</button>
-                  </div>
+                  <button key={k} type="button" aria-pressed={on} aria-label={`${dayShort(d)}, ${n} ${n === 1 ? 'appointment' : 'appointments'}`} onClick={() => setPicked(d)}
+                    className={`flex min-h-[64px] flex-col items-center justify-center rounded-md border px-0.5 py-1.5 ${on ? 'border-blue bg-blue/10 text-blue' : 'border-border bg-bg-card hover:bg-bg-hover'}`}>
+                    <span className="text-[0.75rem] font-bold">{d.toLocaleDateString('en-US', { weekday: 'short' })}</span>
+                    <span className={`display num text-[1.125rem] font-bold leading-tight ${k === todayKey && !on ? 'text-blue' : ''}`}>{d.getDate()}</span>
+                    <span className="num h-4 text-[0.75rem] text-text-secondary">{n > 0 ? <><span className="lamp lamp-blue mr-1 !h-2 !w-2 align-middle" aria-hidden="true" />{n}</> : ''}</span>
+                  </button>
                 )
               })}
             </div>
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="mb-4">
-            <input className="form-input max-w-sm" placeholder="Search appointments…" value={search} onChange={e => setSearch(e.target.value)} />
-          </div>
-          {loading ? (
-            <div className="card p-8 text-center text-text-muted">Loading…</div>
-          ) : (
-            <div className="card overflow-hidden">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Date & Time</th><th>Customer</th><th>Vehicle</th><th>Service</th><th>Tech</th><th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {appts.filter(a => !search || [a.customer_name, a.service, a.vehicle].some(v => (v||'').toLowerCase().includes(search.toLowerCase()))).map(a => (
-                    <tr key={a.id} className="cursor-pointer" onClick={() => { setForm(a); setEditing(a.id) }}>
-                      <td className="whitespace-nowrap">
-                        <div className="font-medium">{a.date ? new Date(a.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}</div>
-                        <div className="text-xs text-text-muted">{fmtTime(a.time)}</div>
-                      </td>
-                      <td><div className="font-medium">{a.customer_name}</div><div className="text-xs text-text-muted">{a.phone}</div></td>
-                      <td className="text-sm text-text-muted">{a.vehicle || '—'}</td>
-                      <td className="text-sm">{a.service || '—'}</td>
-                      <td className="text-sm text-text-muted">{a.tech || '—'}</td>
-                      <td><span className={`tag ${STATUS_COLOR[a.status] || 'tag-gray'}`}>{a.status}</span></td>
-                    </tr>
+          )}
+
+          {view === 'week' && desktop && (
+            <Timeline columns={weekColumns} onOpen={openAppt} onSlot={(date, mins) => openNew(date, fromMin(mins))} />
+          )}
+
+          {view === 'day' && desktop && (
+            dayItems.length === 0 ? (
+              <>
+                {!failedEmpty && <EmptyDay label={dayLong(picked!)} onNew={() => openNew(pickedKey)} />}
+                <div className="mt-4"><Timeline columns={dayColumns} onOpen={openAppt} onSlot={(date, mins, tech) => openNew(date, fromMin(mins), tech)} /></div>
+              </>
+            ) : (
+              <Timeline columns={dayColumns} onOpen={openAppt} onSlot={(date, mins, tech) => openNew(date, fromMin(mins), tech)} />
+            )
+          )}
+
+          {view === 'day' && !desktop && (
+            dayItems.length === 0
+              ? (failedEmpty ? null : <EmptyDay label={dayLong(picked!)} onNew={() => openNew(pickedKey)} />)
+              : <ApptRows items={dayItems} onOpen={openAppt} />
+          )}
+
+          {view === 'list' && (
+            <div>
+              <div className="relative mb-4 max-w-xl">
+                <label htmlFor="sched-search" className="sr-only">Search appointments</label>
+                <Icon name="search" className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-text-muted" />
+                <input id="sched-search" type="search" className="form-input pl-10" placeholder="Search by name, service, vehicle or tech" value={search} onChange={e => setSearch(e.target.value)} />
+              </div>
+              {upcoming.length === 0 ? (failedEmpty ? null : (
+                <div className="empty-state">
+                  <p className="font-bold text-text-primary">{search.trim() ? `No appointments match “${search.trim()}”` : 'Nothing is booked yet'}</p>
+                  <p className="mx-auto mt-1 max-w-md">{search.trim() ? 'Check the spelling, or search by customer, service, vehicle or tech.' : 'Book a customer in and they show up here, on the grid, and on Today.'}</p>
+                  <div className="mt-4 flex justify-center gap-2">
+                    {search.trim() && <button type="button" className="btn btn-secondary" onClick={() => setSearch('')}>Clear search</button>}
+                    <button type="button" className="btn btn-primary" onClick={() => openNew()}><Icon name="plus" className="h-5 w-5" />New appointment</button>
+                  </div>
+                </div>
+              )) : (
+                <div className="space-y-5">
+                  {[...new Set(upcoming.map(a => a.date))].map(date => (
+                    <section key={date} aria-label={dayLong(parseYmd(date))}>
+                      <h3 className="section-title mb-1.5">{date === todayKey ? 'Today' : dayLong(parseYmd(date))}</h3>
+                      <ApptRows items={upcoming.filter(a => a.date === date)} onOpen={openAppt} />
+                    </section>
                   ))}
-                  {appts.length === 0 && (
-                    <tr><td colSpan={6} className="text-center py-12 text-text-muted">
-                      <div className="text-4xl mb-3">📅</div>
-                      <div className="text-lg font-semibold mb-1">No appointments yet</div>
-                      <button className="btn btn-primary btn-sm mt-2" onClick={() => openNew()}>Schedule First Appointment</button>
-                    </td></tr>
-                  )}
-                </tbody>
-              </table>
+                </div>
+              )}
+              {past.length > 0 && (
+                <div className="mt-6">
+                  <button type="button" className="btn btn-ghost" aria-expanded={showPast} onClick={() => setShowPast(s => !s)}>
+                    {showPast ? 'Hide' : 'Show'} past appointments
+                    <Icon name="chevronDown" className={`h-4 w-4 transition-transform ${showPast ? 'rotate-180' : ''}`} />
+                  </button>
+                  {showPast && <div className="mt-2"><ApptRows items={past} onOpen={openAppt} showDate={a => dayShort(parseYmd(a.date))} /></div>}
+                </div>
+              )}
             </div>
           )}
         </>
       )}
+
+      <Sheet open={sheet === 'form'} onClose={closeSheet} title={openId ? 'Edit appointment' : 'New appointment'} wide>
+        <ApptForm
+          key={`${openId || 'new'}-${sheet === 'form' ? 'open' : 'closed'}`}
+          form={form}
+          setForm={setForm}
+          isNew={!openId}
+          customers={customers}
+          techs={techs}
+          serviceIdeas={serviceIdeas}
+          appts={appts}
+          saving={saving || busy}
+          error={formError}
+          onSave={save}
+          onCancel={closeSheet}
+          onDelete={openId ? () => { setFormError(''); setSheet('delete') } : undefined}
+        />
+      </Sheet>
+
+      <Sheet open={sheet === 'detail'} onClose={closeSheet} title={current ? current.customer_name : 'Appointment'}>
+        {current && (
+          <ApptDetail
+            key={current.id}
+            appt={current}
+            shopName={shop.name}
+            shopPhone={shop.phone}
+            busy={busy}
+            error={detailError}
+            textSent={textSent}
+            onStatus={setStatus}
+            onEdit={() => { setForm({ ...current }); setFormError(''); setSheet('form') }}
+            onCall={() => window.dispatchEvent(new CustomEvent('phone:call', { detail: { number: current.phone, name: current.customer_name } }))}
+            onSendText={sendText}
+            onClose={closeSheet}
+          />
+        )}
+      </Sheet>
+
+      <Sheet open={sheet === 'delete'} onClose={() => setSheet('form')} title="Delete this appointment?">
+        <p className="text-[0.9375rem]">{current ? `${current.customer_name}, ${dayShort(parseYmd(current.date))}` : 'This appointment'} will be removed for good. If the customer just cannot come, mark it cancelled instead so you keep the record.</p>
+        {formError && <p role="alert" className="form-error">{formError}</p>}
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button type="button" className="btn btn-secondary" onClick={() => setSheet('form')} disabled={busy}>Keep it</button>
+          <button type="button" className="btn btn-danger" onClick={del} disabled={busy}>{busy ? 'Deleting…' : 'Delete appointment'}</button>
+        </div>
+      </Sheet>
+    </div>
+  )
+}
+
+function EmptyDay({ label, onNew }: { label: string; onNew: () => void }) {
+  return (
+    <div className="empty-state">
+      <p className="font-bold text-text-primary">Nothing booked for {label}</p>
+      <p className="mx-auto mt-1 max-w-md">Book a customer in for this day. They will show up here and on Today.</p>
+      <button type="button" className="btn btn-primary mt-4" onClick={onNew}><Icon name="plus" className="h-5 w-5" />New appointment</button>
     </div>
   )
 }
