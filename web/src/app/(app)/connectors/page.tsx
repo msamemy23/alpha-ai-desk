@@ -3,68 +3,19 @@ import { useEffect, useState, useCallback, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Icon from '@/components/Icon'
 import { ErrorCard } from '@/components/ListKit'
+import Notice from '@/components/Notice'
 import { ScreenToast, useToast } from '@/components/ScreenParts'
-
-interface Connector {
-  id: string
-  service: string
-  enabled: boolean
-  page_id: string | null
-  metadata: Record<string, unknown>
-  updated_at: string
-}
-
-interface ServiceInfo {
-  icon: string
-  name: string
-  short: string
-  description: string
-  note: string
-  oauthPath: string
-}
-
-const SERVICE_INFO: Record<string, ServiceInfo> = {
-  facebook: {
-    icon: 'globe',
-    name: 'Facebook Pages',
-    short: 'Facebook',
-    description: 'Post updates, reply to comments and manage messages.',
-    note: 'Connecting Facebook also connects Instagram when your page is linked to it.',
-    oauthPath: '/api/auth/facebook',
-  },
-  instagram: {
-    icon: 'camera',
-    name: 'Instagram Business',
-    short: 'Instagram',
-    description: 'Post photos and reply to comments and messages.',
-    note: 'Instagram signs in through Facebook, so you will see the Facebook sign-in.',
-    oauthPath: '/api/auth/facebook', // Instagram shares the Facebook OAuth flow
-  },
-  google_business: {
-    icon: 'map',
-    name: 'Google Business Profile',
-    short: 'Google Business',
-    description: 'Post updates, reply to reviews and see your ratings.',
-    note: 'Connecting Google Business also connects Google Calendar.',
-    oauthPath: '/api/auth/google',
-  },
-  google_calendar: {
-    icon: 'calendar',
-    name: 'Google Calendar',
-    short: 'Google Calendar',
-    description: 'Schedule appointments and manage bookings.',
-    note: 'Google Calendar signs in through Google, together with Google Business.',
-    oauthPath: '/api/auth/google',
-  },
-}
-
-const SERVICE_ORDER = ['facebook', 'instagram', 'google_business', 'google_calendar']
+import { connectNotice, type ConnectNotice } from '@/lib/connector-messages'
+import ServiceCard from '@/components/connectors/ServiceCard'
+import { SERVICE_INFO, SERVICE_ORDER, type Connector } from '@/components/connectors/services'
 
 function ConnectorsContent() {
   const [connectors, setConnectors] = useState<Record<string, Connector>>({})
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [disconnecting, setDisconnecting] = useState<string | null>(null)
+  const [connecting, setConnecting] = useState<string | null>(null)
+  const [notice, setNotice] = useState<ConnectNotice | null>(null)
   const { toast, notify, dismiss } = useToast()
   const searchParams = useSearchParams()
 
@@ -81,7 +32,7 @@ function ConnectorsContent() {
       setConnectors(map)
       setLoadError(null)
     } catch {
-      setLoadError('Your connected apps could not be loaded. Check your connection and try again.')
+      setLoadError('Your connected apps could not be loaded. Check your connection and try again. Nothing was changed.')
     }
     setLoading(false)
   }, [])
@@ -90,21 +41,24 @@ function ConnectorsContent() {
 
   // Coming back from a sign-in on Facebook or Google: say how it went, then tidy the address bar.
   useEffect(() => {
-    const success = searchParams.get('success')
-    const error = searchParams.get('error')
-    const detail = searchParams.get('detail')
-    if (!success && !error) return
-    if (success === 'facebook') notify('Facebook and Instagram are connected.', 'success')
-    else if (success === 'google') notify('Google Business and Google Calendar are connected.', 'success')
-    else if (error === 'facebook_denied') notify(`Facebook was not connected. The sign-in was cancelled${detail ? ': ' + detail : '.'}`, 'error')
-    else if (error === 'google_denied') notify(`Google was not connected. The sign-in was cancelled${detail ? ': ' + detail : '.'}`, 'error')
-    else if (error) notify(`Connection problem: ${error.replace(/_/g, ' ')}${detail ? ' - ' + detail : ''}`, 'error')
+    const result = connectNotice(searchParams.get('success'), searchParams.get('error'), searchParams.get('detail'))
+    if (!result) return
+    setNotice(result)
     try { window.history.replaceState(null, '', window.location.pathname) } catch { /* the message already showed */ }
-  }, [searchParams, notify])
+  }, [searchParams])
+
+  // Backing out of a sign-in page returns here with the page as it was left: let the buttons work again.
+  useEffect(() => {
+    const reset = (e: PageTransitionEvent) => { if (e.persisted) setConnecting(null) }
+    window.addEventListener('pageshow', reset)
+    return () => window.removeEventListener('pageshow', reset)
+  }, [])
 
   const handleConnect = (service: string) => {
     const info = SERVICE_INFO[service]
     if (!info) return
+    setNotice(null)
+    setConnecting(service)
     // Facebook covers Instagram too
     window.location.href = info.oauthPath
   }
@@ -123,22 +77,14 @@ function ConnectorsContent() {
       if (!response.ok || result.ok !== true) throw new Error(result.error || 'Disconnect failed')
       notify(`${name} is disconnected.`, 'success')
       await loadConnectors()
-    } catch (e) {
-      notify(`${name} was not disconnected: ${e instanceof Error ? e.message : 'something went wrong'}. Try again.`, 'error')
+    } catch {
+      notify(`${name} was not disconnected and is still connected. Check your connection, then try again.`, 'error')
     }
     setDisconnecting(null)
   }
 
-  const getAccountName = (connector: Connector): string | null => {
-    const meta = connector.metadata || {}
-    for (const key of ['page_name', 'account_name', 'profile_name', 'location_name']) {
-      if (typeof meta[key] === 'string' && meta[key]) return meta[key] as string
-    }
-    if (connector.page_id) return `ID ${connector.page_id}`
-    return null
-  }
-
   const connectedCount = SERVICE_ORDER.filter(s => connectors[s]?.enabled === true).length
+  const anyBusy = disconnecting !== null || connecting !== null
 
   return (
     <div className="page-container animate-fade-in">
@@ -147,17 +93,28 @@ function ConnectorsContent() {
           <h1 className="page-title">Connected apps</h1>
           <p className="page-subtitle">Connect Facebook, Instagram and Google so Alpha can post, reply and book for you.</p>
         </div>
-        {!loading && !loadError && connectedCount > 0 && (
+        {!loading && !loadError && (
           <p className="flex items-center gap-2 font-bold text-text-primary">
-            <span className="lamp lamp-green" aria-hidden="true" />
-            {connectedCount} of {SERVICE_ORDER.length} connected
+            <span className={`lamp ${connectedCount > 0 ? 'lamp-green' : 'lamp-off'}`} aria-hidden="true" />
+            <span><span className="num">{connectedCount}</span> of <span className="num">{SERVICE_ORDER.length}</span> connected</span>
           </p>
         )}
       </header>
 
+      {notice && (
+        <Notice kind={notice.kind} className="mb-4 max-w-2xl">
+          <div className="flex items-start justify-between gap-3">
+            <p>{notice.message}</p>
+            <button type="button" className="btn-icon -my-2 -mr-2 shrink-0" onClick={() => setNotice(null)} aria-label="Dismiss message">
+              <Icon name="close" className="h-5 w-5" />
+            </button>
+          </div>
+        </Notice>
+      )}
+
       {loadError ? (
         <ErrorCard title="Connected apps did not load" message={loadError} onRetry={loadConnectors} busy={loading} className="max-w-xl" />
-      ) : loading ? (
+      ) : loading && Object.keys(connectors).length === 0 ? (
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2" aria-busy="true" role="status" aria-label="Loading connected apps">
           {SERVICE_ORDER.map(s => <div key={s} className="skeleton h-44" />)}
         </div>
@@ -177,55 +134,17 @@ function ConnectorsContent() {
             {SERVICE_ORDER.map(service => {
               const info = SERVICE_INFO[service]
               if (!info) return null
-              const connector = connectors[service]
-              const isConnected = connector?.enabled === true
-              const accountName = connector ? getAccountName(connector) : null
-              const busy = disconnecting === service
-
               return (
-                <li key={service} className="card flex flex-col gap-4">
-                  <div className="flex items-start gap-3">
-                    <span className="grid h-11 w-11 shrink-0 place-items-center rounded-md bg-bg-hover text-text-secondary">
-                      <Icon name={info.icon} className="h-6 w-6" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <h2 className="section-title">{info.name}</h2>
-                      <p className="mt-0.5 text-[0.9375rem] text-text-secondary">{info.description}</p>
-                    </div>
-                  </div>
-
-                  {isConnected && accountName && (
-                    <p className="truncate rounded-md bg-bg-hover px-3 py-2 text-[0.9375rem]">
-                      <span className="text-text-secondary">Signed in as </span>
-                      <span className="font-bold">{accountName}</span>
-                    </p>
-                  )}
-
-                  {!isConnected && <p className="text-[0.875rem] text-text-secondary">{info.note}</p>}
-
-                  <div className="mt-auto flex flex-col gap-3 border-t border-border pt-3 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="flex items-center gap-2 font-bold">
-                      <span className={`lamp ${isConnected ? 'lamp-green' : 'lamp-off'}`} aria-hidden="true" />
-                      {isConnected ? 'Connected' : 'Not connected'}
-                    </p>
-                    {isConnected ? (
-                      <button
-                        type="button"
-                        className="btn btn-danger w-full sm:w-auto"
-                        onClick={() => handleDisconnect(service)}
-                        disabled={busy}
-                        aria-label={`Disconnect ${info.name}`}
-                      >
-                        {busy ? 'Disconnecting…' : 'Disconnect'}
-                      </button>
-                    ) : (
-                      <button type="button" className="btn btn-secondary w-full sm:w-auto" onClick={() => handleConnect(service)}>
-                        <Icon name="link" className="h-5 w-5" />
-                        Connect {info.short}
-                      </button>
-                    )}
-                  </div>
-                </li>
+                <ServiceCard
+                  key={service}
+                  info={info}
+                  connector={connectors[service]}
+                  busy={disconnecting === service}
+                  connecting={connecting === service}
+                  anyBusy={anyBusy}
+                  onConnect={() => handleConnect(service)}
+                  onDisconnect={() => handleDisconnect(service)}
+                />
               )
             })}
           </ul>
@@ -236,6 +155,7 @@ function ConnectorsContent() {
               <li className="flex gap-2"><Icon name="check" className="mt-0.5 h-5 w-5 shrink-0 text-green" /><span><span className="font-bold text-text-primary">Facebook and Instagram</span> use one sign-in. Connecting Facebook connects Instagram too, when it is linked to your page.</span></li>
               <li className="flex gap-2"><Icon name="check" className="mt-0.5 h-5 w-5 shrink-0 text-green" /><span><span className="font-bold text-text-primary">Google Business and Calendar</span> use one Google sign-in. Both connect at once.</span></li>
               <li className="flex gap-2"><Icon name="check" className="mt-0.5 h-5 w-5 shrink-0 text-green" /><span>Once connected, ask Alpha to post, reply to reviews, check comments or book appointments.</span></li>
+              <li className="flex gap-2"><Icon name="check" className="mt-0.5 h-5 w-5 shrink-0 text-green" /><span>Disconnecting stops Alpha right away. Your posts and reviews on those sites stay as they are.</span></li>
             </ul>
           </section>
         </>

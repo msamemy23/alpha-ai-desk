@@ -1,5 +1,5 @@
 'use client'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase, updateSettings, getSettings, getShopProfile, getShopId } from '@/lib/supabase'
 import {
   AI_BASE_URLS,
@@ -8,9 +8,15 @@ import {
   normalizeAiModel,
 } from '@/lib/ai-config'
 import Icon from '@/components/Icon'
+import { ErrorCard } from '@/components/ListKit'
 import Notice from '@/components/Notice'
-import { SettingsProvider, type Settings } from './fields'
-import { AiSection, CommsSection, OutreachSection, ReviewsSection, ShopSection } from './sections'
+import { FIELD_SECTION, firstErrorKey, joinShopAddress, splitShopAddress, validateSettings, type FieldErrors } from '@/lib/shop-form'
+import { SettingsProvider, type Settings } from '@/components/settings/fields'
+import ShopSection from '@/components/settings/ShopSection'
+import AiSection from '@/components/settings/AiSection'
+import CommsSection from '@/components/settings/CommsSection'
+import OutreachSection from '@/components/settings/OutreachSection'
+import ReviewsSection from '@/components/settings/ReviewsSection'
 
 type SectionId = 'shop' | 'ai' | 'comms' | 'outreach' | 'reviews'
 type LoadState = 'loading' | 'ready' | 'error'
@@ -43,6 +49,13 @@ export default function SettingsPage() {
   const [saveError, setSaveError] = useState('')
   const [section, setSection] = useState<SectionId | null>(null)
   const [visited, setVisited] = useState<SectionId[]>(['shop'])
+  const [errors, setErrors] = useState<FieldErrors>({})
+  const [wide, setWide] = useState(false)
+  // The city line of the shop profile, so saving an address keeps the profile's street and city apart.
+  const profileCity = useRef('')
+  // What is on screen right now, so a reload (Try again) can keep anything typed since the last save.
+  const latest = useRef<{ settings: Settings; baseline: Settings }>({ settings: {}, baseline: {} })
+  useEffect(() => { latest.current = { settings, baseline } })
 
   // On a desktop one section is always open; on a phone the list comes first.
   const active: SectionId = section ?? 'shop'
@@ -67,15 +80,20 @@ export default function SettingsPage() {
         return
       }
       if (profile) {
+        profileCity.current = profile.city_state_zip || ''
         merged = {
           ...merged,
           shop_name: merged.shop_name || profile.shop_name || '',
           shop_phone: merged.shop_phone || profile.phone || '',
-          shop_address: merged.shop_address || profile.address || '',
+          shop_address: merged.shop_address || joinShopAddress(profile.address, profile.city_state_zip),
           shop_email: merged.shop_email || (profile as { email?: string }).email || '',
         }
       }
-      setSettings(merged)
+      const typed: Settings = {}
+      for (const key of Object.keys(latest.current.settings)) {
+        if (norm(latest.current.settings[key]) !== norm(latest.current.baseline[key])) typed[key] = latest.current.settings[key]
+      }
+      setSettings({ ...merged, ...typed })
       setBaseline(merged)
       setSettingsMissing(!settingsData)
       setLoadState('ready')
@@ -122,35 +140,102 @@ export default function SettingsPage() {
     return () => window.removeEventListener('beforeunload', warn)
   }, [dirty])
 
+  // The same for a tap on a link to another screen: ask first, and stay put if the answer is no.
+  useEffect(() => {
+    if (!dirty) return
+    const guard = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+      const link = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null
+      if (!link || link.target === '_blank' || link.hasAttribute('download')) return
+      const href = link.getAttribute('href') || ''
+      if (href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:')) return
+      let url: URL
+      try { url = new URL(link.href, window.location.href) } catch { return }
+      if (url.origin === window.location.origin && url.pathname === window.location.pathname) return
+      if (!window.confirm('You have changes that are not saved. Leave Settings without saving them?')) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+    }
+    document.addEventListener('click', guard, true)
+    return () => document.removeEventListener('click', guard, true)
+  }, [dirty])
+
+  // Wide screens always show one section; narrow ones show the list first.
+  useEffect(() => {
+    const query = window.matchMedia('(min-width: 1024px)')
+    const sync = () => setWide(query.matches)
+    sync()
+    query.addEventListener('change', sync)
+    return () => query.removeEventListener('change', sync)
+  }, [])
+
   const set = useCallback((key: string, value: unknown) => {
     setSettings(s => ({ ...s, [key]: value }))
     setSaveState(s => (s === 'saved' ? 'idle' : s))
+    setErrors(e => {
+      if (!e[key]) return e
+      const rest = { ...e }
+      delete rest[key]
+      return rest
+    })
   }, [])
 
   const save = async () => {
     const snapshot = settings
+
+    // Check only what was changed, so an old odd value in a section nobody opened never blocks a save.
+    const changed: Settings = {}
+    for (const key of Object.keys(snapshot)) if (norm(snapshot[key]) !== norm(baseline[key])) changed[key] = snapshot[key]
+    const found = validateSettings(changed)
+    const firstKey = firstErrorKey(found)
+    if (firstKey) {
+      setErrors(found)
+      setSaveState('error')
+      const count = Object.keys(found).length
+      setSaveError(count === 1 ? 'One field needs a change. It is marked in red.' : `${count} fields need a change. They are marked in red.`)
+      const target = FIELD_SECTION[firstKey]
+      if (target) openSection(target)
+      window.setTimeout(() => {
+        const el = document.getElementById(`set-${firstKey}`)
+        el?.scrollIntoView({ block: 'center' })
+        el?.focus()
+      }, 80)
+      return
+    }
+
+    setErrors({})
     setSaveState('saving')
     setSaveError('')
     const settingsResult = await updateSettings(snapshot)
     if (settingsResult?.error) {
       setSaveState('error')
-      setSaveError(settingsResult.error.message || 'Settings could not be saved')
+      const raw = (settingsResult.error.message || '').trim()
+      const why = /^forbidden$/i.test(raw)
+        ? 'Your account can look at settings but not change them. Ask the shop owner'
+        : /^unauthorized$/i.test(raw)
+          ? 'You were signed out. Sign in again in another tab'
+          : (raw || 'Your settings could not be saved').replace(/[.\s]+$/, '')
+      setSaveError(`${why}. What you typed is still here.${/^forbidden$/i.test(raw) ? '' : ' Choose Save changes to try again.'}`)
       return
     }
 
     // Keep the tenant profile's display information in sync as well.
     const shopId = await getShopId()
     if (shopId) {
+      const split = splitShopAddress(snapshot.shop_address, profileCity.current)
       const { error: profileError } = await supabase.from('shop_profiles').update({
         shop_name: snapshot.shop_name || '',
         phone: snapshot.shop_phone || '',
-        address: snapshot.shop_address || '',
+        address: split.address,
+        city_state_zip: split.cityStateZip,
       }).eq('id', shopId)
       if (profileError) {
         setSaveState('error')
-        setSaveError(profileError.message || 'Shop profile could not be saved')
+        setSaveError('Your settings were saved, but the name, phone and address in your shop profile were not updated. Choose Save changes to try again.')
         return
       }
+      profileCity.current = split.cityStateZip
     }
 
     // A saved credential is cleared from the page and shown as "Saved".
@@ -181,7 +266,7 @@ export default function SettingsPage() {
   const barPhoneHidden = section === null && !dirty && !saving && saveState !== 'error'
 
   return (
-    <SettingsProvider value={{ settings, set }}>
+    <SettingsProvider value={{ settings, set, errors }}>
       <div className="page-container animate-fade-in">
         <header className={`page-header ${section ? 'sr-only lg:not-sr-only lg:mb-5' : ''}`}>
           <div>
@@ -206,11 +291,7 @@ export default function SettingsPage() {
         )}
 
         {loadState === 'error' && (
-          <div role="alert" className="card max-w-xl">
-            <p className="font-bold">Settings could not load.</p>
-            <p className="mt-1 text-text-secondary">Check your connection and try again. Nothing was changed.</p>
-            <button type="button" className="btn btn-secondary mt-3" onClick={load}>Try again</button>
-          </div>
+          <ErrorCard title="Settings did not load" message="Check your connection and try again. Nothing was changed." onRetry={load} className="max-w-xl" />
         )}
 
         {loadState === 'ready' && (
@@ -223,7 +304,7 @@ export default function SettingsPage() {
                     <a
                       href={`#${s.id}`}
                       onClick={e => { e.preventDefault(); openSection(s.id) }}
-                      aria-current={active === s.id ? 'true' : undefined}
+                      aria-current={(section ?? (wide ? 'shop' : null)) === s.id ? 'true' : undefined}
                       className="ledger-row no-underline lg:min-h-[44px] lg:rounded-md lg:py-2 lg:aria-[current=true]:bg-blue/10 lg:aria-[current=true]:text-blue"
                     >
                       <Icon name={s.icon} className="h-5 w-5 shrink-0 text-text-secondary lg:text-current" />
@@ -241,8 +322,9 @@ export default function SettingsPage() {
             <div className="min-w-0 lg:max-w-2xl">
               {settingsMissing && (
                 <Notice kind="warn" className="mb-4">
-                  <p>Your saved settings did not load, so some fields may look empty. Fields that did not load stay as they are when you save.</p>
-                  <button type="button" className="mt-1 font-bold text-blue underline underline-offset-4" onClick={load}>Try again</button>
+                  <p className="font-bold">Some of your saved settings did not load.</p>
+                  <p>Those fields may look empty. They are left as they are when you save. Your AI key and phone details are safe.</p>
+                  <button type="button" className="mt-1 min-h-[44px] font-bold text-blue underline underline-offset-4" onClick={load}>Try again</button>
                 </Notice>
               )}
 

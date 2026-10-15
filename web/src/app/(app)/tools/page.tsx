@@ -2,9 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { AgentDefinition, PermissionLevel, SkillDefinition, ToolDefinition } from '@/lib/ai/capabilities'
+import type { AgentDefinition, SkillDefinition, ToolDefinition } from '@/lib/ai/capabilities'
 import Icon from '@/components/Icon'
 import { EmptyBlock, ErrorCard } from '@/components/ListKit'
+import Notice from '@/components/Notice'
+import { ScreenToast, useToast } from '@/components/ScreenParts'
+import { plainName } from '@/lib/connector-messages'
+import AgentList, { Tag, plural } from '@/components/tools/AgentList'
+import { SERVER_NAME } from '@/components/tools/copy'
 
 interface CapabilitySnapshot {
   agents: AgentDefinition[]
@@ -58,14 +63,6 @@ function getDesktopApi() {
   return (window as unknown as { electronAPI?: ToolsElectronApi }).electronAPI
 }
 
-type Tone = 'neutral' | 'green' | 'amber' | 'red' | 'blue'
-
-/** A small labelled pill. Always carries words. */
-function Tag({ children, tone = 'neutral' }: { children: ReactNode; tone?: Tone }) {
-  const cls = { neutral: 'tag-gray', green: 'tag-green', amber: 'tag-amber', red: 'tag-red', blue: 'tag-blue' }[tone]
-  return <span className={`tag ${cls} max-w-full text-[0.8125rem]`}><span className="min-w-0 truncate">{children}</span></span>
-}
-
 /** Status as a lamp plus a word. */
 function Status({ lamp, children }: { lamp: 'green' | 'amber' | 'red' | 'blue' | 'off'; children: ReactNode }) {
   return (
@@ -86,16 +83,9 @@ function isReadOnlyMcpTool(serverId: string, toolName: string) {
   return READ_ONLY_MCP_TOOLS[serverId]?.has(normalized) || false
 }
 
-const PERMISSION_LABEL: Record<PermissionLevel, { label: string; tone: Tone }> = {
-  read: { label: 'Reads only', tone: 'green' },
-  write: { label: 'Changes data', tone: 'blue' },
-  external: { label: 'Contacts others', tone: 'amber' },
-  destructive: { label: 'Deletes data', tone: 'red' },
-  sensitive: { label: 'Sensitive data', tone: 'amber' },
-}
+const serverName = (id: string, label?: string) => SERVER_NAME[id] ?? label ?? plainName(id)
 
-const humanize = (name: string) => name.replace(/[_-]+/g, ' ')
-const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`
+const timeOf = (d: Date) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 
 export default function ToolsPage() {
   const [snapshot, setSnapshot] = useState<CapabilitySnapshot | null>(null)
@@ -103,10 +93,13 @@ export default function ToolsPage() {
   const [error, setError] = useState('')
   const [mcp, setMcp] = useState<McpServerState[]>([])
   const [mcpLoading, setMcpLoading] = useState(false)
+  const [mcpChecked, setMcpChecked] = useState<Date | null>(null)
   const [kaptureStatus, setKaptureStatus] = useState<KaptureStatus | null>(null)
   const [mcpAudit, setMcpAudit] = useState<McpAuditEntry[]>([])
   const [mcpAuditPath, setMcpAuditPath] = useState('')
   const [desktopApi, setDesktopApi] = useState<ToolsElectronApi | undefined>(undefined)
+  const [setupNote, setSetupNote] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
+  const { toast, notify, dismiss } = useToast()
   const isDesktop = !!desktopApi?.isElectron
 
   // Read the desktop bridge after the page is on screen so the first paint matches the server.
@@ -135,11 +128,11 @@ export default function ToolsPage() {
     setError('')
     try {
       const res = await fetch('/api/ai-capabilities', { cache: 'no-store' })
-      const data = await res.json()
-      if (!res.ok || data.error) throw new Error(data.error || 'Could not load capabilities')
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data.error || !data.data) throw new Error(typeof data.error === 'string' ? data.error : 'The list could not be loaded')
       setSnapshot(data.data)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load capabilities')
+      setError(err instanceof Error ? err.message : 'The list could not be loaded')
     } finally {
       setLoading(false)
     }
@@ -168,18 +161,19 @@ export default function ToolsPage() {
             ok: !!tabsResult?.ok,
             connectedTabs: tabs.length,
             activeTab: tabs.find((tab: { active?: boolean; title?: string }) => tab.active)?.title || tabs[0]?.title,
-            lastError: tabsResult?.ok ? undefined : tabsResult?.error || 'Kapture list_tabs returned an error',
+            lastError: tabsResult?.ok ? undefined : tabsResult?.error || 'The Chrome link returned an error',
           })
         } catch (err) {
-          setKaptureStatus({ ok: false, connectedTabs: 0, lastError: err instanceof Error ? err.message : 'Could not read Kapture tabs' })
+          setKaptureStatus({ ok: false, connectedTabs: 0, lastError: err instanceof Error ? err.message : 'Could not read the Chrome tabs' })
         }
       } else if (kapture) {
-        setKaptureStatus({ ok: false, connectedTabs: 0, lastError: kapture.error || 'Kapture MCP server is not connected' })
+        setKaptureStatus({ ok: false, connectedTabs: 0, lastError: kapture.error || 'The Chrome link is not connected' })
       }
     } catch (err) {
-      setMcp([{ id: 'desktop', ok: false, error: err instanceof Error ? err.message : 'MCP check failed' }])
-      setKaptureStatus({ ok: false, connectedTabs: 0, lastError: err instanceof Error ? err.message : 'MCP check failed' })
+      setMcp([{ id: 'desktop', ok: false, error: err instanceof Error ? err.message : 'The check failed' }])
+      setKaptureStatus({ ok: false, connectedTabs: 0, lastError: err instanceof Error ? err.message : 'The check failed' })
     } finally {
+      setMcpChecked(new Date())
       setMcpLoading(false)
     }
   }, [desktopApi])
@@ -189,9 +183,25 @@ export default function ToolsPage() {
     try {
       await desktopApi?.mcp?.stop(serverId)
       await loadMcp()
+      notify(serverId ? `${serverName(serverId)} was restarted.` : 'All desktop connections were restarted.', 'success')
     } catch (err) {
-      setMcp(prev => [...prev, { id: serverId || 'all', ok: false, error: err instanceof Error ? err.message : 'Reconnect failed' }])
+      setMcp(prev => [...prev.filter(m => m.id !== (serverId || 'all')), { id: serverId || 'all', ok: false, error: err instanceof Error ? err.message : 'The restart failed' }])
       setMcpLoading(false)
+      notify('The restart did not work. Close and reopen the Alpha Desk desktop app, then check again.', 'error')
+    }
+  }
+
+  const setUpChrome = async () => {
+    setSetupNote(null)
+    try {
+      const result = await desktopApi?.kapture?.openSetup()
+      if (result && result.ok === false) {
+        setSetupNote({ kind: 'error', text: result.error || 'The Chrome setup page could not be opened.' })
+      } else {
+        setSetupNote({ kind: 'info', text: result?.instructions || 'The Chrome setup page is opening. Follow the steps there, then choose Check connections.' })
+      }
+    } catch (err) {
+      setSetupNote({ kind: 'error', text: err instanceof Error ? err.message : 'The Chrome setup page could not be opened.' })
     }
   }
 
@@ -199,6 +209,7 @@ export default function ToolsPage() {
   useEffect(() => { if (isDesktop) void loadMcp() }, [isDesktop, loadMcp])
 
   const loaded = !!snapshot
+  const asksFirst = snapshot?.tools.filter(t => t.requiresConfirmation).length
 
   return (
     <div className="page-container animate-fade-in">
@@ -217,18 +228,25 @@ export default function ToolsPage() {
               <button type="button" className="btn btn-secondary" onClick={loadMcp} disabled={mcpLoading}>
                 {mcpLoading ? 'Checking…' : 'Check connections'}
               </button>
-              <button type="button" className="btn btn-secondary" onClick={() => reconnectMcp()} disabled={mcpLoading}>Reconnect all</button>
-              <button type="button" className="btn btn-primary" onClick={() => desktopApi?.kapture?.openSetup()}>Set up Chrome link</button>
+              <button type="button" className="btn btn-secondary" onClick={() => reconnectMcp()} disabled={mcpLoading}>Restart all</button>
+              <button type="button" className="btn btn-primary" onClick={setUpChrome}>Set up Chrome link</button>
             </>
           )}
         </div>
       </header>
 
-      <ul className="mb-8 grid grid-cols-3 gap-3" aria-label="Totals">
+      {setupNote && (
+        <Notice kind={setupNote.kind} className="mb-4 max-w-2xl">
+          <p className="whitespace-pre-line break-words">{setupNote.text}</p>
+        </Notice>
+      )}
+
+      <ul className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-4" aria-label="Totals">
         {[
           { label: 'Agents', value: snapshot?.agents.length, hint: 'Helpers' },
-          { label: 'Tools', value: snapshot?.tools.length, hint: 'Actions' },
-          { label: 'Skills', value: snapshot?.skills.length, hint: 'Routines' },
+          { label: 'Tools', value: snapshot?.tools.length, hint: 'Actions they can take' },
+          { label: 'Skills', value: snapshot?.skills.length, hint: 'Ready-made routines' },
+          { label: 'Ask you first', value: asksFirst, hint: 'Tools that wait for a yes' },
         ].map(s => (
           <li key={s.label} className="card !p-3 sm:!p-4">
             <p className="text-[0.875rem] font-bold text-text-secondary">{s.label}</p>
@@ -247,89 +265,95 @@ export default function ToolsPage() {
         {!isDesktop ? (
           <div className="flex items-start gap-3 rounded-lg border border-border bg-bg-card p-4">
             <Icon name="info" className="mt-0.5 h-5 w-5 shrink-0 text-blue" />
-            <p className="text-[0.9375rem] text-text-secondary">These checks only work in the Alpha Desk desktop app. Open this page there to see the Windows and Chrome connections Alpha can use on that computer.</p>
+            <p className="text-[0.9375rem] text-text-secondary">These checks only work in the Alpha Desk desktop app. Open this page there to see the Windows and Chrome connections Alpha can use on that computer. Everything else on this page works here.</p>
           </div>
         ) : mcpLoading && mcp.length === 0 && !kaptureStatus ? (
           <div className="grid gap-3 md:grid-cols-2" aria-busy="true" role="status" aria-label="Checking connections">
             <div className="skeleton h-32" /><div className="skeleton h-32" />
           </div>
         ) : (
-          <div className="grid gap-3 md:grid-cols-2">
-            {kaptureStatus && (
-              <div className="card md:col-span-2">
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div>
-                    <h3 className="font-bold">Chrome tabs Alpha can use</h3>
-                    <p className="text-[0.875rem] text-text-secondary">The Chrome extension that lets Alpha work in your browser</p>
-                  </div>
-                  <Status lamp={kaptureStatus.ok && kaptureStatus.connectedTabs > 0 ? 'green' : 'amber'}>
-                    {kaptureStatus.connectedTabs} connected
-                  </Status>
-                </div>
-                <dl className="mt-3 grid gap-3 text-[0.9375rem] md:grid-cols-3">
-                  <div><dt className="text-[0.8125rem] font-bold text-text-secondary">Link</dt><dd>{kaptureStatus.ok ? 'Running' : 'Needs attention'}</dd></div>
-                  <div className="min-w-0"><dt className="text-[0.8125rem] font-bold text-text-secondary">Active tab</dt><dd className="break-words">{kaptureStatus.activeTab || 'None'}</dd></div>
-                  <div className="min-w-0"><dt className="text-[0.8125rem] font-bold text-text-secondary">Last problem</dt><dd className="break-words">{kaptureStatus.lastError || 'None'}</dd></div>
-                </dl>
-              </div>
-            )}
-            {mcp.map(server => {
-              const serverTools = server.tools || []
-              return (
-                <div key={server.id} className="card flex flex-col">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <h3 className="font-bold">{server.label || server.id}</h3>
-                      <p className="text-[0.875rem] text-text-secondary">{server.description || 'Desktop connection'}</p>
+          <>
+            {mcpChecked && <p className="mb-2 text-[0.875rem] text-text-secondary">{mcpLoading ? 'Checking again…' : `Last checked at ${timeOf(mcpChecked)}.`}</p>}
+            <div className="grid gap-3 md:grid-cols-2">
+              {kaptureStatus && (
+                <div className="card md:col-span-2">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <h3 className="font-bold">Chrome tabs Alpha can use</h3>
+                      <p className="text-[0.875rem] text-text-secondary">The Chrome extension that lets Alpha work in your browser</p>
                     </div>
-                    <Status lamp={server.ok ? 'green' : 'red'}>{server.ok ? 'Connected' : 'Not working'}</Status>
+                    <Status lamp={kaptureStatus.ok && kaptureStatus.connectedTabs > 0 ? 'green' : 'amber'}>
+                      {kaptureStatus.connectedTabs} connected
+                    </Status>
                   </div>
-                  {server.error && <p className="mt-3 text-[0.9375rem] text-red">{server.error}</p>}
-                  <p className="mt-3 text-[0.9375rem] text-text-secondary">{plural(serverTools.length, 'tool')} found</p>
-                  {serverTools.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {serverTools.slice(0, 12).map(tool => {
-                        const readOnly = isReadOnlyMcpTool(server.id, tool.name)
-                        return <Tag key={tool.name} tone={readOnly ? 'green' : 'amber'}>{humanize(tool.name)}, {readOnly ? 'reads only' : 'takes action'}</Tag>
-                      })}
-                      {serverTools.length > 12 && <Tag>and {serverTools.length - 12} more</Tag>}
-                    </div>
+                  <dl className="mt-3 grid gap-3 text-[0.9375rem] md:grid-cols-3">
+                    <div><dt className="text-[0.8125rem] font-bold text-text-secondary">Link</dt><dd>{kaptureStatus.ok ? 'Running' : 'Needs attention'}</dd></div>
+                    <div className="min-w-0"><dt className="text-[0.8125rem] font-bold text-text-secondary">Active tab</dt><dd className="break-words">{kaptureStatus.activeTab || 'None'}</dd></div>
+                    <div className="min-w-0"><dt className="text-[0.8125rem] font-bold text-text-secondary">Last problem</dt><dd className="break-words">{kaptureStatus.lastError || 'None'}</dd></div>
+                  </dl>
+                  {kaptureStatus.connectedTabs === 0 && (
+                    <p className="mt-3 text-[0.9375rem] text-text-secondary">No tab is connected. Choose Set up Chrome link, then open the extension in the Chrome tab you want Alpha to use.</p>
                   )}
-                  <div className="mt-auto flex flex-wrap gap-2 pt-4">
-                    <button type="button" className="btn btn-secondary" disabled={mcpLoading} onClick={() => reconnectMcp(server.id)}>Restart</button>
-                    <button type="button" className="btn btn-secondary" disabled={mcpLoading} onClick={loadMcp}>Check again</button>
-                  </div>
                 </div>
-              )
-            })}
-            {mcp.length === 0 && !kaptureStatus && (
-              <div className="md:col-span-2"><EmptyBlock icon="plug" title="No desktop connections found">Tap Check connections to look again, or Set up Chrome link to connect your browser.</EmptyBlock></div>
-            )}
-          </div>
+              )}
+              {mcp.map(server => {
+                const serverTools = server.tools || []
+                return (
+                  <div key={server.id} className="card flex flex-col">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <h3 className="font-bold">{serverName(server.id, server.label)}</h3>
+                        <p className="text-[0.875rem] text-text-secondary">{server.description || 'Desktop connection'}</p>
+                      </div>
+                      <Status lamp={server.ok ? 'green' : 'red'}>{server.ok ? 'Connected' : 'Not working'}</Status>
+                    </div>
+                    {server.error && <p className="mt-3 break-words text-[0.9375rem] text-red">{server.error}</p>}
+                    <p className="mt-3 text-[0.9375rem] text-text-secondary">{plural(serverTools.length, 'tool')} found</p>
+                    {serverTools.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {serverTools.slice(0, 12).map(tool => {
+                          const readOnly = isReadOnlyMcpTool(server.id, tool.name)
+                          return <Tag key={tool.name} tone={readOnly ? 'green' : 'amber'}>{plainName(tool.name.replace(/^kapturemcp_/i, ''))}, {readOnly ? 'reads only' : 'takes action'}</Tag>
+                        })}
+                        {serverTools.length > 12 && <Tag>and {serverTools.length - 12} more</Tag>}
+                      </div>
+                    )}
+                    <div className="mt-auto flex flex-wrap gap-2 pt-4">
+                      <button type="button" className="btn btn-secondary" disabled={mcpLoading} onClick={() => reconnectMcp(server.id)}>Restart</button>
+                      <button type="button" className="btn btn-secondary" disabled={mcpLoading} onClick={loadMcp}>Check again</button>
+                    </div>
+                  </div>
+                )
+              })}
+              {mcp.length === 0 && !kaptureStatus && (
+                <div className="md:col-span-2"><EmptyBlock icon="plug" title="No desktop connections found">Choose Check connections to look again, or Set up Chrome link to connect your browser.</EmptyBlock></div>
+              )}
+            </div>
+          </>
         )}
       </section>
 
       {isDesktop && (
         <section className="mb-8" aria-labelledby="audit-h">
           <div className="mb-2 flex flex-wrap items-end justify-between gap-2">
-            <div>
+            <div className="min-w-0">
               <h2 id="audit-h" className="section-title">Recent tool calls on this computer</h2>
-              {mcpAuditPath && <p className="break-all text-[0.8125rem] text-text-secondary">Saved at {mcpAuditPath}</p>}
+              {mcpAuditPath && <p className="break-all text-[0.8125rem] text-text-secondary">Log file: {mcpAuditPath}</p>}
             </div>
             <Tag tone={mcpAudit.length ? 'green' : 'neutral'}>{plural(mcpAudit.length, 'recent call')}</Tag>
           </div>
           {mcpAudit.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-[0.9375rem] text-text-secondary">Alpha has not used any desktop tools on this computer yet.</p>
+            <p className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-[0.9375rem] text-text-secondary">Alpha has not used any desktop tools on this computer yet. Calls will be listed here with whether they worked and whether you approved them.</p>
           ) : (
             <ul className="ledger">
               {mcpAudit.slice().reverse().map((entry, index) => (
                 <li key={`${entry.timestamp}-${entry.server}-${entry.tool}-${index}`} className="px-3 py-3">
                   <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
-                    <p className="min-w-0 font-bold">{entry.server || 'Server'}: {humanize(entry.tool || 'tool')}</p>
+                    <p className="min-w-0 font-bold">{serverName(entry.server || 'desktop')}: {plainName(entry.tool || 'tool').toLowerCase()}</p>
                     <Status lamp={entry.ok ? 'green' : 'red'}>{entry.ok ? 'Worked' : 'Failed'}</Status>
                   </div>
-                  <p className="text-[0.875rem] text-text-secondary">{entry.timestamp ? new Date(entry.timestamp).toLocaleString() : 'Time unknown'}</p>
-                  <p className="mt-1 text-[0.9375rem] text-text-secondary">
+                  <p className="text-[0.875rem] text-text-secondary">{entry.timestamp && !Number.isNaN(new Date(entry.timestamp).getTime()) ? new Date(entry.timestamp).toLocaleString() : 'Time unknown'}</p>
+                  <p className="mt-1 break-words text-[0.9375rem] text-text-secondary">
                     {entry.approvalRequired ? (entry.approved ? 'You approved it.' : 'It needed your approval.') : 'No approval needed.'}
                     {entry.cancelled ? ' It was cancelled.' : ''}
                     {entry.error ? ` ${entry.error}` : ''}
@@ -348,80 +372,18 @@ export default function ToolsPage() {
             {[0, 1, 2, 3].map(i => <div key={i} className="skeleton h-[5.5rem]" />)}
           </div>
         ) : error && !snapshot ? (
-          <ErrorCard title="The agent list did not load" message={`${error}. Check your connection and try again.`} onRetry={loadCapabilities} busy={loading} className="max-w-xl" />
+          <ErrorCard title="The agent list did not load" message={`${error.replace(/[.\s]+$/, '')}. Check your connection and try again.`} onRetry={loadCapabilities} busy={loading} className="max-w-xl" />
         ) : snapshot && snapshot.agents.length === 0 ? (
           <EmptyBlock icon="tools" title="No agents are set up yet">When agents are added they will show here with their tools and skills.</EmptyBlock>
         ) : (
           <div className="space-y-2">
-            {error && <ErrorCard message={`${error}. The list below may be out of date.`} onRetry={loadCapabilities} busy={loading} />}
-            {snapshot?.agents.map(agent => {
-              const tools = toolsByAgent[agent.id] || []
-              const skills = skillsByAgent[agent.id] || []
-              return (
-                <details key={agent.id} className="panel group">
-                  <summary className="flex min-h-[64px] cursor-pointer items-center gap-3 rounded-lg px-4 py-3 hover:bg-bg-hover [&::-webkit-details-marker]:hidden">
-                    <span className="min-w-0 flex-1">
-                      <span className="section-title block">{agent.name}</span>
-                      <span className="mt-0.5 block text-[0.9375rem] text-text-secondary">{agent.purpose}</span>
-                      <span className="mt-1 block text-[0.875rem] font-bold text-text-secondary">{plural(tools.length, 'tool')} · {plural(skills.length, 'skill')}</span>
-                    </span>
-                    <Icon name="chevronDown" className="h-5 w-5 shrink-0 text-text-secondary transition-transform group-open:rotate-180" />
-                  </summary>
-
-                  <div className="border-t border-border p-4">
-                    {agent.owns.length > 0 && (
-                      <p className="mb-4 text-[0.9375rem] text-text-secondary"><span className="font-bold text-text-primary">Looks after: </span>{agent.owns.join(', ')}</p>
-                    )}
-                    <div className="grid gap-5 lg:grid-cols-2">
-                      <div>
-                        <h3 className="mb-2 font-bold">Tools</h3>
-                        {tools.length === 0 ? (
-                          <p className="text-[0.9375rem] text-text-secondary">This agent has no tools of its own.</p>
-                        ) : (
-                          <ul className="ledger">
-                            {tools.map(tool => {
-                              const perm = PERMISSION_LABEL[tool.permission] || { label: tool.permission, tone: 'neutral' as Tone }
-                              return (
-                                <li key={tool.name} className="px-1 py-3">
-                                  <p className="font-bold" title={tool.name}>{humanize(tool.name)}</p>
-                                  <div className="mt-1.5 flex flex-wrap gap-1.5">
-                                    <Tag tone={perm.tone}>{perm.label}</Tag>
-                                    {tool.requiresConfirmation && <Tag tone="amber">Asks you first</Tag>}
-                                    {tool.audit && <Tag>Logged</Tag>}
-                                  </div>
-                                  <p className="mt-1.5 text-[0.9375rem] text-text-secondary">{tool.description}</p>
-                                </li>
-                              )
-                            })}
-                          </ul>
-                        )}
-                      </div>
-                      <div>
-                        <h3 className="mb-2 font-bold">Skills</h3>
-                        {skills.length === 0 ? (
-                          <p className="text-[0.9375rem] text-text-secondary">This agent has no ready-made skills.</p>
-                        ) : (
-                          <ul className="ledger">
-                            {skills.map(skill => (
-                              <li key={skill.id} className="px-1 py-3">
-                                <p className="font-bold">{skill.name}</p>
-                                <p className="mt-1 text-[0.9375rem] text-text-secondary">{skill.description}</p>
-                                {skill.requiredTools.length > 0 && (
-                                  <p className="mt-1.5 text-[0.875rem] text-text-secondary"><span className="font-bold">Uses: </span>{skill.requiredTools.map(humanize).join(', ')}</p>
-                                )}
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </details>
-              )
-            })}
+            {error && <ErrorCard message={`${error.replace(/[.\s]+$/, '')}. The list below may be out of date.`} onRetry={loadCapabilities} busy={loading} />}
+            {snapshot && <AgentList agents={snapshot.agents} toolsByAgent={toolsByAgent} skillsByAgent={skillsByAgent} />}
           </div>
         )}
       </section>
+
+      <ScreenToast toast={toast} onClose={dismiss} />
     </div>
   )
 }
