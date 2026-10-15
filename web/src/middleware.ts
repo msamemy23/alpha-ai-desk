@@ -34,6 +34,10 @@ const PUBLIC_API_PREFIXES = [
   '/api/sms',
   '/api/sms-inbound',
   '/api/telnyx-voice-webhook',
+  // Customer-facing: the public booking page and calendar feed, and the "where is my car" link.
+  // Each route checks its own slug or long random token and limits how often one visitor can ask.
+  '/api/book',
+  '/api/status',
 ]
 
 function hasInternalApiSecret(req: NextRequest) {
@@ -144,8 +148,14 @@ export async function middleware(req: NextRequest) {
     pathname.startsWith('/auth/') ||
     pathname.startsWith('/sign/') ||
     pathname.startsWith('/inspection/') ||
+    pathname.startsWith('/book/') ||
     pathname.startsWith('/_next/') ||
-    pathname === '/favicon.ico'
+    pathname === '/favicon.ico' ||
+    // What a phone needs to install the app and to show "you are offline": no sign-in, nothing private.
+    pathname === '/manifest.webmanifest' ||
+    pathname === '/sw.js' ||
+    pathname === '/offline' ||
+    pathname.startsWith('/icons/')
   ) {
     return withSecurityHeaders(NextResponse.next())
   }

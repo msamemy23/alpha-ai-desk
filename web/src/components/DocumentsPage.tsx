@@ -145,6 +145,8 @@ export default function DocumentsPage({ type }: { type: DocType }) {
   const laborRate = Number(settings.labor_rate) > 0 ? Number(settings.labor_rate) : 0
   const shopMethods = useMemo(() => String(settings.payment_methods || '').split(',').map(s => s.trim()).filter(Boolean), [settings.payment_methods])
   const formatWarrantyText = (value: unknown) => String(value || '')
+    // The presets name no shop: {shop} is where this shop's own name goes.
+    .replace(/\{shop\}/g, shopName || 'our shop')
     .replace(/Alpha International Auto Center/g, shopName || 'our shop')
     .replace(/Alpha's/g, `${shopName || 'our shop'}'s`)
     .replace(/\bAlpha\b/g, shopName || 'our shop')
