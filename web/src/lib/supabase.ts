@@ -37,11 +37,18 @@ export function getServiceClient() {
 
 // ─── DB Helpers ────────────────────────────────────────────────
 
+// The database does not let the browser create a shop itself, so the server does it (and only for a person with no shop yet).
 export async function ensureShopProfile(shopName: string) {
-  const { data, error } = await supabase.rpc('ensure_shop_profile', { p_shop_name: shopName })
-  if (error) throw error
-  if (!data?.id) throw new Error('Your shop could not be initialized.')
-  return data as { id: string; created: boolean }
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`
+  } catch { /* cookie sign-in still works */ }
+  const response = await fetch('/api/shop/ensure', { method: 'POST', headers, body: JSON.stringify({ shopName }), cache: 'no-store' })
+  const data = await response.json().catch(() => ({})) as { id?: string; created?: boolean; error?: string }
+  if (!response.ok) throw new Error(data.error || 'Your shop could not be initialized.')
+  if (!data.id) throw new Error('Your shop could not be initialized.')
+  return { id: data.id, created: Boolean(data.created) }
 }
 
 export async function getShopProfile() {
@@ -216,11 +223,15 @@ export async function getUnreadCount() {
   return count || 0
 }
 
+// Messages are changed on the server (the browser may only read them), so marking one read goes through the inbox route.
 export async function markMessageRead(id: string) {
-  const shopId = await getShopId()
-  if (!shopId) return { error: new Error('No shop is associated with the signed-in user') }
-  const { error } = await supabase.from('messages').update({ read: true }).eq('id', id).eq('shop_id', shopId)
-  return { error: error || null }
+  try {
+    const response = await fetch('/api/inbox/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [id] }) })
+    if (!response.ok) return { error: new Error('The message could not be marked read.') }
+    return { error: null as Error | null }
+  } catch {
+    return { error: new Error('Could not reach the server.') }
+  }
 }
 
 export function formatCurrency(n: number | string) {

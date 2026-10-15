@@ -8,6 +8,7 @@ const automations = read('../src/app/api/automations/route.ts')
 // The route hands every run to the automation service, which holds the leased, fenced claim.
 const systemAutomations = read('../src/app/api/system-automations/route.ts') + read('../src/lib/automation-service.ts')
 const documents = read('../src/components/DocumentsPage.tsx')
+const documentsRoute = read('../src/app/api/documents/route.ts')
 const oauthServer = read('../src/lib/openai-oauth-server.ts')
 const socialOperation = read('../src/lib/social-operation.ts')
 const facebook = read('../src/app/api/connectors/facebook/route.ts')
@@ -38,7 +39,10 @@ test('automation execution uses leased fenced claims and records missing configu
 
 test('payment writes require durable idempotency keys in the UI and database', () => {
   assert.match(documents, /Payment idempotency key is required/)
-  assert.match(documents, /p_idempotency_key: idempotencyKey\.trim\(\)/)
+  // The screen sends the key to the server route, and the route hands it to the database function.
+  assert.match(documents, /idempotencyKey: idempotencyKey\.trim\(\)/)
+  assert.match(documentsRoute, /p_idempotency_key: check\.input\.key/)
+  assert.match(documentsRoute, /record_document_payment_server/)
   assert.match(paymentMigration, /payments_idempotency_key_required/)
   assert.match(paymentMigration, /idempotency_key IS NOT NULL/)
 })

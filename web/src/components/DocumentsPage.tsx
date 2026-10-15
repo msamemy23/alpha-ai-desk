@@ -14,11 +14,12 @@ import { WARRANTY_PRESETS } from './documents/warranty'
 import { useShopLogo } from '@/lib/shop-logo'
 import { cleanDecisions, estimateLines, findings, normalizeSections } from '@/lib/dvi'
 import { docWord, isLocked } from './documents/types'
+import { convertEstimate, createDocument, docAction, nextDocNumber, postPayment, saveDocumentFields } from './documents/api'
 import type { Customer, Doc, DocType, Notice } from './documents/types'
 
 const PAYMENT_OPERATION_STORAGE_KEY = 'alpha_ai_payment_operations_v1'
 
-// Every dollar received is recorded and applied by one authenticated database transaction.
+// Every dollar received is recorded and applied by one database transaction on the server (/api/documents).
 async function recordPayment(
   doc: Pick<Doc, 'id' | 'shop_id'>,
   amount: number,
@@ -27,17 +28,10 @@ async function recordPayment(
   idempotencyKey: string
 ): Promise<{ amount_paid?: number; status?: string; balance_due?: number; total?: number } | null> {
   if (!(amount > 0)) return null
-  if (!doc.shop_id) throw new Error('Payment is missing its shop')
   if (!idempotencyKey?.trim()) throw new Error('Payment idempotency key is required')
-  const { data, error } = await supabase.rpc('record_document_payment_safe', {
-    p_document_id: doc.id,
-    p_amount: Math.round(amount * 100) / 100,
-    p_method: method,
-    p_note: note,
-    p_idempotency_key: idempotencyKey.trim(),
-  })
-  if (error) throw new Error(`Payment could not be recorded: ${error.message}`)
-  return (data || null) as { amount_paid?: number; status?: string; balance_due?: number; total?: number } | null
+  const res = await postPayment({ documentId: doc.id, amount: Math.round(amount * 100) / 100, method, note, idempotencyKey: idempotencyKey.trim() })
+  if (!res.ok) throw new Error(res.error)
+  return res.data.result ?? null
 }
 
 async function getAuthJsonHeaders(): Promise<Record<string, string>> {
@@ -240,11 +234,9 @@ export default function DocumentsPage({ type }: { type: DocType }) {
   }
 
   const genDocNumber = async () => {
-    const shopId = await getShopId()
-    if (!shopId) throw new Error('No shop is associated with the signed-in user')
-    const { data, error } = await supabase.rpc('next_document_number', { p_shop_id: shopId, p_type: type })
-    if (error || typeof data !== 'string') throw error || new Error('Document numbering failed')
-    return data
+    const res = await nextDocNumber(type)
+    if (!res.ok || typeof res.data.docNumber !== 'string') throw new Error(res.error || 'Document numbering failed')
+    return res.data.docNumber
   }
 
   async function openNew(shop: Record<string, string> = settings, customerId?: string, people: Customer[] = customers, jobId?: string, dviId?: string) {
@@ -417,30 +409,19 @@ export default function DocumentsPage({ type }: { type: DocType }) {
     try {
       let saved: Partial<Doc> = { ...merged, ...(data as Partial<Doc>) }
       if (editing === 'new') {
-        const result = await supabase.from('documents').insert({ ...data, created_at: new Date().toISOString() }).select()
-        if (result.error) throw new Error(result.error.message)
-        let row = (Array.isArray(result.data) ? result.data[0] : result.data) as Doc | undefined
+        // Added on the server: it checks the shop, the customer and the job, and keeps the document number.
+        const result = await createDocument({ ...data, created_at: new Date().toISOString() })
+        if (!result.ok) throw new Error(result.error)
+        let row = result.data.document as Doc | undefined
         if (!row?.id) {
-          // The insert worked but did not hand the row back: find it by its number.
+          // The save worked but did not hand the row back: find it by its number.
           const fresh = await load()
           row = fresh?.find(r => r.doc_number === data.doc_number)
         }
         if (row) saved = { ...saved, ...row }
       } else if (editing) {
-        const result = await supabase.from('documents').update(data).eq('id', editing).eq('shop_id', shopId).select()
-        if (result.error) throw new Error(result.error.message)
-        if (!result.data || result.data.length === 0) {
-          // RLS blocked the update: retry through the server route.
-          const resp = await fetch('/api/save-document', {
-            method: 'POST',
-            headers: await getAuthJsonHeaders(),
-            body: JSON.stringify({ id: editing, data })
-          })
-          if (!resp.ok) {
-            const err = await resp.json().catch(() => ({}))
-            throw new Error(err.error || 'Save failed')
-          }
-        }
+        const result = await saveDocumentFields(editing, data)
+        if (!result.ok) throw new Error(result.error || 'Save failed')
       }
       if (saved.id) setEditing(saved.id)
       setForm(saved); setBaseline(JSON.stringify(saved))
@@ -592,8 +573,6 @@ export default function DocumentsPage({ type }: { type: DocType }) {
     if (!target) return
     setBusy(true); setSheetError('')
     try {
-      const shopId = await getShopId()
-      if (!shopId) throw new Error('No shop is associated with the signed-in user')
       const t = calcTotals(target as unknown as Record<string, unknown>)
       const remaining = t.total - planForm.down_payment
       const perPayment = remaining / planForm.installments
@@ -605,8 +584,8 @@ export default function DocumentsPage({ type }: { type: DocType }) {
         payments.push({ date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`, amount: Math.round(perPayment * 100) / 100, paid: false })
       }
       const plan = { enabled: true, down_payment: planForm.down_payment, installments: planForm.installments, frequency: planForm.frequency, payments }
-      const { error } = await supabase.from('documents').update({ payment_plan: plan, updated_at: new Date().toISOString() }).eq('id', target.id).eq('shop_id', shopId)
-      if (error) throw new Error(error.message)
+      const saved = await saveDocumentFields(target.id, { payment_plan: plan })
+      if (!saved.ok) throw new Error(saved.error)
       closeSheet()
       syncFromServer(target.id, await load())
       setNotice({ kind: 'ok', text: 'Payment plan saved.' })
@@ -619,13 +598,9 @@ export default function DocumentsPage({ type }: { type: DocType }) {
     if (!form.id) return
     setBusy(true); setSheetError('')
     try {
-      const shopId = await getShopId()
-      if (!shopId) throw new Error('No shop is associated with the signed-in user')
-      const { data: docNumber, error: numberingError } = await supabase.rpc('next_document_number', { p_shop_id: shopId, p_type: 'Invoice' })
-      if (numberingError || typeof docNumber !== 'string') throw new Error('Invoice numbering failed: ' + (numberingError?.message || 'Unknown error'))
-      // Update the existing row in place so there is no duplicate.
-      const { error } = await supabase.from('documents').update({ type: 'Invoice', doc_number: docNumber, status: 'Draft', updated_at: new Date().toISOString() }).eq('id', form.id).eq('shop_id', shopId)
-      if (error) throw new Error(error.message)
+      // The server gives the estimate its invoice number and changes it in place, so there is no duplicate.
+      const converted = await convertEstimate(form.id)
+      if (!converted.ok) throw new Error(converted.error)
       const id = form.id
       closeSheet(); closeEditor()
       router.push(`/invoices?document=${encodeURIComponent(id)}`)
@@ -652,10 +627,9 @@ export default function DocumentsPage({ type }: { type: DocType }) {
     if (!form.id) return
     setBusy(true); setSheetError('')
     try {
-      const shopId = await getShopId()
-      if (!shopId) throw new Error('No shop is associated with the signed-in user')
-      const { error } = await supabase.from('documents').delete().eq('id', form.id).eq('shop_id', shopId)
-      if (error) throw new Error(error.message)
+      const removed = await docAction(form.id, 'delete')
+      // Only an unsent draft can be removed. Anything that was sent, signed or paid stays on record, so say that plainly.
+      if (!removed.ok) throw new Error(removed.status === 409 ? 'This one is kept on record, so it cannot be deleted. Only a draft that was never sent can be.' : removed.error)
       closeSheet(); closeEditor()
       await load()
     } catch (e) { setSheetError(`Not deleted. ${errText(e)}`) }

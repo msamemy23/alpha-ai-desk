@@ -114,6 +114,16 @@ export const logHistory = (body: { documentId: string; kind: 'edited' | 'status'
 export const docAction = (documentId: string, action: 'void' | 'restore' | 'delete' | 'revoke_links' | 'extend', extra: { reason?: string; expiresDate?: string } = {}) =>
   api<{ status?: string; linksTurnedOff?: number; count?: number; expiresDate?: string }>('/api/document-actions', { method: 'POST', body: { documentId, action, ...extra } })
 
+/* ───────── writing documents and payments (all through /api/documents) ───────── */
+
+export type DocKindName = 'Estimate' | 'Invoice' | 'Receipt'
+export const nextDocNumber = (type: DocKindName) => api<{ docNumber?: string }>('/api/documents', { method: 'POST', body: { action: 'number', type } })
+export const createDocument = (data: Record<string, unknown>) => api<{ document?: Record<string, unknown> }>('/api/documents', { method: 'POST', body: { action: 'create', data } })
+export const convertEstimate = (documentId: string) => api<{ docNumber?: string }>('/api/documents', { method: 'POST', body: { action: 'convert', documentId } })
+export const postPayment = (body: { documentId: string; amount: number; method: string; note: string; idempotencyKey: string }) =>
+  api<{ result?: { amount_paid?: number; status?: string; balance_due?: number; total?: number } | null }>('/api/documents', { method: 'POST', body: { action: 'payment', ...body } })
+export const saveDocumentFields = (id: string, data: Record<string, unknown>) => api('/api/save-document', { method: 'POST', body: { id, data } })
+
 /* ───────── sending ───────── */
 
 export interface SendPreview { channel: string; to: string; subject: string; text: string; html: string; blocked: string; total: number }
