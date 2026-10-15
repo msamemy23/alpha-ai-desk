@@ -1,5 +1,6 @@
 ﻿'use client'
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { getShopId, supabase, markMessageRead } from '@/lib/supabase'
 import { phonePretty } from '@/lib/today'
@@ -8,6 +9,10 @@ import Sheet from '@/components/Sheet'
 import Segmented from '@/components/inbox/Segmented'
 import ConversationList from '@/components/inbox/ConversationList'
 import ThreadView from '@/components/inbox/ThreadView'
+import type { ThreadExtras } from '@/components/inbox/ThreadView'
+import { useTemplates } from '@/components/inbox/ThreadTools'
+import { useAiOverlay } from '@/components/inbox/useAiOverlay'
+import { useInboxAlerts } from '@/components/inbox/useAlerts'
 import CallsView from '@/components/inbox/CallsView'
 import CallDetail from '@/components/inbox/CallDetail'
 import NewMessageSheet from '@/components/inbox/NewMessageSheet'
@@ -57,6 +62,10 @@ function InboxScreen() {
   const selectedKey = threadParam ? contactKey(threadParam) : null
 
   const [shopPhone, setShopPhone] = useState('')
+  const [shopName, setShopName] = useState('')
+  const overlay = useAiOverlay()
+  const reloadOverlay = overlay.reload
+  const tpl = useTemplates()
   const shopPhoneRef = useRef('')
   const [calls, setCalls] = useState<CallRecord[]>([])
   const [messages, setMessages] = useState<Message[]>([])
@@ -173,7 +182,8 @@ function InboxScreen() {
     const loadShopPhone = async () => {
       const shopId = await getShopId()
       if (!shopId) return
-      const { data } = await supabase.from('settings').select('shop_phone').eq('shop_id', shopId).limit(1).maybeSingle()
+      const { data } = await supabase.from('settings').select('shop_phone, shop_name').eq('shop_id', shopId).limit(1).maybeSingle()
+      if (!disposed && data?.shop_name) setShopName(String(data.shop_name))
       if (!disposed && data?.shop_phone) {
         const p = data.shop_phone.startsWith('+') ? data.shop_phone : '+1' + data.shop_phone.replace(/\D/g, '')
         shopPhoneRef.current = p
@@ -269,6 +279,11 @@ function InboxScreen() {
   }, [messages, byId, byPhone])
 
   const unreadTotal = useMemo(() => threads.reduce((s, t) => s + t.unread, 0), [threads])
+  const alertName = useCallback((m: { from_address: string }) => byPhone.get(contactKey(m.from_address))?.name || phonePretty(m.from_address), [byPhone])
+  const alerts = useInboxAlerts(messages, !loading, alertName, unreadTotal)
+  const needsKeys = useMemo(() => new Set(overlay.needsPerson.keys()), [overlay.needsPerson])
+  const draftKeys = useMemo(() => new Set(overlay.items.filter(i => i.channel === 'sms' && i.draft).map(i => i.contact_key)), [overlay.items])
+  const assistantBadge = needsKeys.size + draftKeys.size
   const missedRecent = useMemo(() => {
     const since = Date.now() - 3 * DAY
     return calls.filter(c => new Date(c.start_time).getTime() >= since && callKind(c.direction, c.status, c.duration_secs, c.viaAi) === 'missed').length
@@ -336,21 +351,22 @@ function InboxScreen() {
   }, [loading, newParam, toParam])
 
   // ---------- Actions ----------
-  const sendMessage = useCallback(async (to: string, body: string, channel: 'sms' | 'email'): Promise<string | null> => {
+  const sendMessage = useCallback(async (to: string, body: string, channel: 'sms' | 'email', mediaIds?: string[]): Promise<string | null> => {
     try {
       const res = await fetch('/api/send-message', {
         method: 'POST',
         headers: await getAuthJsonHeaders(),
-        body: JSON.stringify({ to, body, channel }),
+        body: JSON.stringify({ to, body, channel, ...(mediaIds && mediaIds.length ? { mediaIds } : {}) }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok || data.error) throw new Error(data.error || 'Message could not be sent')
       await loadMessages()
+      reloadOverlay()
       return null
     } catch (error) {
       return error instanceof Error ? error.message : 'Message could not be sent'
     }
-  }, [loadMessages])
+  }, [loadMessages, reloadOverlay])
 
   const closeCompose = useCallback(() => setCompose(null), [])
   const closeDial = useCallback(() => setDialOpen(false), [])
@@ -372,6 +388,8 @@ function InboxScreen() {
     audioRef.current?.pause()
     setPlayingId(null)
     setSelectedCall(c)
+    const made = overlay.byCall.get(c.id)
+    if (made && !made.seen_at) void overlay.markSeen([made.id])
   }
 
   const kbInset = useKeyboardInset(!!selected && !isDesktop && tab === 'messages')
@@ -383,15 +401,31 @@ function InboxScreen() {
   const selectedContact = selected?.customerId ? byId.get(selected.customerId) : (selected ? byPhone.get(selected.key) : undefined)
   const selectedCallPerson = selectedCall ? byPhone.get(contactKey(otherNumber(selectedCall))) : undefined
 
+  const held = selected ? overlay.byThread.get(selected.key) : undefined
+  const extras: ThreadExtras | undefined = selected ? {
+    draft: held?.draft ? { interactionId: held.id, text: held.draft.text, at: held.draft.at } : null,
+    assignee: overlay.assigneeOf.get(selected.key),
+    team: overlay.team,
+    assignAvailable: overlay.assignAvailable,
+    templates: tpl.items,
+    templatesStatus: tpl.status,
+    reloadTemplates: tpl.reload,
+    onChanged: overlay.reload,
+    shopName,
+    shopPhone,
+    canEdit: true,
+  } : undefined
+
   const threadPane = selected && (
     <ThreadView
       key={selected.key}
       thread={selected}
       showBack={!isDesktop}
       onBack={closeThread}
-      onSend={body => sendMessage(selected.contact, body, 'sms')}
+      onSend={(body, ids) => sendMessage(selected.contact, body, 'sms', ids)}
       keyboardInset={kbInset}
       vehicle={selectedContact?.vehicle}
+      extras={extras}
     />
   )
 
@@ -414,13 +448,20 @@ function InboxScreen() {
     <div className="mx-auto flex w-full max-w-[1180px] flex-col px-4 pb-10 pt-5 animate-fade-in sm:px-6 lg:h-[calc(100dvh-4rem)] lg:px-8 lg:pb-6 lg:pt-8">
       <audio ref={audioRef} onEnded={() => setPlayingId(null)} onPause={() => setPlayingId(null)} className="hidden" />
 
-      <div {...(showLayer ? ({ inert: '', 'aria-hidden': true } as object) : {})} className="flex min-h-0 flex-1 flex-col">
-        <header className="mb-4 flex items-end justify-between gap-3">
-          <div className="min-w-0">
+      <div {...(showLayer ? ({ inert: true, 'aria-hidden': true } as object) : {})} className="flex min-h-0 flex-1 flex-col">
+        <header className="mb-4 flex flex-wrap items-end justify-between gap-x-3 gap-y-2">
+          <div className="min-w-0 basis-full sm:basis-auto">
             <h1 className="page-title">Inbox</h1>
             <p className="page-subtitle truncate">{shopPhone ? `Texts and calls on ${phonePretty(shopPhone)}` : 'Texts and calls with your customers'}</p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <button type="button" className="btn-icon shrink-0" onClick={() => void alerts.toggle()} aria-pressed={alerts.on} aria-label={alerts.on ? 'New text alerts are on. Turn them off' : 'New text alerts are off. Turn them on'} title={alerts.on ? 'Alerts on' : 'Alerts off'}>
+              <Icon name="bell" className={`h-5 w-5 ${alerts.on ? 'text-blue' : 'text-text-muted'}`} />
+            </button>
+            <Link href="/messages/ai" className="btn btn-secondary px-3 no-underline" aria-label={assistantBadge > 0 ? `AI assistant, ${assistantBadge} waiting for you` : 'AI assistant'}>
+              <Icon name="sparkle" className="h-5 w-5" /><span className="hidden sm:inline">Assistant</span>
+              {assistantBadge > 0 && <span className="num rounded-full bg-red/[0.14] px-2 text-[0.8125rem] font-bold leading-5 text-red" aria-hidden="true">{assistantBadge}</span>}
+            </Link>
             <button type="button" className="btn btn-secondary w-11 px-0 sm:w-auto sm:px-4" onClick={() => setDialOpen(true)} aria-label="Call a number">
               <Icon name="phone" className="h-5 w-5" /><span className="hidden sm:inline">Call a number</span>
             </button>
@@ -430,6 +471,12 @@ function InboxScreen() {
           </div>
         </header>
 
+        {alerts.toast && (
+          <div role="status" className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-blue/40 bg-blue/[0.08] px-4 py-3">
+            <span className="min-w-0"><span className="flex items-center gap-2 font-bold text-blue"><span className="lamp lamp-blue" aria-hidden="true" />{alerts.toast.title}</span><span className="block truncate text-[0.9375rem] text-text-secondary">{alerts.toast.body}</span></span>
+            <button type="button" className="btn-icon -mr-2 h-9 w-9 shrink-0 sm:h-9 sm:w-9" onClick={alerts.dismiss} aria-label="Dismiss"><Icon name="close" className="h-4 w-4" /></button>
+          </div>
+        )}
         {newCallFlash && (
           <div role="status" className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-green/40 bg-green/[0.1] px-4 py-3">
             <span className="flex items-center gap-2 font-bold text-green"><span className="lamp lamp-green" aria-hidden="true" />New call received</span>
@@ -484,7 +531,7 @@ function InboxScreen() {
                       <button className="btn btn-secondary mt-3" onClick={() => setMsgSearch('')}>Show all texts</button>
                     </div>
                   ) : (
-                    <ConversationList threads={filteredThreads} selectedKey={selected?.key || null} onSelect={openThread} />
+                    <ConversationList threads={filteredThreads} selectedKey={selected?.key || null} onSelect={openThread} needsPerson={needsKeys} assignees={overlay.assigneeOf} drafts={draftKeys} />
                   )}
                 </div>
               </div>
@@ -506,14 +553,14 @@ function InboxScreen() {
         ) : (
           callsError && calls.length === 0 ? listError('Your calls')
           : (
-            <CallsView calls={calls} nameFor={callName} playingId={playingId} onOpen={openCall} onPlay={togglePlay} onCallBack={c => dialNumber(otherNumber(c), callName(c))} />
+            <CallsView calls={calls} nameFor={callName} playingId={playingId} onOpen={openCall} onPlay={togglePlay} onCallBack={c => dialNumber(otherNumber(c), callName(c))} ai={overlay.byCall} onSeen={ids => void overlay.markSeen(ids)} />
           )
         )}
       </div>
 
       {/* Phone and tablet: the open conversation sits above the tab bar, and above the keyboard when it is up. */}
       {showLayer && (
-        <div className="fixed inset-x-0 z-30 bg-bg-base" style={{ top: '3.5rem', bottom: kbInset > 0 ? kbInset : 'calc(var(--tabbar-h) + env(safe-area-inset-bottom))' }}>
+        <div className="fixed inset-x-0 z-50 bg-bg-base" style={{ top: '3.5rem', bottom: kbInset > 0 ? kbInset : 'calc(var(--tabbar-h) + env(safe-area-inset-bottom))' }}>
           {threadPane}
         </div>
       )}
@@ -526,6 +573,8 @@ function InboxScreen() {
             customerId={selectedCallPerson?.id || null}
             onCallBack={() => dialNumber(otherNumber(selectedCall), callName(selectedCall))}
             onText={() => { const n = otherNumber(selectedCall); setSelectedCall(null); setCompose({ to: n, channel: 'sms' }) }}
+            ai={overlay.byCall.get(selectedCall.id)}
+            onAiChanged={overlay.reload}
           />
         </Sheet>
       )}

@@ -14,6 +14,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { resolveSearchCity } from '@/lib/growth-city'
 
 const GOOGLE_MAPS_KEY = process.env.GOOGLE_MAPS_API_KEY || ''
 const HUNTER_KEY = process.env.HUNTER_IO_API_KEY || ''
@@ -33,7 +34,7 @@ function delay(ms: number) { return new Promise(r => setTimeout(r, ms)) }
 
 // ─── Google Maps Places enrichment ──────────────────────────────────────────
 // Searches by business name + optionally location, returns phone/address/rating/types
-async function googleMapsEnrich(businessName: string, city = 'Houston TX') {
+async function googleMapsEnrich(businessName: string, city = '') {
   if (!GOOGLE_MAPS_KEY) return null
   try {
     // Text Search (finds local business by name + location)
@@ -125,7 +126,7 @@ async function hunterFindEmail(domain: string, firstName?: string, lastName?: st
 
 // ─── Serper web search enrichment ───────────────────────────────────────────
 // Falls back to web search to find contact info when other sources miss
-async function serperEnrich(businessName: string, city = 'Houston TX') {
+async function serperEnrich(businessName: string, city = '') {
   if (!SERPER_KEY) return null
   try {
     const res = await fetch('https://google.serper.dev/search', {
@@ -158,9 +159,10 @@ async function serperEnrich(businessName: string, city = 'Houston TX') {
 
 // ─── Main enrichment logic ───────────────────────────────────────────────────
 
-async function enrichOneLead(lead: any) {
+async function enrichOneLead(lead: any, shopCity: string) {
   const domain = extractDomain(lead.website)
-  const city = lead.city ? `${lead.city} ${lead.state || ''}` : 'Houston TX'
+  // The lead's own city, else the shop's. Never a guessed one: with neither, search by name alone.
+  const city = lead.city ? `${lead.city} ${lead.state || ''}`.trim() : shopCity
 
   // Run Google Maps + Serper in parallel; Hunter needs domain so runs after
   const [mapsResult, serperResult] = await Promise.all([
@@ -252,7 +254,7 @@ async function enrichOneLead(lead: any) {
   const bestContact = enriched.contacts[0]
   if (!lead.owner_name && bestContact?.name) {
     updateData.owner_name = bestContact.name
-    updateData.owner_title = bestContact.title || 'Decision Maker'
+    updateData.owner_title = bestContact.title || null
   }
 
   return { updateData, enriched }
@@ -266,6 +268,7 @@ export async function POST(req: NextRequest) {
     if (!auth) return unauthorized()
     const { lead_id, bulk_lead_ids } = body
     const db = getServiceClient()
+    const shopCity = await resolveSearchCity(db, auth.shopId, null)
 
     // ── Bulk enrichment ──────────────────────────────────────────────────
     if (bulk_lead_ids?.length) {
@@ -279,7 +282,7 @@ export async function POST(req: NextRequest) {
       const results = []
       for (const lead of leadsData) {
         try {
-          const { updateData, enriched } = await enrichOneLead(lead)
+          const { updateData, enriched } = await enrichOneLead(lead, shopCity)
           await db.from('leads').update(updateData).eq('id', lead.id).eq('shop_id', auth.shopId)
           results.push({
             id: lead.id,
@@ -320,7 +323,7 @@ export async function POST(req: NextRequest) {
       const { data: lead } = await db.from('leads').select('*').eq('id', lead_id).eq('shop_id', auth.shopId).single()
       if (!lead) return NextResponse.json({ error: 'Lead not found' }, { status: 404 })
 
-      const { updateData, enriched } = await enrichOneLead(lead)
+      const { updateData, enriched } = await enrichOneLead(lead, shopCity)
       await db.from('leads').update(updateData).eq('id', lead_id).eq('shop_id', auth.shopId)
 
       const { error: activityError } = await db.from('growth_activity').insert({

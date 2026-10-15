@@ -6,6 +6,7 @@ import { EmptyBlock, ErrorCard, RowsSkeleton, SearchField } from '@/components/L
 import { phonePretty } from '@/lib/today'
 import { agoWords, hasPhone, lastVisitOf } from '@/lib/growth-text'
 import { Flagged, PAGE, Section } from './parts'
+import ReviewReplies from './ReviewReplies'
 import { timeAgo } from './helpers'
 import type { Rec, ShopInfo } from './helpers'
 
@@ -97,6 +98,8 @@ export default function ReviewsTab({ loading, failedCustomers, customers, visits
             </>
           )}
       </Section>
+
+      <ReviewReplies notify={notify} />
     </>
   )
 }

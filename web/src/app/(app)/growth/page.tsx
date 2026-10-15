@@ -14,6 +14,8 @@ import LeadSheet from '@/components/growth/LeadSheet'
 import LookupSheet from '@/components/growth/LookupSheet'
 import PostSheet from '@/components/growth/PostSheet'
 import PostsTab from '@/components/growth/PostsTab'
+import PromotionsTab from '@/components/growth/PromotionsTab'
+import type { PromotionSeed } from '@/components/growth/PromotionSheet'
 import ReferralsTab from '@/components/growth/ReferralsTab'
 import ResultsTab from '@/components/growth/ResultsTab'
 import ReviewsTab from '@/components/growth/ReviewsTab'
@@ -24,12 +26,14 @@ import { getAuthJsonHeaders } from '@/components/growth/helpers'
 import type { Rec } from '@/components/growth/helpers'
 import type { OutreachMethod } from '@/components/growth/OutreachButtons'
 import { useGrowthData } from '@/components/growth/useGrowthData'
+import { QUIET_DAYS, legacyOutreachMessage } from '@/lib/growth-text'
 
-type Tab = 'followups' | 'reviews' | 'referrals' | 'leads' | 'posts' | 'results'
+type Tab = 'followups' | 'reviews' | 'referrals' | 'promotions' | 'leads' | 'posts' | 'results'
 const TABS: { key: Tab; label: string }[] = [
   { key: 'followups', label: 'Follow-ups' },
   { key: 'reviews', label: 'Reviews' },
   { key: 'referrals', label: 'Referrals' },
+  { key: 'promotions', label: 'Promotions' },
   { key: 'leads', label: 'Leads' },
   { key: 'posts', label: 'Posts and ads' },
   { key: 'results', label: 'Results' },
@@ -50,6 +54,8 @@ export default function GrowthPage() {
   const [ads, setAds] = useState<null | 'google' | 'facebook'>(null)
   const [showPost, setShowPost] = useState(false)
   const [showLookup, setShowLookup] = useState(false)
+  const [promoSeed, setPromoSeed] = useState<PromotionSeed | null>(null)
+  const clearSeed = useCallback(() => setPromoSeed(null), [])
 
   const { load, loadCalls, callState } = d
   useEffect(() => { if (tab === 'leads' && callState === 'idle') void loadCalls() }, [tab, callState, loadCalls])
@@ -127,11 +133,11 @@ export default function GrowthPage() {
             <div><Stat label="Open leads" value={d.loading || d.failed.leads ? '–' : openLeads} onClick={() => changeTab('leads')} /></div>
           </div>
 
-          <Segmented label="Choose what to work on" idPrefix="growth" options={TABS} value={tab} onChange={changeTab} />
+          <Segmented label="Choose what to work on" idPrefix="growth" options={TABS} value={tab} onChange={changeTab} columns="grid-cols-3 md:grid-cols-7" />
 
           <div id="growth-panel" role="tabpanel" aria-labelledby={`growth-tab-${tab}`} className="mt-6">
             {tab === 'followups' && (
-              <FollowUpsTab loading={d.loading} failed={d.failed} customers={d.customers} quiet={d.quiet} visits={d.visits} shop={d.shop} onRetry={() => load()} onText={customers => setCompose({ kind: 'followup', customers })} />
+              <FollowUpsTab loading={d.loading} failed={d.failed} customers={d.customers} quiet={d.quiet} visits={d.visits} shop={d.shop} onRetry={() => load()} onText={customers => setCompose({ kind: 'followup', customers })} onPromote={() => { setPromoSeed({ name: `Win-back, not in ${QUIET_DAYS}+ days`, message: legacyOutreachMessage(''), email_subject: '', audience: { lastVisitMinDays: QUIET_DAYS } }); setTab('promotions') }} />
             )}
             {tab === 'reviews' && (
               <ReviewsTab loading={d.loading} failedCustomers={d.failed.customers} customers={d.customers} visits={d.visits} shop={d.shop} onRetry={() => load()} onRetryShop={() => void d.loadShop()} onAsk={customer => setCompose({ kind: 'review', customer })} notify={notify} />
@@ -139,6 +145,7 @@ export default function GrowthPage() {
             {tab === 'referrals' && (
               <ReferralsTab loading={d.loading} failed={d.failed.customers || d.failed.referrals} customers={d.customers} referrals={d.referrals} onRetry={() => load()} onCreate={customer => setCompose({ kind: 'referral', customer })} notify={notify} />
             )}
+            {tab === 'promotions' && <PromotionsTab notify={notify} seed={promoSeed} onSeedUsed={clearSeed} />}
             {tab === 'leads' && (
               <LeadsTab
                 loading={d.loading} failed={d.failed.leads} leads={d.leads} onRetry={() => load()}
@@ -150,14 +157,14 @@ export default function GrowthPage() {
               />
             )}
             {tab === 'posts' && (
-              <PostsTab loading={d.loading} failedPosts={d.failed.posts} failedCampaigns={d.failed.campaigns} posts={d.postHistory} campaigns={d.campaigns} cityLabel={d.city?.label || null} onRetry={() => load()} onWrite={() => setShowPost(true)} onAd={setAds} />
+              <PostsTab loading={d.loading} failedPosts={d.failed.posts} failedCampaigns={d.failed.campaigns} posts={d.postHistory} campaigns={d.campaigns} cityLabel={d.city?.label || null} onRetry={() => load()} onWrite={() => setShowPost(true)} onAd={setAds} notify={notify} />
             )}
             {tab === 'results' && (
               <ResultsTab loading={d.loading} failed={d.failed} customers={d.customers} leads={d.leads} referrals={d.referrals} outreach={d.outreachHistory} campaigns={d.campaigns} quietCount={d.quiet.length} onRetry={() => load()} />
             )}
           </div>
 
-          {tab !== 'results' && !d.failed.activity && <ActivityLog items={d.activityLog} />}
+          {tab !== 'results' && tab !== 'promotions' && !d.failed.activity && <ActivityLog items={d.activityLog} />}
         </>
       )}
 
@@ -177,8 +184,8 @@ export default function GrowthPage() {
       {composing && <SendFlow key={composing.id} compose={composing.what} shop={d.shop} aiMode={aiMode} onClose={closeCompose} onChanged={refresh} notify={notify} />}
 
       {leadSheet && <LeadSheet lead={leadSheet.lead} onClose={() => setLeadSheet(null)} onSaved={message => { setLeadSheet(null); notify(message, 'success'); refresh() }} />}
-      {ads && <AdsSheet platform={ads} cityLabel={d.city?.label || null} onClose={() => setAds(null)} onSaved={message => { setAds(null); notify(message, 'success'); refresh() }} />}
-      {showPost && <PostSheet shopName={d.shop.name} onClose={() => setShowPost(false)} onSaved={message => { setShowPost(false); notify(message, 'success'); refresh() }} />}
+      {ads && <AdsSheet platform={ads} shopName={d.shop.name} cityLabel={d.city?.label || null} onClose={() => setAds(null)} onSaved={message => { setAds(null); notify(message, 'success'); refresh() }} />}
+      {showPost && <PostSheet shopName={d.shop.name} shopPhone={d.shop.phone} cityLabel={d.city?.label || null} onClose={() => setShowPost(false)} onSaved={message => { setShowPost(false); notify(message, 'success'); refresh() }} />}
       {showLookup && <LookupSheet onClose={() => setShowLookup(false)} />}
 
       <ScreenToast toast={toast} onClose={dismiss} />

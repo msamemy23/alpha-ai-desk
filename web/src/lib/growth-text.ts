@@ -182,3 +182,14 @@ export function cityFromProfile(cityStateZip: unknown): { search: string; label:
   if (!label || !search) return null
   return { search, label }
 }
+
+/**
+ * The older one-tap win-back call sends a message the owner may have typed with {shopName} and {phone}.
+ * Those become the placeholders the promotion engine knows. With nothing typed, a plain message that
+ * promises no price, special or discount is used.
+ */
+export function legacyOutreachMessage(template: string): string {
+  const t = template.trim()
+  if (!t) return 'Hi {name}, it has been a while since we saw you at {shop}. {contact} to book your next visit.'
+  return t.replace(/\{shopName\}/gi, '{shop}').replace(/\{phone\}/gi, '{shop_phone}')
+}

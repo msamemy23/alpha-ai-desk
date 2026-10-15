@@ -5,6 +5,7 @@ import { EmptyBlock, ErrorCard, RowsSkeleton, SearchField } from '@/components/L
 import { phonePretty } from '@/lib/today'
 import { hasPhone } from '@/lib/growth-text'
 import { Flagged, PAGE, Section } from './parts'
+import ReferralResults from './ReferralResults'
 import type { Rec } from './helpers'
 
 interface Props {
@@ -33,6 +34,7 @@ export default function ReferralsTab({ loading, failed, customers, referrals, on
   }
 
   return (
+    <>
     <Section title="Referral codes" hint="Give a happy customer a code to share. You choose the discount and see the text before it goes.">
       {failed ? <ErrorCard title="Referral codes did not load" message="Check your connection and try again." onRetry={onRetry} busy={loading} />
         : loading ? <RowsSkeleton rows={5} label="Loading customers" />
@@ -73,5 +75,7 @@ export default function ReferralsTab({ loading, failed, customers, referrals, on
           </>
         )}
     </Section>
+    <ReferralResults notify={notify} />
+    </>
   )
 }

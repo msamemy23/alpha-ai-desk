@@ -82,7 +82,7 @@ export async function POST(
         connection_id:     connectionId,
         to:                e164,
         from:              fromPhone,
-        from_display_name: 'Alpha AI Call',
+        from_display_name: 'Shop call',
         webhook_url:       `${appUrl}/api/telnyx-voice-webhook`,
         client_state:      createVoiceClientState({
           conferenceJoin: true,

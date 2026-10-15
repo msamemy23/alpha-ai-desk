@@ -4,6 +4,7 @@ import Sheet from '@/components/Sheet'
 import Notice from '@/components/Notice'
 import Icon from '@/components/Icon'
 import { getAuthJsonHeaders } from './helpers'
+import { POST_LIMITS, copyFlags, draftPost } from './post-draft'
 
 const PLATFORMS = [
   { key: 'facebook', label: 'Facebook' },
@@ -14,27 +15,47 @@ const PLATFORMS = [
 
 interface Props {
   shopName: string
+  shopPhone?: string
+  cityLabel?: string | null
   onClose: () => void
   onSaved: (message: string) => void
 }
 
 /** Writes a post and saves it as a draft. Nothing is published from here. */
-export default function PostSheet({ shopName, onClose, onSaved }: Props) {
+export default function PostSheet({ shopName, shopPhone = '', cityLabel = null, onClose, onSaved }: Props) {
   const [text, setText] = useState('')
   const [platforms, setPlatforms] = useState(['facebook', 'google'])
   const [media, setMedia] = useState<File[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [tried, setTried] = useState(false)
+  const [topic, setTopic] = useState('')
+  const [drafting, setDrafting] = useState(false)
+  const [draftNote, setDraftNote] = useState('')
+  const [aiWritten, setAiWritten] = useState(false)
   const busy = useRef(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const textErr = !text.trim() ? 'Write something for the post first.' : ''
   const platformErr = platforms.length === 0 ? 'Choose at least one place for it.' : ''
+  // The shortest limit among the chosen places is the one to respect.
+  const limit = platforms.length ? Math.min(...platforms.map(p => POST_LIMITS[p] || 2000)) : 2000
+  const limitFor = platforms.find(p => (POST_LIMITS[p] || 2000) === limit)
+  const lengthErr = [...text].length > limit ? `This is ${[...text].length.toLocaleString('en-US')} characters. ${PLATFORMS.find(p => p.key === limitFor)?.label || 'That place'} takes up to ${limit.toLocaleString('en-US')}. Shorten it.` : ''
+  const flags = aiWritten ? copyFlags(text, [topic, shopName, shopPhone, cityLabel || '']) : []
+
+  const writeIt = async () => {
+    if (drafting || !topic.trim()) return
+    setDrafting(true); setDraftNote('')
+    const r = await draftPost({ shopName, shopPhone, city: cityLabel || '', platforms, topic: topic.trim() })
+    setDrafting(false)
+    if (!r.ok) { setDraftNote(r.error); return }
+    setText(r.text); setAiWritten(true)
+  }
 
   const save = async () => {
     setTried(true)
-    if (textErr || platformErr || busy.current) return
+    if (textErr || platformErr || lengthErr || busy.current) return
     busy.current = true; setSaving(true); setError('')
     try {
       const mediaUrls: string[] = []
@@ -81,12 +102,29 @@ export default function PostSheet({ shopName, onClose, onSaved }: Props) {
           </div>
           {tried && platformErr && <p className="form-error">{platformErr}</p>}
         </div>
+        <div className="rounded-md border border-border p-3">
+          <label htmlFor="post-topic" className="form-label">Want a first draft? Say what the post is about</label>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input id="post-topic" className="form-input" value={topic} maxLength={300} onChange={e => setTopic(e.target.value)} placeholder="For example: we now do state inspections" />
+            <button type="button" className="btn btn-secondary shrink-0" onClick={() => void writeIt()} disabled={drafting || !topic.trim()} aria-busy={drafting}>
+              <Icon name="pen" className="h-5 w-5" />{drafting ? 'Writing…' : 'Write it for me'}
+            </button>
+          </div>
+          <p className="form-hint">Alpha only uses what you type here. It will not make up prices, offers or promises. You read and change it before saving.</p>
+          {draftNote && <p className="form-error">{draftNote}</p>}
+        </div>
         <div>
           <label htmlFor="post-text" className="form-label">What is happening at your shop?</label>
-          <textarea id="post-text" className="form-textarea" rows={5} value={text} onChange={e => setText(e.target.value)} placeholder="We have two bays open this afternoon. Walk-ins welcome." aria-invalid={tried && !!textErr} />
+          <textarea id="post-text" className="form-textarea" rows={5} value={text} onChange={e => setText(e.target.value)} placeholder="We have two bays open this afternoon. Walk-ins welcome." aria-invalid={tried && (!!textErr || !!lengthErr)} />
           {tried && textErr && <p className="form-error">{textErr}</p>}
-          <p className="form-hint">This saves a draft only. Nothing is published until a connected app is authorized.</p>
+          {lengthErr && <p className="form-error">{lengthErr}</p>}
+          <p className="form-hint"><span className="num">{[...text].length.toLocaleString('en-US')}</span> of {limit.toLocaleString('en-US')} characters.{aiWritten && !flags.length ? ' Alpha wrote the first draft. Read it and change it if you like.' : ''}</p>
+          {flags.map(f => <Notice key={f} kind="warn" className="mt-2">{f}</Notice>)}
         </div>
+        <Notice kind="info">
+          <p className="font-bold">Saving does not publish anything.</p>
+          <p>Publishing to Google, Facebook, Instagram or TikTok needs each account connected first. Until then, save the draft, then copy it from the list and post it yourself.</p>
+        </Notice>
         <div>
           <input ref={fileRef} type="file" multiple accept="image/*,video/*" className="sr-only" tabIndex={-1} aria-label="Choose photos or videos" onChange={e => { if (e.target.files) setMedia(Array.from(e.target.files)) }} />
           <button type="button" className="btn btn-secondary" onClick={() => fileRef.current?.click()}><Icon name="image" className="h-5 w-5" />{media.length ? 'Change photos' : 'Add photos'}</button>

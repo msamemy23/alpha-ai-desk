@@ -34,3 +34,23 @@ export async function recordSmsOptOut(
   }, { onConflict: 'shop_id,phone_digits' })
   if (error) throw new Error('SMS consent could not be recorded')
 }
+
+/** Texting is turned back on only by the customer's own START (or the shop recording a fresh consent). */
+export async function recordSmsOptIn(
+  db: SupabaseClient,
+  shopId: string,
+  phone: unknown,
+  source = 'inbound_start'
+): Promise<void> {
+  const phoneDigits = normalizePhoneDigits(phone)
+  if (!phoneDigits) return
+
+  const { error } = await db.from('sms_consents').upsert({
+    shop_id: shopId,
+    phone_digits: phoneDigits,
+    opted_out: false,
+    source,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'shop_id,phone_digits' })
+  if (error) throw new Error('SMS consent could not be recorded')
+}

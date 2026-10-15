@@ -5,6 +5,8 @@ import { phonePretty } from '@/lib/today'
 import { CALL_KIND_LABEL, CALL_KIND_LAMP, CALL_KIND_TEXT, callKind, formatDuration, otherNumber, recordingUrl, stamp } from './utils'
 import type { CallRecord } from './utils'
 import { LeadTag } from './CallsView'
+import AiReview from './AiReview'
+import type { Interaction } from './ai-types'
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -16,12 +18,15 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
 }
 
 /** Everything about one call: who, how it went, recording, transcript and what the AI noted. */
-export default function CallDetail({ call, name, customerId, onCallBack, onText }: {
+export default function CallDetail({ call, name, customerId, onCallBack, onText, ai, onAiChanged }: {
   call: CallRecord
   name: string
   customerId: string | null
   onCallBack: () => void
   onText: () => void
+  /** What the assistant recorded about this call, when it answered it. */
+  ai?: Interaction
+  onAiChanged?: () => void
 }) {
   const kind = callKind(call.direction, call.status, call.duration_secs, call.viaAi)
   const number = otherNumber(call)
@@ -65,7 +70,9 @@ export default function CallDetail({ call, name, customerId, onCallBack, onText 
         {service && <Fact label="Needs">{service}</Fact>}
       </dl>
 
-      {hasInsights && (
+      {ai && <AiReview interactionId={ai.id} onChanged={onAiChanged} />}
+
+      {!ai && hasInsights && (
         <section aria-labelledby="cd-ai" className="space-y-2">
           <h3 id="cd-ai" className="section-title">What the AI noted</h3>
           <div className="space-y-2 rounded-lg border border-border bg-bg-base p-4 text-[0.9375rem]">
@@ -76,14 +83,14 @@ export default function CallDetail({ call, name, customerId, onCallBack, onText 
         </section>
       )}
 
-      {rec && (
+      {!ai && rec && (
         <section aria-labelledby="cd-rec" className="space-y-2">
           <h3 id="cd-rec" className="section-title">Recording</h3>
           <audio controls preload="none" src={rec} className="w-full" aria-label="Call recording" />
         </section>
       )}
 
-      {(call.transcript || rec) && (
+      {!ai && (call.transcript || rec) && (
         <section aria-labelledby="cd-tx" className="space-y-2">
           <h3 id="cd-tx" className="section-title">Transcript</h3>
           {call.transcript && !failed ? (
@@ -96,7 +103,7 @@ export default function CallDetail({ call, name, customerId, onCallBack, onText 
         </section>
       )}
 
-      {!rec && !call.transcript && !hasInsights && (
+      {!ai && !rec && !call.transcript && !hasInsights && (
         <p className="rounded-lg border border-dashed border-border p-4 text-[0.9375rem] text-text-secondary">
           {kind === 'missed' ? 'Nobody picked up, so there is no recording.' : 'There is no recording or transcript for this call.'}
         </p>

@@ -1,136 +1,53 @@
-export const dynamic = "force-dynamic"
+export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
+import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
-import { sendSMS, formatPhone } from '@/lib/telnyx'
-import { sendEmail } from '@/lib/email'
-import { createHash } from 'node:crypto'
-import { isSmsOptedOut } from '@/lib/sms-consent'
-import { withOptOut } from '@/lib/growth-text'
+import { checkRateLimit } from '@/lib/rate-limit'
+import { NeedsDatabaseUpdate } from '@/lib/automation-store'
+import { engineDeps } from '@/lib/automation-service'
+import { createPromotionStore } from '@/lib/growth-promotions-store'
+import { cleanInput, createPromotion, sendPromotion } from '@/lib/growth-promotions'
+import { legacyOutreachMessage } from '@/lib/growth-text'
 
-function escapeHtml(value: unknown) {
-  return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char))
-}
+export const maxDuration = 60
 
-function idempotencyKey(parts: string[]) {
-  return `outreach-${createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 32)}`
-}
+// The older one-tap "text customers who have not been in" call. It is now a promotion like any other, so it goes
+// through the same checks: STOP is honoured right before each text, nothing goes out during quiet hours, nobody gets
+// more than the marketing limit, and every message is written down in the history. It texts only. Email campaigns
+// are written and sent from Get more customers, where the owner reads the exact message first.
+
+const json = (body: Record<string, unknown>, status = 200) => NextResponse.json(body, { status })
+const WRITERS = new Set(['owner', 'admin', 'manager'])
 
 export async function POST(req: NextRequest) {
   try {
     const auth = await getAuthedShop()
     if (!auth) return unauthorized()
+    if (!WRITERS.has(auth.role)) return forbidden()
 
-    const { type, filter, template, channel } = await req.json()
-    // type: 'follow_up_cold' | 'oil_change_reminder' | 'custom'
-    // filter: { daysSinceLastVisit, status, tags }
-    // template: string with {name}, {phone}, {shopName} placeholders
-    // channel: 'sms' | 'email'
-
-    const db = getServiceClient()
-    const { data: settings, error: settingsError } = await db.from('settings').select('*').eq('shop_id', auth.shopId).limit(1).maybeSingle()
-    if (settingsError) return NextResponse.json({ error: 'Shop settings could not be loaded' }, { status: 500 })
-    const shopName = settings?.shop_name || 'Your Auto Shop'
-    if (channel === 'sms' && (!settings?.telnyx_api_key || !settings?.telnyx_phone_number)) return NextResponse.json({ error: 'SMS is not configured for this shop' }, { status: 503 })
-    if (channel === 'email' && (!settings?.resend_api_key || !settings?.from_email)) return NextResponse.json({ error: 'Email is not configured for this shop' }, { status: 503 })
-
-    let customers: Record<string, unknown>[] = []
-
-    if (type === 'follow_up_cold' || filter?.daysSinceLastVisit) {
-      // Customers with no job in X days
-      const days = filter?.daysSinceLastVisit || 90
-      const cutoff = new Date(Date.now() - days * 86400000).toISOString()
-      const { data: recentCustomerIds, error: recentCustomerIdsError } = await db
-        .from('jobs')
-        .select('customer_id')
-        .eq('shop_id', auth.shopId)
-        .gte('created_at', cutoff)
-      if (recentCustomerIdsError) return NextResponse.json({ ok: false, error: 'Customer activity could not be loaded' }, { status: 500 })
-      const activeIds = (recentCustomerIds || []).map((j: Record<string,unknown>) => j.customer_id).filter(Boolean)
-
-      const query = db.from('customers').select('id,name,phone,email,sms_opted_out').eq('shop_id', auth.shopId).not('id', 'in', `(${activeIds.map((id: unknown) => `"${id}"`).join(',') || '"00000000-0000-0000-0000-000000000000"'})`)
-      if (channel === 'sms') query.not('phone', 'is', null)
-      if (channel === 'email') query.not('email', 'is', null)
-      const { data, error: customersError } = await query.limit(500)
-      if (customersError) return NextResponse.json({ ok: false, error: 'Customers could not be loaded' }, { status: 500 })
-      customers = (data || []) as Record<string, unknown>[]
-    } else if (type === 'custom' && filter?.status) {
-      const { data: jobs, error: jobsError } = await db
-        .from('jobs')
-        .select('customer_id, customer_name, customer:customers(id,name,phone,email,sms_opted_out)')
-        .eq('shop_id', auth.shopId)
-        .eq('status', filter.status)
-      if (jobsError) return NextResponse.json({ ok: false, error: 'Jobs could not be loaded' }, { status: 500 })
-      customers = (jobs || []).map((j: Record<string,unknown>) => j.customer as Record<string,unknown>).filter(Boolean)
+    const body = await req.json().catch(() => ({})) as { type?: unknown; filter?: { daysSinceLastVisit?: unknown }; template?: unknown; channel?: unknown }
+    if (body.channel && body.channel !== 'sms') {
+      return json({ ok: false, error: 'Email campaigns are sent from Get more customers, where you read the exact message first. This only sends texts.' }, 400)
     }
+    const days = Math.min(Math.max(Math.floor(Number(body.filter?.daysSinceLastVisit) || 90), 7), 1095)
+    const limit = checkRateLimit(`outreach:${auth.shopId}`, 3, 10 * 60_000)
+    if (!limit.ok) return json({ ok: false, error: 'Slow down for a minute, then try again.' }, 429)
 
-    let sent = 0; const errors: string[] = []
+    const message = legacyOutreachMessage(typeof body.template === 'string' ? body.template : '')
+    const parsed = cleanInput({ name: `Win-back, not in ${days}+ days`, message, email_subject: '', audience: { lastVisitMinDays: days } })
+    if (!parsed.ok) return json({ ok: false, error: parsed.errors[0] }, 400)
 
-    for (const c of customers) {
-      try {
-        const name = (c.name as string || 'Valued Customer').split(' ')[0]
-        const msg = (template || getDefaultTemplate(type))
-          .replace('{name}', name)
-          .replace('{shopName}', shopName)
-          .replace('{phone}', settings?.shop_phone || '')
-
-        if (channel === 'sms' && (c.sms_opted_out || await isSmsOptedOut(db, auth.shopId, c.phone))) {
-          continue
-        }
-
-        if (channel === 'sms' && c.phone) {
-          const formatted = formatPhone(c.phone as string)
-          const smsBody = withOptOut(msg)
-          await sendSMS(formatted, smsBody, settings.telnyx_phone_number, { apiKey: settings.telnyx_api_key, messagingProfileId: settings.telnyx_messaging_profile_id || '', idempotencyKey: idempotencyKey([auth.shopId, 'cold-followup', String(c.id), smsBody]) })
-          const { error: messageError } = await db.from('messages').insert({
-            shop_id: auth.shopId,
-            direction: 'outbound', channel: 'sms',
-            from_address: settings?.telnyx_phone_number,
-            to_address: formatted,
-            body: smsBody, customer_id: c.id,
-            status: 'sent', read: true, ai_handled: true,
-          })
-          if (messageError) throw messageError
-          sent++
-        } else if (channel === 'email' && c.email) {
-          await sendEmail({
-            to: c.email as string,
-            subject: `${shopName} — We miss you!`,
-            html: `<div style="font-family:Arial;padding:20px"><p>Hi ${escapeHtml(name)},</p><p>${escapeHtml(msg).replace(/\n/g,'<br>')}</p><p style="color:#888;font-size:12px;margin-top:20px">${escapeHtml(shopName)} | ${escapeHtml(settings?.shop_phone)}</p></div>`,
-            apiKey: settings?.resend_api_key,
-            from: settings?.from_email,
-            idempotencyKey: idempotencyKey([auth.shopId, 'cold-followup', String(c.id), msg]),
-          })
-          const { error: messageError } = await db.from('messages').insert({
-            shop_id: auth.shopId,
-            direction: 'outbound', channel: 'email',
-            from_address: settings?.from_email,
-            to_address: c.email,
-            body: msg, customer_id: c.id,
-            status: 'sent', read: true, ai_handled: true,
-          })
-          if (messageError) throw messageError
-          sent++
-        }
-        // Small delay to avoid rate limits
-        await new Promise(r => setTimeout(r, 100))
-      } catch (e: unknown) {
-        errors.push(`${c.name}: ${(e as Error).message}`)
-      }
-    }
-
-    const success = errors.length === 0
-    return NextResponse.json({ ok: success, success, sent, errors, total: customers.length }, { status: success ? 200 : 502 })
-  } catch (e: unknown) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 500 })
+    const sb = getServiceClient()
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : req.nextUrl.origin)
+    const store = createPromotionStore(sb)
+    const created = await createPromotion(store, auth.shopId, auth.userId, parsed.value)
+    const out = await sendPromotion(engineDeps(sb, baseUrl), store, auth.shopId, created.id)
+    if (!out.ok) return json({ ok: false, error: out.error, code: out.code }, out.status)
+    // `sent` and `total` keep their old meaning for any screen still reading them.
+    return json({ ok: true, success: true, sent: out.sent, total: out.queued + out.left_out, queued: out.queued, left_out: out.left_out, waiting: out.waiting, errors: [], promotion_id: created.id, message: out.message })
+  } catch (error) {
+    if (error instanceof NeedsDatabaseUpdate) return json({ ok: false, error: 'Sending needs a database update first. Ask your developer to apply it.', needs_database_update: true }, 409)
+    console.error('[outreach]', error instanceof Error ? error.message : error)
+    return json({ ok: false, error: 'Something went wrong. Nothing was sent twice. Try again.' }, 500)
   }
-}
-
-function getDefaultTemplate(type: string): string {
-  const templates: Record<string, string> = {
-    follow_up_cold: `Hi {name}, it has been a while since we saw you at {shopName}. If your car is due for an oil change, brakes or an inspection, call us at {phone} or reply here to book a time.`,
-    oil_change_reminder: `Hi {name}, this is {shopName}. It may be time for your next oil change. Call us at {phone} or reply here and we will find you a time.`,
-    custom: `Hi {name}, this is {shopName}. Call us at {phone} if you need anything.`,
-  }
-  return templates[type] || templates.custom
 }

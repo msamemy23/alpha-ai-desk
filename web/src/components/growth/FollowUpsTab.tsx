@@ -17,9 +17,11 @@ interface Props {
   shop: ShopInfo
   onRetry: () => void
   onText: (customers: Rec[]) => void
+  /** Turns this list into a promotion, so it can be scheduled and is held back at night. */
+  onPromote: () => void
 }
 
-export default function FollowUpsTab({ loading, failed, customers, quiet, visits, shop, onRetry, onText }: Props) {
+export default function FollowUpsTab({ loading, failed, customers, quiet, visits, shop, onRetry, onText, onPromote }: Props) {
   const [limit, setLimit] = useState(PAGE)
   const split = useMemo(() => splitForText(quiet), [quiet])
   const example = followUpTemplate(shop.name || 'your shop', shop.phone).replace('{name}', '[first name]')
@@ -50,7 +52,11 @@ export default function FollowUpsTab({ loading, failed, customers, quiet, visits
                 <Icon name="send" className="h-5 w-5" />
                 {split.eligible.length === 0 ? 'Nobody here can be texted' : `Review and text ${split.eligible.length} ${split.eligible.length === 1 ? 'customer' : 'customers'}`}
               </button>
-              <p className="form-hint">You see the exact words and the list before anything goes out.</p>
+              <button type="button" className="btn btn-secondary mt-2 w-full sm:ml-2 sm:mt-3 sm:w-auto" onClick={onPromote}>
+                <Icon name="calendar" className="h-5 w-5" />
+                Schedule it as a promotion
+              </button>
+              <p className="form-hint">You see the exact words and the list before anything goes out. A promotion can be set for a time you pick, and texts are held until morning.</p>
               {(split.noPhone.length > 0 || split.optedOut.length > 0 || split.duplicate.length > 0) && (
                 <p className="form-hint">
                   Left out: {[

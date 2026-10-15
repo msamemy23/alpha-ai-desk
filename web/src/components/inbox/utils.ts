@@ -18,7 +18,6 @@ export interface CallRecord {
   caller_sentiment: string | null
   key_quotes: string | null
   call_count_from_number: number | null
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   raw_data: any
   /** True when the AI assistant handled this call (it comes from ai_calls). */
   viaAi?: boolean
@@ -37,6 +36,8 @@ export interface Message {
   customer_id?: string | null
   customer?: { name: string; phone: string; email: string } | null
   subject?: string
+  /** True for texts the AI assistant wrote and sent. */
+  ai_handled?: boolean
 }
 
 export interface Thread {
@@ -148,7 +149,6 @@ export const CALL_KIND_LAMP: Record<CallKind, string> = { missed: 'lamp-red', in
 export const CALL_KIND_TEXT: Record<CallKind, string> = { missed: 'text-red', incoming: 'text-green', outgoing: 'text-blue' }
 
 /** Where the recording for a call can be played from, if there is one. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function recordingUrl(call: { raw_data?: any }): string | null {
   const rd = call.raw_data
   if (!rd) return null

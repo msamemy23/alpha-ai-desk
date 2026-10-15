@@ -1,12 +1,12 @@
 export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { assertPublicUrl } from '@/lib/public-url'
+import { NEEDS_CITY, resolveSearchCity } from '@/lib/growth-city'
 
-// Scan social media / web for people in Houston posting about car trouble
-// Uses SearXNG (if configured) or direct web search via AI
+// Scan social media / web for people near this shop posting about car trouble.
+// Only posts the search engine actually returned are shown. Nothing is suggested or made up by an AI.
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null)
@@ -21,20 +21,15 @@ export async function POST(req: NextRequest) {
     const { data: settings, error: settingsError } = await db.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle()
     if (settingsError) throw settingsError
 
-    const aiKey = (settings?.ai_api_key as string) || ''
-    const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
-    const aiModel = normalizeAiModel(settings?.ai_model, aiBase)
-
-    if (!aiKey) {
-      return NextResponse.json({ error: 'AI API key not configured in Settings' }, { status: 400 })
-    }
+    const city = keywords.length ? '' : await resolveSearchCity(db, auth.shopId, body?.city)
+    if (!keywords.length && !city) return NextResponse.json({ error: NEEDS_CITY }, { status: 400 })
 
     const searchTerms = keywords.length ? keywords : [
-      'car broke down Houston',
-      'need mechanic Houston TX',
-      'car won\'t start Houston',
-      'auto repair recommendation Houston',
-      'check engine light Houston',
+      `car broke down ${city}`,
+      `need mechanic ${city}`,
+      `car won't start ${city}`,
+      `auto repair recommendation ${city}`,
+      `check engine light ${city}`,
     ]
 
     interface SocialPost {
@@ -91,43 +86,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // AI may suggest candidates, but it cannot verify a live post on its own.
-    const aiRes = await fetch(`${aiBase}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiKey}` },
-      body: JSON.stringify({
-        model: aiModel,
-        messages: [
-          { role: 'system', content: 'You are a lead generation AI for an auto repair shop. Return only valid JSON arrays. No markdown.' },
-          { role: 'user', content: `Suggest candidate social posts that might indicate auto-repair demand in the target area. Do not claim you searched or verified live posts. Return JSON array: [{"platform":"Facebook","title":"...","snippet":"...","url":"","potential_service":"brake repair","urgency":"high"}].` }
-        ],
-        max_tokens: 2000,
-      })
-    })
-
-    if (!aiRes.ok) throw new Error(`AI provider returned ${aiRes.status}`)
-    const aiData = await aiRes.json()
-    const content = aiData.choices?.[0]?.message?.content || '[]'
-
-    try {
-      const parsed = JSON.parse(content.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
-      if (Array.isArray(parsed)) {
-        for (const post of parsed) {
-          if (!allPosts.some(p => p.title === post.title)) {
-            allPosts.push({
-              platform: post.platform || 'Social',
-              title: post.title || 'Untitled',
-              snippet: post.snippet || '',
-              url: post.url || '',
-              date: post.date || new Date().toISOString(),
-              potential_service: post.potential_service || 'General',
-              urgency: post.urgency || 'medium',
-              verified: false,
-            })
-          }
-        }
-      }
-    } catch { /* keep what we have */ }
+    if (!searxUrl) return NextResponse.json({ error: 'Reading social posts needs a search endpoint, which is not set up in Settings. Nothing was made up in its place.' }, { status: 503 })
 
     const urgencyOrder: Record<string, number> = { high: 0, medium: 1, low: 2 }
     allPosts.sort((a, b) => (urgencyOrder[a.urgency] || 1) - (urgencyOrder[b.urgency] || 1))

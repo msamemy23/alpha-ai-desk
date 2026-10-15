@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatPhone, sendSMS } from '@/lib/telnyx'
 import { getIdempotencyKey } from '@/lib/api-response'
 import { writeAuditLog } from '@/lib/audit-log'
+import { attachOutgoing } from '@/lib/voice/media-store'
 
 type SmsSettings = {
   telnyx_api_key?: string | null
@@ -21,6 +22,8 @@ type DurableSmsInput = {
   jobId?: string | null
   documentId?: string | null
   settings: SmsSettings
+  /** Pictures already uploaded for this text: their ids and the public links the carrier will fetch. */
+  media?: { ids: string[]; urls: string[] }
 }
 
 export type DurableSmsResult =
@@ -85,6 +88,7 @@ async function saveSmsRecords(
     const inserted = await input.db.from('messages').insert(messageRow).select('id').maybeSingle()
     if (inserted.data?.id) {
       messageRecordSaved = true
+      if (input.media?.ids.length) await attachOutgoing(input.db, input.shopId, input.media.ids, String(inserted.data.id))
     } else if (inserted.error?.code === '23505') {
       // Another replay may have repaired the same provider message between
       // our read and insert. The unique provider identity is authoritative.
@@ -133,6 +137,7 @@ export async function sendDurableSms(input: DurableSmsInput): Promise<DurableSms
     jobId: input.jobId || null,
     documentId: input.documentId || null,
     body: input.text,
+    media: input.media?.ids || [],
   })).digest('hex')
   const operationKey = suppliedKey
     ? `sms:${createHash('sha256').update(suppliedKey).digest('hex')}`
@@ -177,6 +182,7 @@ export async function sendDurableSms(input: DurableSmsInput): Promise<DurableSms
       apiKey: input.settings.telnyx_api_key || '',
       messagingProfileId: input.settings.telnyx_messaging_profile_id || '',
       idempotencyKey: operationKey,
+      mediaUrls: input.media?.urls,
     }) as Record<string, unknown>
     providerAccepted = true
     const providerMessageId = typeof result?.id === 'string' ? result.id : null

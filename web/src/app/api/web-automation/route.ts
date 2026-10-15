@@ -1,335 +1,302 @@
-// v3-fixed-regex
-import { NextRequest, NextResponse } from 'next/server'
-import { getServiceClient } from '@/lib/supabase'
-import { getRouteShop, unauthorized } from '@/lib/api-auth'
-import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
-import { assertPublicUrl, fetchPublicUrl, tryPublicUrl } from '@/lib/public-url'
 import { runHostedBrowser, validateBrowserActions } from '@/lib/hosted-browser'
-import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
+import type { BrowserAction } from '@/lib/hosted-browser'
+import {
+  AUTOMATION_SYSTEM, automationKind, describeActions, filterResults, resultsBlock, scopeFor, shapeControls, summaryPrompt, vetLegacyStep,
+} from '@/lib/browser/automation'
+import type { SearchResultRow } from '@/lib/browser/automation'
+import { describeRefusal, LIMITS, makeCheck, makeResourceFetcher } from '@/lib/browser/guard'
+import { hasAiKey, makeAskModel } from '@/lib/browser/model'
+import type { PolicyContext } from '@/lib/browser/policy'
+import { readPage, searchWeb } from '@/lib/browser/read-page'
+import type { ReadResult } from '@/lib/browser/read-page'
+import { cleanPageText, injectionNotice, inspectPageText, wrapUntrusted } from '@/lib/browser/untrusted'
+import { displayHost, parseTarget, redactUrlForLog } from '@/lib/browser/url'
+import { audit, loadShopRules, openRoute, readJson, reply, usedToday } from '@/lib/browser/server'
+import type { BrowserAudit, BrowserCaller } from '@/lib/browser/server'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
 
-type ParsedPage = { text: string; links: string[]; title: string; error?: string }
+/**
+ * Ask Alpha's way of looking at the web. Same safety rules as the Browser page: signed-in shops only, public sites only,
+ * the shop's allow and block lists, rate limits, a daily cap, an audit line for every page and step, and page text handed to
+ * the AI only as labelled, untrusted data. The shapes of the answers are unchanged so the chat keeps working.
+ */
+const LIVE_EVENTS: BrowserAudit[] = ['browser.visit', 'browser.fill', 'browser.click', 'browser.sent', 'browser.approval_asked', 'browser.handoff']
+const PARTS_SITES = 'site:napaonline.com OR site:oreillyauto.com OR site:autozone.com'
 
-type AutomationSettings = {
-  browserless_token?: unknown
-  ai_api_key?: unknown
-  ai_base_url?: unknown
-  ai_model?: unknown
+type Step = { action: string; screenshotUrl: string; url: string; title: string }
+
+function str(value: unknown, max: number): string {
+  return typeof value === 'string' ? value.trim().slice(0, max) : ''
 }
 
-// -- Fetch + parse page (no browser needed) --
-async function fetchAndParse(url: string, selector?: string): Promise<ParsedPage> {
+function shot(url: string): string {
+  return `/api/screenshot?url=${encodeURIComponent(url)}`
+}
+
+function statusFor(code: Extract<ReadResult, { ok: false }>['code']): number {
+  return code === 'blocked' ? 403 : code === 'bad_url' ? 400 : code === 'not_found' ? 404 : code === 'too_large' ? 413 : code === 'timeout' ? 504 : 502
+}
+
+async function logRun(caller: BrowserCaller, type: string, task: string, result: string, success: boolean) {
   try {
-    let currentUrl = await assertPublicUrl(url)
-    let r: Response | null = null
-    for (let redirect = 0; redirect <= 3; redirect += 1) {
-      r = await fetchPublicUrl(currentUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-        signal: AbortSignal.timeout(15000),
-        maxBytes: 2 * 1024 * 1024,
+    await caller.db.from('web_automation_logs').insert({ shop_id: caller.auth.shopId, type, task: task.slice(0, 500), result: result.slice(0, 1000), success, created_at: new Date().toISOString() })
+  } catch { /* the log table is optional */ }
+}
+
+type Found = { ok: true; rows: SearchResultRow[]; hidden: number } | { ok: false; message: string }
+
+/** One web search. A search key (SERPER_API_KEY) is used when the shop's host has set one; otherwise the built-in search is used. */
+async function runSearch(query: string, ctx: PolicyContext): Promise<Found> {
+  const key = process.env.SERPER_API_KEY || ''
+  if (key) {
+    try {
+      const r = await fetch('https://google.serper.dev/search', {
+        method: 'POST', headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' }, body: JSON.stringify({ q: query, num: 6 }), signal: AbortSignal.timeout(10_000),
       })
-      if (r.status < 300 || r.status >= 400) break
-      const location = r.headers.get('location')
-      const nextUrl = location ? await tryPublicUrl(location, currentUrl) : null
-      if (!nextUrl) return { text: '', links: [], title: '', error: 'Redirected to a non-public URL' }
-      currentUrl = nextUrl
-      if (redirect === 3) return { text: '', links: [], title: '', error: 'Too many redirects' }
-    }
-    if (!r) return { text: '', links: [], title: '', error: 'Page fetch failed' }
-    if (!r.ok) return { text: '', links: [], title: '', error: `Page returned ${r.status}` }
-    const html = await r.text()
-
-    // Simple HTML text extraction with safe regex
-    let title = ''
-    try {
-      const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i)
-      title = titleMatch?.[1]?.trim() || ''
-    } catch { title = '' }
-
-    // Strip scripts, styles, nav, footer - use simple string replacements as fallback
-    let clean = html
-    try {
-      clean = clean.replace(/<script[\s\S]*?<\/script>/gi, '')
-      clean = clean.replace(/<style[\s\S]*?<\/style>/gi, '')
-      clean = clean.replace(/<nav[\s\S]*?<\/nav>/gi, '')
-      clean = clean.replace(/<footer[\s\S]*?<\/footer>/gi, '')
-      clean = clean.replace(/<header[\s\S]*?<\/header>/gi, '')
-    } catch { /* regex failed on this content, continue with raw html */ }
-
-    // Extract text
-    let text = ''
-    try {
-      text = clean
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/\s+/g, ' ')
-        .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ')
-        .trim()
-        .slice(0, 8000)
-    } catch {
-      text = html.slice(0, 8000)
-    }
-
-    // Extract links
-    const links: string[] = []
-    try {
-      const linkMatches = html.matchAll(/href="([^"]+)"/gi)
-      for (const m of linkMatches) {
-        const href = m[1]
-        if (href.startsWith('http') && !href.includes('javascript:')) {
-          links.push(href)
+      const d = await r.json().catch(() => null) as { organic?: Array<{ title?: unknown; link?: unknown; snippet?: unknown }> } | null
+      if (r.ok && d) {
+        const rows: SearchResultRow[] = []
+        for (const item of (d.organic || []).slice(0, 10)) {
+          const parsed = parseTarget(typeof item.link === 'string' ? item.link : '')
+          if (!parsed.ok) continue
+          rows.push({ title: cleanPageText(String(item.title ?? ''), 160), url: parsed.url.toString(), snippet: cleanPageText(String(item.snippet ?? ''), 300) })
         }
+        const filtered = filterResults(rows, ctx)
+        return { ok: true, rows: filtered.rows.slice(0, 6), hidden: filtered.hidden }
       }
-    } catch { /* ignore link extraction errors */ }
-
-    return { text, links: [...new Set(links)].slice(0, 20), title }
-  } catch (e) {
-    return { text: '', links: [], title: '', error: `Failed to fetch: ${(e as Error).message}` }
+    } catch { /* fall through to the built-in search */ }
   }
+  const found = await searchWeb(query, ctx, 'ai')
+  if (!found.ok) return { ok: false, message: found.message }
+  return { ok: true, rows: found.hits.slice(0, 6).map(h => ({ title: h.title, url: h.url, snippet: h.snippet })), hidden: found.hidden }
 }
 
-// -- AI analysis of scraped content --
-async function aiAnalyze(prompt: string, settings: AutomationSettings = {}): Promise<string> {
-  const apiKey = typeof settings.ai_api_key === 'string' ? settings.ai_api_key.trim() : ''
-  if (!apiKey) return ''
-  const baseUrl = normalizeAiBaseUrl(settings.ai_base_url || AI_BASE_URLS.OPENROUTER)
-  const model = normalizeAiModel(settings.ai_model, baseUrl)
+export async function POST(req: Request) {
   try {
-    const r = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], max_tokens: 500 }),
-      signal: AbortSignal.timeout(20000),
+    const body = await readJson(req, 128_000) as Record<string, unknown> | null
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return reply({ ok: false, error: 'Send the request as JSON.' }, 400)
+    const type = typeof body.type === 'string' ? body.type : 'scrape'
+    const kind = automationKind(type)
+    const rawActions = body.actions ?? []
+    const hasActions = Array.isArray(rawActions) && rawActions.length > 0
+    const gate = await openRoute(req, {
+      scope: scopeFor(kind ?? 'read'), need: kind === 'live' && hasActions ? 'act' : 'browse', write: true, allowService: true, body: body as { shopId?: unknown },
     })
-    const d = await r.json().catch(() => ({}))
-    return r.ok ? (d.choices?.[0]?.message?.content?.trim() || '') : ''
-  } catch {
-    return ''
-  }
-}
+    if (!gate.ok) return gate.response
+    const { caller } = gate
+    if (!kind) return reply({ ok: false, error: 'Unknown automation type' }, 400)
+    const rules = await loadShopRules(caller, req)
+    if (!rules.ctx.settings.aiEnabled) return reply({ ok: false, error: 'Alpha is switched off for the browser in this shop. Turn it on in the browser settings.', code: 'ai_off' }, 403)
 
+    const task = str(body.task, 4000)
+    const url = str(body.url, 2048)
+    const query = str(body.query, 500)
+    const notices: string[] = []
 
-// -- Log automation run --
-async function logRun(shopId: string, type: string, task: string, result: string, success: boolean) {
-  try {
-    const sb = getServiceClient()
-    await sb.from('web_automation_logs').insert({ shop_id: shopId, type, task: task.slice(0, 500), result: result.slice(0, 1000), success, created_at: new Date().toISOString() })
-  } catch { /* ignore if table doesn't exist */ }
-}
+    const refuse = async (address: string, label = ''): Promise<Response | null> => {
+      const why = describeRefusal(address, rules.ctx, 'ai')
+      if (!why) return null
+      const parsed = parseTarget(address)
+      if (parsed.ok) await audit(caller, 'browser.blocked', { url: address, actor: 'ai', detail: why })
+      return reply({ ok: false, error: label ? `${label}: ${why}` : why, code: parsed.ok ? 'blocked' : 'bad_url' }, parsed.ok ? 403 : 400)
+    }
+    if (url) { const stop = await refuse(url); if (stop) return stop }
 
-export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json().catch(() => null)
-    const auth = await getRouteShop(req, body?.shopId)
-    if (!auth) return unauthorized()
-    if (!checkRateLimit(rateLimitKey('web-browser', auth.userId, auth.shopId), 12, 60_000).ok) return NextResponse.json({ ok: false, error: 'Browser request limit reached. Try again in a minute.' }, { status: 429 })
-    const { data: settings, error: settingsError } = await getServiceClient()
-      .from('settings')
-      .select('browserless_token,ai_api_key,ai_base_url,ai_model')
-      .eq('shop_id', auth.shopId)
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-    if (settingsError) return NextResponse.json({ ok: false, error: 'Shop automation settings could not be loaded' }, { status: 500 })
-    const shopSettings = (settings || {}) as AutomationSettings
-    const task = typeof body?.task === 'string' ? body.task.trim().slice(0, 4000) : ''
-    const url = typeof body?.url === 'string' ? body.url.trim() : ''
-    const type = typeof body?.type === 'string' ? body.type : 'scrape'
-    const actions = body?.actions ?? []
-    if (['browser', 'browse', 'fill_form', 'click'].includes(type)) {
-      try { validateBrowserActions(actions) } catch (error) {
-        return NextResponse.json({ ok: false, error: (error as Error).message }, { status: 400 })
+    let actions: BrowserAction[] = []
+    if (kind === 'live') {
+      try { actions = validateBrowserActions(rawActions) } catch (error) {
+        return reply({ ok: false, error: (error as Error).message }, 400)
+      }
+      for (const action of actions) {
+        if (action.type === 'navigate') { const stop = await refuse(String(action.url || '').trim(), 'Navigate action rejected'); if (stop) return stop }
       }
     }
-    const query = typeof body?.query === 'string' ? body.query.trim().slice(0, 500) : ''
-    const validateUrl = async (value: string) => {
-      if (!value) return 'URL required'
-      try {
-        await assertPublicUrl(value)
-      } catch (error) {
-        return error instanceof Error ? error.message : 'Valid public URL required'
-      }
-      return null
-    }
-    if (url) {
-      const urlError = await validateUrl(url)
-      if (urlError) return NextResponse.json({ ok: false, error: urlError }, { status: 400 })
-    }
-    for (const action of (Array.isArray(actions) ? actions : [])) {
-      if (action && action.type === 'navigate') {
-        const actionError = await validateUrl(typeof action.url === 'string' ? action.url.trim() : '')
-        if (actionError) return NextResponse.json({ ok: false, error: `Navigate action rejected: ${actionError}` }, { status: 400 })
-      }
-    }
-    const log = (kind: string, label: string, result: string, success: boolean) => logRun(auth.shopId, kind, label, result, success)
 
-    // -- SCRAPE: fetch a page and extract info --
-    if (type === 'scrape' || type === 'read') {
-      if (!url) return NextResponse.json({ ok: false, error: 'URL required for scrape' }, { status: 400 })
-      const { text, links, title, error: fetchError } = await fetchAndParse(url)
-      if (fetchError) {
-        await log('scrape', task || url, fetchError, false)
-        return NextResponse.json({ ok: false, error: fetchError }, { status: 502 })
+    // The shop's own AI key, loaded only when something needs it.
+    let aiSettings: Record<string, unknown> | null | undefined
+    const analyze = async (prompt: string): Promise<string> => {
+      if (aiSettings === undefined) {
+        try {
+          const { data } = await caller.db.from('settings').select('ai_api_key,ai_base_url,ai_model').eq('shop_id', caller.auth.shopId).order('updated_at', { ascending: false }).limit(1).maybeSingle()
+          aiSettings = data ?? null
+        } catch { aiSettings = null }
       }
-      let analysis = ''
-      if (task) {
-        analysis = await aiAnalyze(`You scraped a web page.\n\nTitle: ${title}\nURL: ${url}\n\nContent:\n${text}\n\n---\nUser task: ${task}\n\nAnswer the task based on the page content. Be specific and concise.`, shopSettings)
+      if (!hasAiKey(aiSettings)) { if (!notices.includes('Add your AI key in Settings to get a written answer.')) notices.push('Add your AI key in Settings to get a written answer.'); return '' }
+      const said = await makeAskModel(aiSettings || {}, fetch, 20_000, 500)([{ role: 'system', content: AUTOMATION_SYSTEM }, { role: 'user', content: prompt }])
+      return said ? said.trim() : ''
+    }
+    const finish = (data: Record<string, unknown>, status = 200) => reply({ ...data, ...(notices.length ? { notice: notices.join(' ') } : {}) }, status)
+
+    /* ---- read a page ---- */
+    if (kind === 'read') {
+      if (!url) return reply({ ok: false, error: 'URL required for scrape' }, 400)
+      const read = await readPage(url, rules.ctx, 'ai')
+      if (!read.ok) {
+        await logRun(caller, 'scrape', task || url, read.message, false)
+        return reply({ ok: false, error: read.message, code: read.code }, statusFor(read.code))
       }
-      await log('scrape', task || url, analysis || text.slice(0, 200), true)
-      const scrapeScreenshotUrl = `/api/screenshot?url=${encodeURIComponent(url)}`
-      const scrapeSteps = [
-        { action: `Navigating to ${url}...`, screenshotUrl: scrapeScreenshotUrl, url, title: title || url },
-        { action: `Reading page: ${title || url}`, screenshotUrl: scrapeScreenshotUrl, url, title: title || url },
-        ...(analysis ? [{ action: `Analyzed: ${analysis.slice(0, 120)}${analysis.length > 120 ? '...' : ''}`, screenshotUrl: scrapeScreenshotUrl, url, title: title || url }] : [])
+      const doc = read.doc
+      const host = displayHost(read.finalUrl)
+      const warn = injectionNotice(doc.injection)
+      if (warn) notices.push(warn)
+      const analysis = task ? await analyze(summaryPrompt(task, { title: doc.title, host, text: doc.text })) : ''
+      await logRun(caller, 'scrape', task || url, analysis || doc.text.slice(0, 200), true)
+      await audit(caller, 'browser.read', { url: read.finalUrl, actor: 'ai', detail: doc.title })
+      const picture = shot(read.finalUrl)
+      const title = doc.title || host
+      const steps: Step[] = [
+        { action: `Navigating to ${host}...`, screenshotUrl: picture, url: read.finalUrl, title },
+        { action: `Reading page: ${title}`, screenshotUrl: picture, url: read.finalUrl, title },
+        ...(analysis ? [{ action: `Analyzed: ${analysis.slice(0, 120)}${analysis.length > 120 ? '...' : ''}`, screenshotUrl: picture, url: read.finalUrl, title }] : []),
       ]
-      return NextResponse.json({ ok: true, type: 'scrape', title, url, text: text.slice(0, 3000), links, analysis, steps: scrapeSteps })
-    }
-
-    // -- SEARCH --
-    if (type === 'search') {
-      const searchQuery = (query || task).slice(0, 500)
-      if (!searchQuery) return NextResponse.json({ ok: false, error: 'Query required' }, { status: 400 })
-      const serperKey = process.env.SERPER_API_KEY || ''
-      let results: Array<{title: string; url: string; snippet: string}> = []
-      if (serperKey) {
-        const r = await fetch('https://google.serper.dev/search', {
-          method: 'POST',
-          headers: { 'X-API-KEY': serperKey, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ q: searchQuery, num: 5 }),
-        })
-        const d = await r.json().catch(() => ({}))
-        if (!r.ok) {
-          const message = d?.message || d?.error || `Search provider returned ${r.status}`
-          await log('search', searchQuery, message, false)
-          return NextResponse.json({ ok: false, search_succeeded: false, error: message }, { status: 502 })
-        }
-        results = (d.organic || []).map((item: {title: string; link: string; snippet: string}) => ({ title: item.title, url: item.link, snippet: item.snippet }))
-      }
-      let analysis = ''
-      if (task && results.length > 0) {
-        const content = results.map(r => `${r.title}\n${r.snippet}`).join('\n\n')
-        analysis = await aiAnalyze(`Search results for "${searchQuery}":\n\n${content}\n\nTask: ${task}\n\nAnswer based on the search results.`, shopSettings)
-      }
-      const searchSucceeded = results.length > 0
-      await log('search', searchQuery, analysis || (searchSucceeded ? 'Search completed' : 'No verified results'), searchSucceeded)
-      const searchSteps: Array<{action: string; screenshotUrl: string; url: string; title: string}> = searchSucceeded ? [{
-        action: `Searching for: "${searchQuery}"...`,
-        screenshotUrl: `/api/screenshot?url=${encodeURIComponent(`https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`)}`,
-        url: `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`,
-        title: `Google: ${searchQuery}`,
-      }] : []
-      if (searchSucceeded) {
-        results.slice(0, 2).forEach((r: {title: string; url: string; snippet: string}) => {
-          searchSteps.push({ action: `Found: ${r.title || r.url} -- ${(r.snippet||'').slice(0,80)}`, screenshotUrl: `/api/screenshot?url=${encodeURIComponent(r.url)}`, url: r.url, title: r.title })
-        })
-        if (analysis) searchSteps.push({ action: analysis.slice(0, 140), screenshotUrl: searchSteps[searchSteps.length-1]?.screenshotUrl || '', url: searchSteps[searchSteps.length-1]?.url || '', title: 'Summary' })
-      }
-      return NextResponse.json({
-        ok: true,
-        type: 'search',
-        query: searchQuery,
-        results,
-        analysis,
-        search_succeeded: searchSucceeded,
-        notice: searchSucceeded ? undefined : 'No verified search results were returned. Configure SERPER_API_KEY to enable web search.',
-        steps: searchSteps,
+      const links = [...new Set(doc.links.map(l => l.href).filter(h => /^https?:\/\//i.test(h)))].slice(0, 20)
+      return finish({
+        ok: true, type: 'scrape', title: cleanPageText(doc.title, 160), url: read.finalUrl, text: wrapUntrusted(doc.text, host, 3000), links, analysis, steps, untrusted: true,
+        injection: { suspected: doc.injection.suspected, hiddenText: doc.injection.hiddenText },
       })
     }
 
-    // -- PARTS PRICE --
-    if (type === 'parts_price') {
+    /* ---- search ---- */
+    if (kind === 'search') {
+      const q = (query || task).slice(0, 500)
+      if (!q) return reply({ ok: false, error: 'Query required' }, 400)
+      const found = await runSearch(q, rules.ctx)
+      if (!found.ok) {
+        await logRun(caller, 'search', q, found.message, false)
+        return reply({ ok: false, search_succeeded: false, error: found.message }, 502)
+      }
+      const succeeded = found.rows.length > 0
+      const analysis = task && succeeded ? await analyze(`The shop's task: ${task}\n\n${resultsBlock(found.rows, 'web search results')}\n\nAnswer the task using only the search results above.`) : ''
+      if (found.hidden) notices.push(`${found.hidden} result${found.hidden === 1 ? ' was' : 's were'} left out because of your shop's browser rules.`)
+      if (!succeeded) notices.push('No search results were found for that. Try different words.')
+      await logRun(caller, 'search', q, analysis || (succeeded ? 'Search completed' : 'No verified results'), succeeded)
+      await audit(caller, 'browser.search', { actor: 'ai', detail: `Searched the web (${found.rows.length} results)`, meta: { words: q.split(/\s+/).length } })
+      const steps: Step[] = succeeded ? [
+        { action: `Searching for: "${q}"...`, screenshotUrl: '', url: `https://duckduckgo.com/?q=${encodeURIComponent(q)}`, title: `Search: ${q}` },
+        ...found.rows.slice(0, 2).map(r => ({ action: `Found: ${r.title || r.url} -- ${(r.snippet || '').slice(0, 80)}`, screenshotUrl: shot(r.url), url: r.url, title: r.title })),
+      ] : []
+      if (steps.length > 1 && analysis) steps.push({ action: analysis.slice(0, 140), screenshotUrl: steps[steps.length - 1].screenshotUrl, url: steps[steps.length - 1].url, title: 'Summary' })
+      return finish({ ok: true, type: 'search', query: q, results: found.rows, analysis, search_succeeded: succeeded, steps, untrusted: true })
+    }
+
+    /* ---- parts prices ---- */
+    if (kind === 'parts') {
       const partQuery = (query || task).slice(0, 500)
-      if (!partQuery) return NextResponse.json({ ok: false, error: 'Part query required' }, { status: 400 })
-      const serperKey = process.env.SERPER_API_KEY || ''
-      let priceInfo = ''
-      if (serperKey) {
-        const r = await fetch('https://google.serper.dev/search', {
-          method: 'POST',
-          headers: { 'X-API-KEY': serperKey, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ q: `${partQuery} auto part price site:napaonline.com OR site:oreillyauto.com OR site:autozone.com`, num: 6 }),
-        })
-        const d = await r.json().catch(() => ({}))
-        if (!r.ok) {
-          const message = d?.message || d?.error || `Price search provider returned ${r.status}`
-          await log('parts_price', partQuery, message, false)
-          return NextResponse.json({ ok: false, price_verified: false, error: message }, { status: 502 })
-        }
-        const organic = d.organic || []
-        priceInfo = organic.map((item: {title: string; snippet: string; link: string}) => `${item.title}: ${item.snippet} (${item.link})`).join('\n')
+      if (!partQuery) return reply({ ok: false, error: 'Part query required' }, 400)
+      const found = await runSearch(`${partQuery} auto part price ${PARTS_SITES}`, rules.ctx)
+      if (!found.ok) {
+        await logRun(caller, 'parts_price', partQuery, found.message, false)
+        return reply({ ok: false, price_verified: false, error: found.message }, 502)
       }
-      const analysis = priceInfo ? await aiAnalyze(`Find the best price for this auto part: "${partQuery}"\n\nSearch results:\n${priceInfo}\n\nExtract prices, part numbers, and recommend the best option.`, shopSettings) : ''
-      const priceVerified = Boolean(priceInfo)
-      await log('parts_price', partQuery, analysis || (priceVerified ? 'Price results found' : 'No verified price results'), priceVerified)
-      return NextResponse.json({
-        ok: true,
-        type: 'parts_price',
-        query: partQuery,
-        analysis,
-        raw: priceInfo,
-        price_verified: priceVerified,
-        notice: priceVerified ? undefined : 'No verified price results were returned. Configure SERPER_API_KEY to enable live pricing.',
-      })
+      const verified = found.rows.length > 0
+      const block = verified ? resultsBlock(found.rows, 'auto parts search results') : ''
+      const analysis = verified ? await analyze(`The shop wants the best price for this auto part: "${partQuery}".\n\n${block}\n\nList the prices and part numbers that appear in the results above and recommend the best option. Do not guess a number that is not in the results.`) : ''
+      notices.push(verified ? 'These prices come from search result text. Check the vendor page before you quote a customer.' : 'No price results were found. Try the part number or a different description.')
+      await logRun(caller, 'parts_price', partQuery, analysis || (verified ? 'Price results found' : 'No verified price results'), verified)
+      await audit(caller, 'browser.search', { actor: 'ai', detail: `Looked up a part price (${found.rows.length} results)` })
+      return finish({ ok: true, type: 'parts_price', query: partQuery, analysis, raw: block, price_verified: verified, untrusted: true })
     }
 
-    // -- MONITOR COMPETITOR --
-    if (type === 'monitor_competitor') {
+    /* ---- competitor ---- */
+    if (kind === 'monitor') {
       const target = url || task
-      if (!target) return NextResponse.json({ ok: false, error: 'URL or competitor name required' }, { status: 400 })
-      let pageData: ParsedPage = { text: '', title: '', links: [] }
-      if (target.startsWith('http')) {
-        const targetError = await validateUrl(target)
-        if (targetError) return NextResponse.json({ ok: false, error: targetError }, { status: 400 })
-        pageData = await fetchAndParse(target)
-        if (pageData.error) return NextResponse.json({ ok: false, error: pageData.error }, { status: 502 })
+      if (!target) return reply({ ok: false, error: 'URL or competitor name required' }, 400)
+      let material = ''
+      let host = 'search results'
+      if (/^https?:\/\//i.test(target)) {
+        const stop = await refuse(target)
+        if (stop) return stop
+        const read = await readPage(target, rules.ctx, 'ai')
+        if (!read.ok) return reply({ ok: false, error: read.message, code: read.code }, statusFor(read.code))
+        const warn = injectionNotice(read.doc.injection)
+        if (warn) notices.push(warn)
+        host = displayHost(read.finalUrl)
+        material = wrapUntrusted(read.doc.text, host, 3500)
+        await audit(caller, 'browser.read', { url: read.finalUrl, actor: 'ai', detail: read.doc.title })
+      } else {
+        const found = await runSearch(`${target.slice(0, 200)} auto repair shop`, rules.ctx)
+        if (!found.ok) return reply({ ok: false, error: found.message }, 502)
+        if (!found.rows.length) return finish({ ok: true, type: 'monitor', target, analysis: '', notice: 'Nothing was found for that name. Paste the shop\'s website address instead.' })
+        material = resultsBlock(found.rows, 'search results')
+        notices.push('This is based on search result text only. Paste the shop\'s website address to read its pages.')
+        await audit(caller, 'browser.search', { actor: 'ai', detail: 'Looked up a competitor by name' })
       }
-      const analysis = await aiAnalyze(`Analyze this competitor auto shop information:\n\nTarget: ${target}\nContent: ${pageData.text.slice(0, 3000)}\n\nExtract: services offered, prices listed, special offers, contact info, hours.`, shopSettings)
-      await log('monitor', target, analysis, true)
-      return NextResponse.json({ ok: true, type: 'monitor', target, analysis })
+      const analysis = await analyze(`The shop wants to know about this competitor: ${cleanPageText(target, 200)}\n\n${material}\n\nList the services offered, prices shown, special offers, contact details and hours that appear above. Say "not shown" for anything that is missing.`)
+      await logRun(caller, 'monitor', target, analysis, true)
+      return finish({ ok: true, type: 'monitor', target, analysis, untrusted: true })
     }
 
-    // -- FULL BROWSER --
-    if (type === 'browser' || type === 'browse' || type === 'fill_form' || type === 'click') {
-      if (!url) return NextResponse.json({ ok: false, error: 'URL required' }, { status: 400 })
-      if (actions.length > 0 && body?.approval !== 'confirm') {
-        return NextResponse.json({ ok: false, approvalRequired: true, error: 'Browser actions require explicit approval' }, { status: 409 })
-      }
-      const result = await runHostedBrowser(url, actions)
-      await log('browser', task || url, result.error || 'Browser steps completed; see page evidence', result.success)
-      return NextResponse.json({ ok: result.success, type: 'browser', ...result }, { status: result.success ? 200 : 502 })
+    /* ---- plan a form ---- */
+    if (kind === 'smart_fill') {
+      if (!url) return reply({ ok: false, error: 'URL required' }, 400)
+      const read = await readPage(url, rules.ctx, 'ai')
+      if (!read.ok) return reply({ ok: false, error: read.message, code: read.code }, statusFor(read.code))
+      const doc = read.doc
+      const host = displayHost(read.finalUrl)
+      const warn = injectionNotice(doc.injection)
+      if (warn) notices.push(warn)
+      const fields = doc.forms.flatMap(f => f.fields).slice(0, 30).map(f => ({ label: cleanPageText(f.label, 60), type: cleanPageText(f.type, 20) }))
+      const fieldText = fields.map(f => `- ${f.label || 'Unnamed field'} (${f.type || 'text'})`).join('\n') || 'No fields were found.'
+      const analysis = await analyze(`The shop's task: ${task || 'Work out what each field on this form is for.'}\n\n${wrapUntrusted(`${fieldText}\n\n${doc.text}`, host, 5000)}\n\nName the form fields and what shop data would go in each. Never suggest passwords, card numbers or security codes. Only plan: do not claim anything was filled in or sent.`)
+      notices.push('This only plans the form. To fill it in, open the Browser page, where every send needs your approval.')
+      await logRun(caller, 'smart_fill', task || url, analysis, true)
+      await audit(caller, 'browser.read', { url: read.finalUrl, actor: 'ai', detail: 'Planned a form' })
+      return finish({ ok: true, type: 'smart_fill', url: read.finalUrl, title: cleanPageText(doc.title, 160), analysis, fields, untrusted: true })
     }
 
-    // -- SMART FILL --
-    if (type === 'smart_fill') {
-      if (!url) return NextResponse.json({ ok: false, error: 'URL required' }, { status: 400 })
-      const { text, title, error: fetchError } = await fetchAndParse(url)
-      if (fetchError) return NextResponse.json({ ok: false, error: fetchError }, { status: 502 })
-      const formAnalysis = await aiAnalyze(`This is a web form page: ${title}\n\nPage content:\n${text.slice(0, 3000)}\n\nTask: ${task}\n\nIdentify the form fields and what data should go in each field.`, shopSettings)
-      await log('smart_fill', task, formAnalysis, true)
-      return NextResponse.json({ ok: true, type: 'smart_fill', url, title, analysis: formAnalysis })
+    /* ---- the older step list in a real (locked) browser ---- */
+    if (!url) return reply({ ok: false, error: 'URL required' }, 400)
+    if (hasActions && body.approval !== 'confirm') {
+      return reply({ ok: false, approvalRequired: true, error: 'Browser actions require explicit approval', summary: describeActions(actions) }, 409)
     }
-
-    return NextResponse.json({ ok: false, error: 'Unknown automation type' }, { status: 400 })
+    if (await usedToday(caller, LIVE_EVENTS) >= LIMITS.liveDaily) {
+      return reply({ ok: false, error: 'This shop has used its live browsing for today. Reading pages still works, and live browsing resets tomorrow.', code: 'daily_cap' }, 429)
+    }
+    const result = await runHostedBrowser(url, actions, {
+      check: makeCheck(rules.ctx, 'ai'), fetchResource: makeResourceFetcher(), vet: vetLegacyStep, cleanText: t => cleanPageText(t, 6000),
+    })
+    const kindOfAudit: BrowserAudit = hasActions ? 'browser.click' : 'browser.visit'
+    if (!result.success) {
+      await logRun(caller, 'browser', task || url, result.error || 'The browser run failed', false)
+      await audit(caller, kindOfAudit, { url, actor: 'ai', detail: `Stopped: ${result.error}`.slice(0, 280) })
+      return reply({ ok: false, type: 'browser', ...result }, 502)
+    }
+    const look = inspectPageText(result.text || '')
+    const warn = injectionNotice(look)
+    const finalHost = displayHost(result.url || url)
+    await logRun(caller, 'browser', task || url, 'Browser steps completed; see page evidence', true)
+    await audit(caller, kindOfAudit, {
+      url: result.url || url, actor: 'ai', detail: hasActions ? `Ran the steps you confirmed (${describeActions(actions)})` : 'Opened the page',
+      meta: { pages: [redactUrlForLog(url), ...actions.filter(a => a.type === 'navigate').map(a => redactUrlForLog(a.url || ''))].slice(0, 9) },
+    })
+    return reply({
+      ok: true, type: 'browser', success: true, steps: result.steps, text: wrapUntrusted(result.text || '', finalHost, 5400), controls: shapeControls(result.controls, look.suspected),
+      title: cleanPageText(result.title || '', 160), url: result.url || url, mode: result.mode, untrusted: true,
+      injection: { suspected: look.suspected, hiddenText: look.hiddenText },
+      notice: [result.notice, warn, look.suspected ? 'Page controls were not offered to Alpha because the page looked like it was giving instructions to an AI.' : ''].filter(Boolean).join(' '),
+    })
   } catch (e) {
-    console.error('Web automation error:', e)
-    return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 })
+    console.error('Web automation error:', e instanceof Error ? e.message : 'unknown')
+    return reply({ ok: false, error: 'That browser request could not be completed. Try again in a moment.' }, 500)
   }
 }
 
-export async function GET(req: NextRequest) {
-  const auth = await getRouteShop(req, new URL(req.url).searchParams.get('shop_id'))
-  if (!auth) return unauthorized()
-  const hasSerper = !!process.env.SERPER_API_KEY
-  return NextResponse.json({
+export async function GET(req: Request) {
+  const gate = await openRoute(req, { scope: 'read', need: 'browse', allowService: true, body: { shopId: new URL(req.url).searchParams.get('shop_id') } })
+  if (!gate.ok) return gate.response
+  const rules = await loadShopRules(gate.caller, req)
+  return reply({
     ok: true,
-    status: 'active',
+    status: rules.ctx.settings.aiEnabled ? 'active' : 'off',
     capabilities: {
-      scrape: { available: true, description: 'Fetch and read any public webpage' },
-      search: { available: hasSerper, description: 'Web search via Serper' },
-      parts_price: { available: hasSerper, description: 'Search auto parts prices' },
-      monitor_competitor: { available: true, description: 'Scrape and analyze competitor websites' },
-      browser: { available: true, description: 'Alpha-hosted isolated public browser: navigation, reading and approved form preparation; submissions need handoff' },
-      smart_fill: { available: true, description: 'AI analyzes form structure' },
-    }
+      scrape: { available: true, description: 'Read any public web page the shop allows, as plain text' },
+      search: { available: true, description: 'Web search' },
+      parts_price: { available: true, description: 'Search auto parts prices from search result text' },
+      monitor_competitor: { available: true, description: 'Read and summarise a competitor website' },
+      browser: { available: true, description: 'Alpha-hosted locked browser: opening pages and preparing forms; anything that sends, buys or signs in is done on the Browser page with your approval' },
+      smart_fill: { available: true, description: 'Plan what goes in a form (nothing is filled in or sent)' },
+    },
   })
 }

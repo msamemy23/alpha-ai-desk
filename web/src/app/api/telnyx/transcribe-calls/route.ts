@@ -40,7 +40,7 @@ async function transcribeViaOpenRouter(url: string, telnyxApiKey: string, openRo
     // Use GPT-4o audio preview via OpenRouter for transcription
     const r = await fetch(`${aiBaseUrl}/chat/completions`, {
       method: 'POST',
-      headers: {'Authorization': `Bearer ${openRouterApiKey}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://alpha-ai-desk.vercel.app', 'X-Title': 'Alpha AI Desk'},
+      headers: {'Authorization': `Bearer ${openRouterApiKey}`, 'Content-Type': 'application/json', 'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'https://localhost', 'X-Title': 'Shop assistant'},
       body: JSON.stringify({model: aiModel, messages: [{role: 'user', content: [{type: 'input_audio', input_audio: {data: b64, format: 'wav'}}, {type: 'text', text: 'Transcribe this phone call audio word for word. Return ONLY the spoken text.'}]}], max_tokens: 2000})
     })
     if (!r.ok) {const err = await r.text(); return {text:null, error:`OPENROUTER_${r.status}: ${err.substring(0,150)}`}}
@@ -53,7 +53,7 @@ async function scoreLeadFromTranscript(t: string, openRouterApiKey: string, aiBa
   const e = {lead_score:'unknown',lead_reasoning:'',service_needed:'',caller_sentiment:'',key_quotes:''}
   if (!openRouterApiKey||!t||t.length<20) return {...e,lead_reasoning:'Transcript too short'}
   try {
-    const r = await fetch(`${aiBaseUrl}/chat/completions`,{method:'POST',headers:{'Authorization':`Bearer ${openRouterApiKey}`,'Content-Type':'application/json','HTTP-Referer':'https://alpha-ai-desk.vercel.app','X-Title':'Alpha AI Desk'},body:JSON.stringify({model:aiModel,messages:[{role:'system',content:`You are an AI for ${shopName || 'this auto repair shop'}. Analyze call transcripts. Return JSON: lead_score(hot/warm/cold), lead_reasoning, service_needed, caller_sentiment(positive/neutral/frustrated/spam), key_quotes.`},{role:'user',content:`Analyze and return JSON:\n\n${t.substring(0,3000)}`}],temperature:0.1,max_tokens:600,response_format:{type:'json_object'}})})
+    const r = await fetch(`${aiBaseUrl}/chat/completions`,{method:'POST',headers:{'Authorization':`Bearer ${openRouterApiKey}`,'Content-Type':'application/json','HTTP-Referer':process.env.NEXT_PUBLIC_APP_URL||'https://localhost','X-Title':'Shop assistant'},body:JSON.stringify({model:aiModel,messages:[{role:'system',content:`You are an AI for ${shopName || 'this auto repair shop'}. Analyze call transcripts. Return JSON: lead_score(hot/warm/cold), lead_reasoning, service_needed, caller_sentiment(positive/neutral/frustrated/spam), key_quotes.`},{role:'user',content:`Analyze and return JSON:\n\n${t.substring(0,3000)}`}],temperature:0.1,max_tokens:600,response_format:{type:'json_object'}})})
     if (!r.ok) return {...e,lead_reasoning:`AI error: ${r.status}`}
     const d = await r.json()
     const c = (d.choices?.[0]?.message?.content||'{}').replace(/<think>[\s\S]*?<\/think>/g,'').trim()

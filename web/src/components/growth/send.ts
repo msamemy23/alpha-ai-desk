@@ -49,17 +49,21 @@ export async function postSms(input: { to: string; message: string; customerId?:
 export type OutreachResult = { kind: 'sent' } | { kind: 'optedOut' } | { kind: 'failed'; error: string }
 
 /** Texts, emails or has Alpha phone one lead. The words are sent exactly as shown on screen. */
-export async function postOutreach(input: { leadId: string; method: 'sms' | 'email' | 'ai_call'; aiMode: boolean; message?: string }): Promise<OutreachResult> {
+export async function postOutreach(input: { leadId: string; method: 'sms' | 'email' | 'ai_call'; aiMode: boolean; message?: string; subject?: string }): Promise<OutreachResult> {
   try {
     const res = await fetch('/api/growth/outreach', {
       method: 'POST',
       headers: await getAuthJsonHeaders(),
-      body: JSON.stringify({ lead_id: input.leadId, method: input.method, ai_mode: input.aiMode, ...(input.message ? { message: input.message } : {}) }),
+      body: JSON.stringify({ lead_id: input.leadId, method: input.method, ai_mode: input.aiMode, ...(input.message ? { message: input.message } : {}), ...(input.subject ? { subject: input.subject } : {}) }),
     })
     const d = await res.json().catch(() => ({} as Record<string, unknown>))
     if (res.ok && d.success === true) return { kind: 'sent' }
     const err = typeof d.error === 'string' ? d.error : ''
+    if (d.code === 'opted_out') return { kind: 'optedOut' }
+    // The server already wrote these in plain words (stopped lead, needs permission, calling hours, missing address).
+    if (typeof d.code === 'string' && d.code && err) return { kind: 'failed', error: err.endsWith('.') ? err : `${err}.` }
     if (res.status === 409 && /opted out/i.test(err)) return { kind: 'optedOut' }
+    if (/^Email failed:/i.test(err)) return { kind: 'failed', error: `The email service turned this down (${err.replace(/^Email failed:\s*/i, '').slice(0, 120)}). Check the address and try again.` }
     if (res.status === 503 && /email/i.test(err)) return { kind: 'failed', error: 'Email sending is not set up for this shop yet. Add it in Settings.' }
     if (/failed: [45]\d\d/i.test(err)) return { kind: 'failed', error: 'The carrier or email service turned this down. Check the number or address and try again.' }
     return { kind: 'failed', error: sendProblem(res.status, err) }

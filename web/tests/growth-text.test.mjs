@@ -135,3 +135,10 @@ test('the city comes from the shop profile and is never guessed', () => {
   assert.equal(g.cityFromProfile(undefined), null)
   assert.equal(g.cityFromProfile('77025'), null)
 })
+
+test('the one-tap win-back message maps old placeholders and never invents a special', () => {
+  assert.equal(g.legacyOutreachMessage('Hi {name}, call {phone} at {shopName}.'), 'Hi {name}, call {shop_phone} at {shop}.')
+  const plain = g.legacyOutreachMessage('   ')
+  assert.match(plain, /\{shop\}/)
+  assert.doesNotMatch(plain, /special|discount|\$|%|free/i)
+})

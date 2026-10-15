@@ -17,6 +17,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
+import { NEEDS_CITY, cityName, resolveSearchCity } from '@/lib/growth-city'
+import { firstEmailIn, matchSource, nameFoundIn, scoreOf } from '@/lib/lead-grounding'
 import { validateAutomationInvocation } from '@/lib/automation-fencing'
 
 const SERPER_KEY = process.env.SERPER_API_KEY || ''
@@ -130,67 +132,43 @@ async function deepResearchBusiness(biz: any, industry: string) {
     searchSerper(`"${name}" owner OR manager OR contact`),
     searchSerper(`"${name}" email contact phone`),
   ])
-  const emailMatch = JSON.stringify(emailResults).match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/)
+  const emailFound = firstEmailIn(JSON.stringify(emailResults))
   return {
     ...biz,
     industry,
     owner_search: ownerResults.slice(0, 2).map((r: any) => r.snippet).join(' | '),
-    email: emailMatch ? emailMatch[0] : null,
+    email: emailFound,
   }
 }
 
-async function aiAnalyzeLeads(businesses: any[], city: string, isAlphaAiProspects: boolean, aiKey: string, aiUrl: string, aiModel: string, shopName: string) {
-  if (!aiKey || !businesses.length) return []
+async function aiAnalyzeLeads(businesses: any[], city: string, isAlphaAiProspects: boolean, aiKey: string, aiUrl: string, aiModel: string, shopName: string): Promise<any[] | null> {
+  if (!businesses.length) return []
+  if (!aiKey) return null
+  const rules = 'Use ONLY facts that appear in the search data you are given. If a fact is not in the data, use null. Never guess a person\'s name, a phone number, an email address, revenue, head count or call volume.'
   const systemPrompt = isAlphaAiProspects
-    ? `You are a sales intelligence analyst for Alpha AI — an AI phone answering service that helps businesses never miss a call. 
-Analyze these local businesses and score them as potential Alpha AI customers.
-Return a JSON array where each object has ALL these fields:
+    ? `You help ${shopName} find local businesses that may miss phone calls and could use an AI phone answering service. ${rules}
+Return a JSON array. Each item has exactly these fields:
 {
-  "name": "business name",
-  "phone": "their phone",
-  "email": "their email if found",
-  "address": "full address",
-  "city": "${city.split(' ')[0]}",
-  "website": "website or null",
-  "owner_name": "owner/manager name if found",
-  "owner_title": "Owner/Manager/Director",
-  "google_rating": rating number or null,
-  "google_reviews_count": review count or null,
-  "employee_count": "estimated (e.g. 5-20)",
+  "name": "the business name exactly as given",
+  "owner_name": "an owner or manager named in the search data, else null",
+  "owner_title": "their title as written, else null",
   "industry": "their industry",
-  "pain_points": "call-related pain points (missed calls, after-hours, overwhelmed staff)",
-  "alpha_ai_fit_score": 1-10 (how much they need AI answering — 10=perfect fit),
-  "monthly_call_volume_estimate": "estimated monthly inbound calls",
-  "alpha_ai_pitch": "personalized pitch: why they need Alpha AI phone answering",
-  "annual_contract_value": "estimated ARR if they sign (e.g. $1,200-$3,600/yr)",
-  "confidence": "high/medium/low",
-  "best_contact_time": "morning/afternoon/business_hours",
-  "outreach_channel": "phone/email/both"
-}
-Focus on businesses with high inbound call volume, seasonal surges, or after-hours issues.`
-    : `You are a competitive intelligence analyst for ${shopName} in ${city}.
-Analyze these competitor auto shops and create DEEP profiles.
-Return a JSON array where each object has ALL these fields:
+  "pain_points": "one short sentence on why a business like this may miss calls, using only the data, else null",
+  "alpha_ai_fit_score": a whole number 1-10 for how likely a business like this misses calls (10 = very likely),
+  "alpha_ai_pitch": "two plain sentences to say to this business. Mention no price, discount, guarantee or deadline.",
+  "confidence": "high, medium or low, for how much the data supports this"
+}`
+    : `You help ${shopName}, an independent auto repair shop in ${city}, study nearby competitors. ${rules}
+Return a JSON array. Each item has exactly these fields:
 {
-  "name": "competitor shop name",
-  "phone": "their phone",
-  "email": "their email if found",
-  "address": "full address",
-  "city": "the city of the address above",
-  "website": "website or null",
-  "owner_name": "owner/manager name from search data",
-  "owner_title": "Owner/Manager/President",
-  "google_rating": rating number,
-  "google_reviews_count": review count,
-  "employee_count": "estimated (e.g. 5-15)",
-  "revenue_estimate": "estimated (e.g. $500K-$1M)",
-  "industry": "auto repair",
-  "pain_points": "their weaknesses from reviews (wait times, pricing, quality issues)",
-  "fleet_score": 1-10 (how easy to steal their customers),
-  "confidence": "high/medium/low",
-  "outreach_pitch": "pitch to their unhappy customers mentioning specific complaints",
-  "annual_value_estimate": "potential revenue if we capture their customers",
-  "review_snippet": "notable bad review quote"
+  "name": "the competitor's name exactly as given",
+  "owner_name": "an owner or manager named in the search data, else null",
+  "owner_title": "their title as written, else null",
+  "pain_points": "their weaknesses, only if the data mentions them (wait times, pricing, quality), else null",
+  "fleet_score": a whole number 1-10 for how much room there is to win customers from this shop, from the data only,
+  "confidence": "high, medium or low, for how much the data supports this",
+  "outreach_pitch": "two plain sentences the shop could say. Mention no price, discount, guarantee or deadline.",
+  "review_snippet": "a short quote from a low-rated review if the data has one, else null"
 }`
 
   try {
@@ -203,16 +181,41 @@ Return a JSON array where each object has ALL these fields:
           role: 'system', content: systemPrompt
         }, {
           role: 'user',
-          content: `Analyze these ${city} businesses:\\n${JSON.stringify(businesses.slice(0, 10))}`
+          content: `Analyze these ${city} businesses:\n${JSON.stringify(businesses.slice(0, 10))}`
         }],
-        temperature: 0.3, max_tokens: 4000
+        temperature: 0.2, max_tokens: 4000
       })
     }, 45000)
-    if (!res.ok) return []
+    if (!res.ok) return null
     const data = await res.json()
     const content = data.choices?.[0]?.message?.content || '[]'
-    return JSON.parse(content.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
-  } catch { return [] }
+    const parsed = JSON.parse(content.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
+    return Array.isArray(parsed) ? parsed : null
+  } catch { return null }
+}
+
+/** Contact details and ratings come from the search results, never the AI. An owner name only counts if the search text names them. */
+function groundedLead(row: any, sources: any[]) {
+  const src: any = matchSource(row, sources)
+  if (!src) return null
+  const owner = nameFoundIn(row.owner_name, String(src.owner_search || ''))
+  return {
+    ...row,
+    name: src.name,
+    phone: src.phone || null,
+    email: src.email || null,
+    address: src.address || null,
+    website: src.website || null,
+    google_rating: src.rating ?? null,
+    google_reviews_count: src.reviews ?? null,
+    owner_name: owner,
+    owner_title: owner ? (row.owner_title || null) : null,
+    industry: src.industry || row.industry || null,
+    category_label: src.category_label,
+    fleet_score: scoreOf(row.fleet_score),
+    alpha_ai_fit_score: scoreOf(row.alpha_ai_fit_score),
+    confidence: ['high', 'medium', 'low'].includes(row.confidence) ? row.confidence : 'low',
+  }
 }
 
 function deduplicateByName(items: any[], existingNames: Set<string>) {
@@ -238,14 +241,9 @@ export async function POST(req: NextRequest) {
     if (!['competitors', 'alpha_ai', 'both'].includes(scan_type)) return NextResponse.json({ error: 'Invalid scan_type' }, { status: 400 })
     const db = getServiceClient()
     // Search near the place the caller named, else near the shop itself. Never a guessed city: a scheduled run for
-    // another shop must not quietly search Houston.
-    let city = typeof rawCity === 'string' ? rawCity.trim().slice(0, 120) : ''
-    if (!city) {
-      const { data: profile, error: profileError } = await db.from('shop_profiles').select('city_state_zip').eq('id', auth.shopId).maybeSingle()
-      if (profileError) throw profileError
-      city = typeof profile?.city_state_zip === 'string' ? profile.city_state_zip.trim().slice(0, 120) : ''
-    }
-    if (!city) return NextResponse.json({ error: 'Add your shop’s city in the setup guide first, so Alpha knows where to search.' }, { status: 400 })
+    // another shop must not quietly search somewhere else.
+    const city = await resolveSearchCity(db, auth.shopId, rawCity)
+    if (!city) return NextResponse.json({ error: NEEDS_CITY }, { status: 400 })
     const { data: settings, error: settingsError } = await db.from('settings').select('ai_api_key,ai_base_url,ai_model,shop_name').eq('shop_id', auth.shopId).maybeSingle()
     if (settingsError) throw settingsError
     const shopName = typeof settings?.shop_name === 'string' && settings.shop_name.trim() ? settings.shop_name.trim().slice(0, 160) : 'this shop'
@@ -271,7 +269,9 @@ export async function POST(req: NextRequest) {
 
       if (comps.length > 0) {
         const researched = await Promise.all(comps.slice(0, 6).map(c => deepResearchBusiness(c, 'auto repair')))
-        const analyzed = await aiAnalyzeLeads(researched, city, false, aiKey, aiUrl, aiModel, shopName)
+        const analyzedRaw = await aiAnalyzeLeads(researched, city, false, aiKey, aiUrl, aiModel, shopName)
+        if (analyzedRaw === null) return NextResponse.json({ error: 'Alpha’s AI could not analyze the shops just now. Try again in a few minutes.' }, { status: 502 })
+        const analyzed = analyzedRaw.map(r => groundedLead(r, researched)).filter(Boolean)
         const sorted = (analyzed || []).sort((a: any, b: any) => (b.fleet_score || 0) - (a.fleet_score || 0)).slice(0, 12)
 
         for (const l of sorted) {
@@ -287,22 +287,19 @@ export async function POST(req: NextRequest) {
             owner_name: l.owner_name || null,
             owner_title: l.owner_title || null,
             address: l.address || null,
-            city: l.city || city.split(' ')[0],
+            city: cityName(city),
             website: l.website || null,
             google_rating: l.google_rating || null,
             google_reviews_count: l.google_reviews_count || null,
-            employee_count: l.employee_count || null,
-            revenue_estimate: l.revenue_estimate || null,
             industry: 'auto repair',
             pain_points: l.pain_points || null,
             deep_research: {
               review_snippet: l.review_snippet,
               fleet_score: l.fleet_score,
               outreach_pitch: l.outreach_pitch,
-              annual_value_estimate: l.annual_value_estimate,
             },
             research_completed_at: new Date().toISOString(),
-            notes: JSON.stringify(l),
+            notes: null,
             follow_up_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
             created_at: new Date().toISOString(),
             shop_id: auth.shopId,
@@ -336,7 +333,9 @@ export async function POST(req: NextRequest) {
       if (allProspects.length > 0) {
         // Deep research top prospects
         const researched = await Promise.all(allProspects.slice(0, 8).map(c => deepResearchBusiness(c, c.industry)))
-        const analyzed = await aiAnalyzeLeads(researched, city, true, aiKey, aiUrl, aiModel, shopName)
+        const analyzedRaw = await aiAnalyzeLeads(researched, city, true, aiKey, aiUrl, aiModel, shopName)
+        if (analyzedRaw === null) return NextResponse.json({ error: 'Alpha’s AI could not analyze the businesses just now. Try again in a few minutes.' }, { status: 502 })
+        const analyzed = analyzedRaw.map(r => groundedLead(r, researched)).filter(Boolean)
         const sorted = (analyzed || []).sort((a: any, b: any) => (b.alpha_ai_fit_score || 0) - (a.alpha_ai_fit_score || 0)).slice(0, 20)
 
         for (const l of sorted) {
@@ -352,23 +351,18 @@ export async function POST(req: NextRequest) {
             owner_name: l.owner_name || null,
             owner_title: l.owner_title || null,
             address: l.address || null,
-            city: l.city || city.split(' ')[0],
+            city: cityName(city),
             website: l.website || null,
             google_rating: l.google_rating || null,
             google_reviews_count: l.google_reviews_count || null,
-            employee_count: l.employee_count || null,
             industry: l.industry || null,
             pain_points: l.pain_points || null,
             deep_research: {
               alpha_ai_fit_score: l.alpha_ai_fit_score,
-              monthly_call_volume: l.monthly_call_volume_estimate,
               alpha_ai_pitch: l.alpha_ai_pitch,
-              annual_contract_value: l.annual_contract_value,
-              best_contact_time: l.best_contact_time,
-              outreach_channel: l.outreach_channel,
             },
             research_completed_at: new Date().toISOString(),
-            notes: JSON.stringify(l),
+            notes: null,
             follow_up_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
             created_at: new Date().toISOString(),
             shop_id: auth.shopId,

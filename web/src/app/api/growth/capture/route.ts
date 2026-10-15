@@ -1,38 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
-import { isSmsOptedOut } from '@/lib/sms-consent'
 
 // Leads are shop data — every caller must resolve to one shop.
-
-
-async function sendFollowUpSMS(phone: string, name: string, shopName: string, shopPhone: string, apiKey: string, fromNumber: string): Promise<{ success: boolean; error?: string }> {
-  if (!apiKey || !fromNumber) {
-    return { success: false, error: 'Telnyx not configured' }
-  }
-
-  const message = `Hi ${name}! Thanks for reaching out to ${shopName}. We'd love to help with your vehicle. Ready to schedule? Call us at ${shopPhone} or reply to this text!`
-
-  try {
-    const res = await fetch('https://api.telnyx.com/v2/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        from: fromNumber,
-        to: phone,
-        text: message
-      })
-    })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok) return { success: false, error: data.errors?.[0]?.detail || `Telnyx returned ${res.status}` }
-    return data.data?.id ? { success: true } : { success: false, error: data.errors?.[0]?.detail || 'Telnyx did not return a message id' }
-  } catch (e: unknown) {
-    return { success: false, error: (e as Error).message }
-  }
-}
 
 // POST - Capture a walk-in or call lead
 export async function POST(req: NextRequest) {
@@ -41,12 +11,6 @@ export async function POST(req: NextRequest) {
     const auth = await getRouteShop(req, body?.shopId)
     if (!auth) return unauthorized()
     const supabase = getServiceClient()
-    const { data: settings, error: settingsError } = await supabase.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle()
-    if (settingsError) return NextResponse.json({ error: 'Unable to load shop settings' }, { status: 500 })
-    const shopName = String(settings?.shop_name || settings?.company_name || settings?.business_name || 'your shop').slice(0, 120)
-    const shopPhone = String(settings?.shop_phone || settings?.phone || settings?.business_phone || '').slice(0, 40)
-    const telnyxKey = String(settings?.telnyx_api_key || '')
-    const telnyxFrom = String(settings?.telnyx_phone_number || '')
     const { action } = body || {}
 
     if (action === 'capture') {
@@ -123,66 +87,10 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === 'follow_up_pending') {
-      // Get all leads that need follow-up and haven't been contacted in 24h
-      const oneDayAgo = new Date()
-      oneDayAgo.setDate(oneDayAgo.getDate() - 1)
-
-      const { data: pendingLeads, error } = await supabase
-        .from('growth_leads')
-        .select('*')
-        .eq('needs_followup', true)
-        .eq('shop_id', auth.shopId)
-        .eq('converted', false)
-        .lt('last_contact', oneDayAgo.toISOString())
-        .order('last_contact', { ascending: true })
-
-      if (error) throw error
-
-      const results: Array<{ name: string; phone: string; sent: boolean; recorded?: boolean; error?: string }> = []
-
-      for (const lead of pendingLeads || []) {
-        if (!lead.phone) continue
-        if (await isSmsOptedOut(supabase, auth.shopId, lead.phone)) continue
-
-        const smsResult = await sendFollowUpSMS(lead.phone, lead.name, shopName, shopPhone, telnyxKey, telnyxFrom)
-        
-        // Update only after recording whether the attempt succeeded. Keep a failed
-        // lead eligible for a later retry instead of silently marking it contacted.
-        let recorded = true
-        let recordError = ''
-        if (smsResult.success) {
-          const { error: updateError } = await supabase
-            .from('growth_leads')
-            .update({
-              last_contact: new Date().toISOString(),
-              touch_count: (lead.touch_count || 0) + 1
-            })
-            .eq('id', lead.id)
-            .eq('shop_id', auth.shopId)
-          if (updateError) {
-            recorded = false
-            recordError = 'Follow-up sent, but the lead could not be updated for retry protection'
-            console.error('Lead follow-up update error:', updateError.message)
-          }
-        }
-
-        results.push({
-          name: lead.name,
-          phone: lead.phone,
-          sent: smsResult.success,
-          recorded,
-          error: smsResult.error || recordError || undefined
-        })
-      }
-
-      const success = results.every(result => result.sent === true && result.recorded !== false)
-      return NextResponse.json({
-        ok: success,
-        success,
-        total_pending: (pendingLeads || []).length,
-        followed_up: results.filter(r => r.sent).length,
-        results
-      }, { status: success ? 200 : 502 })
+      // Lead follow-ups used to be texted from here every day with no limit. They now run as the "New lead
+      // follow-up" automation (a small fixed number of texts, spaced apart, with quiet hours, STOP handling,
+      // a preview and a history). This call stays so older schedulers do not break, and it sends nothing.
+      return NextResponse.json({ ok: true, success: true, sent: 0, message: 'Lead follow-ups run from Automations now. Nothing was sent from here.' })
     }
 
     if (action === 'convert') {

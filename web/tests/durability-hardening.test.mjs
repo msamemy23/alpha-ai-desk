@@ -5,7 +5,8 @@ import { test } from 'node:test'
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8')
 const aiAction = read('../src/app/api/ai-action/route.ts')
 const automations = read('../src/app/api/automations/route.ts')
-const systemAutomations = read('../src/app/api/system-automations/route.ts')
+// The route hands every run to the automation service, which holds the leased, fenced claim.
+const systemAutomations = read('../src/app/api/system-automations/route.ts') + read('../src/lib/automation-service.ts')
 const documents = read('../src/components/DocumentsPage.tsx')
 const oauthServer = read('../src/lib/openai-oauth-server.ts')
 const socialOperation = read('../src/lib/social-operation.ts')

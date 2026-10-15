@@ -198,39 +198,49 @@ Screens: Inbox (Texts tab).
 | --- | --- | --- | --- |
 | One inbox on the shop number | Unified inbox on a single number [S12] | Exists. Live updates, unread, search | Exists |
 | Texts kept with the customer | Stay in each customer's history [S12] | Exists | Exists |
-| Photos and video in texts | Send pictures, video, progress [S12][S29] | Missing. Text only | To build |
-| Message templates | Not shown on pages I read (unverified) | Partial. Templates on Schedule only | To build |
-| One thread with approvals and estimates | Messages, estimates, timelines and approvals in one thread [S29] | Partial. Texts only | To build |
-| Assign a thread, per-thread access | Add staff to a thread; set access [S29] | Missing | To build |
-| Alerts for new messages | Team alerts [S29] | Partial. "X texted you" on Today; no push | To build |
-| Opt-out handling | Not researched | Exists. STOP stops auto replies | Exists |
-| AI auto-reply to texts | Fin resolves and hands off with history [S35] | Partial. Replies unseen, fixed hours in the prompt, 10-minute limit resets on restart, no "needs a person" flag, no off switch found | To build |
-| Quiet hours | Not researched | Missing. No guard found for night texts | To build |
-| Texting that carriers allow | Registered sender required [S46][S47] | Missing. Needs registration or verification | Blocked |
-
+| Photos and video in texts | Send pictures, video, progress [S12][S29] | Exists. Attach and send pictures (checked in the browser with the send route mocked); pictures customers send are saved in the app, not left on the carrier's link. Needs migration 038; without it texts work and pictures show a notice | Exists |
+| Message templates | Not shown on pages I read (unverified) | Exists. Saved replies in the thread fill the customer's name, the shop name and phone from settings; one tap adds starter replies. Needs migration 037 | Exists |
+| One thread with approvals and estimates | Messages, estimates, timelines and approvals in one thread [S29] | Exists. Sent, opened, approved, declined and paid events for the customer's estimates and invoices show inside the thread (checked in the browser). Needs the document history table from migration 046; without it the thread shows texts only | Exists |
+| Assign a thread | Add staff to a thread [S29] | Exists. "Give to someone" names who has the thread (checked in the browser). Needs migration 037 | Exists |
+| Per-thread access | Set access per thread [S29] | Missing. Assignment shows who has it but does not hide the thread from anyone | To build |
+| Alerts for new messages | Team alerts [S29] | Exists in the app: optional browser alert and tab count in the Inbox, "X texted you" on Today, and an optional email when a customer texts and the assistant did not answer. No phone push | Exists |
+| Phone push alerts | Mobile push [S29] | Missing. Needs web push or a mobile app | To build |
+| Opt-out handling | Not researched | Exists. STOP, START and HELP are handled on the server (tests); a stopped number is never texted again, checked again at send time | Exists |
+| AI auto-reply to texts | Fin resolves and hands off with history [S35] | Exists. Off, draft or auto per shop. Says it is an AI in its first text, never gives a price or promises a time, asks for name, vehicle, problem and number, books through the schedule only with approval, flags "needs a person", pauses when a person replies, stops after the shop's reply limit and never answers another automated sender. Limits are counted from the saved texts, so a restart does not reset them. Tests plus browser checks | Exists |
+| Approve the AI's reply first | Fin pauses for approval on sensitive steps [S35] | Exists. Draft mode shows the exact words in the thread with Send this reply, Change it first and Do not send (checked in the browser) | Exists |
+| Human takes over a thread | Hand off with history [S35][S36] | Exists. When a person replies, the assistant steps back for the shop's chosen time; "Pause assistant" and "Let the assistant answer again" are on each thread | Exists |
+| Quiet hours | Not researched | Exists. No automatic reply goes out in the shop's quiet window (default 9 pm to 8 am in the shop's time zone). Other automated texts follow their own rules in Automations | Exists |
+| Texting that carriers allow | Registered sender required [S46][S47] | Blocked on the owner. Built: a step-by-step checklist in Settings, Communications that detects what is already done, remembers progress, and writes the answers to paste into the carrier forms. Still needs the owner to register in the Telnyx account. Needs migration 039 to remember progress | Blocked |
 ## 9. Phone calls and the AI receptionist
 
 Screens: Inbox (Calls tab), Today ("Alpha answered"), Settings (Texts and calls).
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| Call log with recording and transcript | Recordings, transcripts, summaries [S43] | Exists. Filters All, Missed, Incoming, Outgoing; search by name, number, service | Exists |
+| Call log with recording and transcript | Recordings, transcripts, summaries [S43] | Exists. Filters All, AI answered, Missed, Incoming, Outgoing; search by name, number, service | Exists |
 | Call from the browser | Not researched | Exists. Softphone and Dial sheet | Exists |
-| AI summary of each call | Summaries, transcripts, notifications [S43] | Exists. 2 to 4 bullets, lead score, mood, service needed | Exists |
-| AI answers inbound calls | 24/7, many calls at once [S41][S43][S30] | Exists. Answers, records, transcribes | Exists |
-| Tells callers it is AI | Callers are told [S41]; disclosure is a required guardrail [S45] | Missing. Prompt says never to say so unless asked | To build |
-| Transfer to a person | Live or warm transfer with briefing [S43][S41] | Missing. Takes a message only | To build |
-| Books the appointment | Checks calendar, offers times, confirms [S41][S43] | Missing. Says it will pass things along | To build |
-| Knows this shop's hours | Learns from profile and site [S43] | Missing. No hours setting in the app; prompt falls back to words | To build |
-| Never invents prices | Answers only from shop context | Partial. Outbound prompt forbids it; inbound prompt invites pricing talk with no price data | To build |
-| Spam filtering | Spam calls filtered [S43] | Missing | To build |
-| Text the caller during or after the call | Booking link or details by text [S41][S43] | Missing | To build |
-| Guardrails that end or transfer a call | Rules that end, transfer or reroute [S45] | Missing | To build |
-| Filter chip for AI-answered calls | Not researched | Missing (known item) | To build |
-| Mark AI inbound calls as read | Not researched | Missing (known item) | To build |
-| Outbound AI calls for the shop | Not researched | Exists. Task calls started from Ask Alpha, with transcript and summary | Exists |
-| Recording notice | Not researched | Unverified. No spoken notice found in code; ask counsel | To build |
-
+| AI summary of each call | Summaries, transcripts, notifications [S43] | Exists. 2 to 4 bullets, lead score, mood, service needed; the assistant's own calls also get a summary in the app and by email | Exists |
+| AI answers inbound calls | 24/7, many calls at once [S41][S43][S30] | Exists. One call path (the old second path is retired). Answers, collects name, vehicle, problem and call-back number, records and transcribes. Checked with simulated call events and in the practice screen; not yet tried on a live Telnyx call | Exists |
+| Tells callers it is AI | Callers are told [S41]; disclosure is a required guardrail [S45] | Exists. Said in the first sentence of every call and every first text; says so again if asked; cannot be switched off | Exists |
+| Transfer to a person | Live or warm transfer with briefing [S43][S41] | Exists. During open hours the call goes to the shop's handoff numbers in order, with a short text briefing (who, vehicle, need) to the person; if nobody answers it takes a message. Simulated Telnyx events in tests | Exists |
+| Books the appointment | Checks calendar, offers times, confirms [S41][S43] | Exists. Shop picks: take a message, ask the team to confirm (saved as a request the team approves with "Put on the schedule"), or offer only open times from hours and the schedule. Checked end to end in the browser | Exists |
+| Knows this shop's hours | Learns from profile and site [S43] | Exists. Weekly hours, closed days and time zone in Settings, AI receptionist. Until set, it never states hours or says the shop is closed | Exists |
+| Never invents prices | Answers only from shop context | Exists. Prices, ranges, discounts, "free", ready times, call-back times, diagnoses and "safe to drive" are removed from every reply on the server, whatever the AI wrote (tests) | Exists |
+| Spam filtering | Spam calls filtered [S43] | Exists. Sales and robocalls are ended politely and logged; one switch | Exists |
+| Text the caller during or after the call | Booking link or details by text [S41][S43] | Exists. Short text-back after a missed call or a message, never to a number that said STOP; one switch | Exists |
+| Guardrails that end or transfer a call | Rules that end, transfer or reroute [S45] | Exists. Upset caller, safety, towing, accident, insurance, legal, the shop's own keywords, "talk to a person" and "not sure" flag the call for a person and email the team; a call from the shop's own number is hung up on | Exists |
+| Filter chip for AI-answered calls | Not researched | Exists. "AI answered" chip with a count | Exists |
+| Mark AI inbound calls as read | Not researched | Exists. "Mark all as read" and per call | Exists |
+| Outbound AI calls for the shop | Not researched | Exists. Task calls started from Ask Alpha, with transcript and summary; now say they are an AI and that the call may be recorded | Exists |
+| Recording notice | Not researched | Exists. Spoken near the start of every call the assistant answers; wording and on/off set by the shop. Whether the wording meets the shop's state law is the owner's call (see Blocked on the owner) | Exists |
+| Shop rules screen | Guidance for tone, handoff, limits [S37] | Exists. Settings, AI receptionist: separate off switches for calls and text replies, tone, name, greeting, recording notice, hours and holidays, handoff people, what needs a person, what it may share, never-say lists, booking, quiet hours, limits, who is emailed. Defaults name no shop. Checked on phone and desktop, light and dark. Needs migration 037 to save | Exists |
+| Test mode | Practice before going live [S37] | Exists. "Try the assistant" runs a pretend call or text through the real rules (even unsaved ones) at a pretend time of day and shows the reply, which rules fired and what it would have done. Nothing is sent, saved or dialed | Exists |
+| Review what the assistant did | Audit trail the owner can read [S28] | Exists. Inbox, AI assistant: what it needs from you, the log with transcript, recording, outcome, and Handled well or Needs work marks | Exists |
+| Results in plain numbers | Outcome counts [S35] | Exists. Answered, booked, asked for a time, passed to a person, missed, after hours, messages taken, still need a person, spam blocked, for 7, 30 or 90 days. Dollars brought in are not shown (no price data) | Exists |
+| Needs a person flag and email | Escalation rules [S36] | Exists. Red "Needs a person" on the thread, call and AI page, plus an email with the details; the assistant stops replying there until marked handled | Exists |
+| Summary and alerts without texting | Summaries, notifications [S43] | Exists. In the app and by email (owner picks every call, only follow-ups, or never) | Exists |
+| Telnyx assistant instructions | Not researched | Exists. Settings, AI receptionist: Copy instructions writes the same rules as text for a Telnyx AI assistant. This app enforces the same rules itself | Exists |
+| Carrier registration checklist | Registered sender required [S46][S47] | Exists as a screen (see section 8). The registration itself is Blocked on the owner | Blocked |
 ## 10. Ask Alpha (AI assistant)
 
 Screens: Ask Alpha, review cards, Agents and tools.
@@ -259,19 +269,22 @@ Screens: Get more customers (Growth), Settings.
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| Review requests | Automatic Google review request after a posted order [S11] | Exists. Manual text of your link plus a daily automation | Blocked |
-| Reply to a review | Review management [S13] | Partial. Paste a review, Alpha drafts a reply; nothing is fetched from Google | To build |
-| Win-back | Lost customer follow-up, default 12 months [S11] | Exists. 60-day list; automation at 90 days | Exists |
-| Service-due reminders | Reminder when a canned job is due, cancels on early return [S11] | Partial. Oil change by miles; not per canned job | To build |
-| Declined-service reminder | Default 6 months after declined work [S11] | Missing | To build |
-| Campaign dashboard | Sent and next-30-days view [S13] | Partial. "Recently sent"; no upcoming view | To build |
-| Promotions to a list | Text and email promotions [S13] | Exists. Weekly SMS blast automation | Blocked |
-| Audience filters | Based on service history [S13] | Missing | To build |
-| Referral codes | Not researched | Exists. 10 percent off for friends, $25 credit | Exists |
+| Review requests | Automatic Google review request after a posted order [S11] | Exists in code. Manual text of your link, plus an automation after a paid invoice: waits 2 hours by default, one request per customer every 90 days, skips unhappy customers, held at night, STOP checked right before sending, preview and test text to yourself. Real texts wait on carrier registration | Blocked |
+| Reply to a review | Review management [S13] | Exists. Paste a review and the stars; Alpha drafts a plain reply (never invents an offer, price or phone number), flags low ratings and serious claims, you edit and approve, copy it into Google and mark it posted. Saved per shop. Nothing is fetched from or posted to Google. Needs migration 041 | Exists |
+| Win-back | Lost customer follow-up, default 12 months [S11] | Exists. 60-day list that can be sent as a scheduled promotion; win-back automation; the one-tap blast in Settings now opens Get more customers instead and the old call goes through the same checks | Exists |
+| Service-due reminders | Reminder when a canned job is due, cancels on early return [S11] | Exists. Oil change and tire rotation by date or miles, plus state inspection, brake inspection, coolant, transmission, air filter and alignment you switch on one by one. A queued reminder is dropped if the customer came in first. Intervals are common shop defaults; only oil and tires can be changed per shop | Exists |
+| Declined-service reminder | Default 6 months after declined work [S11] | Exists. Declined work follow-up names only the items on their own estimate or inspection, after 30 days by default (14 to 120), stops after 180 days; dropped if the customer came in first | Exists |
+| Campaign dashboard | Sent and next-30-days view [S13] | Exists. Sent, delivered, replied, booked and paid afterwards, per promotion and per automation, over 7, 30 or 90 days (Get more customers, Results); next 30 days under Automations, Coming up. Delivered shows once the carrier reports it | Exists |
+| Promotions to a list | Text and email promotions [S13] | Exists in code. Promotions tab: write, choose who, read every message, test text to yourself, send now or at a set time in the shop clock, stop while it goes out. STOP, quiet hours and limits are checked on the server right before each message. Real texts wait on carrier registration. Needs migrations 040 and 041 | Blocked |
+| Audience filters | Based on service history [S13] | Exists. Last visit (not in for, in within), vehicle make and model year, lifetime spend, tags (any or all), has email. Counted live before sending; STOP and no-number are always left out | Exists |
+| Referral codes | Not researched | Exists. Codes with a discount you choose; credit a new customer's invoice to a code (checks they are new and the invoice counts once); what each referral paid; thank-you given or still owed. Needs migration 041 for the credits | Exists |
 | Find new customers | Not researched | Exists. AI lead search; check email-marketing law before auto outreach (unverified) | Exists |
-| Social post drafts | Not researched | Exists. Draft first; publishing needs a connected account and approval | Exists |
+| Social post drafts | Not researched | Exists. Write a post or have Alpha draft it from what you type (flags invented prices, offers and credentials), character limit per place, preview, save as a draft, copy to post yourself. Publishing is a separate row below | Exists |
 | Google Business Profile | Booking via profile [S10] | Partial. Connector listed; Alpha's prompt says Google access is pending approval (unverified now) | Blocked |
-| Paid ads | Not researched | Partial. Plans saved as drafts only | To build |
+| Paid ads | Not researched | Partial. Plan an ad with headline and text (optional AI draft, same checks), see a preview, save as a draft. Starting the ad needs the owner's Google Ads or Facebook account and a payment method | Blocked |
+| Publishing posts to Google, Facebook, Instagram | Post from one place | Blocked on the owner. Drafts, preview and copy are built; posting itself needs each account connected and approved | Blocked |
+| Test text to yourself | Send a sample before it goes out [S11] | Exists. Promotions and every texting automation can text the message to your own number, marked [Test], never to a customer | Exists |
+| Safe win-back blast in Settings | Not researched | Exists. The old Settings button sent to up to 500 people at once with one confirmation box; it now points to Promotions, and the old server call makes a promotion so STOP, quiet hours and limits apply | Exists |
 
 ## 12. Automations
 
@@ -279,15 +292,21 @@ Screens: Automations.
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| Ready-made automations | Six marketing automations [S11] | Exists. Ten built in, each with on and off | Exists |
+| Ready-made automations | Six marketing automations [S11] | Exists. Thirteen built in (ten that message customers, three that run in the background), each with its own on and off switch, grouped by purpose | Exists |
 | Your own automation | Not researched | Exists. Plain-English task with a schedule | Exists |
-| Preview before it runs | Message, timing and channel set before saving [S11] | Partial. Settings per automation; no preview of the actual messages | To build |
-| Pause cancels queued messages | Pausing cancels pending [S13] | Unverified. Not checked in code | To build |
-| Limits per customer | One review request per customer [S11] | Unverified. Not checked in code | To build |
-| Runs at the stated time | Not researched | Unverified. One daily job in `vercel.json`; stated times may not be exact | To build |
+| Preview before it runs | Message, timing and channel set before saving [S11] | Exists. Preview shows the exact message for each person, who gets it and when, who is held until morning, who is left out and why. Switching on and Run now both open it first. Settings show the real messages as you type | Exists |
+| Pause cancels queued messages | Pausing cancels pending [S13] | Exists. Pausing, the master switch and editing the message cancel what is waiting, and the screen says how many. A paused automation also never sends anything it had already lined up | Exists |
+| Limits per customer | One review request per customer [S11] | Exists. One marketing text a week and three a month per customer, a daily limit on service texts, and a per-automation gap (review requests 90 days). Rules sheet changes them. Checked again right before each send | Exists |
+| Runs at the stated time | Not researched | Partial. Times are worked out in the shop's time zone and the logic is tested, and the screen says how often it really checks. It needs a check every 5 minutes: vercel.json has one daily job, so hourly and 15-minute automations run late until a frequent scheduler is set up | Blocked |
 | Safe against double runs | Not researched | Exists. Leases and fencing in migrations 040, 048, 054, 060 | Exists |
-| Quiet hours | Not researched | Missing | To build |
-| Run history | Not researched | Partial. "Last run worked" or "failed" with time; no per-message history | To build |
+| Quiet hours | Not researched | Exists. No texts 9 PM to 8 AM by each customer's own clock (from their area code), longer if you choose, Sundays optional. Messages wait for morning instead of being dropped | Exists |
+| Run history | Not researched | Exists. History tab lists every message with who, what was said, when and what happened (sent, delivered, waiting, left out and why, did not send), plus every run; failures also email the owner | Exists |
+| Master off switch | Not researched | Exists. One switch pauses every automation and promotion and cancels what is waiting; each automation also has its own switch | Exists |
+| Rules for all automations | Not researched | Exists. Quiet hours, Sundays, marketing and service limits, failure-alert email, in one Rules sheet | Exists |
+| Results per automation | Sent, replied, booked [S13] | Exists. Sent, delivered, replied, booked and paid afterwards over 7, 30 or 90 days; each reply, booking or payment is credited once to the last message that customer got | Exists |
+| Coming up | Next 30 days view [S13] | Exists. Messages waiting by day, next scheduled runs, appointments to remind, vehicles coming due | Exists |
+| Failure alerts and retries | Not researched | Exists. A temporary failure retries up to three times; a message the carrier is unsure about is never sent twice; the owner is emailed when messages fail | Exists |
+| Reminder dropped when the customer came back | Cancels on early return [S11] | Exists. Service, declined-work and win-back messages still waiting are cancelled if the customer paid an invoice after they were lined up | Exists |
 
 ## 13. Reports
 
@@ -403,6 +422,49 @@ Screens: Settings, Connected apps, Agents and tools, Setup guide, login.
 | Help, privacy, terms | Not researched | Exists | Exists |
 | Test and build safety | Not applicable | Exists. 226 tests pass per the log; type check and lint clean | Exists |
 
+## 20. Built-in browser
+
+Screens: Browser (`/browser`) and the browse tool inside Ask Alpha. Added 2026-10-15 from the owner's request: "i want a built in web browser, a professional one better then chrome."
+
+Honest framing: nobody beats Chrome as a general-purpose browser, and this section does not try to. The professional version the AI companies ship is a browser inside the product that the AI can drive while the person watches and can take over [B1][B3][B5]. This section is that, built for shops (parts sites, insurance portals, recall and VIN sites, manufacturer repair sites).
+
+What runs where, because Alpha runs on Vercel serverless (no long-lived connection, no browser that stays open, and most sites refuse to load inside an iframe):
+
+| Piece | Runs | Why |
+| --- | --- | --- |
+| Reader view | Server fetch in one request, no browser engine | Fast, cheap, works for most parts, recall and manual pages; page is turned into plain blocks and drawn by Alpha, never as the site's own HTML |
+| Live view (snapshot and act) | One short headless browser per tap: open the page, redo the fields already filled, do the one action, take a picture and a list of controls, close | The picture-and-action loop the computer-use tools use [B4]; works on serverless because nothing stays open between taps |
+| Ask Alpha doing a lookup | The Browser page runs the loop on the screen (up to 12 steps, Stop button), calling the two views above | The person watches every step and can take over at any time |
+| Sites that need a sign-in, cookies or scripts that post data | The shop's own computer ("connect your computer" mode) | Alpha's servers must never hold a shop's passwords, and nothing can stay signed in on serverless |
+
+| Capability | What the best do | Alpha today | Status |
+| --- | --- | --- | --- |
+| A browser screen inside the product with tabs and an address and search bar | Dia and Atlas put tabs, an address bar and the assistant in one window [B7][B1] | Missing. Only a small panel of step pictures inside Ask Alpha | To build |
+| Reader view | Not named by the AI browsers I read (unverified); Stagehand's extract pulls clean data from a page [B7] | Partial. Scrape returns plain text to the AI; no screen | To build |
+| Live view you can tap | Browserbase live view: watch, or take control, of the running page [B5] | Missing | To build |
+| Screenshots and page snapshots | Screenshot after every action [B4] | Partial. Screenshot route sends the page address to two outside screenshot services | To build |
+| Ask Alpha does the lookup while you watch | Agent mode opens tabs, clicks and finishes multi-step tasks, and pauses on sensitive sites so you can watch [B1] | Partial. Ask Alpha can read a page and propose a click; no watch screen, no stop button on a browser task | To build |
+| Take over at any time | Live view lets a person click and type in the same session [B5] | Missing | To build |
+| Approval before a submit, purchase, message or download, showing the exact action | Pause before high-risk actions such as publishing or purchasing [B3]; confirm before sending, buying or filling details [B9]; human confirms real-world consequences [B4] | Partial. One approval for a whole batch; the action itself is not shown; a script cannot tell a search form from an order form | To build |
+| Never types passwords, card numbers or one-time codes | Keep logins and sensitive data away from the agent [B4]; logged-out mode [B1] | Partial. A word check on the clicked item only; the typed value is not checked | To build |
+| Sign-in steps hand control to the person | Pauses on sensitive sites [B1] | Partial. Some clicks stop; nothing tells the person what to do next | To build |
+| Page text is data, never instructions | Mark retrieved content untrusted, separate it from the person's request, scan for hidden text [B9][B10]; pages can hide instructions [B2] | Partial. One sentence in the prompt; hidden text and invisible characters are kept | To build |
+| Check each action against what was asked | Check proposed actions against the request [B10] | Missing | To build |
+| Activity log of every page and action | Session replays of each step [B6] | Partial. A database row per task, no screen, no page-by-page record | To build |
+| Saved quick sites for the shop | Pinned apps and profiles [B8] | Missing | To build |
+| Per-shop allow and block lists | Site-level permissions and admin allow and block lists [B3]; allowlist domains [B4] | Missing | To build |
+| Sensible default blocklist | Blocked categories such as financial services, adult and pirated content [B3] | Missing | To build |
+| Master off switch for the AI browser | Settings to turn the extension off [B3]; per-site page visibility toggle [B2] | Missing | To build |
+| Safe fetching on the server | Resolve, check every address, connect to the checked address, check every redirect, fix the scheme and port, limit the response [B11] | Partial. Public-address check and pinned connection exist; gaps listed under Bugs found; no port limit; no shop rules | To build |
+| Login required, rate limits and size limits on every fetch route | Not researched | Partial. Login on all three; rate limit on one; 8 MB and 20 s limits on one | To build |
+| Downloads never run | Cannot download files [B1] | Missing. Every non-image file is refused | To build |
+| Approved downloads of plain files (PDF, pictures, text) | Not described by the products I read (unverified) | Missing | To build |
+| Practice mode on pretend sites | Not researched | Missing | To build |
+| Sources shown for what the AI found | Not researched | Missing | To build |
+| Search from the address bar | AI browsers search from the address bar [B8] | Partial. Needs an optional search key; nothing without it | To build |
+| Connect your computer (desktop host) | Not described by the products I read for a web app (unverified) | Missing. Contract and server side only; no desktop app yet | Blocked |
+| Use what was found (copy into an estimate or Ask Alpha) | Not researched | Missing | To build |
+
 ---
 
 # Quality bar for every screen
@@ -431,17 +493,17 @@ Taken from `web/DESIGN.md`. A screen is not done until every box can be ticked.
 
 | Rule | Why | Alpha today |
 | --- | --- | --- |
-| Show exactly what will be sent before it is sent | The owner approves recipient, channel, words and total [S35] | Partial. Yes for documents and Ask Alpha; no for text auto-replies and AI calls |
-| Human approval for anything customer-facing | Fin pauses for a teammate on sensitive steps [S35] | Partial. Ask Alpha yes; text auto-reply and call answering run unseen |
+| Show exactly what will be sent before it is sent | The owner approves recipient, channel, words and total [S35] | Partial. Yes for documents and Ask Alpha. Text auto-replies: draft mode shows the exact words with Send, Change and Do not send; auto mode and calls can be tried first in test mode and the greeting preview |
+| Human approval for anything customer-facing | Fin pauses for a teammate on sensitive steps [S35] | Partial. Ask Alpha yes. Text replies: the shop picks off, draft or auto. Bookings: the team approves unless the shop lets it book open times. Calls answer on their own inside the shop's rules, with a review list afterward |
 | Undo, or say it cannot be undone | People mis-tap | Partial. "Cannot be undone" tag; no undo |
-| Audit trail the owner can read | Who, what, when, approved [S28] | Partial. Logged in the database; no screen |
-| Stop button | A running action can be cancelled | Partial. Being added in Ask Alpha; verify |
-| Honest uncertainty | Say what is not verified; show sources; never invent prices or parts | Partial. Parts show sources; some prompts still say answer anyway |
-| Tell people it is AI | Callers are told [S41]; disclosure is enforced [S45] | Missing on calls |
-| Hand off to a person with context | Fin passes history to a human [S35][S36] | Missing |
-| Rules the shop sets | Guidance for tone, handoff, limits [S37] | Missing |
+| Audit trail the owner can read | Who, what, when, approved [S28] | Partial. Receptionist: yes, Inbox, AI assistant lists every call and text with transcript, outcome and the rules used. Other AI actions: logged, see Ask Alpha |
+| Stop button | A running action can be cancelled | Partial. Receptionist: separate master switches for calls and text replies, a pause on each conversation, quiet hours and per-number limits. Ask Alpha: being added; verify |
+| Honest uncertainty | Say what is not verified; show sources; never invent prices or parts | Partial. Receptionist: never states a price, time or diagnosis and says the team will confirm; says when it is not sure and passes to a person. Parts show sources; some other prompts still say answer anyway |
+| Tell people it is AI | Callers are told [S41]; disclosure is enforced [S45] | Exists on calls (inbound and outbound) and in the first text; cannot be switched off |
+| Hand off to a person with context | Fin passes history to a human [S35][S36] | Exists for the receptionist: transfer with a text briefing, and a needs-a-person flag with an email, the transcript and what it wrote down |
+| Rules the shop sets | Guidance for tone, handoff, limits [S37] | Exists for the receptionist (Settings, AI receptionist). Ask Alpha has its own rules screen |
 | Safe to repeat | Same request never acts twice | Exists |
-| Mark what the AI did | Easy to measure and review | Partial. Texts carry an AI flag; calls show "AI assistant" |
+| Mark what the AI did | Easy to measure and review | Exists for the receptionist: texts and calls carry an AI marker, a filter chip, and Handled well or Needs work marks |
 
 ---
 
@@ -452,7 +514,7 @@ Rough size is my estimate (S is days, M is a couple of weeks, L is longer). "Own
 | # | What | Why in this place | Size | Owner |
 | --- | --- | --- | --- | --- |
 | 0 | Apply migrations 034, 035, 036 | Logo, breaks and inspection links already built; see "Blocked on the owner" | S | Yes |
-| 1 | Make the AI receptionist and text auto-reply safe: say it is AI, shop hours setting, never quote prices, "needs a person" flag, off switch, quiet hours | It talks to customers unseen today | M | Yes (wording) |
+| 1 | Done (2026-10-15). Make the AI receptionist and text auto-reply safe: say it is AI, shop hours setting, never quote prices, "needs a person" flag, off switch, quiet hours | It talks to customers unseen today | M | Yes (wording) |
 | 2 | Texting that carriers allow (10DLC or toll-free verification) | Estimate texts, inspection links, reminders and review requests all depend on it | S | Yes |
 | 3 | Payment links, card on file and deposits through a processor | Closes the money loop the leaders all have [S3][S22] | L | Yes |
 | 4 | Estimate by text with a link: view, approve line by line, sign, pay | Today the text has no link | M | |
@@ -467,7 +529,7 @@ Rough size is my estimate (S is days, M is a couple of weeks, L is longer). "Own
 | 13 | Shop board: TV or full-screen mode | For the shop wall | S | |
 | 14 | Shop board: jump-to-technician chips on phones | Long scroll on a phone | S | |
 | 15 | Undo clock-out | Mis-taps happen | S | |
-| 16 | Inbox: AI filter chip, and mark AI inbound calls as read | Owner sees what Alpha answered without clutter | S | |
+| 16 | Done (2026-10-15). Inbox: AI filter chip, and mark AI inbound calls as read | Owner sees what Alpha answered without clutter | S | |
 | 17 | Labor guide integration | Leaders put labor times in the estimate [S1] | L | Yes |
 | 18 | Parts catalog ordering (PartsTech first) | Order from the estimate [S2][S24] | L | Yes |
 | 19 | Pricing matrices and one-click jobs from the vehicle | Speeds writing; needs 17 and 18 for full value [S2] | L | |
@@ -478,7 +540,7 @@ Rough size is my estimate (S is days, M is a couple of weeks, L is longer). "Own
 | 24 | Command menu and keyboard shortcuts | Speed for office staff [S38] | M | |
 | 25 | AI controls for the shop (rules, tone, handoff) and an included AI key | Fin-style guidance [S37]; the shop should not paste a key | M | Yes |
 | 26 | One approval path in Ask Alpha, verify the Stop button, and an audit screen | Finish the AI-product bar | M | |
-| 27 | Message templates, photos in texts, thread assignment | Shop-Ware and Tekmetric patterns [S12][S29] | M | |
+| 27 | Done except per-thread access and phone push (2026-10-15). Message templates, photos in texts, thread assignment | Shop-Ware and Tekmetric patterns [S12][S29] | M | |
 | 28 | Per-shop warranty wording and permission roles screen | Needed before the second shop | M | Yes (legal) |
 | 29 | Customer duplicate merge, CSV import and export | Clean data; Alpha has about 20 to remove | M | Yes |
 | 30 | Multi-location view and benchmarks | Many shops later [S15][S20] | L | |
@@ -491,7 +553,7 @@ Nothing here can be finished by code alone.
 
 1. **Production migrations not applied.** `supabase/migrations/034_shop_logo.sql` (logo shows on documents), `035_timeclock_breaks.sql` (Break buttons appear), `036_dvi_customer_link.sql` (inspection text link, customer answers and list status). Until applied, the logo does not save, breaks stay hidden and the inspection text lists findings instead of a link. Needs Aaron's OK on the live database.
 2. **Pushing to GitHub and a Vercel preview.** Needs the Claude GitHub App installed on the account that owns the repo. The rebuild branch is local only until then.
-3. **Texting registration.** Needs 10DLC registration or toll-free verification. Telnyx says unregistered traffic gets limited, filtered or blocked [S46][S47]. Until done, every text feature is at risk.
+3. **Texting registration.** Needs 10DLC registration or toll-free verification. Telnyx says unregistered traffic gets limited, filtered or blocked [S46][S47]. Until done, every text feature is at risk. The in-app checklist (Settings, Communications) lists each step and writes the answers to paste; only the owner can submit it in the Telnyx account.
 4. **Duplicate and test customers.** About 20 should be removed; needs Aaron's approval before anything is deleted.
 
 Also coming up, and not yet decided:
@@ -502,7 +564,12 @@ Also coming up, and not yet decided:
 8. **Production schema export** for the `dvi` table, which was made by hand and has no migration in the repo.
 9. **Rotate keys.** The June 2026 log says keys once in source were compromised and should be rotated. I could not verify they were.
 10. **Google Business Profile access.** Alpha's prompt says Google approval was pending. Current status unverified.
-11. **Legal wording.** AI disclosure on calls, call-recording notice, and warranty terms for shops other than Alpha. Ask counsel.
+11. **Legal wording.** AI disclosure on calls, call-recording notice, and warranty terms for shops other than Alpha. Ask counsel. The assistant says it is an AI and that calls may be recorded by default; the owner should read the wording on the AI receptionist screen and the registration copy before relying on them.
+12. **Voice and text migrations 037, 038 and 039** (`supabase/migrations/`): receptionist rules, thread assignment and saved replies, the assistant's activity log, bookings and picture storage, and the carrier checklist. Until applied, the AI receptionist and text auto-reply keep working with the standard generic rules, and each screen that needs a table shows a short "needs a database update" notice. Needs Aaron's OK on the live database.
+13. **One live test call and one test text** after the rules are saved, to hear the greeting and the transfer on the real Telnyx number. The assistant is covered by tests with simulated Telnyx events and by the practice screen, but not yet by a live call.
+14. **Automation and growth migrations 040 and 041** (`supabase/migrations/`): the message ledger, run history and results for Automations, and promotions, review replies and referral credits for Get more customers. Until applied, each screen shows a short "needs a database update" notice and nothing is sent or saved by the new features. Needs Aaron's OK on the live database.
+15. **A scheduler that checks every 5 minutes.** `vercel.json` has one daily job, so automations that should run every 15 minutes or every hour (appointment reminders, car is ready) run late. Options: Vercel Pro with a 5-minute cron on `/api/cron/tick`, or a free outside pinger or GitHub Actions calling it with the cron secret. The Automations screen says how often it really checks.
+16. **Accounts for posting and ads.** Publishing a post to Google, Facebook, Instagram or TikTok, and starting a paid ad, need each account connected and a payment method on the ad account. Drafting, preview and copy are built; the last step waits on Aaron.
 
 ---
 
@@ -574,3 +641,14 @@ All read 2026-10-14. Facts above are summarised in my own words.
 | S45 | https://docs.bland.ai/tutorials/guard-rails.md | Guardrails: required AI disclosure, end or transfer on a breach |
 | S46 | https://developers.telnyx.com/docs/messaging/toll-free-verification | Toll-free verification and filtering of unverified traffic |
 | S47 | https://support.telnyx.com/en/articles/3679260-10dlc-general-faq-s-at-t-launch-faq-s | 10DLC registration and blocking of unregistered traffic |
+| B1 | https://help.openai.com/en/articles/12628199-chatgpt-atlas-agent-mode | Atlas agent mode: logged-in and logged-out, pauses on sensitive sites, cannot run code, download files, install extensions or touch the computer's files; custom rules |
+| B2 | https://openai.com/index/introducing-chatgpt-atlas/ | Atlas launch post: optional viewable memories, per-site page visibility toggle, warning that pages can hide malicious instructions. The fetch summary said the page now calls Atlas deprecated; not checked further |
+| B3 | https://claude.com/resources/articles/claude-for-chrome | Claude for Chrome: site-level permissions, confirmation before high-risk actions, blocked categories, admin allow and block lists, prompt-injection test results |
+| B4 | https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool | Computer use: screenshot and action loop, isolate, keep logins away, allowlist domains, human confirms real-world consequences, injection classifiers |
+| B5 | https://docs.browserbase.com/features/session-live-view | Live view: watch or take control of a running page, read-only or interactive, embeddable |
+| B6 | https://docs.browserbase.com/introduction/what-is-browserbase | Browserbase: isolated sessions, live view, session replays |
+| B7 | https://docs.stagehand.dev/v3/first-steps/introduction | Stagehand: act, extract, observe, agent; save and replay actions |
+| B8 | https://www.diabrowser.com/ | Dia: chat with tabs, profiles, privacy toggles; page did not describe agent actions |
+| B9 | https://hub-prod.perplexity.ai/hub/blog/mitigating-prompt-injection-in-comet | Comet: classifiers on retrieved content, content marked untrusted, confirmation before sending or buying, notices when something is blocked |
+| B10 | https://brave.com/blog/comet-prompt-injection/ | Brave's attack on Comet and its advice: separate instructions from page content, check actions against the request, confirm sensitive actions, isolate agent browsing |
+| B11 | https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html | SSRF prevention: check every address, connect to the checked address, redirects, schemes, ports, parser disagreement |

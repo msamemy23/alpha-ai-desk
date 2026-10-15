@@ -1,6 +1,7 @@
 'use client'
 import { useMemo } from 'react'
 import { EmptyBlock, ErrorCard } from '@/components/ListKit'
+import CampaignResults from './CampaignResults'
 import { Section } from './parts'
 import { sourceLabel, timeAgo } from './helpers'
 import type { Rec } from './helpers'
@@ -38,6 +39,8 @@ export default function ResultsTab({ loading, failed, customers, leads, referral
   return (
     <>
       {anyFailed && <ErrorCard title="Some results did not load" message="The numbers below may be missing some of your data. Check your connection and try again." onRetry={onRetry} busy={loading} className="mb-4" />}
+      <CampaignResults />
+
       <Section title="How it is going">
         {loading ? <div className="skeleton h-24" aria-busy="true" /> : (
           <dl className="panel grid grid-cols-2 sm:grid-cols-4">

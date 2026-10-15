@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
 import { createVoiceClientState } from '@/lib/voice-state'
+import { inQuietHours } from '@/lib/voice/hours'
 
 
 export async function POST(req: NextRequest) {
@@ -13,7 +14,7 @@ export async function POST(req: NextRequest) {
     const { to, task, callerName } = body || {}
     if (typeof to !== 'string' || !to.trim()) return NextResponse.json({ ok: false, error: 'Missing to' }, { status: 400 })
     const db = getServiceClient()
-    const { data: settings, error: settingsError } = await db.from('settings').select('telnyx_api_key,telnyx_phone_number,telnyx_connection_id').eq('shop_id', auth.shopId).maybeSingle()
+    const { data: settings, error: settingsError } = await db.from('settings').select('telnyx_api_key,telnyx_phone_number,telnyx_connection_id,timezone').eq('shop_id', auth.shopId).maybeSingle()
     if (settingsError) return NextResponse.json({ ok: false, error: 'Shop calling settings could not be loaded' }, { status: 500 })
     const apiKey = String(settings?.telnyx_api_key || '')
     const fromPhone = String(settings?.telnyx_phone_number || '')
@@ -24,6 +25,11 @@ export async function POST(req: NextRequest) {
     const digits = to.replace(/\D/g, '')
     if (![10, 11].includes(digits.length) || (digits.length === 11 && !digits.startsWith('1'))) return NextResponse.json({ ok: false, error: 'Enter a valid US phone number' }, { status: 400 })
     const e164   = digits.length === 10 ? `+1${digits}` : `+${digits}`
+
+    // Calls placed by an AI voice follow the same calling hours as telemarketing calls: nothing before 8 am or after 9 pm.
+    if (inQuietHours({ enabled: true, from: '21:00', to: '08:00' }, String(settings?.timezone || 'America/Chicago'), new Date())) {
+      return NextResponse.json({ ok: false, error: 'AI calls are only placed between 8 am and 9 pm, shop time. Try again in the morning, or call the customer yourself.' }, { status: 409 })
+    }
 
     const webhookUrl  = `${appUrl}/api/telnyx-voice-webhook`
     const safeTask = typeof task === 'string' ? task.slice(0, 2000) : 'Have a helpful conversation'
@@ -44,10 +50,7 @@ export async function POST(req: NextRequest) {
         answering_machine_detection: 'disabled',
         webhook_url:                 webhookUrl,
         client_state:                clientState,
-        // Record the call so the user can listen back
-        record:                      'record-from-answer',
-        record_channels:             'dual',
-        record_format:               'mp3',
+        // Recording starts in the call webhook, right after the assistant says the call may be recorded.
       }),
     })
 

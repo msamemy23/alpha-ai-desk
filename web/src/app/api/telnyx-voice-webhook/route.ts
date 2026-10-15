@@ -1,11 +1,11 @@
 /**
- * Telnyx Voice Webhook — AI voice agent v8.0
- * - Three call types: Alpha sales, custom AI task, personal call
- * - Personal calls: silent connect, no AI greeting or script
- * - Custom task calls: AI follows user's specific instructions
- * - Alpha sales calls: uses Alpha Auto Center sales script
+ * Telnyx Voice Webhook for calls the shop STARTS (outbound). Inbound calls are handled by /api/calls/webhook.
+ * - Three call types: shop service call, custom AI task, personal call
+ * - Personal calls: silent connect, no AI greeting or script, and no recording (nothing was said to warn the other person)
+ * - Custom task and service calls: the assistant says it is an AI calling for the shop, and that the call may be recorded,
+ *   before anything else. It follows the task, never invents prices, and ends politely when the person says no.
  * - Echo filter, barge-in, transcription engine B, both tracks
- * - Groq AI (30-80ms TTFT) with OpenRouter fallback
+ * - The shop's own AI provider (settings), nothing deployment-wide
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { waitUntil } from '@vercel/functions'
@@ -143,8 +143,8 @@ async function aiChat(messages: Array<{ role: string; content: string }>, maxTok
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
         ...(baseUrl.includes('openrouter.ai') ? {
-          'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'https://alpha-ai-desk.vercel.app',
-          'X-Title': 'Alpha AI Desk',
+          'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL || 'https://localhost',
+          'X-Title': 'Shop assistant',
         } : {}),
       },
       body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature: 0.7 }),
@@ -159,7 +159,13 @@ async function aiChat(messages: Array<{ role: string; content: string }>, maxTok
   }
 }
 
-// ── Shop-specific outbound sales prompt ──
+// What the person hears first on every assistant-placed call, whatever else the task says.
+function aiNotice(settings: VoiceSettings): string {
+  const shopName = String(settings.shop_name || '').trim()
+  return `Hi, this is an AI assistant calling${shopName ? ` for ${shopName}` : ''}. This call may be recorded.`
+}
+
+// ── Shop-specific outbound service prompt ──
 function buildSalesSystem(settings: VoiceSettings): string {
   const shopName = String(settings.shop_name || 'the configured auto repair shop')
   const address = String(settings.shop_address || 'the configured shop address')
@@ -171,15 +177,15 @@ YOUR JOB: Help the customer with the requested auto-repair conversation and, whe
 RULES:
 - You called them. Never say Thanks for calling.
 - Keep every reply to 1-3 short sentences.
-- Answer only from the configured shop context or what the customer tells you. Never invent prices, appointments, guarantees, or vehicle facts.
+- You are an AI assistant. If asked, say so plainly. Never claim to be a person.
+- Answer only from the configured shop context or what the customer tells you. Never invent prices, appointments, guarantees, or vehicle facts. If asked for a price or a time, say a person on the team will confirm it.
 - If they are not interested, acknowledge it once and end politely.
 - Spoken words only. No markdown, bullets, stage directions, or quotes.`
 }
 
 // ── Handle call.answered ──
-// ── Handle call.answered ──
 // Three call types:
-// 1. Alpha sales call: task === 'Alpha Auto Center oil change call' or mentions auto services
+// 1. Shop service call: the task is about an auto service (oil change, brakes, inspection ...)
 // 2. AI task call: task has custom instructions (e.g. "ask if he's going to church")
 // 3. Personal call: task is empty — user just wants to talk, no AI involvement
 async function handleAnswered(callId: string, task: string, shopId: string, settings: VoiceSettings) {
@@ -188,14 +194,12 @@ async function handleAnswered(callId: string, task: string, shopId: string, sett
     const upsert = (data: Record<string, unknown>) => dbUpsert(callId, data, shopId)
     const say = (text: string) => speak(callId, text, shopId, String(settings.telnyx_api_key || ''))
     console.log(`[handleAnswered] START callId=${callId.slice(0, 25)} task="${task.slice(0, 80)}"`)
-    const isAlpha = task === 'Alpha Auto Center oil change call' || (
-      /oil.?change|brake|transmission|engine|state inspection/i.test(task) &&
+    const isServiceCall = /oil.?change|brake|transmission|engine|state inspection/i.test(task) &&
       !/calling.*hotline|calling.*chatgpt|have a conversation|test.*call/i.test(task)
-    )
     const isPersonalCall = !task || task.trim() === '' || task === 'personal call'
-    const isCustomTask = !isAlpha && !isPersonalCall
+    const isCustomTask = !isServiceCall && !isPersonalCall
 
-    console.log(`[handleAnswered] callType: isAlpha=${isAlpha} isPersonalCall=${isPersonalCall} isCustomTask=${isCustomTask}`)
+    console.log(`[handleAnswered] callType: isServiceCall=${isServiceCall} isPersonalCall=${isPersonalCall} isCustomTask=${isCustomTask}`)
 
     await upsert({ status: 'active', task: task || 'personal call', greeted: false, processing: true, is_speaking: false, script_stage: 0, objection_count: 0, started_at: Date.now(), last_ai_text: '' })
 
@@ -208,7 +212,10 @@ async function handleAnswered(callId: string, task: string, shopId: string, sett
     }, String(settings.telnyx_api_key || ''))
     console.log(`[handleAnswered] transcription_start result: ok=${txResult.ok} status=${txResult.status}`)
 
-    await telnyxPost(`/calls/${callId}/actions/record_start`, { format: 'mp3', channels: 'dual', play_beep: false }, String(settings.telnyx_api_key || ''))
+    // Record only when the notice is about to be spoken. A personal call has no notice, so it is not recorded.
+    if (!isPersonalCall) {
+      await telnyxPost(`/calls/${callId}/actions/record_start`, { format: 'mp3', channels: 'dual', play_beep: false }, String(settings.telnyx_api_key || ''))
+    }
 
     // Personal call: no AI greeting, just connect silently
     if (isPersonalCall) {
@@ -220,20 +227,20 @@ async function handleAnswered(callId: string, task: string, shopId: string, sett
     // Build greeting based on call type
     let greetingPrompt: string
     let fallbackGreeting: string
-    if (isAlpha) {
-      greetingPrompt = buildSalesSystem(settings) + '\n\nSay your opening line to the customer. One punchy sentence.\nYOU called THEM. Never say Thanks for calling.'
-      fallbackGreeting = `Hey there, this is ${String(settings.shop_name || 'the shop')}. How are you doing today?`
+    if (isServiceCall) {
+      greetingPrompt = buildSalesSystem(settings) + '\n\nThe customer has already heard that you are an AI assistant calling for the shop. Say only your opening line about the reason for the call, in one short sentence.\nYOU called THEM. Never say Thanks for calling.'
+      fallbackGreeting = 'How are you doing today?'
     } else {
       // Custom AI task — greeting should reflect the user's actual instructions
       greetingPrompt = `You are making an outbound phone call on behalf of someone. Your specific task for this call is: "${task}"
 
-Say a natural opening line that starts working toward completing your task. 1-2 sentences max. Be friendly and direct.
+The person has already heard that you are an AI assistant. Say a natural opening line that starts working toward completing your task. 1-2 sentences max. Be friendly and direct.
 YOU called THEM. Never say Thanks for calling. No markdown, no stage directions.
 Spoken words only.`
-      fallbackGreeting = 'Hey, how are you doing today?'
+      fallbackGreeting = 'How are you doing today?'
     }
 
-    const greeting = await aiChat([{ role: 'system', content: greetingPrompt }], 60, settings) || fallbackGreeting
+    const greeting = `${aiNotice(settings)} ${await aiChat([{ role: 'system', content: greetingPrompt }], 60, settings) || fallbackGreeting}`.replace(/\s+/g, ' ').trim()
 
     const transcript = [{ speaker: 'ai', text: greeting }]
     const conversation = [{ role: 'assistant', content: greeting }]
@@ -340,7 +347,7 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     const objectionCount = (state.objection_count as number) || 0
     const isHardNo = /not interested|do not call|take me off|remove me|stop calling/i.test(text)
     const isSoftNo = /no thank|no thanks|can.?t right now|not right now|maybe later|not today|not looking/i.test(text)
-    const isAlpha = (state.task || '') === 'Alpha Auto Center oil change call' || /oil.?change|auto.?center|brake|transmission|engine|state inspection/i.test(state.task || '')
+    const isServiceCall = /oil.?change|auto.?center|brake|transmission|engine|state inspection/i.test(state.task || '')
 
     if (isHardNo || (isSoftNo && objectionCount >= 1)) {
       const bye = 'No problem at all, I appreciate your time. Have a great day!'
@@ -380,7 +387,7 @@ async function handleTranscription(callId: string, text: string, isFinal: boolea
     const isPersonal = !storedTask || storedTask === 'personal call'
 
     let systemPrompt: string
-    if (isAlpha) {
+    if (isServiceCall) {
       systemPrompt = buildSalesSystem(settings) + `\n\nThe customer just said: "${text}"\nRespond naturally. 1-3 sentences max. Spoken words only.`
     } else if (isPersonal) {
       // Personal call — AI should just have a natural conversation, no script

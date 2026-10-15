@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { getAuthedShop, hasInternalApiSecret, unauthorized } from '@/lib/api-auth'
+import { hasInternalApiSecret, unauthorized } from '@/lib/api-auth'
 import { sendEmail } from '@/lib/email'
 import { sendSMS, formatPhone } from '@/lib/telnyx'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { earliestSend, normalizeRules, validTimezone, windowFromRules } from '@/lib/automation-rules'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -54,6 +55,7 @@ export async function POST(req: NextRequest) {
   let failed = 0
   let cancelled = 0
   let unknown = 0
+  let held = 0
   const results: Array<Record<string, unknown>> = []
 
   for (const row of due) {
@@ -117,6 +119,19 @@ export async function POST(req: NextRequest) {
         const phone = customer?.phone || ''
         if (!phone) throw new Error('Customer has no phone number')
         const formattedPhone = formatPhone(phone)
+        // Texts wait for calling hours in the customer's own time (the shop's quiet hours, 9pm to 8am unless lengthened).
+        const rules = normalizeRules((settings.automation_config as Record<string, unknown> | null | undefined)?._rules)
+        const goesAt = earliestSend(now, validTimezone(settings.timezone), formattedPhone, windowFromRules(rules))
+        if (goesAt.getTime() - nowMs > 60_000) {
+          const { error: holdError } = await db.from('scheduled_messages').update({
+            status: 'pending', claimed_at: null, attempts: Math.max(0, Number((claimed as ScheduledMessage).attempts || 1) - 1),
+            next_attempt_at: goesAt.toISOString(), updated_at: new Date().toISOString(),
+          }).eq('id', row.id).eq('shop_id', row.shop_id).eq('status', 'sending')
+          if (holdError) throw holdError
+          held++
+          results.push({ id: row.id, status: 'held', reason: 'quiet_hours', until: goesAt.toISOString() })
+          continue
+        }
         if (await isSmsOptedOut(db, row.shop_id, formattedPhone)) {
           const { error: cancelError } = await db.from('scheduled_messages').update({
             status: 'cancelled', claimed_at: null, next_attempt_at: null,
@@ -207,7 +222,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ ok: failed === 0 && unknown === 0, success: failed === 0 && unknown === 0, inspected: due.length, sent, failed, cancelled, unknown, results }, { status: failed === 0 && unknown === 0 ? 200 : 502 })
+  return NextResponse.json({ ok: failed === 0 && unknown === 0, success: failed === 0 && unknown === 0, inspected: due.length, sent, failed, cancelled, unknown, held, results }, { status: failed === 0 && unknown === 0 ? 200 : 502 })
 }
 
 export async function GET(req: NextRequest) {

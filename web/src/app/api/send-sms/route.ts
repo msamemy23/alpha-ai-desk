@@ -7,6 +7,8 @@ import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
 import { normalizePhoneDigits } from '@/lib/sms-normalize'
 import { isSmsOptedOut } from '@/lib/sms-consent'
 import { sendDurableSms } from '@/lib/durable-sms'
+import { closeStaleDrafts, resolveNeedsPerson } from '@/lib/voice/actions'
+import { phoneKey } from '@/lib/voice/rules'
 
 export const dynamic = 'force-dynamic'
 
@@ -71,6 +73,7 @@ export async function POST(req: NextRequest) {
       settings,
     })
     if (!result.ok) return apiFail(result.error, result.status, result.uncertain ? 'PROVIDER_ERROR' : 'CONFLICT')
+    try { await resolveNeedsPerson(db, auth.shopId, phoneKey(formatted), auth.userId); await closeStaleDrafts(db, auth.shopId, phoneKey(formatted)) } catch { /* the text already went out */ }
     return apiOk({
       message_id: result.messageId,
       idempotent: result.idempotent,

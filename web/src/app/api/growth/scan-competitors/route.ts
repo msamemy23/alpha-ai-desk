@@ -1,10 +1,9 @@
 export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 
-// Scan competitor auto shops in Houston for low-rated reviews
+// Scan competitor auto shops near this shop for low-rated reviews
 // Uses Google Places API (Text Search + Place Details)
 export async function POST(req: NextRequest) {
   try {
@@ -92,55 +91,9 @@ export async function POST(req: NextRequest) {
         })
       }
     } else {
-      // === FALLBACK: Use AI + web search to find competitors ===
-      const aiKey = (settings?.ai_api_key as string) || ''
-      const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
-      const aiModel = normalizeAiModel(settings?.ai_model, aiBase)
-
-      if (!aiKey) {
-        return NextResponse.json({ error: 'No Google Maps API key or AI API key configured. Add GOOGLE_MAPS_API_KEY to env or configure AI in Settings.' }, { status: 400 })
-      }
-
-      // Use AI to search and extract competitor info
-      const searchPrompt = `Search for auto repair shops in Houston TX that have bad reviews. For each shop, provide:
-1. Shop name
-2. Address
-3. Overall rating
-4. A summary of common complaints from unhappy customers
-
-Format as JSON array: [{"name":"...","address":"...","rating":3.2,"complaints":"..."}]
-Focus on shops near ${shopAddress}.
-Only include shops with ratings below 4.0 or notable bad reviews.`
-
-      const aiRes = await fetch(`${aiBase}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiKey}` },
-        body: JSON.stringify({
-          model: aiModel,
-          messages: [
-            { role: 'system', content: 'You are a business intelligence assistant. Return only valid JSON arrays. No markdown.' },
-            { role: 'user', content: searchPrompt }
-          ],
-          max_tokens: 1500,
-        })
-      })
-      if (!aiRes.ok) throw new Error(`AI provider returned ${aiRes.status}`)
-      const aiData = await aiRes.json()
-      const content = aiData.choices?.[0]?.message?.content || '[]'
-
-      try {
-        const parsed = JSON.parse(content.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
-        competitors = Array.isArray(parsed) ? parsed.filter(c => c && typeof c === 'object').map((c: { name: string; address: string; rating: number; complaints: string }) => ({
-          name: c.name,
-          address: c.address,
-          rating: c.rating,
-          total_reviews: 0,
-          place_id: '',
-          low_reviews: c.complaints ? [{ author: 'AI Summary', rating: 1, text: c.complaints, time: new Date().toISOString(), relative_time: 'recent' }] : [],
-        })) : []
-      } catch {
-        competitors = []
-      }
+      // No guessing. An AI model cannot look up real shops or their reviews, so without a Google Maps key
+      // there is nothing honest to show.
+      return NextResponse.json({ error: 'Reading competitor reviews needs a Google Maps key, which is not set up. Nothing was made up in its place.' }, { status: 503 })
     }
 
     // Save scan results to Supabase for tracking

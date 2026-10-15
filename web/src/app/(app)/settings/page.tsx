@@ -15,16 +15,20 @@ import { SettingsProvider, type Settings } from '@/components/settings/fields'
 import ShopSection from '@/components/settings/ShopSection'
 import AiSection from '@/components/settings/AiSection'
 import CommsSection from '@/components/settings/CommsSection'
+import ReceptionistSection from '@/components/settings/ReceptionistSection'
 import OutreachSection from '@/components/settings/OutreachSection'
 import ReviewsSection from '@/components/settings/ReviewsSection'
+import AiRulesSection from '@/components/ai/AiRulesSection'
 
-type SectionId = 'shop' | 'ai' | 'comms' | 'outreach' | 'reviews'
+type SectionId = 'shop' | 'ai' | 'assistant' | 'receptionist' | 'comms' | 'outreach' | 'reviews'
 type LoadState = 'loading' | 'ready' | 'error'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error'
 
 const SECTIONS: { id: SectionId; label: string; sub: string; icon: string; hasFields: boolean }[] = [
   { id: 'shop', label: 'Shop info', sub: 'Name, phone, rates, tax', icon: 'map', hasFields: true },
   { id: 'ai', label: 'AI assistant', sub: 'AI key, model, ChatGPT', icon: 'alpha', hasFields: true },
+  { id: 'assistant', label: 'Assistant rules', sub: 'What it may do and never do', icon: 'shield', hasFields: false },
+  { id: 'receptionist', label: 'AI receptionist', sub: 'Answers calls and texts for you', icon: 'phone', hasFields: false },
   { id: 'comms', label: 'Communications', sub: 'Texts, calls and email', icon: 'inbox', hasFields: true },
   { id: 'outreach', label: 'AI outreach', sub: 'Win back past customers', icon: 'send', hasFields: false },
   { id: 'reviews', label: 'Reviews', sub: 'Draft replies to reviews', icon: 'star', hasFields: false },
@@ -337,6 +341,8 @@ export default function SettingsPage() {
                   <h2 id={`sec-${s.id}`} className="display mb-4 text-[1.5rem] font-bold leading-tight">{s.label}</h2>
                   {s.id === 'shop' && <ShopSection />}
                   {s.id === 'ai' && <AiSection />}
+                  {s.id === 'assistant' && <AiRulesSection />}
+                  {s.id === 'receptionist' && <ReceptionistSection />}
                   {s.id === 'comms' && <CommsSection />}
                   {s.id === 'outreach' && <OutreachSection />}
                   {s.id === 'reviews' && <ReviewsSection shopName={String(settings.shop_name || '')} />}

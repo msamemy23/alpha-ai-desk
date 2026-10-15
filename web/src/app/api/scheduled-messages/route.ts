@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { earliestSend, normalizeRules, validTimezone, windowFromRules } from '@/lib/automation-rules'
 
 export async function GET() {
   const auth = await getAuthedShop()
@@ -51,6 +52,7 @@ export async function POST(req: NextRequest) {
     }
   }
   if (!resolvedCustomerId) return NextResponse.json({ error: 'A scheduled message requires a customer' }, { status: 400 })
+  let customerPhone = ''
   if (resolvedCustomerId) {
     const { data: customer, error: customerError } = await sb
       .from('customers')
@@ -60,6 +62,7 @@ export async function POST(req: NextRequest) {
       .maybeSingle()
     if (customerError) return NextResponse.json({ error: customerError.message }, { status: 500 })
     if (!customer) return NextResponse.json({ error: 'Customer not found in this shop' }, { status: 404 })
+    customerPhone = String(customer.phone || '')
     if (selectedChannel === 'sms' && (customer.sms_opted_out || await isSmsOptedOut(sb, auth.shopId, customer.phone))) return NextResponse.json({ error: 'This destination has opted out of SMS' }, { status: 409 })
   }
 
@@ -76,7 +79,21 @@ export async function POST(req: NextRequest) {
   }).select().single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ ok: true, scheduled: data })
+
+  // Texts are not sent during quiet hours. Say so now, so a message set for 11pm is not a surprise at 8am.
+  let note: string | undefined
+  let goesAt: string | undefined
+  if (selectedChannel === 'sms') {
+    const { data: settings } = await sb.from('settings').select('timezone,automation_config').eq('shop_id', auth.shopId).maybeSingle()
+    const tz = validTimezone(settings?.timezone)
+    const rules = normalizeRules((settings?.automation_config as Record<string, unknown> | null | undefined)?._rules)
+    const when = earliestSend(scheduledDate, tz, customerPhone, windowFromRules(rules))
+    if (when.getTime() - scheduledDate.getTime() > 60_000) {
+      goesAt = when.toISOString()
+      note = `This text will go out at ${new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short', hour: 'numeric', minute: '2-digit' }).format(when)} instead, because texts are not sent during quiet hours.`
+    }
+  }
+  return NextResponse.json({ ok: true, scheduled: data, ...(note ? { note, goes_at: goesAt } : {}) })
 }
 
 export async function PATCH(req: NextRequest) {

@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
+import { NEEDS_CITY, cityName, resolveSearchCity } from '@/lib/growth-city'
+import { emailFoundIn, phoneFoundIn } from '@/lib/lead-grounding'
 
 const SERPER_KEY = process.env.SERPER_API_KEY || ''
 
@@ -24,8 +26,9 @@ async function searchSerper(query: string) {
   } catch { return [] }
 }
 
-async function aiDeepAnalyze(posts: any[], city: string, aiKey: string, aiUrl: string, aiModel: string, shopName: string) {
-  if (!aiKey || !posts.length) return []
+async function aiDeepAnalyze(posts: any[], city: string, aiKey: string, aiUrl: string, aiModel: string, shopName: string): Promise<any[] | null> {
+  if (!posts.length) return []
+  if (!aiKey) return null
   try {
     const res = await fetchT(aiUrl, {
       method: 'POST',
@@ -34,20 +37,21 @@ async function aiDeepAnalyze(posts: any[], city: string, aiKey: string, aiUrl: s
         model: aiModel,
         messages: [{
           role: 'system',
-          content: `You are a social media lead analyst for ${shopName} in ${city}. Analyze social posts about car problems and extract leads with DEEP profiles. Return JSON array:\n[{\n  "name": "person's name or username",\n  "phone": "if mentioned",\n  "email": "if findable",\n  "platform": "facebook/reddit/nextdoor/yelp",\n  "post_snippet": "what they posted about",\n  "service_needed": "specific auto service needed",\n  "address": "location if mentioned",\n  "city": "Houston area",\n  "urgency": "high/medium/low",\n  "confidence": "high/medium/low",\n  "pain_points": "specific car problems",\n  "vehicle_info": "car make/model/year if mentioned",\n  "outreach_pitch": "personalized pitch",\n  "suggested_message": "ready SMS text",\n  "annual_value_estimate": "$X,XXX"\n}]`
+          content: `You help ${shopName}, an independent auto repair shop in ${city}, spot people who posted about car trouble. Use ONLY what is written in the posts. If a detail is not there, use null. Never guess a phone number, email address, address or name. Return a JSON array. Each item has exactly these fields:\n{\n  "name": "the person's name or username as written",\n  "phone": "a phone number written in the post, else null",\n  "email": "an email address written in the post, else null",\n  "platform": "facebook, reddit, nextdoor or yelp, from the link",\n  "post_snippet": "a short quote of what they posted",\n  "service_needed": "the auto service they seem to need",\n  "city": "a city named in the post, else null",\n  "urgency": "high, medium or low",\n  "confidence": "high, medium or low, for how clearly the post asks for a mechanic",\n  "pain_points": "the car problem in the post",\n  "vehicle_info": "make, model or year if written, else null"\n}`
         }, {
           role: 'user',
           content: `Extract leads from these ${city} social media posts about car problems:\n${JSON.stringify(posts.slice(0, 15))}`
         }],
-        temperature: 0.3,
+        temperature: 0.2,
         max_tokens: 3000
       })
     }, 30000)
-    if (!res.ok) return []
+    if (!res.ok) return null
     const data = await res.json()
     const content = data.choices?.[0]?.message?.content || '[]'
-    return JSON.parse(content.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
-  } catch { return [] }
+    const parsed = JSON.parse(content.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
+    return Array.isArray(parsed) ? parsed : null
+  } catch { return null }
 }
 
 export async function POST(req: NextRequest) {
@@ -55,9 +59,9 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}))
     const auth = await getRouteShop(req, body.shopId)
     if (!auth) return unauthorized()
-    const { city: rawCity = 'Houston TX' } = body
-    const city = typeof rawCity === 'string' ? rawCity.trim().slice(0, 120) || 'Houston TX' : 'Houston TX'
     const db = getServiceClient()
+    const city = await resolveSearchCity(db, auth.shopId, body.city)
+    if (!city) return NextResponse.json({ error: NEEDS_CITY }, { status: 400 })
     const { data: settings, error: settingsError } = await db.from('settings').select('ai_api_key,ai_base_url,ai_model,shop_name').eq('shop_id', auth.shopId).maybeSingle()
     if (settingsError) throw settingsError
     const shopName = typeof settings?.shop_name === 'string' && settings.shop_name.trim() ? settings.shop_name.trim().slice(0, 160) : 'this shop'
@@ -69,30 +73,33 @@ export async function POST(req: NextRequest) {
     const queries = [
       `"need a mechanic" OR "car broke down" OR "check engine light" ${city} site:reddit.com OR site:facebook.com`,
       `"looking for auto repair" OR "need transmission" OR "brakes grinding" ${city}`,
-      `"recommend a mechanic" OR "car overheating" OR "need oil change" Houston Texas`
+      `"recommend a mechanic" OR "car overheating" OR "need oil change" ${city}`
     ]
     const shuffled = queries.sort(() => Math.random() - 0.5).slice(0, 2)
     const allResults = (await Promise.all(shuffled.map(q => searchSerper(q)))).flat()
 
-    const leads = await aiDeepAnalyze(allResults, city, aiKey, aiUrl, aiModel, shopName)
+    const analyzed = await aiDeepAnalyze(allResults, city, aiKey, aiUrl, aiModel, shopName)
+    if (analyzed === null) return NextResponse.json({ error: 'Alpha’s AI could not read the posts just now. Try again in a few minutes.' }, { status: 502 })
+    // A phone number or email only counts if it is written in the posts Alpha actually read.
+    const evidence = JSON.stringify(allResults)
+    const leads = analyzed.filter((l: any) => l && typeof l === 'object' && (l.name || l.post_snippet)).slice(0, 15).map((l: any) => ({
+      ...l, phone: phoneFoundIn(l.phone, evidence), email: emailFoundIn(l.email, evidence),
+    }))
 
     if (leads.length > 0) {
       const rows = leads.map((l: any) => ({
-        name: l.name || 'Social User',
-        phone: l.phone || null, email: l.email || null,
+        name: l.name || 'Social user',
+        phone: l.phone, email: l.email,
         service_needed: l.service_needed || 'Auto repair',
         source: 'ai-social-scan', status: 'new',
         business_type: l.platform || 'social media',
-        confidence: l.confidence || 'medium',
-        address: l.address || null, city: l.city || 'Houston',
+        confidence: ['high', 'medium', 'low'].includes(l.confidence) ? l.confidence : 'low',
+        address: null, city: l.city || cityName(city),
         pain_points: l.pain_points || null,
         industry: 'individual consumer',
-        deep_research: { platform: l.platform, post_snippet: l.post_snippet,
-          urgency: l.urgency, vehicle_info: l.vehicle_info,
-          outreach_pitch: l.outreach_pitch, suggested_message: l.suggested_message,
-          annual_value_estimate: l.annual_value_estimate },
+        deep_research: { platform: l.platform, post_snippet: l.post_snippet, urgency: l.urgency, vehicle_info: l.vehicle_info },
         research_completed_at: new Date().toISOString(),
-        notes: JSON.stringify(l),
+        notes: l.post_snippet ? `Posted: ${String(l.post_snippet).slice(0, 400)}` : null,
         follow_up_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
         created_at: new Date().toISOString(),
         shop_id: auth.shopId,

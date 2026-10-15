@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
+import { NEEDS_CITY, cityName, resolveSearchCity } from '@/lib/growth-city'
+import { firstEmailIn, matchSource, nameFoundIn, scoreOf } from '@/lib/lead-grounding'
 
 const SERPER_KEY = process.env.SERPER_API_KEY || ''
 
@@ -51,30 +53,26 @@ async function searchSerper(query: string) {
   } catch { return [] }
 }
 
-async function deepResearchBusiness(biz: any) {
+async function deepResearchBusiness(biz: any, city: string) {
   const name = biz.name
   const [ownerResults, fleetResults, emailResults] = await Promise.all([
-    searchSerper(`"${name}" owner OR president OR CEO OR founder Houston`),
-    searchSerper(`"${name}" fleet vehicles trucks vans Houston`),
-    searchSerper(`"${name}" email contact Houston`)
+    searchSerper(`"${name}" owner OR president OR CEO OR founder ${city}`),
+    searchSerper(`"${name}" fleet vehicles trucks vans ${city}`),
+    searchSerper(`"${name}" email contact ${city}`)
   ])
-  const emailMatch = JSON.stringify(emailResults).match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/)
+  const emailFound = firstEmailIn(JSON.stringify(emailResults))
   return {
     ...biz,
     owner_search: ownerResults.slice(0, 2).map((r: any) => r.snippet).join(' | '),
     fleet_search: fleetResults.slice(0, 2).map((r: any) => r.snippet).join(' | '),
-    email: emailMatch ? emailMatch[0] : biz.email || null,
+    email: emailFound || biz.email || null,
     raw_snippets: [...ownerResults, ...fleetResults].slice(0, 4).map((r: any) => r.snippet).join(' ')
   }
 }
 
-async function aiDeepAnalyze(businesses: any[], city: string, aiKey: string, aiUrl: string, aiModel: string, shopName: string) {
-  if (!aiKey || !businesses.length) return businesses.map(b => ({
-    ...b, fleet_score: 5, owner_name: 'Unknown', owner_title: 'Owner',
-    estimated_vehicles: '2-5', revenue_estimate: 'Unknown', years_in_business: null,
-    has_maintenance_contract: false, vehicle_types: 'Mixed', service_area: city,
-    pain_points: '', outreach_pitch: 'Contact for fleet services'
-  }))
+async function aiDeepAnalyze(businesses: any[], city: string, aiKey: string, aiUrl: string, aiModel: string, shopName: string): Promise<any[] | null> {
+  if (!businesses.length) return []
+  if (!aiKey) return null
   try {
     const res = await fetchT(aiUrl, {
       method: 'POST',
@@ -83,7 +81,7 @@ async function aiDeepAnalyze(businesses: any[], city: string, aiKey: string, aiU
         model: aiModel,
         messages: [{
           role: 'system',
-          content: `You are an expert business intelligence analyst for ${shopName} in ${city}. Do DEEP research analysis on each business. Extract every detail possible. Return a JSON array where each object has ALL these fields:\n{\n  "name": "exact business name",\n  "owner_name": "owner/president/CEO name from search data or best guess",\n  "owner_title": "their title (Owner, President, CEO, GM, Fleet Manager)",\n  "phone": "business phone",\n  "email": "business email",\n  "address": "full street address",\n  "city": "city",\n  "zip": "zip code",\n  "website": "website url",\n  "business_type": "industry category",\n  "industry": "specific industry",\n  "employee_count": "estimated employees (e.g. 10-25)",\n  "revenue_estimate": "estimated annual revenue (e.g. $500K-$1M)",\n  "years_in_business": estimated number or null,\n  "fleet_size": "estimated vehicles (e.g. 5-10)",\n  "vehicle_types": "types of vehicles (vans, trucks, cars, etc)",\n  "has_maintenance_contract": true/false guess,\n  "current_shop": "who they likely use for maintenance or Unknown",\n  "service_area": "areas they serve in Houston",\n  "google_rating": number or null,\n  "google_reviews_count": number or null,\n  "facebook_url": "facebook page url or null",\n  "linkedin_url": "linkedin page url or null",\n  "pain_points": "likely vehicle/fleet pain points",\n  "fleet_score": 1-10 (10 = highest fleet service need),\n  "confidence": "high/medium/low",\n  "outreach_pitch": "personalized 2-sentence pitch mentioning their business by name",\n  "best_services": ["oil change", "brakes", etc],\n  "annual_value_estimate": "$X,XXX estimated annual spend on fleet maintenance"\n}\nUse the search snippets provided to fill in real data. If info is not available, make intelligent estimates based on business type and size. Be thorough.`
+          content: `You help ${shopName}, an independent auto repair shop in ${city}, find local businesses that run vehicles and may need a repair shop. Use ONLY facts that appear in the search data you are given. If a fact is not in the data, use null. Never guess a person's name, a phone number, an email address, revenue or head count. Return a JSON array. Each item has exactly these fields:\n{\n  \"name\": \"the business name exactly as given\",\n  \"owner_name\": \"an owner, president or manager named in the search data, else null\",\n  \"owner_title\": \"their title as written in the data, else null\",\n  \"business_type\": \"the kind of business\",\n  \"vehicle_types\": \"vehicles the data says they run, else null\",\n  \"fleet_score\": a whole number 1-10 for how likely a business like this runs several vehicles that need regular service,\n  \"pain_points\": \"one short sentence on why this business may need service, using only the data, else null\",\n  \"best_services\": [\"services such a business usually needs, e.g. oil change, brakes\"],\n  \"outreach_pitch\": \"two plain sentences the shop could say to this business. Mention no price, discount, guarantee or deadline.\",\n  \"confidence\": \"high, medium or low, for how much the data supports this\"\n}`
         }, {
           role: 'user',
           content: `Deep analyze these ${city} businesses for fleet potential. Use the search data provided:\n${JSON.stringify(businesses.slice(0, 12))}`
@@ -92,11 +90,12 @@ async function aiDeepAnalyze(businesses: any[], city: string, aiKey: string, aiU
         max_tokens: 4000
       })
     }, 45000)
-    if (!res.ok) return []
+    if (!res.ok) return null
     const data = await res.json()
     const content = data.choices?.[0]?.message?.content || '[]'
-    return JSON.parse(content.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
-  } catch { return [] }
+    const parsed = JSON.parse(content.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
+    return Array.isArray(parsed) ? parsed : null
+  } catch { return null }
 }
 
 export async function POST(req: NextRequest) {
@@ -104,9 +103,10 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}))
     const auth = await getRouteShop(req, body.shopId)
     if (!auth) return unauthorized()
-    const { city: rawCity = 'Houston TX', categories } = body
-    const city = typeof rawCity === 'string' ? rawCity.trim().slice(0, 120) || 'Houston TX' : 'Houston TX'
+    const { categories } = body
     const db = getServiceClient()
+    const city = await resolveSearchCity(db, auth.shopId, body.city)
+    if (!city) return NextResponse.json({ error: NEEDS_CITY }, { status: 400 })
     const { data: settings, error: settingsError } = await db.from('settings').select('ai_api_key,ai_base_url,ai_model,shop_name').eq('shop_id', auth.shopId).maybeSingle()
     if (settingsError) throw settingsError
     const shopName = typeof settings?.shop_name === 'string' && settings.shop_name.trim() ? settings.shop_name.trim().slice(0, 160) : 'this shop'
@@ -130,10 +130,28 @@ export async function POST(req: NextRequest) {
 
     // Step 2: Deep research top 8 businesses (3 parallel searches each)
     const topBiz = allBiz.slice(0, 8)
-    const researched = await Promise.all(topBiz.map(b => deepResearchBusiness(b)))
+    const researched = await Promise.all(topBiz.map(b => deepResearchBusiness(b, city)))
 
     // Step 3: AI deep analysis with all gathered intel
-    const leads = await aiDeepAnalyze(researched, city, aiKey, aiUrl, aiModel, shopName)
+    const analyzed = await aiDeepAnalyze(researched, city, aiKey, aiUrl, aiModel, shopName)
+    if (analyzed === null) return NextResponse.json({ error: 'Alpha’s AI could not analyze the businesses just now. Try again in a few minutes.' }, { status: 502 })
+    // Contact details and ratings come from the search results themselves, never from the AI. A name or email the AI
+    // added that is not in the search text is dropped.
+    const leads = analyzed.flatMap((row: any) => {
+      const src: any = matchSource(row, researched)
+      if (!src) return []
+      const evidence = `${src.owner_search || ''} ${src.raw_snippets || ''}`
+      return [{
+        name: src.name, phone: src.phone || null, email: src.email || null, address: src.address || null, website: src.website || null,
+        google_rating: src.rating ?? null, google_reviews_count: src.reviews ?? null,
+        business_type: src.business_type || row.business_type || null,
+        owner_name: nameFoundIn(row.owner_name, evidence), owner_title: nameFoundIn(row.owner_name, evidence) ? (row.owner_title || null) : null,
+        vehicle_types: row.vehicle_types || null,
+        fleet_score: scoreOf(row.fleet_score), pain_points: row.pain_points || null,
+        best_services: Array.isArray(row.best_services) ? row.best_services.slice(0, 6) : [],
+        outreach_pitch: row.outreach_pitch || null, confidence: ['high', 'medium', 'low'].includes(row.confidence) ? row.confidence : 'low',
+      }]
+    })
     const sorted = leads.sort((a: any, b: any) => (b.fleet_score || 0) - (a.fleet_score || 0)).slice(0, 15)
 
     // Step 4: Save to DB with all deep research fields
@@ -145,33 +163,22 @@ export async function POST(req: NextRequest) {
         service_needed: `Fleet - ${lead.business_type || 'General'}`,
         source: 'ai-fleet-scan',
         status: 'new',
-        business_type: lead.business_type || lead.industry,
+        business_type: lead.business_type || null,
         confidence: lead.fleet_score >= 7 ? 'high' : lead.fleet_score >= 4 ? 'medium' : 'low',
         owner_name: lead.owner_name || null,
         owner_title: lead.owner_title || null,
         address: lead.address || null,
-        city: lead.city || city.split(' ')[0],
-        zip: lead.zip || null,
+        city: cityName(city),
         website: lead.website || null,
-        google_rating: lead.google_rating || lead.rating || null,
-        google_reviews_count: lead.google_reviews_count || lead.reviews || null,
-        years_in_business: lead.years_in_business || null,
-        employee_count: lead.employee_count || null,
-        revenue_estimate: lead.revenue_estimate || null,
-        fleet_size: lead.fleet_size || lead.estimated_vehicles || null,
+        google_rating: lead.google_rating ?? null,
+        google_reviews_count: lead.google_reviews_count ?? null,
         vehicle_types: lead.vehicle_types || null,
-        has_maintenance_contract: lead.has_maintenance_contract || false,
-        current_shop: lead.current_shop || null,
-        industry: lead.industry || lead.business_type || null,
-        service_area: lead.service_area || null,
-        facebook_url: lead.facebook_url || null,
-        linkedin_url: lead.linkedin_url || null,
+        industry: lead.business_type || null,
         pain_points: lead.pain_points || null,
         deep_research: {
           fleet_score: lead.fleet_score,
           best_services: lead.best_services,
           outreach_pitch: lead.outreach_pitch,
-          annual_value_estimate: lead.annual_value_estimate,
           confidence: lead.confidence
         },
         research_completed_at: new Date().toISOString(),

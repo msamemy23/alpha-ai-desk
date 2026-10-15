@@ -6,7 +6,7 @@ import { normalizeInbound } from '@/lib/sms-normalize'
 // Inbound-SMS webhook for the PHONE gateway (TextBee / httpSMS / custom).
 // When SMS goes through your own phone, the gateway app forwards each received
 // text here. Point the gateway's "received message" webhook at:
-//   https://alpha-ai-desk.vercel.app/api/sms-inbound?secret=YOUR_SECRET
+//   https://YOUR-APP-ADDRESS/api/sms-inbound?secret=YOUR_SECRET
 // and set SMS_INBOUND_SECRET to the same value (optional but recommended — the
 // gateways don't sign their webhooks).
 

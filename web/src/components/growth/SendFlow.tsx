@@ -13,7 +13,9 @@ import type { Flag, Skipped, Who } from './MessageSheet'
 import { IDLE_RUN, useBatchSend } from './useBatchSend'
 import type { RunState } from './useBatchSend'
 import { draftMessage, postOutreach, postSms } from './send'
+import { isAfterHours } from './promotions-model'
 import type { SmsResult } from './send'
+import { unsupportedClaims } from '@/lib/automation-rules'
 import { errText, isAiLead, timeAgo } from './helpers'
 import type { Rec, ShopInfo } from './helpers'
 
@@ -33,7 +35,8 @@ interface Props {
   notify: (message: string, kind?: 'success' | 'error' | 'info') => void
 }
 
-const LEAD_DEFAULT_FLAG = 'Alpha found this lead on the web. They have not contacted your shop, so message them only if it is fitting.'
+const LEAD_DEFAULT_FLAG = 'Alpha found this lead on the web. They have not contacted your shop, so email them only if it is a good fit. They can unsubscribe in one click.'
+const LEAD_NO_TEXT = 'Texting or calling someone who has not asked to hear from you needs their written permission. Alpha found this lead on the web, so use email, or call them yourself if they are a business.'
 
 /** A lead that is a business has no first name to greet. Use the owner's name when Alpha found one. */
 function greetingFor(lead: Rec): string {
@@ -98,6 +101,7 @@ export default function SendFlow({ compose, shop, aiMode, onClose, onChanged, no
   // ── Alpha writes a draft for a lead, to be read and edited ─────────────
   const [drafting, setDrafting] = useState(false)
   const [draftNote, setDraftNote] = useState('')
+  const [aiWritten, setAiWritten] = useState(false)
   const wantsDraft = compose.kind === 'lead' && compose.method !== 'ai_call' && aiMode
   const draft = useCallback(async () => {
     if (compose.kind !== 'lead' || compose.method === 'ai_call') return
@@ -108,6 +112,7 @@ export default function SendFlow({ compose, shop, aiMode, onClose, onChanged, no
       // The greeting has the real first name already, so no {name} is left in a draft.
       setMessage(channel === 'sms' ? withOptOut(r.text) : r.text)
       setEdited(true)
+      setAiWritten(true)
     } else setDraftNote(`${r.error} This is the standard message instead. You can edit it.`)
     setDrafting(false)
   }, [compose, shop.name, shop.phone])
@@ -177,7 +182,7 @@ export default function SendFlow({ compose, shop, aiMode, onClose, onChanged, no
     await start(
       [{ id: who.id, name: who.name }],
       async () => {
-        const r = await postOutreach({ leadId: String(lead.id), method: leadMethod, aiMode, message: text })
+        const r = await postOutreach({ leadId: String(lead.id), method: leadMethod, aiMode, message: text, subject: leadMethod === 'email' ? leadEmailSubject(shop.name || '', String(lead.service_needed || '')) : undefined })
         return r.kind === 'failed' ? { kind: 'failed', error: r.error } : r
       },
       async () => { changed.current = true },
@@ -242,11 +247,26 @@ export default function SendFlow({ compose, shop, aiMode, onClose, onChanged, no
   if (compose.kind === 'followup' && who.length > 1 && !blocker) {
     flags.push({ kind: 'info', text: 'Texts go out one at a time, so a long list takes a while. You can stop at any point and nobody after that is texted.' })
   }
+  // A text to a whole list at night is the kind customers complain about. One-to-one texts are the owner's call, so they only get a note.
+  if (compose.kind === 'followup' || compose.kind === 'review' || compose.kind === 'referral') {
+    const hour = new Date().getHours()
+    if (isAfterHours(hour)) {
+      if (compose.kind === 'followup' && who.length > 1) {
+        blocker = blocker || 'It is after hours. Texts to a list wait until 8 AM. Come back in the morning, or schedule it from Promotions.'
+        flags.push({ kind: 'warn', text: <>It is after hours for your customers (9 PM to 8 AM). Texting a whole list now is held back. Use the Promotions tab to schedule it for the morning, and each customer is checked again right before their text.</> })
+      } else {
+        flags.push({ kind: 'info', text: 'It is after hours (9 PM to 8 AM). A text sent now reaches the customer at night. Waiting until morning is kinder.' })
+      }
+    }
+  }
   if (compose.kind === 'lead') {
     if (leadWho.length === 0) blocker = compose.method === 'email' ? 'This lead has no email address.' : 'This lead has no phone number.'
-    if (isAiLead(compose.lead) && compose.method !== 'email') flags.push({ kind: 'warn', text: LEAD_DEFAULT_FLAG })
+    if (isAiLead(compose.lead) && compose.method !== 'email') blocker = blocker || LEAD_NO_TEXT
+    if (isAiLead(compose.lead) && compose.method === 'email') flags.push({ kind: 'warn', text: LEAD_DEFAULT_FLAG })
     if (compose.method === 'ai_call') flags.push({ kind: 'warn', text: 'Alpha speaks with an AI voice. Calling people who have not asked to hear from you can break the law. Call only someone who would expect to hear from your shop.' })
-    if (compose.method === 'email') flags.push({ kind: 'warn', text: 'This email has no unsubscribe link, so if this person asks you to stop, write it in their lead notes and do not email them again. Your shop name, phone and address are added at the bottom.' })
+    if (compose.method === 'email') flags.push({ kind: 'info', text: 'Your shop name, phone and address and an unsubscribe link are added at the bottom. Anyone who unsubscribes is never emailed again.' })
+    const claims = aiWritten ? unsupportedClaims(message, shop.phone, shop.name, String(compose.lead.service_needed || '')) : []
+    if (claims.length) flags.push({ kind: 'warn', text: `Alpha wrote ${claims.join(', ')} that you did not give it. Take it out unless it is true for your shop.` })
     if (wantsDraft && draftNote) flags.push({ kind: 'warn', text: draftNote })
     if (wantsDraft && !draftNote && !drafting && !edited && compose.method !== 'ai_call') flags.push({ kind: 'info', text: 'Alpha wrote this. Read it, change it if you like, then send.' })
   }

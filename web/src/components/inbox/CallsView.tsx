@@ -4,8 +4,10 @@ import Icon from '@/components/Icon'
 import { phonePretty } from '@/lib/today'
 import { CALL_KIND_LABEL, CALL_KIND_LAMP, CALL_KIND_TEXT, callKind, formatDuration, otherNumber, recordingUrl, stamp } from './utils'
 import type { CallKind, CallRecord } from './utils'
+import { outcomeLabel } from './ai-types'
+import type { Interaction } from './ai-types'
 
-type Filter = 'all' | CallKind
+type Filter = 'all' | 'ai' | CallKind
 
 export function LeadTag({ score }: { score: string | null }) {
   if (!score || score === 'unknown') return null
@@ -16,13 +18,17 @@ export function LeadTag({ score }: { score: string | null }) {
 const PAGE = 50
 
 /** Calls as ledger rows: who, how it went (lamp and word), how long, when, with play and call back one tap away. */
-export default function CallsView({ calls, nameFor, playingId, onOpen, onPlay, onCallBack }: {
+export default function CallsView({ calls, nameFor, playingId, onOpen, onPlay, onCallBack, ai, onSeen }: {
   calls: CallRecord[]
   nameFor: (c: CallRecord) => string
   playingId: string | null
   onOpen: (c: CallRecord) => void
   onPlay: (c: CallRecord) => void
   onCallBack: (c: CallRecord) => void
+  /** What the assistant recorded for each AI-answered call, keyed by the call's id in this list. */
+  ai?: Map<string, Interaction>
+  /** Marks AI-answered calls as read (their ids in the assistant's own records). */
+  onSeen?: (interactionIds: string[]) => void
 }) {
   const [filter, setFilter] = useState<Filter>('all')
   const [search, setSearch] = useState('')
@@ -36,16 +42,18 @@ export default function CallsView({ calls, nameFor, playingId, onOpen, onPlay, o
   }), [calls, nameFor])
 
   const counts = useMemo(() => {
-    const m: Record<Filter, number> = { all: rows.length, missed: 0, incoming: 0, outgoing: 0 }
-    rows.forEach(r => { m[r.kind] += 1 })
+    const m: Record<Filter, number> = { all: rows.length, ai: 0, missed: 0, incoming: 0, outgoing: 0 }
+    rows.forEach(r => { m[r.kind] += 1; if (r.c.viaAi) m.ai += 1 })
     return m
   }, [rows])
+
+  const unseen = useMemo(() => rows.filter(r => r.c.viaAi && ai?.get(r.c.id) && !ai.get(r.c.id)?.seen_at).map(r => ai!.get(r.c.id)!.id), [rows, ai])
 
   const shown = useMemo(() => {
     const q = search.trim().toLowerCase()
     const qd = q.replace(/\D/g, '')
     return rows.filter(r => {
-      if (filter !== 'all' && r.kind !== filter) return false
+      if (filter === 'ai' ? !r.c.viaAi : filter !== 'all' && r.kind !== filter) return false
       if (!q) return true
       return r.title.toLowerCase().includes(q)
         || (qd.length >= 3 && r.number.replace(/\D/g, '').includes(qd))
@@ -56,8 +64,8 @@ export default function CallsView({ calls, nameFor, playingId, onOpen, onPlay, o
 
   const now = new Date()
   const filters: { key: Filter; label: string }[] = [
-    { key: 'all', label: 'All' }, { key: 'missed', label: 'Missed' }, { key: 'incoming', label: 'Incoming' }, { key: 'outgoing', label: 'Outgoing' },
-  ]
+    { key: 'all', label: 'All' }, { key: 'ai', label: 'AI answered' }, { key: 'missed', label: 'Missed' }, { key: 'incoming', label: 'Incoming' }, { key: 'outgoing', label: 'Outgoing' },
+  ].filter(f => f.key !== 'ai' || counts.ai > 0 || filter === 'ai') as { key: Filter; label: string }[]
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -75,18 +83,24 @@ export default function CallsView({ calls, nameFor, playingId, onOpen, onPlay, o
                 key={f.key} type="button" aria-pressed={on} onClick={() => { setFilter(f.key); setLimit(PAGE) }}
                 className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-full border px-3.5 text-[0.9375rem] font-bold transition-colors sm:min-h-[40px] ${on ? 'border-blue bg-blue/10 text-blue' : 'border-line bg-bg-card text-text-primary hover:bg-bg-hover'}`}
               >
-                {f.key !== 'all' && <span className={`lamp ${CALL_KIND_LAMP[f.key]}`} aria-hidden="true" style={{ boxShadow: 'none' }} />}
+                {f.key !== 'all' && f.key !== 'ai' && <span className={`lamp ${CALL_KIND_LAMP[f.key]}`} aria-hidden="true" style={{ boxShadow: 'none' }} />}
                 {f.label}
                 <span className="num font-normal opacity-80">{counts[f.key]}</span>
               </button>
             )
           })}
         </div>
+        {unseen.length > 0 && onSeen && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-bg-card px-4 py-2">
+            <span className="flex items-center gap-2 text-[0.9375rem]"><span className="lamp lamp-blue" aria-hidden="true" /><span className="font-bold">{unseen.length === 1 ? '1 AI-answered call' : `${unseen.length} AI-answered calls`}</span> not looked at yet</span>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => onSeen(unseen)}>Mark all as read</button>
+          </div>
+        )}
       </div>
 
       {shown.length === 0 ? (
         <div className="empty-state">
-          <p className="font-bold text-text-primary">{search.trim() ? <>No calls match &ldquo;{search.trim()}&rdquo;</> : filter === 'all' ? 'No calls yet' : `No ${filter} calls`}</p>
+          <p className="font-bold text-text-primary">{search.trim() ? <>No calls match &ldquo;{search.trim()}&rdquo;</> : filter === 'all' ? 'No calls yet' : filter === 'ai' ? 'No calls answered by the assistant' : `No ${filter} calls`}</p>
           <p className="mt-1">{calls.length === 0 ? 'Calls to and from your shop number show up here, with recordings and transcripts when you have them.' : 'Try fewer letters or a different filter.'}</p>
           {calls.length > 0 && <button className="btn btn-secondary mt-4" onClick={() => { setSearch(''); setFilter('all') }}>Show all calls</button>}
         </div>
@@ -101,6 +115,9 @@ export default function CallsView({ calls, nameFor, playingId, onOpen, onPlay, o
               const playing = playingId === c.id
               const hasText = !!c.transcript && c.transcript !== '[transcription_failed]'
               const when = stamp(c.start_time, now)
+              const rec2 = c.viaAi ? ai?.get(c.id) : undefined
+              const isNew = !!rec2 && !rec2.seen_at
+              const result = rec2 ? (rec2.needs_person && !rec2.needs_resolved_at ? 'Needs a person' : outcomeLabel(rec2.outcome)) : ''
               const extra = [kind === 'missed' ? '' : formatDuration(c.duration_secs), c.service_needed && c.service_needed !== 'unknown' ? c.service_needed : '', hasText ? 'Transcript' : ''].filter(Boolean)
               return (
                 <li key={c.id}>
@@ -116,7 +133,9 @@ export default function CallsView({ calls, nameFor, playingId, onOpen, onPlay, o
                           <span className={`lamp ${CALL_KIND_LAMP[kind]}`} aria-hidden="true" />
                           <span className={`font-bold ${CALL_KIND_TEXT[kind]}`}>{CALL_KIND_LABEL[kind]}</span>
                           <span>· {when}</span>
+                          {isNew && <span className="font-bold text-blue">· Unread</span>}
                         </span>
+                        {c.viaAi && <span className="ledger-sub block">AI assistant{result ? ` · ${result}` : ''}</span>}
                         {extra.length > 0 && <span className="ledger-sub block">{extra.join(' · ')}</span>}
                       </span>
                       {/* Wide layout */}
@@ -130,6 +149,8 @@ export default function CallsView({ calls, nameFor, playingId, onOpen, onPlay, o
                             <span className="ledger-title">{title}</span>
                             <LeadTag score={c.lead_score} />
                             {c.viaAi && <span className="tag tag-gray shrink-0">AI assistant</span>}
+                            {result && <span className={`tag shrink-0 ${rec2?.needs_person && !rec2.needs_resolved_at ? 'tag-red' : 'tag-gray'}`}>{result}</span>}
+                            {isNew && <span className="tag tag-amber shrink-0">Unread</span>}
                           </span>
                           <span className="ledger-sub block">
                             {[name ? phonePretty(number) : '', c.service_needed && c.service_needed !== 'unknown' ? c.service_needed : '', hasText ? 'Transcript saved' : ''].filter(Boolean).join(' · ') || ' '}

@@ -22,7 +22,9 @@ export function formatPhone(phone: string): string {
   return phone
 }
 
-export async function sendSMS(to: string, body: string, from?: string, options?: { apiKey?: string; messagingProfileId?: string; idempotencyKey?: string }) {
+export type SmsOptions = { apiKey?: string; messagingProfileId?: string; idempotencyKey?: string; mediaUrls?: string[] }
+
+export async function sendSMS(to: string, body: string, from?: string, options?: SmsOptions) {
   // Tenant-bound calls always use the shop's Telnyx credentials. The legacy
   // deployment-wide phone gateways remain available only to callers that do
   // not supply shop credentials (for backwards-compatible internal jobs).
@@ -37,7 +39,7 @@ export async function sendSMS(to: string, body: string, from?: string, options?:
 }
 
 // ── Telnyx (original behavior) ───────────────────────────────────────────────
-async function sendViaTelnyx(to: string, body: string, from?: string, options?: { apiKey?: string; messagingProfileId?: string; idempotencyKey?: string }) {
+async function sendViaTelnyx(to: string, body: string, from?: string, options?: SmsOptions) {
   // When a shop-specific options object is supplied, do not fall back to a
   // shared deployment credential for that shop.
   const apiKey = options ? options.apiKey : process.env.TELNYX_API_KEY
@@ -54,7 +56,10 @@ async function sendViaTelnyx(to: string, body: string, from?: string, options?: 
     body: JSON.stringify({
       from: fromNumber,
       to,
-      text: body,
+      // A picture with no words is allowed; the carrier needs the text field only when there is text.
+      ...(body ? { text: body } : {}),
+      // Pictures and video go out as a multimedia message (MMS). The links are one-time-token links on this app.
+      ...(options?.mediaUrls?.length ? { media_urls: options.mediaUrls.slice(0, 5), type: 'MMS' } : {}),
       messaging_profile_id: options ? options.messagingProfileId : process.env.TELNYX_MESSAGING_PROFILE_ID,
     }),
   })

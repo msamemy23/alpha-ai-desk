@@ -91,11 +91,9 @@ export async function GET(req: NextRequest) {
   // Every tenant-aware worker receives one explicit shop id. No worker may
   // silently fall back to the first shop or to global credentials.
   results.sync_calls = await callForEachShop('/api/telnyx/sync-calls?action=sync-all')
-  results.scan_competitors = await callForEachShop('/api/growth/scan-competitors', {
-    query: 'auto repair shop',
-    radius: 15000,
-  })
-  results.follow_ups = await callForEachShop('/api/growth/capture', { action: 'follow_up_pending' })
+  // Competitor and lead scans are no longer run for every shop every night. The owner turns on "Find local business
+  // leads" in Automations, which uses their own Google Maps and search accounts.
+  // Lead follow-ups are an automation now (system_automations below), with limits, quiet hours and a history.
 
   // These workers fan out internally because they own their per-shop schedule.
   results.custom_automations = await callApi('/api/automations', { action: 'check_due' })
