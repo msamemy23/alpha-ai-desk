@@ -24,7 +24,7 @@ export default function ConfirmSheet({
   return (
     <Sheet open={open} onClose={() => { if (!busy) onCancel() }} title={title}>
       <div className="text-[0.9375rem] leading-relaxed text-text-primary">{children}</div>
-      {error && <p role="alert" className="form-error !text-[0.875rem]">{error}</p>}
+      {error && <p role="alert" className="form-error">{error}</p>}
       <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
         <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={busy}>{cancelLabel}</button>
         <button type="button" className={`btn ${danger ? 'btn-danger' : 'btn-primary'}`} onClick={onConfirm} disabled={busy}>{busy ? busyLabel || 'Working…' : confirmLabel}</button>

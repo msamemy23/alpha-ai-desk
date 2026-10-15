@@ -187,7 +187,7 @@ button:disabled { cursor: not-allowed; }
   .btn-ghost { @apply bg-transparent text-text-primary hover:bg-bg-hover; }
   .btn-danger { @apply bg-bg-card text-red border-red/60 hover:bg-red/10; }
   .btn-success { @apply bg-green text-[rgb(var(--c-card))] hover:brightness-110; }
-  .btn-sm { @apply min-h-[36px] px-3 text-[0.8125rem] sm:min-h-[34px]; }
+  .btn-sm { @apply min-h-[44px] px-3 text-[0.875rem] sm:min-h-[36px]; }
   .btn-lg { @apply min-h-[52px] px-6 text-base; }
   .btn-icon { @apply inline-grid h-11 w-11 place-items-center rounded-md border border-transparent text-text-secondary hover:bg-bg-hover hover:text-text-primary sm:h-10 sm:w-10; }
 
@@ -195,9 +195,9 @@ button:disabled { cursor: not-allowed; }
   .form-input { @apply w-full min-h-[44px] rounded-md border border-[rgb(var(--c-line))] bg-bg-input px-3 py-2 text-base text-text-primary placeholder:text-text-muted focus:border-blue focus:outline-none focus:ring-2 focus:ring-blue/30 disabled:opacity-60 sm:min-h-[40px]; }
   .form-select { @apply form-input cursor-pointer pr-8; }
   .form-textarea { @apply form-input resize-y; }
-  .form-label { @apply mb-1.5 block text-[0.8125rem] font-bold text-text-secondary; }
-  .form-hint { @apply mt-1 text-[0.8125rem] text-text-muted; }
-  .form-error { @apply mt-1 text-[0.8125rem] font-bold text-red; }
+  .form-label { @apply mb-1.5 block text-[0.875rem] font-bold text-text-secondary; }
+  .form-hint { @apply mt-1 text-[0.875rem] text-text-secondary; }
+  .form-error { @apply mt-1 text-[0.875rem] font-bold text-red; }
 
   /* Pills. Always carry words, never only a colour. */
   .tag { @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-bold leading-5; }
@@ -424,8 +424,8 @@ a.rotag:hover { background: rgb(var(--c-hover)); }
 .btn-close {
   display: inline-grid;
   place-items: center;
-  width: 2.5rem;
-  height: 2.5rem;
+  width: 2.75rem;
+  height: 2.75rem;
   border-radius: 6px;
   border: 0;
   background: transparent;

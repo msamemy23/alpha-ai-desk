@@ -6,6 +6,7 @@ import { sendSMS, formatPhone } from '@/lib/telnyx'
 import { sendEmail } from '@/lib/email'
 import { createHash } from 'node:crypto'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { withOptOut } from '@/lib/growth-text'
 
 function escapeHtml(value: unknown) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char))
@@ -68,7 +69,7 @@ export async function POST(req: NextRequest) {
     for (const c of customers) {
       try {
         const name = (c.name as string || 'Valued Customer').split(' ')[0]
-        const msg = (template || getDefaultTemplate(type, shopName))
+        const msg = (template || getDefaultTemplate(type))
           .replace('{name}', name)
           .replace('{shopName}', shopName)
           .replace('{phone}', settings?.shop_phone || '')
@@ -79,13 +80,14 @@ export async function POST(req: NextRequest) {
 
         if (channel === 'sms' && c.phone) {
           const formatted = formatPhone(c.phone as string)
-          await sendSMS(formatted, msg, settings.telnyx_phone_number, { apiKey: settings.telnyx_api_key, messagingProfileId: settings.telnyx_messaging_profile_id || '', idempotencyKey: idempotencyKey([auth.shopId, 'cold-followup', String(c.id), msg]) })
+          const smsBody = withOptOut(msg)
+          await sendSMS(formatted, smsBody, settings.telnyx_phone_number, { apiKey: settings.telnyx_api_key, messagingProfileId: settings.telnyx_messaging_profile_id || '', idempotencyKey: idempotencyKey([auth.shopId, 'cold-followup', String(c.id), smsBody]) })
           const { error: messageError } = await db.from('messages').insert({
             shop_id: auth.shopId,
             direction: 'outbound', channel: 'sms',
             from_address: settings?.telnyx_phone_number,
             to_address: formatted,
-            body: msg, customer_id: c.id,
+            body: smsBody, customer_id: c.id,
             status: 'sent', read: true, ai_handled: true,
           })
           if (messageError) throw messageError
@@ -124,11 +126,11 @@ export async function POST(req: NextRequest) {
   }
 }
 
-function getDefaultTemplate(type: string, shopName: string): string {
+function getDefaultTemplate(type: string): string {
   const templates: Record<string, string> = {
-    follow_up_cold: `Hi {name}! It's been a while since we've seen you at {shopName}. We miss you! 🚗\n\nWe're running specials this week on oil changes, brakes, and inspections. Call us at {phone} or just reply here to book.\n\nSee you soon!`,
-    oil_change_reminder: `Hi {name}! Just a friendly reminder from {shopName} — it may be time for your oil change. 🛢️\n\nGive us a call at {phone} to schedule. Same-day appointments available!\n\n— {shopName}`,
-    custom: `Hi {name}, this is {shopName}. We wanted to reach out — call us at {phone} if you need anything!`,
+    follow_up_cold: `Hi {name}, it has been a while since we saw you at {shopName}. If your car is due for an oil change, brakes or an inspection, call us at {phone} or reply here to book a time.`,
+    oil_change_reminder: `Hi {name}, this is {shopName}. It may be time for your next oil change. Call us at {phone} or reply here and we will find you a time.`,
+    custom: `Hi {name}, this is {shopName}. Call us at {phone} if you need anything.`,
   }
   return templates[type] || templates.custom
 }

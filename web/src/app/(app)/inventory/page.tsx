@@ -6,9 +6,9 @@ import type { InvSort } from '@/lib/list-logic'
 import Icon from '@/components/Icon'
 import Sheet from '@/components/Sheet'
 import { EmptyBlock, ErrorCard, RowsSkeleton, SearchField, sentenceCase } from '@/components/ListKit'
-import ConfirmSheet from '@/components/inventory/ConfirmSheet'
-import FlashNotice from '@/components/inventory/FlashNotice'
-import type { Flash } from '@/components/inventory/FlashNotice'
+import ConfirmSheet from '@/components/forms/ConfirmSheet'
+import FlashNotice from '@/components/forms/FlashNotice'
+import type { Flash } from '@/components/forms/FlashNotice'
 import PartFormFields from '@/components/inventory/PartFormFields'
 import { PartList, PartTable } from '@/components/inventory/PartRows'
 import { CATEGORIES, emptyForm, toForm, toRow, validate } from '@/components/inventory/types'
@@ -314,7 +314,7 @@ export default function InventoryPage() {
         </>
       )}
 
-      <Sheet open={panel === 'form'} onClose={requestClose} title={editing === 'new' ? 'Add part' : 'Edit part'} wide>
+      <Sheet open={panel === 'form'} onClose={requestClose} title={editing === 'new' ? 'Add part' : 'Edit part'} wide dirty={dirty}>
         <PartFormFields
           form={form}
           setForm={setForm}

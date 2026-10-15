@@ -7,8 +7,8 @@ import { contactProblems, findDuplicates, isDirty, reasonOf } from '@/lib/list-l
 import Icon from '@/components/Icon'
 import Sheet from '@/components/Sheet'
 import { EmptyBlock, ErrorCard, FilterChips, RowsSkeleton, SearchField } from '@/components/ListKit'
-import FlashNotice from '@/components/inventory/FlashNotice'
-import type { Flash } from '@/components/inventory/FlashNotice'
+import FlashNotice from '@/components/forms/FlashNotice'
+import type { Flash } from '@/components/forms/FlashNotice'
 import SentimentMark from '@/components/customers/SentimentMark'
 import CustomerForm from '@/components/customers/CustomerForm'
 import CustomerDetail, { dialCustomer } from '@/components/customers/CustomerDetail'
@@ -443,7 +443,7 @@ function CustomersScreen() {
         </>
       )}
 
-      <Sheet open={sheet !== null} onClose={requestClose} title={sheetTitle} wide>
+      <Sheet open={sheet !== null} onClose={requestClose} title={sheetTitle} wide dirty={dirty}>
         <div ref={sheetBody} tabIndex={-1} className="outline-none">
           {confirm === 'discard' && (
             <div>

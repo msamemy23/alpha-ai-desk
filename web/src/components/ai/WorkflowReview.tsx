@@ -164,7 +164,7 @@ export function WorkflowReview({ approval, busy, onDecision }: { approval: Appro
         <p className="font-bold">Sources used for quoted prices</p>
         {approval.sources.map(source => <a key={source.url} className="block truncate text-blue underline-offset-2 hover:underline" href={source.url} target="_blank" rel="noreferrer">{source.label}: {source.url}</a>)}
       </div>}
-      <p className="mt-3 text-[0.8125rem] text-text-secondary">An email address and a customer record are not required.</p>
+      <p className="mt-3 text-[0.8125rem] text-text-secondary">An email address and a linked customer record are optional. You can add them after it is saved.</p>
     </> : <PayloadList payload={draft} />}
   </ApprovalFrame>
 }

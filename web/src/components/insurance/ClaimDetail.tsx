@@ -135,7 +135,7 @@ export default function ClaimDetail({ job, save, onBack, onAsk, onAddNote, onDel
               {statusBusy && <p className="mt-2 text-[0.875rem] text-text-secondary" role="status">Saving…</p>}
               {statusError && <p role="alert" className="form-error !text-[0.875rem]">{statusError}</p>}
             </div>
-            {job.status === 'Supplement' && <p className="mt-2 text-[0.875rem] text-text-secondary">On the Jobs board this repair order shows under New. Use the Supplement section below to track the request itself.</p>}
+            {job.status === 'Supplement' && <p className="mt-2 text-[0.875rem] text-text-secondary">On the Jobs board this repair order shows under Waiting, until the insurer answers. Use the Supplement section below to track the request itself.</p>}
           </Panel>
 
           <Panel title="Insurance and claim">

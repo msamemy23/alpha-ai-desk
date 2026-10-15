@@ -176,7 +176,7 @@ Return a JSON array where each object has ALL these fields:
   "phone": "their phone",
   "email": "their email if found",
   "address": "full address",
-  "city": "Houston",
+  "city": "the city of the address above",
   "website": "website or null",
   "owner_name": "owner/manager name from search data",
   "owner_title": "Owner/Manager/President",
@@ -234,10 +234,18 @@ export async function POST(req: NextRequest) {
     if (!auth) return unauthorized()
     const automationCheck = await validateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['lead_discovery'])
     if (!automationCheck.ok) return NextResponse.json({ ok: false, error: automationCheck.error }, { status: automationCheck.status })
-    const { city: rawCity = 'Houston TX', scan_type = 'both', categories } = body
-    const city = typeof rawCity === 'string' ? rawCity.trim().slice(0, 120) || 'Houston TX' : 'Houston TX'
+    const { city: rawCity, scan_type = 'both', categories } = body
     if (!['competitors', 'alpha_ai', 'both'].includes(scan_type)) return NextResponse.json({ error: 'Invalid scan_type' }, { status: 400 })
     const db = getServiceClient()
+    // Search near the place the caller named, else near the shop itself. Never a guessed city: a scheduled run for
+    // another shop must not quietly search Houston.
+    let city = typeof rawCity === 'string' ? rawCity.trim().slice(0, 120) : ''
+    if (!city) {
+      const { data: profile, error: profileError } = await db.from('shop_profiles').select('city_state_zip').eq('id', auth.shopId).maybeSingle()
+      if (profileError) throw profileError
+      city = typeof profile?.city_state_zip === 'string' ? profile.city_state_zip.trim().slice(0, 120) : ''
+    }
+    if (!city) return NextResponse.json({ error: 'Add your shop’s city in the setup guide first, so Alpha knows where to search.' }, { status: 400 })
     const { data: settings, error: settingsError } = await db.from('settings').select('ai_api_key,ai_base_url,ai_model,shop_name').eq('shop_id', auth.shopId).maybeSingle()
     if (settingsError) throw settingsError
     const shopName = typeof settings?.shop_name === 'string' && settings.shop_name.trim() ? settings.shop_name.trim().slice(0, 160) : 'this shop'

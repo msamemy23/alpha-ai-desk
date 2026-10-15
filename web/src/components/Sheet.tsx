@@ -8,10 +8,12 @@ import Icon from '@/components/Icon'
  * A bottom sheet on phones and a centered dialog on larger screens (the look
  * comes from .modal-overlay / .modal-box in globals.css). Closes on Escape or
  * a tap outside, locks page scroll while open, and returns focus afterward.
+ * While `dirty` is true (typed changes not saved) a tap outside does nothing, so a stray touch cannot throw the work away;
+ * Escape and the close button still call onClose, where the page asks before discarding.
  */
 export default function Sheet({
-  open, onClose, title, children, wide = false, hideTitle = false,
-}: { open: boolean; onClose: () => void; title: string; children: ReactNode; wide?: boolean; hideTitle?: boolean }) {
+  open, onClose, title, children, wide = false, hideTitle = false, dirty = false,
+}: { open: boolean; onClose: () => void; title: string; children: ReactNode; wide?: boolean; hideTitle?: boolean; dirty?: boolean }) {
   const boxRef = useRef<HTMLDivElement>(null)
   // Kept in a ref so a page that passes a new onClose on every render does not re-run the effect below,
   // which would pull focus out of whatever field the person is typing in.
@@ -35,7 +37,7 @@ export default function Sheet({
 
   if (!open) return null
   return (
-    <div className="modal-overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="modal-overlay" onMouseDown={e => { if (e.target === e.currentTarget && !dirty) onClose() }}>
       <div
         ref={boxRef}
         tabIndex={-1}

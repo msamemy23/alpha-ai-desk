@@ -4,9 +4,9 @@ import { getShopId, supabase } from '@/lib/supabase'
 import Icon from '@/components/Icon'
 import Sheet from '@/components/Sheet'
 import { EmptyBlock, ErrorCard, FilterChips, RowsSkeleton, SearchField, sentenceCase } from '@/components/ListKit'
-import ConfirmSheet from '@/components/inventory/ConfirmSheet'
-import FlashNotice from '@/components/inventory/FlashNotice'
-import type { Flash } from '@/components/inventory/FlashNotice'
+import ConfirmSheet from '@/components/forms/ConfirmSheet'
+import FlashNotice from '@/components/forms/FlashNotice'
+import type { Flash } from '@/components/forms/FlashNotice'
 import JobForm from '@/components/canned-jobs/JobForm'
 import InventoryPicker from '@/components/canned-jobs/InventoryPicker'
 import type { StockPart } from '@/components/canned-jobs/InventoryPicker'
@@ -318,7 +318,7 @@ export default function CannedJobsPage() {
         </>
       )}
 
-      <Sheet open={panel === 'form' || panel === 'pick'} onClose={() => { if (panel === 'pick') setPanel('form'); else requestClose() }} title={sheetTitle} wide>
+      <Sheet open={panel === 'form' || panel === 'pick'} onClose={() => { if (panel === 'pick') setPanel('form'); else requestClose() }} title={sheetTitle} wide dirty={dirty}>
         <div ref={dialogTop}>
           {panel === 'pick' ? (
             <InventoryPicker stock={stock} loading={stockLoading} error={stockError} onRetry={() => void loadStock()} onPick={pickPart} onBack={() => setPanel('form')} />

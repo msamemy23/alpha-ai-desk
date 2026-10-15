@@ -69,6 +69,19 @@ export function matches(pathname: string, item: NavItem): boolean {
   return hit(item.href) || (item.also?.some(hit) ?? false)
 }
 
+/**
+ * The one item that should look selected in the desktop rail, which lists every page. The most specific page wins, so
+ * Vehicles lights up on /vehicles instead of Customers and Vehicles together. Pages with no item of their own fall back to
+ * the item that lists them in `also`. The phone tab bar only shows PRIMARY, so it keeps using `matches`.
+ */
+export function activeHref(pathname: string): string | null {
+  const own = (i: NavItem) => pathname === i.href || pathname.startsWith(i.href + '/')
+  let best: NavItem | null = null
+  for (const i of ALL_ITEMS) if (own(i) && (!best || i.href.length > best.href.length)) best = i
+  if (best) return best.href
+  return ALL_ITEMS.find(i => matches(pathname, i))?.href ?? null
+}
+
 /** Page name for the header. Most specific match wins. */
 export function titleFor(pathname: string): string {
   const exact = ALL_ITEMS.find(i => pathname === i.href || pathname.startsWith(i.href + '/'))

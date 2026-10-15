@@ -71,7 +71,7 @@ export const STAGES: Stage[] = [
   { key: 'new', label: 'New', dropTo: 'New', statuses: ['New', 'Estimate Sent', 'Pending'], lamp: 'off', empty: 'Cars written up and not yet approved show here.' },
   { key: 'approved', label: 'Approved', dropTo: 'Approved', statuses: ['Approved'], lamp: 'off', empty: 'Approved work waiting for a tech shows here.' },
   { key: 'working', label: 'In progress', dropTo: 'In Progress', statuses: ['In Progress', 'In Repair'], lamp: 'blue', empty: 'Cars being worked on show here.' },
-  { key: 'waiting', label: 'Waiting', dropTo: 'Waiting on Parts', statuses: ['Waiting on Parts', 'Waiting on Customer'], lamp: 'amber', empty: 'Nothing is stuck waiting.' },
+  { key: 'waiting', label: 'Waiting', dropTo: 'Waiting on Parts', statuses: ['Waiting on Parts', 'Waiting on Customer', 'Supplement'], lamp: 'amber', empty: 'Nothing is stuck waiting.' },
   { key: 'ready', label: 'Ready for pickup', dropTo: 'Ready for Pickup', statuses: ['Completed', 'Ready for Pickup'], lamp: 'green', empty: 'Finished cars waiting for their owner show here.' },
   { key: 'done', label: 'Paid and closed', dropTo: 'Paid', statuses: ['Paid', 'Closed'], lamp: 'off', empty: 'Paid and closed jobs show here.' },
 ]
@@ -105,7 +105,8 @@ export function statusLamp(status: string): Lamp {
     case 'In Progress':
     case 'In Repair': return 'blue'
     case 'Waiting on Parts':
-    case 'Waiting on Customer': return 'amber'
+    case 'Waiting on Customer':
+    case 'Supplement': return 'amber'
     case 'Completed':
     case 'Ready for Pickup':
     case 'Paid': return 'green'
@@ -211,7 +212,8 @@ export function nextStep(j: Job, docs: JobDoc[]): NextStep | null {
     case 'In Repair': return { label: 'Ready for pickup', to: 'Ready for Pickup', icon: 'check' }
     case 'Estimate Sent': return { label: 'Customer approved', to: 'Approved', icon: 'check' }
     case 'Waiting on Parts':
-    case 'Waiting on Customer': return { label: 'Resume work', to: 'In Progress', icon: 'wrench' }
+    case 'Waiting on Customer':
+    case 'Supplement': return { label: 'Resume work', to: 'In Progress', icon: 'wrench' }
     case 'Completed':
     case 'Ready for Pickup': {
       const invoices = docs.filter(d => d.type === 'Invoice')

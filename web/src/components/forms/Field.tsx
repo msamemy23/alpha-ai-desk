@@ -17,9 +17,9 @@ export function Section({ title, children, action }: { title: string; children: 
 export function Field({ id, label, error, hint, children, className = '' }: { id: string; label: string; error?: string; hint?: string; children: ReactNode; className?: string }) {
   return (
     <div className={className}>
-      <label className="form-label !text-[0.875rem]" htmlFor={id}>{label}</label>
+      <label className="form-label" htmlFor={id}>{label}</label>
       {children}
-      {error ? <p id={`${id}-err`} className="form-error !text-[0.875rem]">{error}</p> : hint ? <p className="form-hint !text-[0.875rem] !text-text-secondary">{hint}</p> : null}
+      {error ? <p id={`${id}-err`} className="form-error">{error}</p> : hint ? <p className="form-hint">{hint}</p> : null}
     </div>
   )
 }

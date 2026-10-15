@@ -11,7 +11,7 @@ import PhoneWidget from '@/components/PhoneWidget'
 import Icon from '@/components/Icon'
 import Sheet from '@/components/Sheet'
 import SearchPanel from '@/components/shell/SearchPanel'
-import { PRIMARY, MORE_GROUPS, matches } from '@/components/shell/nav'
+import { PRIMARY, MORE_GROUPS, activeHref, matches } from '@/components/shell/nav'
 
 interface Notice { id: string; kind: 'text' | 'call'; title: string; body: string; when: string; href: string }
 interface ShopProfile { id?: string; shop_name: string; phone: string; address: string; city_state_zip: string }
@@ -27,6 +27,7 @@ const timeLabel = (iso: string) => {
 
 export default function AppLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname()
+  const railActive = activeHref(pathname)
   const [unread, setUnread] = useState(0)
   const [shop, setShop] = useState<ShopProfile | null>(null)
   const { logo } = useShopLogo()
@@ -125,7 +126,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           <ul className="space-y-0.5">
             {PRIMARY.map(item => (
               <li key={item.href}>
-                <Link href={item.href} className="rail-link" aria-current={matches(pathname, item) ? 'page' : undefined}>
+                <Link href={item.href} className="rail-link" aria-current={railActive === item.href ? 'page' : undefined}>
                   <Icon name={item.icon} className="h-5 w-5 shrink-0" />
                   <span className="flex-1">{item.label}</span>
                   {item.href === '/messages' && unread > 0 && (
@@ -141,7 +142,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
               <ul className="space-y-0.5">
                 {group.items.map(item => (
                   <li key={item.href}>
-                    <Link href={item.href} className="rail-link" aria-current={pathname === item.href || pathname.startsWith(item.href + '/') ? 'page' : undefined}>
+                    <Link href={item.href} className="rail-link" aria-current={railActive === item.href ? 'page' : undefined}>
                       <Icon name={item.icon} className="h-5 w-5 shrink-0" />
                       <span className="flex-1">{item.label}</span>
                     </Link>
