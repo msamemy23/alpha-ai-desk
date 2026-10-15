@@ -1,5 +1,6 @@
 ﻿'use client'
 import { useEffect, useState, useRef, useCallback, type MouseEvent as ReactMouseEvent } from 'react'
+import { useRouter } from 'next/navigation'
 import { getShopId, supabase } from '@/lib/supabase'
 import { addOpenAIOAuthHeaders } from '@/lib/openai-oauth-client'
 import { browserDestinationAnswer, toModelMessages } from '@/lib/ai/model-messages'
@@ -10,6 +11,8 @@ import { normalizeDocumentDraft } from '@/lib/ai/document-draft'
 import { WorkflowReview, ApprovalFrame, PayloadList } from '@/components/ai/WorkflowReview'
 import Icon from '@/components/Icon'
 import Sheet from '@/components/Sheet'
+import { renderChatMarkdown as renderMarkdown, chatPlainText, escapeHtml, safeUrl } from '@/components/ai-desk/markdown'
+import CopyButton from '@/components/ai-desk/CopyButton'
 import type { Approval, WorkflowReply } from '@/lib/ai/workflow/engine'
 import { verifyReadClaims, unverifiedReadMessage } from '@/lib/ai/read-verification'
 import { calculateDocumentTotals, getLaborFlatAmount, laborLineTotal, partLineTotal } from '@/lib/document-money'
@@ -43,17 +46,6 @@ const CONNECTOR_SERVICE_INFO: Record<string, { icon: string; name: string; descr
 const CONNECTOR_ORDER = ['facebook', 'instagram', 'google_business', 'google_calendar']
 
 interface ConnectorRecord { id: string; service: string; enabled: boolean; page_id: string | null; metadata: Record<string, unknown>; updated_at: string }
-
-interface VoiceCallState {
-  callId: string
-  to: string
-  task: string
-  status: 'dialing' | 'active' | 'ended' | 'error'
-  summary?: string
-  transcript?: Array<{speaker: string; text: string}>
-  duration?: number
-  recording_url?: string
-}
 
 type BrowserPanelStep = {action:string;screenshot?:string;screenshotUrl?:string;url:string;title:string}
 type PrefetchedManual = {
@@ -119,12 +111,42 @@ const FAILURE_PREFIXES: [RegExp, string][] = [
   [/^Image analysis failed:\s*/i, 'Alpha could not read that photo'],
   [/^Desktop action failed:\s*/i, 'The desktop action failed'],
 ]
-function describeFailure(content: string): { title: string; detail: string } | null {
+// A request the owner stopped is saved as an ordinary assistant message too, so it
+// survives in history and shows as "Stopped" with a way to ask again.
+const STOP_NOTICE = 'Stopped by you. Nothing was sent or changed.'
+const STOP_PATTERN = /^Stopped by you\.\s*/i
+const ABORT_PATTERN = /AbortError|signal is aborted|user aborted a request|operation was aborted/i
+
+type FailureKind = 'failed' | 'stopped'
+function describeFailure(content: string): { title: string; detail: string; kind: FailureKind } | null {
+  if (STOP_PATTERN.test(content)) return { title: 'You stopped this request', detail: content.replace(STOP_PATTERN, '').trim(), kind: 'stopped' }
   for (const [pattern, title] of FAILURE_PREFIXES) {
-    if (pattern.test(content)) return { title, detail: content.replace(pattern, '').replace(/\s*Try again\.\s*$/i, '').replace(/\.{2,}$/, '.').trim() }
+    if (pattern.test(content)) {
+      const detail = content.replace(pattern, '').replace(/\s*Try again\.\s*$/i, '').replace(/\.{2,}$/, '.').trim()
+      // A request cut off by Stop can surface as a raw "aborted" error from deep inside a lookup.
+      if (ABORT_PATTERN.test(detail)) return { title: 'You stopped this request', detail: 'Nothing was sent or changed.', kind: 'stopped' }
+      return { title, detail, kind: 'failed' }
+    }
   }
   return null
 }
+
+// Browsers report a dropped connection as "Failed to fetch" or "Load failed". Say what
+// it means and what to do instead.
+function friendlyError(error: unknown, fallback = 'Something went wrong'): string {
+  const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  if (!raw) return fallback
+  if (/failed to fetch|load failed|networkerror|network request failed|network connection/i.test(raw)) {
+    return 'Alpha could not reach the server. Check your signal, then tap Retry.'
+  }
+  if (/timed out|timeouterror/i.test(raw)) return 'Alpha waited too long for an answer. Tap Retry.'
+  return raw
+}
+
+// Some steps end by asking the owner a question, or because the owner pressed Stop.
+// Neither is a failure.
+const NEEDS_INFO_PATTERN = /^Need the vehicle first/i
+const STOPPED_STEP_PATTERN = /^Stopped by you/i
 
 function humanizeTool(tool: string) {
   const base = tool.replace(/^action\./, '').replace(/^kapture\./, 'browser ')
@@ -135,6 +157,16 @@ function humanizeTool(tool: string) {
 // Tool events are stored newest first and a tool logs "running" and then "ok" or
 // "error" as separate entries. Return this turn's events oldest first, with each
 // finished tool replacing its own "running" entry.
+function mergeToolRuns(chronological: ToolActivity[]): ToolActivity[] {
+  const rows: ToolActivity[] = []
+  for (const event of chronological) {
+    if (event.status === 'running') { rows.push(event); continue }
+    const at = rows.map(row => `${row.tool}:${row.status}`).lastIndexOf(`${event.tool}:running`)
+    if (at >= 0) rows[at] = event
+    else rows.push(event)
+  }
+  return rows
+}
 function turnTools(events: ToolActivity[], loading: boolean): ToolActivity[] {
   const turn: ToolActivity[] = []
   for (const event of events) {
@@ -142,14 +174,7 @@ function turnTools(events: ToolActivity[], loading: boolean): ToolActivity[] {
     turn.push(event)
   }
   turn.reverse()
-  const rows: ToolActivity[] = []
-  for (const event of turn) {
-    if (event.status === 'running') { rows.push(event); continue }
-    const at = rows.map(row => `${row.tool}:${row.status}`).lastIndexOf(`${event.tool}:running`)
-    if (at >= 0) rows[at] = event
-    else rows.push(event)
-  }
-  return rows.filter(row => loading || row.status !== 'running')
+  return mergeToolRuns(turn).filter(row => loading || row.status !== 'running')
 }
 
 function ToolRows({ events, label = 'What Alpha did', showTime = false }: { events: ToolActivity[]; label?: string; showTime?: boolean }) {
@@ -157,15 +182,17 @@ function ToolRows({ events, label = 'What Alpha did', showTime = false }: { even
   return (
     <ul className="ledger max-w-[70ch]" aria-label={label}>
       {events.map((event, index) => {
-        const lamp = event.status === 'ok' ? 'lamp-green' : event.status === 'error' ? 'lamp-red' : 'lamp-amber'
-        const word = event.status === 'ok' ? 'Done' : event.status === 'error' ? 'Failed' : 'Running'
-        const tone = event.status === 'ok' ? 'text-green' : event.status === 'error' ? 'text-red' : 'text-amber'
+        const needsInfo = event.status === 'error' && NEEDS_INFO_PATTERN.test(event.detail)
+        const stopped = event.status === 'error' && STOPPED_STEP_PATTERN.test(event.detail)
+        const lamp = event.status === 'ok' ? 'lamp-green' : stopped ? 'lamp-off' : needsInfo ? 'lamp-amber' : event.status === 'error' ? 'lamp-red' : 'lamp-amber'
+        const word = event.status === 'ok' ? 'Done' : stopped ? 'Stopped' : needsInfo ? 'Needs info' : event.status === 'error' ? 'Failed' : 'Running'
+        const tone = event.status === 'ok' ? 'text-green' : stopped ? 'text-text-secondary' : needsInfo ? 'text-amber' : event.status === 'error' ? 'text-red' : 'text-amber'
         return (
           <li key={`${event.time}-${event.tool}-${index}`} className="flex items-start gap-3 px-1 py-2.5">
             <span className={`lamp ${lamp} mt-1.5`} aria-hidden="true" />
             <span className="min-w-0 flex-1">
               <span className="block text-[0.9375rem] font-bold leading-snug">{humanizeTool(event.tool)}</span>
-              {event.detail && <span className="block break-words text-[0.875rem] leading-snug text-text-secondary">{event.agent}{event.skill ? `, ${event.skill}` : ''}: {event.detail}</span>}
+              {event.detail && <span className="block break-words text-[0.875rem] leading-snug text-text-secondary">{event.detail}</span>}
             </span>
             <span className="shrink-0 text-right">
               <span className={`block text-[0.875rem] font-bold ${tone}`}>{word}</span>
@@ -178,19 +205,20 @@ function ToolRows({ events, label = 'What Alpha did', showTime = false }: { even
   )
 }
 
-function FailureRow({ title, detail, onRetry, busy }: { title: string; detail: string; onRetry?: () => void; busy: boolean }) {
+function FailureRow({ title, detail, kind = 'failed', onRetry, busy }: { title: string; detail: string; kind?: FailureKind; onRetry?: () => void; busy: boolean }) {
+  const stopped = kind === 'stopped'
   return (
-    <div role="alert" className="max-w-[40rem] rounded-lg border border-line border-l-[6px] border-l-[rgb(var(--lamp-red))] bg-bg-card p-4">
+    <div role={stopped ? 'status' : 'alert'} className={`max-w-[40rem] rounded-lg border border-line border-l-[6px] ${stopped ? 'border-l-[rgb(var(--lamp-off))]' : 'border-l-[rgb(var(--lamp-red))]'} bg-bg-card p-4`}>
       <div className="flex items-center gap-2 font-bold">
-        <span className="lamp lamp-red" aria-hidden="true" />
-        Failed
+        <span className={`lamp ${stopped ? 'lamp-off' : 'lamp-red'}`} aria-hidden="true" />
+        {stopped ? 'Stopped' : 'Failed'}
       </div>
       <p className="mt-1 text-[1.0625rem] font-bold leading-snug">{title}</p>
       {detail && <p className="mt-1 break-words text-[0.9375rem] text-text-secondary">{detail}</p>}
       {onRetry && (
         <button type="button" className="btn btn-secondary mt-3 w-full sm:w-auto" onClick={onRetry} disabled={busy}>
           <Icon name="refresh" className="h-5 w-5" />
-          Retry
+          {stopped ? 'Ask again' : 'Retry'}
         </button>
       )}
       {!onRetry && <p className="mt-1 text-[0.9375rem] text-text-secondary">Ask again in your own words to try once more.</p>}
@@ -741,7 +769,6 @@ function formatRepairSearchText(query: string, data: any) {
   return `${view.mechanicSummary}\n\n${view.checkHeading}:\n${checks || '- I need the exact vehicle/engine before giving a confident answer.'}\n\n${view.primaryActionLabel}:\n${links || '- Tell me the engine or VIN and I will narrow this down.'}\n\nNext: ${view.action}`
 }
 
-const REPAIR_ANCHOR_TERMS = /\b(?:repair|diagnos|diagnostic|dtc|code|manual|procedure|removal|remove|install|replace|diagram|wiring|schematic|pinout|spec|torque|tsb|recall|symptom|check engine|misfire|brake|brakes|rotor|pad|caliper|control arm|strut|shock|coolant|radiator|thermostat|reservoir|alternator|starter|sensor|oxygen|catalytic|converter|suspension|steering|airbag|adas|hybrid|ev)\b/i
 const REPAIR_FOLLOWUP_TERMS = /\b(?:order|firing\s+order|cylinder\s+order|cylinder\s+layout|plug\s+wire|coil|fuse|fuses|fuse\s+box|relay|relays|location|where|diagram|wiring|schematic|pinout|removal|remove|install|replace|replacement|procedure|steps?|spec|torque|test|testing|check|checks?)\b/i
 // Explicit "go online" intent. Repair answers stay manual-only unless this is present.
 const ONLINE_INTENT = /\b(online|search\s+(?:the\s+)?web|web\s+search|google\s+(?:it|this|that)|look\s+(?:it\s+up|up)\s+online|check\s+online|search\s+online|on\s+the\s+internet|the\s+internet)\b/i
@@ -757,10 +784,6 @@ If the manual section is empty or thin, STILL answer from your own expertise. Ne
 NEVER claim abilities you don't have: you cannot "snap a pic", open a physical manual, email photos, or browse for him. If he asked for a diagram and MANUAL INFO shows none was found, say plainly "the manual doesn't show a diagram on this page" and tell him he can say "look online" to pull one from the web — nothing more.
 
 No labeled sections, no headers, no bulleted form — just talk to him. The REAL manual steps and images may be rendered below your reply — when they are, talk him through the highlights and gotchas naturally (don't re-list every step; they can see them). Only say a diagram is below when the DIAGRAM STATUS says one is actually displayed — if the book has no drawing, say that straight and offer to look online. When it fits, end by offering the obvious next move. Keep it short and useful — a few sentences, not an essay.`
-
-function hasRepairAnchor(value: string) {
-  return REPAIR_ANCHOR_TERMS.test(value) || REPAIR_FOLLOWUP_TERMS.test(value) || /\b(?:19|20)?\d{2}\b/.test(value) || /\b[PCBU][0-9A-F]{4}\b/i.test(value) || /\b[A-HJ-NPR-Z0-9]{17}\b/i.test(value)
-}
 
 function isFreshRepairVehicleOrCode(value: string) {
   return /\b(?:19|20)?\d{2}\b/.test(value) || /\b[PCBU][0-9A-F]{4}\b/i.test(value) || /\b[A-HJ-NPR-Z0-9]{17}\b/i.test(value)
@@ -884,6 +907,7 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
           <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
             {content.images.map(img => (
               <a key={img.url} href={proxiedImage(img.url)} target="_blank" rel="noreferrer" style={imageMat} className="block overflow-hidden rounded-md border border-border hover:border-blue">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={proxiedImage(img.url)} alt={img.alt} loading="lazy" className="h-auto w-full object-contain" />
               </a>
             ))}
@@ -897,6 +921,7 @@ function RepairResultCard({ result, onAskNext }: { result: RepairChatResult; onA
           <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
             {(result.webImages || []).map(img => (
               <a key={img.url} href={img.source_url || img.url} target="_blank" rel="noreferrer" style={imageMat} className="block overflow-hidden rounded-md border border-border hover:border-blue">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={img.thumbnail || img.url}
                   alt={img.title || 'Web reference picture'}
@@ -1063,6 +1088,7 @@ function BrowserPanel({ steps }: { steps: BrowserPanelStep[] }) {
 }
 
 export default function AIPage() {
+  const router = useRouter()
   const [messages, setMessages] = useState<ChatMessage[]>([
     { role: 'assistant', content: INTRO_GREETING }
   ])
@@ -1077,6 +1103,24 @@ export default function AIPage() {
   const [historyStatus, setHistoryStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [showOptions, setShowOptions] = useState(false)
   const [showAttach, setShowAttach] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
+  const [stopping, setStopping] = useState(false)
+  // Every request in a turn shares the turn's signal, so Stop can cancel it. A timeout
+  // joins it where the request has one.
+  const runSignal = useCallback((timeoutMs?: number): AbortSignal | undefined => {
+    const run = abortRef.current?.signal
+    if (!timeoutMs) return run
+    const timeout = AbortSignal.timeout(timeoutMs)
+    if (!run) return timeout
+    return typeof AbortSignal.any === 'function' ? AbortSignal.any([run, timeout]) : timeout
+  }, [])
+  const stopRun = useCallback(() => {
+    if (!abortRef.current || abortRef.current.signal.aborted) return
+    setStopping(true)
+    abortRef.current.abort()
+    try { window.speechSynthesis?.cancel() } catch { /* nothing is speaking */ }
+  }, [])
+  useEffect(() => { if (!loading) setStopping(false) }, [loading])
   const [historySaveError, setHistorySaveError] = useState<HistoryEntry | null>(null)
 const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:string;subject?:string;customerId?:string;customerName?:string;idempotencyKey:string}|null>(null)
   const [pendingAction, setPendingAction] = useState<{ action: string; payload: Record<string, unknown>; kind?: 'connector' | 'automation' | 'browser'; endpoint?: string; idempotencyKey?: string } | null>(null)
@@ -1086,20 +1130,16 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   const workflowActiveRef = useRef(false)
   const chatSessionIdRef = useRef(`chat-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   const historyWriteRef = useRef<Promise<void>>(Promise.resolve())
-  const [voiceCall, setVoiceCall] = useState<VoiceCallState | null>(null)
   const [voiceActive, setVoiceActive] = useState(false)
-  const [voiceSpeaking, setVoiceSpeaking] = useState(false)
+  const [, setVoiceSpeaking] = useState(false)
   const [voiceStatus, setVoiceStatus] = useState<'idle'|'listening'|'thinking'|'speaking'>('idle')
    
   const voiceRecRef = useRef<any>(null)
   const voiceSynthRef = useRef<SpeechSynthesisUtterance | null>(null)
   const bestVoiceRef = useRef<SpeechSynthesisVoice | null>(null)
-  const voicePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const voiceActiveRef = useRef(false)
-  const [jumpingIn, setJumpingIn] = useState(false)
-  const [jumpInPhone, setJumpInPhone] = useState('')
-  const [showJumpIn, setShowJumpIn] = useState(false)
   const [sendingSms, setSendingSms] = useState(false)
+  const [smsError, setSmsError] = useState('')
   const [toast, setToast] = useState('')
   const [thinkingElapsed, setThinkingElapsed] = useState(0)
   const thinkingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -1118,6 +1158,8 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   const addToolEvent = useCallback((event: Omit<ToolActivity, 'time'>) => {
     setToolTimeline(prev => [{
       ...event,
+      // A request cut off by Stop reports a raw "aborted" error. Say what happened instead.
+      detail: ABORT_PATTERN.test(event.detail) ? 'Stopped by you' : event.detail,
       time: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' }),
     }, ...prev].slice(0, 12))
   }, [])
@@ -1346,13 +1388,66 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     loadContext()
   }, [])
 
+  // Keep what the owner is reading in view. A new message jumps to the bottom. A new
+  // answer starts at its first line, so a long one is read from the top instead of the
+  // end. If the owner has scrolled up to read something, nothing moves; a "Latest"
+  // button appears instead.
+  const stickRef = useRef(true)
+  const messageCountRef = useRef(1)
+  const [showJump, setShowJump] = useState(false)
+  const lastScrollTopRef = useRef(0)
+  const updateJump = useCallback(() => {
+    const scroller = bottomRef.current?.parentElement
+    if (!scroller) return
+    const gap = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+    // Near the bottom means "follow new text". Only moving up and away from the bottom means
+    // the owner is reading something else. New text growing the page changes neither.
+    if (gap < 96) stickRef.current = true
+    else if (scroller.scrollTop < lastScrollTopRef.current - 2) stickRef.current = false
+    lastScrollTopRef.current = scroller.scrollTop
+    setShowJump(gap > 200)
+  }, [])
+  // Jumps, never glides. A glide reports itself as "scrolled away" part-way, which would
+  // stop the chat following new text.
+  const scrollChatTo = useCallback((top: number) => {
+    bottomRef.current?.parentElement?.scrollTo({ top })
+  }, [])
   useEffect(() => {
     const scroller = bottomRef.current?.parentElement
     if (!scroller) return
+    const previousCount = messageCountRef.current
+    messageCountRef.current = messages.length
     // A new or empty chat starts at the top so the intro and suggestions are all in view.
-    if (messages.length <= 1) scroller.scrollTo({ top: 0 })
-    else scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' })
-  }, [messages, status, workflowApproval, pendingAction, pendingSms])
+    if (messages.length <= 1) { scroller.scrollTo({ top: 0 }); stickRef.current = true; setShowJump(false); return }
+    const last = messages[messages.length - 1]
+    if (last.role === 'user') stickRef.current = true
+    if (!stickRef.current) { updateJump(); return }
+    if (messages.length === previousCount + 1 && last.role === 'assistant') {
+      const answer = scroller.querySelector<HTMLElement>(`[data-msg="${messages.length - 1}"]`)
+      if (answer) {
+        const top = answer.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+        if (scroller.scrollHeight - top > scroller.clientHeight) { scrollChatTo(Math.max(0, top - 12)); return }
+      }
+    }
+    scrollChatTo(scroller.scrollHeight)
+  }, [messages, status, workflowApproval, pendingAction, pendingSms, smsError, scrollChatTo, updateJump])
+
+  // A half-typed message survives a refresh, a lost signal or a trip to another screen.
+  const draftReadyRef = useRef(false)
+  useEffect(() => {
+    if (!draftReadyRef.current) return
+    try {
+      if (input) localStorage.setItem('alpha_ask_draft', input)
+      else localStorage.removeItem('alpha_ask_draft')
+    } catch { /* private mode: the draft simply is not kept */ }
+  }, [input])
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('alpha_ask_draft')
+      if (saved) setInput(current => current || saved)
+    } catch { /* nothing saved */ }
+    draftReadyRef.current = true
+  }, [])
 
   // Phones keep the layout the same size when the on-screen keyboard opens and cover the
   // bottom of the page instead. Shrink the chat by the covered part so the composer
@@ -1530,7 +1625,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     }
   })
 
-  const runRepairLookup = useCallback(async (text: string, userMsg: ChatMessage, forceRepairMode = false) => {
+  const runRepairLookup = useCallback(async (text: string, userMsg: ChatMessage) => {
     const previousRepairContext = lastRepairContextRef.current
     const isFollowup = !!previousRepairContext && !isFreshRepairVehicleOrCode(text) && isLikelyRepairFollowup(text)
     const lookupQuery = buildRepairLookupQuery(text, previousRepairContext)
@@ -1539,9 +1634,12 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     const skillName = SKILLS.find(skill => skill.id === 'source_backed_repair_research')?.name || 'Source-backed repair research'
 
     const finish = (assistantMsg: ChatMessage) => {
+      // If the owner pressed Stop, say so instead of showing a half-finished lookup.
+      const stopped = abortRef.current?.signal.aborted === true
+      if (stopped) assistantMsg = { role: 'assistant', content: STOP_NOTICE }
       setMessages(prev => [...prev, assistantMsg])
       saveToHistory([...messages, userMsg, assistantMsg])
-      speak(assistantMsg.content)
+      if (!stopped) speak(assistantMsg.content)
       return true
     }
 
@@ -1572,7 +1670,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         method: 'POST',
         headers: await getAuthJsonHeaders(),
         body: JSON.stringify({ query: lookupQuery, vehicle: fallbackVehicle }),
-        signal: AbortSignal.timeout(60000),
+        signal: runSignal(60000),
       })
       const rd = await rr.json().catch(() => ({}))
       if (rr.ok && rd?.ok && rd.data) {
@@ -1600,7 +1698,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
               method: 'POST',
               headers: await getAuthJsonHeaders(),
               body: JSON.stringify({ url: bestStart.url, query: lookupQuery }),
-              signal: AbortSignal.timeout(45000),
+              signal: runSignal(45000),
             })
             const mj = await mr.json().catch(() => ({}))
             if (mr.ok && mj?.ok && mj.data) {
@@ -1625,7 +1723,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
           setStatus('No factory drawing — pulling pictures from the web...')
           try {
             const imgQuery = [vehicleForAnswer !== 'Vehicle not fully identified' ? vehicleForAnswer : '', lookupQuery, 'diagram'].filter(Boolean).join(' ')
-            const ir = await fetch(`/api/ai-search?q=${encodeURIComponent(imgQuery)}`, { headers: await getAuthJsonHeaders(), signal: AbortSignal.timeout(20000) })
+            const ir = await fetch(`/api/ai-search?q=${encodeURIComponent(imgQuery)}`, { headers: await getAuthJsonHeaders(), signal: runSignal(20000) })
             const idata = await ir.json().catch(() => ({}))
              
             const imgs: any[] = Array.isArray(idata?.images) ? idata.images : Array.isArray(idata?.data?.images) ? idata.data.images : []
@@ -1644,7 +1742,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         if (wantsOnline) {
           setStatus('Adding web sources...')
           try {
-            const wr = await fetch(`/api/ai-search?q=${encodeURIComponent(lookupQuery)}`, { headers: await getAuthJsonHeaders(), signal: AbortSignal.timeout(20000) })
+            const wr = await fetch(`/api/ai-search?q=${encodeURIComponent(lookupQuery)}`, { headers: await getAuthJsonHeaders(), signal: runSignal(20000) })
             const wd = await wr.json().catch(() => ({}))
              
             const results: any[] = Array.isArray(wd?.results) ? wd.results : Array.isArray(wd?.data?.results) ? wd.data.results : []
@@ -1682,6 +1780,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
               max_tokens: 700,
               temperature: 0.4,
             }),
+            signal: runSignal(60000),
           })
           const sd = await synth.json().catch(() => ({}))
           const out = sd.choices?.[0]?.message?.content?.trim()
@@ -1697,8 +1796,8 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         content: `Repair lookup failed: ${rd?.error || 'Unknown error'}. Try year, make, model, engine, and the exact component, symptom, diagram, or DTC.`,
       })
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown repair lookup error'
-      addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'error', detail: message })
+      const message = friendlyError(err, 'Unknown repair lookup error').replace(/\.+$/, '')
+      addToolEvent({ agent: agentName, skill: skillName, tool: 'repairSearch', status: 'error', detail: abortRef.current?.signal.aborted ? 'Stopped by you' : message })
       return finish({
         role: 'assistant',
         content: `Repair lookup failed: ${message}. Try the Repair page with year, make, model, engine, and the exact component, symptom, diagram, or DTC.`,
@@ -1706,7 +1805,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     } finally {
       setStatus('')
     }
-  }, [addToolEvent, messages, saveToHistory, speak])
+  }, [addToolEvent, messages, runSignal, saveToHistory, speak])
 
   const runDirectDesktopCommand = useCallback(async (text: string, userMsg: ChatMessage) => {
     if (!features.desktopTools || !isDesktop || typeof window === 'undefined') return false
@@ -1839,7 +1938,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
           method: 'POST',
           headers: await getAuthJsonHeaders(),
           body: JSON.stringify({ query: text }),
-          signal: AbortSignal.timeout(60000),
+          signal: runSignal(60000),
         })
         const rd = await rr.json().catch(() => ({}))
         if (rr.ok && rd?.ok && rd.data) {
@@ -1875,7 +1974,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
           method: 'POST',
           headers: await getAuthJsonHeaders(),
           body: JSON.stringify({ query: partsQuery }),
-          signal: AbortSignal.timeout(45000),
+          signal: runSignal(45000),
         })
         const pd = await pr.json().catch(() => ({}))
         if (pr.ok && pd?.ok && pd.data) {
@@ -1885,7 +1984,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         }
         addToolEvent({ agent: agentName, skill: skillName, tool: 'partsLookup', status: 'error', detail: pd?.error || 'Exact prices unavailable' })
 
-        const search = await fetch(`/api/ai-search?q=${encodeURIComponent(partsQuery)}`, { signal: AbortSignal.timeout(20000) })
+        const search = await fetch(`/api/ai-search?q=${encodeURIComponent(partsQuery)}`, { signal: runSignal(20000) })
         const searchData = await search.json().catch(() => ({}))
         const links = Array.isArray(searchData?.results)
           ? searchData.results.slice(0, 6).map((item: { title?: string; url?: string; snippet?: string }, index: number) => (
@@ -1971,13 +2070,16 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     }
 
     return false
-  }, [addToolEvent, features.desktopTools, isDesktop, messages, saveToHistory, speak])
+  }, [addToolEvent, features.desktopTools, isDesktop, messages, runSignal, saveToHistory, speak])
 
   const send = useCallback(async (overrideInput?: string) => {
     const text = (overrideInput || input).trim()
     if (!text || loading) return
     if (!overrideInput) setInput('')
     setLoading(true)
+    // One controller per turn: the Stop button cancels whatever request is in flight.
+    const controller = new AbortController()
+    abortRef.current = controller
     // Build message content - include attached file if any
     let fullContent = text
     let attachImageUrl: string | undefined
@@ -2001,7 +2103,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       const pending = pendingRepairQueryRef.current
       pendingRepairQueryRef.current = null
       if (looksLikeVehicle) {
-        await runRepairLookup(`${pending} ${text}`.trim(), userMsg, false)
+        await runRepairLookup(`${pending} ${text}`.trim(), userMsg)
         setLoading(false)
         setStatus('')
         return
@@ -2033,7 +2135,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     })
 
     if (repairOnlyMode || decision.intent === 'repair_lookup') {
-      await runRepairLookup(text, userMsg, repairOnlyMode)
+      await runRepairLookup(text, userMsg)
       setLoading(false)
       setStatus('')
       return
@@ -2062,7 +2164,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       addToolEvent({ agent: routeAgent, skill: routeSkill, tool: 'call', status: 'error', detail: 'Blocked until call confirmation' })
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: `I can call ${phone}${instructions ? ` and ask: ${instructions}` : ''}, but calls require confirmation before I dial.`,
+        content: `I can call ${phone}${instructions ? ` and ask: ${instructions}` : ''}, but calls require confirmation before I dial, and I cannot place one from this chat yet. Nothing was dialed. Use the phone in the app to make this call yourself.`,
       }])
       setLoading(false)
       setStatus('')
@@ -2077,44 +2179,17 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     try {
       await agentLoop(history2, features, decision)
     } catch (err) {
-      const errText = err instanceof Error ? err.message : 'Something went wrong'
-      setMessages(prev => [...prev, { role: 'assistant', content: `Ran into an issue: ${errText}. Try again.` }])
+      if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+        setMessages(prev => [...prev, { role: 'assistant', content: STOP_NOTICE }])
+      } else {
+        const errText = friendlyError(err).replace(/\.+$/, '')
+        setMessages(prev => [...prev, { role: 'assistant', content: `Ran into an issue: ${errText}. Try again.` }])
+      }
     }
     setLoading(false)
     setStatus('')
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [input, loading, messages, shopContext, attachedFile, features, repairOnlyMode, runRepairLookup, runDirectDesktopCommand, addToolEvent])
-
-  // Poll for voice call status/summary
-  const startVoicePoll = useCallback((callId: string) => {
-    if (voicePollRef.current) clearInterval(voicePollRef.current)
-    voicePollRef.current = setInterval(async () => {
-      try {
-        const r = await fetch(`/api/call-summary/${callId}`, { headers: await getAuthJsonHeaders() })
-        const d = await r.json()
-        if (d.ok) {
-          setVoiceCall(prev => prev ? {
-            ...prev,
-            status:        d.status,
-            summary:       d.summary,
-            transcript:    d.transcript,
-            duration:      d.duration,
-            recording_url: d.recording_url || prev.recording_url,
-          } : null)
-          if (d.status === 'ended') {
-            if (voicePollRef.current) clearInterval(voicePollRef.current)
-            // Add summary to chat
-            const summaryMsg: ChatMessage = {
-              role: 'assistant',
-              content: '',
-              html: renderVoiceSummary(d)
-            }
-            setMessages(prev => [...prev, summaryMsg])
-          }
-        }
-      } catch { /* ignore poll errors */ }
-    }, 3000)
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep sendRef current
   useEffect(() => { sendRef.current = send }, [send])
@@ -2122,6 +2197,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   // Feature 12: Send image to AI
   const sendImage = async (file: File) => {
     setLoading(true)
+    abortRef.current = new AbortController()
     const reader = new FileReader()
     reader.onload = async () => {
       const base64 = reader.result as string
@@ -2144,7 +2220,8 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
               ]}
             ],
             max_tokens: 1500, temperature: 0.7
-          })
+          }),
+          signal: runSignal(),
         })
         const data = await res.json().catch(() => ({}))
         if (!res.ok || data.error) throw new Error(getAIErrorMessage(data, `Image analysis failed (${res.status})`))
@@ -2154,8 +2231,12 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
         speak(raw)
         saveToHistory([...hist, assistantMsg])
       } catch (err) {
-        const errText = err instanceof Error ? err.message : 'Try a different model or check your API key.'
-        setMessages(prev => [...prev, { role: 'assistant', content: `Image analysis failed: ${errText}` }])
+        if (abortRef.current?.signal.aborted) {
+          setMessages(prev => [...prev, { role: 'assistant', content: STOP_NOTICE }])
+        } else {
+          const errText = friendlyError(err, 'Try again in a moment.')
+          setMessages(prev => [...prev, { role: 'assistant', content: `Image analysis failed: ${errText}` }])
+        }
       }
       setLoading(false); setStatus('')
     }
@@ -2180,7 +2261,8 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
       if (!response.ok) throw new Error(getAIErrorMessage(result))
       acceptWorkflowReply(result)
     } catch (error) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `No confirmed result was received. The review is retained; retry checks the same operation. ${error instanceof Error ? error.message : ''}` }])
+      const detail = friendlyError(error, '').replace(/\.+$/, '')
+      setMessages(prev => [...prev, { role: 'assistant', content: `Alpha did not get a confirmed result back${detail ? `: ${detail}` : ''}. The review is still open below. Tap the button again to check the same operation. It will not run twice.` }])
     } finally { setConfirmingAction(false) }
   }
 
@@ -2192,12 +2274,12 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     const immediateCommunication = /\b(?:send|text|sms|email|call|dial)\b/i.test(latestText) && !/\b(?:invoice|estimate|follow.?up|schedule|customer)\b/i.test(latestText)
     const shopWorkflowRequest = /\b(?:invoice|estimate|receipt|customer|appointment|inventory|job|staff|follow.?up)\b/i.test(latestText)
     if (workflowActiveRef.current || shopWorkflowRequest || (!specializedRequest && !immediateCommunication)) {
-      setStatus('Working with your saved task…')
+      setStatus('Working on it…')
       const sessionId = chatSessionIdRef.current
       const previous = workflowRequestRef.current
       const request = previous?.sessionId === sessionId && previous.message === latestText ? previous : { sessionId, message: latestText, turnId: crypto.randomUUID() }
       workflowRequestRef.current = request
-      const response = await fetch('/api/ai-workflow', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify(request) })
+      const response = await fetch('/api/ai-workflow', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify(request), signal: runSignal() })
       const result = await response.json()
       if (!response.ok) throw new Error(getAIErrorMessage(result))
       workflowRequestRef.current = null
@@ -2287,7 +2369,8 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           frequency_penalty: 0.6,
           presence_penalty: 0.4,
             ...(activeFeatures.thinking ? { reasoning: { effort: 'high' } } : {}),
-        })
+        }),
+        signal: runSignal(),
       })
 
       const data = await res.json().catch(() => ({}))
@@ -2449,7 +2532,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             method: 'POST',
             headers: await getAuthJsonHeaders(),
             body: JSON.stringify({ query: parsed.query, vehicle: parsed.vehicle }),
-            signal: AbortSignal.timeout(60000),
+            signal: runSignal(60000),
           })
           const rd = await rr.json().catch(() => ({}))
           if (rr.ok && rd?.ok && rd.data) {
@@ -2484,7 +2567,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             method: 'POST',
             headers: await getAuthJsonHeaders(),
             body: JSON.stringify({ query: parsed.query }),
-            signal: AbortSignal.timeout(45000),
+            signal: runSignal(45000),
           })
           const pd = await pr.json()
           if (pd.ok && pd.data) {
@@ -2519,7 +2602,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       }
         let searchResult = 'No results'
         try {
-          const r = await fetch(`/api/ai-search?q=${encodeURIComponent(parsed.query as string)}`, { headers: await getAuthJsonHeaders(), signal: AbortSignal.timeout(20000) })
+          const r = await fetch(`/api/ai-search?q=${encodeURIComponent(parsed.query as string)}`, { headers: await getAuthJsonHeaders(), signal: runSignal(20000) })
           const d = await r.json().catch(() => ({}))
           if (!r.ok || d.ok === false || d.search_succeeded !== true) {
             searchResult = d.notice || d.error || 'No verified search results were returned.'
@@ -2711,7 +2794,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       if (parsed.tool === 'aiVoiceCall') {
         const assistantMsg: ChatMessage = {
           role: 'assistant',
-          content: `I can place the AI voice call to ${parsed.to || 'that number'}, but calls require confirmation. Confirm the number and task before I dial.`,
+          content: `I can place the AI voice call to ${parsed.to || 'that number'}, but calls require confirmation, and I cannot place one from this chat yet. Nothing was dialed. Use the phone in the app to make this call yourself.`,
         }
         addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'aiVoiceCall', status: 'error', detail: 'Blocked until call confirmation' })
         setMessages(prev => [...prev, assistantMsg])
@@ -2732,12 +2815,15 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
 
       // Navigate
       if (parsed.tool === 'navigate') {
-        const v = parsed.view as string; if (v.startsWith('http')) { window.open(v, '_blank') } else { window.location.href = `/${v}` }
+        const v = String(parsed.view || '')
+        if (v.startsWith('http')) window.open(v, '_blank', 'noopener,noreferrer')
+        else if (/^[a-z0-9][a-z0-9/_-]*$/i.test(v)) router.push(`/${v}`)
         return
       }
 
       // Message - show draft confirmation card
       if (parsed.tool === 'message') {
+        setSmsError('')
         setPendingSms({
           to: parsed.to as string,
           body: parsed.body as string,
@@ -3226,52 +3312,13 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
     saveToHistory([...history, finalMsg])
   }
 
-  // Voice call status card
-  const renderVoiceCallCard = (state: VoiceCallState): string => {
-    const lamp = state.status === 'active' ? 'lamp-green' : state.status === 'error' ? 'lamp-red' : state.status === 'ended' ? 'lamp-off' : 'lamp-amber'
-    const statusLabel = state.status === 'dialing' ? 'Dialing' : state.status === 'active' ? 'Live' : state.status === 'ended' ? 'Ended' : 'Failed'
-    return `<div class="voice-call-card w-full max-w-[40rem] rounded-lg border border-line bg-bg-card p-4 text-[0.9375rem]">
-      <div class="flex items-center gap-2 font-bold"><span class="lamp ${lamp}" aria-hidden="true"></span>AI voice call<span class="ml-auto">${escapeHtml(statusLabel)}</span></div>
-      <p class="mt-2 text-text-secondary">Calling ${escapeHtml(String(state.to || ''))}</p>
-      <p class="mt-1">${escapeHtml(String(state.task || ''))}</p>
-      <p class="mt-2 text-[0.8125rem] text-text-secondary">Alpha is handling the conversation. A summary appears here when the call ends.</p>
-    </div>`
-  }
-
-  // Voice call summary card (shown after call ends)
-  const renderVoiceSummary = (d: {summary?: string; transcript?: Array<{speaker:string;text:string}>; duration?: number; to?: string; recording_url?: string}): string => {
-    const lines = (d.transcript || []).map(t =>
-      `<p class="mt-1.5 first:mt-0"><span class="font-bold">${t.speaker==='ai'?'Alpha':'Person'}:</span> ${escapeHtml(String(t.text || ''))}</p>`
-    ).join('')
-    const dur = d.duration ? `${Math.floor(d.duration/60)}m ${d.duration%60}s` : ''
-    // Use the proxy route so the recording is always accessible (S3 presigned URLs expire in 10min)
-    const proxyUrl = d.recording_url
-      ? `/api/recording-proxy?url=${encodeURIComponent(d.recording_url)}`
-      : ''
-    const escapedProxyUrl = escapeHtml(proxyUrl)
-    const recordingBlock = proxyUrl
-      ? `<div class="mt-3">
-          <p class="mb-1 text-[0.8125rem] font-bold text-text-secondary">Call recording</p>
-          <audio controls class="w-full">
-            <source src="${escapedProxyUrl}" type="audio/mpeg">
-            Your browser does not support audio playback.
-          </audio>
-          <a href="${escapedProxyUrl}" download="call-recording.mp3" class="mt-1 inline-flex min-h-[44px] items-center font-bold text-blue underline underline-offset-4">Download MP3</a>
-        </div>`
-      : ''
-    return `<div class="w-full max-w-[40rem] rounded-lg border border-line bg-bg-card p-4 text-[0.9375rem]">
-      <div class="flex items-center gap-2 font-bold"><span class="lamp lamp-off" aria-hidden="true"></span>AI call summary<span class="num ml-auto text-text-secondary">${dur}</span></div>
-      ${recordingBlock}
-      ${d.summary ? `<div class="mt-3 whitespace-pre-wrap rounded-md bg-bg-base px-3 py-2.5 text-base leading-relaxed">${escapeHtml(String(d.summary))}</div>` : ''}
-      ${lines ? `<details class="mt-3"><summary class="min-h-[44px] cursor-pointer py-2 font-bold text-blue">Full transcript</summary><div class="mt-1 rounded-md bg-bg-base px-3 py-2.5">${lines}</div></details>` : ''}
-    </div>`
-  }
-
   // Send SMS/Email
   const confirmSendSms = async () => {
     if (!pendingSms) return
     setSendingSms(true)
+    setSmsError('')
     let closeDraft = false
+    const channelLabel = pendingSms.channel === 'email' ? 'Email' : 'Text'
     try {
       const headers = await getAuthJsonHeaders()
       if ((pendingSms.channel || 'sms') === 'sms') headers['Idempotency-Key'] = pendingSms.idempotencyKey
@@ -3288,25 +3335,24 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           ...(pendingSms.channel === 'sms' ? { idempotency_key: pendingSms.idempotencyKey } : {}),
         })
       })
-      const channelLabel = pendingSms.channel === 'email' ? 'Email' : 'SMS'
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}))
-        const errMsg = errData.error || 'Send failed'
-        setMessages(prev => [...prev, { role: 'assistant', content: `Failed to send ${channelLabel}: ${errMsg}` }])
-        showToast(`Failed to send ${channelLabel}: ${errMsg}`)
+        const errMsg = typeof errData.error === 'string' && errData.error ? errData.error : 'The message service did not accept it.'
+        // The draft stays open on screen, so the error sits on the draft where the owner is looking.
+        setSmsError(`${channelLabel} not sent. ${errMsg} Nothing reached ${pendingSms.customerName || 'the recipient'}. Check the details, then tap send again.`)
       } else {
         const result = await res.clone().json().catch(() => ({})) as { message_record_saved?: boolean; audit_error?: string }
         if (result.message_record_saved === false) {
           setMessages(prev => [...prev, { role: 'assistant', content: `${channelLabel} was accepted, but its local record still needs repair. Keep this draft open and retry it; the provider will not be called again.` }])
           showToast(`${channelLabel} sent; local record needs repair`)
         } else {
-          setMessages(prev => [...prev, { role: 'assistant', content: `${channelLabel} sent to ${pendingSms.to}` }])
-          showToast(result.audit_error ? `${channelLabel} sent; audit will retry automatically` : `${channelLabel} sent successfully!`)
+          setMessages(prev => [...prev, { role: 'assistant', content: `${channelLabel} sent to ${pendingSms.customerName ? `${pendingSms.customerName}, ` : ''}${pendingSms.to}.` }])
+          showToast(result.audit_error ? `${channelLabel} sent; audit will retry automatically` : `${channelLabel} sent`)
           closeDraft = true
         }
       }
     } catch (e) {
-      showToast('Failed to send message: ' + (e instanceof Error ? e.message : 'Unknown error'))
+      setSmsError(`${channelLabel} may not have been sent. ${friendlyError(e, 'The connection dropped.')} Check Inbox before you send it again.`)
     }
     if (closeDraft) setPendingSms(null)
     setSendingSms(false)
@@ -3359,17 +3405,17 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       if (!succeeded) {
         const message = data.error || 'Action failed'
         addToolEvent({ agent: 'Alpha AI', tool: `action.${pendingAction.action}`, status: 'error', detail: message })
-        setMessages(prev => [...prev, { role: 'assistant', content: `I did not complete ${pendingAction.action}: ${message}` }])
+        setMessages(prev => [...prev, { role: 'assistant', content: `I did not complete this step (${humanizeTool(pendingAction.action).toLowerCase()}): ${message}` }])
       } else {
         const detail = data.message || data.data?.message || (data.executed === false
           ? 'A proposal was created; no external action was executed.'
           : mode === 'browser' ? 'The listed browser steps completed. Reached: ' + String(data.title || '') + ' — ' + String(data.url || '') + '. ' + (data.notice || '') : 'Confirmed action completed')
         addToolEvent({ agent: 'Alpha AI', tool: `action.${pendingAction.action}`, status: 'ok', detail })
-        setMessages(prev => [...prev, { role: 'assistant', content: `${pendingAction.action}: ${detail}` }])
+        setMessages(prev => [...prev, { role: 'assistant', content: `${humanizeTool(pendingAction.action)}: ${detail}` }])
         closeDraft = true
       }
     } catch (error) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `I did not complete ${pendingAction.action}: ${error instanceof Error ? error.message : 'Unknown error'}` }])
+      setMessages(prev => [...prev, { role: 'assistant', content: `I did not complete this step (${humanizeTool(pendingAction.action).toLowerCase()}): ${friendlyError(error, 'The connection dropped.')} Nothing is confirmed. Check before you try again.` }])
     } finally {
       if (closeDraft) setPendingAction(null)
       setConfirmingAction(false)
@@ -3426,8 +3472,8 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           <div class="display mt-2 text-[1.25rem] font-bold leading-snug">${escapeHtml(docType)} ${escapeHtml(String(docNum))} for ${escapeHtml(String(normalized.customer || 'the customer'))}</div>
           <p class="mt-1 text-text-secondary">Want to send it now? Nothing is sent until you tap a button.</p>
           <div class="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-            ${email ? `<button type="button" data-ai-action="send-saved-doc" data-doc-id="${escapeHtml(String(documentId))}" data-channel="email" data-to="${escapeHtml(email)}" class="btn btn-primary w-full sm:w-auto">Email to ${escapeHtml(email)}</button>` : ''}
-            ${phone ? `<button type="button" data-ai-action="send-saved-doc" data-doc-id="${escapeHtml(String(documentId))}" data-channel="sms" data-to="${escapeHtml(phone)}" class="btn btn-secondary w-full sm:w-auto">Text to ${escapeHtml(phone)}</button>` : ''}
+            ${email ? `<button type="button" data-ai-action="send-saved-doc" data-doc-id="${escapeHtml(String(documentId))}" data-channel="email" data-to="${escapeHtml(email)}" class="btn btn-primary w-full sm:w-auto">Email ${escapeHtml(docType.toLowerCase())} to ${escapeHtml(email)}</button>` : ''}
+            ${phone ? `<button type="button" data-ai-action="send-saved-doc" data-doc-id="${escapeHtml(String(documentId))}" data-channel="sms" data-to="${escapeHtml(phone)}" class="btn btn-secondary w-full sm:w-auto">Text ${escapeHtml(docType.toLowerCase())} to ${escapeHtml(phone)}</button>` : ''}
             <button type="button" data-ai-action="dismiss-card" class="btn btn-ghost w-full sm:w-auto">Not now</button>
           </div>
         </div>`
@@ -3435,23 +3481,6 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       }
       return true
     } catch (error) { showToast(error instanceof Error ? error.message : 'Failed to save document'); return false }
-  }
-
-  const escapeHtml = (value: string): string => value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-
-  const safeUrl = (value: string): string => {
-    try {
-      const url = new URL(value, window.location.origin)
-      if (!['http:', 'https:'].includes(url.protocol)) return '#'
-      return escapeHtml(url.href)
-    } catch {
-      return '#'
-    }
   }
 
   const encodeProposalPayload = (value: unknown): string => {
@@ -3467,71 +3496,6 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
     const binary = atob(padded)
     const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
     return JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>
-  }
-
-  // Render a small safe markdown subset for chat messages: paragraphs, lists, headings,
-  // simple tables, bold, inline code, links and images. All text is escaped first, so
-  // model or provider output can never add markup of its own.
-  const renderInline = (escaped: string): string => escaped
-    // YouTube embeds: [YouTube](embed_url) or bare embed URLs
-    .replace(/(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([\w-]{11})/g, (_m, id) => `<div style="margin:8px 0;border-radius:12px;overflow:hidden;max-width:480px"><iframe width="100%" height="270" src="https://www.youtube.com/embed/${id}" frameborder="0" allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture" allowfullscreen style="border-radius:12px"></iframe></div>`)
-    // Images: ![alt](url)
-    .replace(/!\[([^\]]*)]\(([^)]+)\)/g, (_m, alt, url) => `<img src="${safeUrl(String(url).replace(/&amp;/g, '&'))}" alt="${escapeHtml(alt)}" class="rounded-lg max-w-full sm:max-w-[300px] max-h-[300px] object-cover my-1 inline-block" />`)
-    // Links: [text](url)
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, url) => `<a href="${safeUrl(String(url).replace(/&amp;/g, '&'))}" target="_blank" rel="noopener noreferrer" class="font-bold text-blue underline underline-offset-4">${escapeHtml(label)}</a>`)
-    // Bold: **text**
-    .replace(/\*\*([^*]+)\*\*/g, '<strong class="font-bold">$1</strong>')
-    // Inline code: `text`
-    .replace(/`([^`]+)`/g, '<code class="rounded bg-text-primary/[0.08] px-1 py-0.5 text-[0.9em]">$1</code>')
-
-  const renderMarkdown = (text: string): string => {
-    const lines = escapeHtml(text).split('\n')
-    const out: string[] = []
-    let paragraph: string[] = []
-    let list: { tag: 'ul' | 'ol'; items: string[]; start: number } | null = null
-    const flushParagraph = () => {
-      if (paragraph.length) out.push(`<p class="mt-3 first:mt-0">${paragraph.map(renderInline).join('<br />')}</p>`)
-      paragraph = []
-    }
-    const flushList = () => {
-      if (list) {
-        const style = list.tag === 'ul' ? 'list-disc' : 'list-decimal'
-        const start = list.tag === 'ol' && list.start > 1 ? ` start="${list.start}"` : ''
-        out.push(`<${list.tag}${start} class="mt-3 first:mt-0 ${style} space-y-1.5 pl-6">${list.items.map(item => `<li class="pl-1">${renderInline(item)}</li>`).join('')}</${list.tag}>`)
-      }
-      list = null
-    }
-    const cells = (row: string) => row.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim())
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]
-      if (!line.trim()) { flushParagraph(); flushList(); continue }
-      const heading = line.match(/^\s{0,3}#{1,6}\s+(.*)$/)
-      if (heading) { flushParagraph(); flushList(); out.push(`<h3 class="mt-4 first:mt-0 font-bold text-[1.0625rem] leading-snug">${renderInline(heading[1])}</h3>`); continue }
-      if (line.trim().startsWith('|') && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[i + 1])) {
-        flushParagraph(); flushList()
-        const head = cells(line)
-        const rows: string[][] = []
-        i += 2
-        while (i < lines.length && lines[i].trim().startsWith('|')) { rows.push(cells(lines[i])); i++ }
-        i--
-        out.push(`<div class="mt-3 first:mt-0 overflow-x-auto rounded-lg border border-border"><table class="w-full text-[0.9375rem]"><thead><tr>${head.map(cell => `<th class="whitespace-nowrap border-b border-line px-3 py-2 text-left text-[0.8125rem] font-bold text-text-secondary">${renderInline(cell)}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr>${head.map((_, c) => `<td class="border-b border-border px-3 py-2 align-top">${renderInline(row[c] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`)
-        continue
-      }
-      const bullet = line.match(/^\s*[-*•]\s+(.*)$/)
-      const numbered = line.match(/^\s*(\d{1,3})[.)]\s+(.*)$/)
-      if (bullet || numbered) {
-        flushParagraph()
-        const tag = bullet ? 'ul' : 'ol'
-        if (list && list.tag !== tag) flushList()
-        if (!list) list = { tag, items: [], start: numbered ? Number(numbered[1]) : 1 }
-        list.items.push(bullet ? bullet[1] : numbered![2])
-        continue
-      }
-      flushList()
-      paragraph.push(line)
-    }
-    flushParagraph(); flushList()
-    return out.join('')
   }
 
   const renderProposal = (parsed: Record<string, unknown>, userText = ''): string => {
@@ -3599,10 +3563,11 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         return
       }
       if (action === 'edit-proposal') {
+        // Start the change in the message box so it is typed on the real keyboard, not a pop-up.
         const parsed = normalizeDocumentDraft(decodeProposalPayload(element.dataset.payload || ''))
         const docType = String(parsed.type || 'Estimate')
-        const editPrompt = window.prompt(`What would you like to change on this ${docType}?`)
-        if (editPrompt) sendRef.current?.(`Edit the ${docType} for ${parsed.customer || 'the customer'}: ${editPrompt}`)
+        setInput(`Edit the ${docType} for ${parsed.customer || 'the customer'}: `)
+        setTimeout(() => composerRef.current?.focus(), 0)
         return
       }
       if (action === 'send-saved-doc') {
@@ -3610,17 +3575,35 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         const to = element.dataset.to || ''
         const documentId = element.dataset.docId || ''
         if (!documentId || !to) throw new Error('Document recipient is missing')
-        const res = await fetch('/api/send-document', {
-          method: 'POST',
-          headers: await getAuthJsonHeaders(),
-          body: JSON.stringify({ documentId, channel, [channel === 'sms' ? 'phone' : 'email']: to }),
-        })
-        const data = await res.json().catch(() => ({}))
-        if (!res.ok || data.error) throw new Error(data.error || 'Send failed')
-        showToast(`${channel === 'email' ? 'Email' : 'SMS'} sent to ${to}`)
+        // One tap sends one message. Every send button on the card locks while one is sending,
+        // so a double tap can never fire the email and the text together. The button that
+        // sent stays locked; the other one is free again afterwards.
+        if (!(element instanceof HTMLButtonElement) || element.disabled || element.dataset.sent) return
+        const card = element.closest('.proposal-card')
+        const sendButtons = card ? Array.from(card.querySelectorAll<HTMLButtonElement>('button[data-ai-action="send-saved-doc"]')) : [element]
+        const sentLabel = element.textContent
+        element.style.minWidth = `${element.offsetWidth}px`
+        sendButtons.forEach(button => { button.disabled = true })
+        element.textContent = 'Sending…'
+        let sent = false
+        try {
+          const res = await fetch('/api/send-document', {
+            method: 'POST',
+            headers: await getAuthJsonHeaders(),
+            body: JSON.stringify({ documentId, channel, [channel === 'sms' ? 'phone' : 'email']: to }),
+          })
+          const data = await res.json().catch(() => ({}))
+          if (!res.ok || data.error) throw new Error(data.error || 'Send failed')
+          sent = true
+          element.dataset.sent = 'true'
+          showToast(`${channel === 'email' ? 'Email' : 'Text'} sent to ${to}`)
+        } finally {
+          element.textContent = sent ? (channel === 'email' ? 'Emailed' : 'Texted') : sentLabel
+          sendButtons.forEach(button => { button.disabled = Boolean(button.dataset.sent) })
+        }
       }
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'The card action failed')
+      showToast(friendlyError(error, 'That did not work.'))
     }
   }
 
@@ -3684,23 +3667,26 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
   }
 
   const deleteConversation = async (entryId: string) => {
-    if (!confirm('Delete this conversation?')) return
+    if (!confirm('Delete this chat? This cannot be undone.')) return
     try {
       const res = await fetch(`/api/ai-chat-history?sessionId=${encodeURIComponent(entryId)}`, { method: 'DELETE', headers: await getAuthJsonHeaders() })
       if (!res.ok) throw new Error('Delete failed')
       setHistory(prev => prev.filter(h => h.id !== entryId))
-      showToast('Conversation deleted')
-    } catch { showToast('Conversation could not be deleted') }
+      showToast('Chat deleted')
+      // Deleting the chat that is open starts a fresh one, so it is not quietly saved again.
+      if (entryId === chatSessionIdRef.current) startNewChat()
+    } catch { showToast('Chat could not be deleted. Check your connection and try again.') }
   }
 
   const deleteAllConversations = async () => {
-    if (!confirm('Delete ALL chat history?')) return
+    if (!confirm('Delete all saved chats? This cannot be undone.')) return
     try {
       const res = await fetch('/api/ai-chat-history?all=true', { method: 'DELETE', headers: await getAuthJsonHeaders() })
       if (!res.ok) throw new Error('Delete failed')
       setHistory([])
-      showToast('All history deleted')
-    } catch { showToast('Chat history could not be deleted') }
+      showToast('All chats deleted')
+      startNewChat()
+    } catch { showToast('Chats could not be deleted. Check your connection and try again.') }
   }
 
   const groupHistoryByDate = () => {
@@ -3728,16 +3714,14 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
     { icon: 'parts', title: 'Find a part spec', prompt: '2016 Cadillac Escalade front lower control arm specs' },
   ] : [
     { icon: 'doc', title: 'Write an estimate', prompt: 'Build me an estimate for front brakes on a 2019 Toyota Camry' },
-    { icon: 'dollar', title: 'Find who owes you money', prompt: "Who hasn't paid in over 30 days?" },
-    { icon: 'send', title: 'Text a customer', prompt: 'Draft a follow-up text for customers with unpaid invoices' },
-    { icon: 'customers', title: 'Win back customers', prompt: "Who hasn't been in for 90+ days?" },
+    { icon: 'dollar', title: 'Who owes you money', prompt: "Who hasn't paid in over 30 days?" },
+    { icon: 'send', title: 'Text a customer their car is ready', prompt: 'Text a customer that their car is ready for pickup' },
     { icon: 'wrench', title: 'See open jobs', prompt: 'What jobs are open right now?' },
+    { icon: 'customers', title: 'Win back customers', prompt: "Who hasn't been in for 90+ days?" },
     { icon: 'growth', title: 'Check this month', prompt: 'How much revenue this month?' },
   ]
 
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const activeAgent = routeDecision ? AGENTS.find(agent => agent.id === routeDecision.agentId) : null
-  const activeSkills = routeDecision ? routeDecision.skillIds.map(id => SKILLS.find(skill => skill.id === id)?.name || id) : []
 
   const busy = loading || confirmingAction || sendingSms
   const closeHistory = useCallback(() => setShowHistory(false), [])
@@ -3764,6 +3748,14 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
     setShowHistory(false)
   }
 
+  // A turn can be asked again when the message before it was typed text, not a photo.
+  const canRetryAt = (index: number) => {
+    for (let i = index - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') return !messages[i].imageUrl
+    }
+    return false
+  }
+
   // Retry a failed turn: drop it, then send the same message again. The workflow keeps
   // its request id, so a retry checks the same operation instead of repeating it.
   const retryFailed = (index: number) => {
@@ -3788,10 +3780,20 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
   }
 
   const turnRows = turnTools(toolTimeline, loading).slice(-5)
-  const lastTool = toolTimeline[0]
-  const showStrip = loading || toolTimeline.length > 0
-  const stripLamp = loading ? 'lamp-amber' : lastTool?.status === 'error' ? 'lamp-red' : 'lamp-green'
-  const stripWord = loading ? (status || 'Working…') : lastTool?.status === 'error' ? 'Last step failed' : 'Ready'
+  // Routing is Alpha's own bookkeeping. The strip only appears when there are real steps to show.
+  const realTools = toolTimeline.filter(event => event.tool !== 'agentRouter')
+  // The strip describes this turn only, so an old lookup never sits beside a newer answer.
+  const thisTurnTools: ToolActivity[] = []
+  for (const event of toolTimeline) {
+    if (event.tool === 'agentRouter') break
+    thisTurnTools.push(event)
+  }
+  const lastTool = thisTurnTools[0]
+  const lastNeedsInfo = lastTool?.status === 'error' && NEEDS_INFO_PATTERN.test(lastTool.detail)
+  const lastStopped = lastTool?.status === 'error' && STOPPED_STEP_PATTERN.test(lastTool.detail)
+  const showStrip = thisTurnTools.length > 0
+  const stripLamp = loading || lastNeedsInfo ? 'lamp-amber' : lastStopped ? 'lamp-off' : lastTool?.status === 'error' ? 'lamp-red' : 'lamp-green'
+  const stripWord = loading ? (status || 'Working…') : lastNeedsInfo ? 'Waiting for your answer' : lastStopped ? 'Stopped' : lastTool?.status === 'error' ? 'Last step failed' : 'Last step done'
   const voiceWord = voiceStatus === 'listening' ? 'Listening. Go ahead and talk.' : voiceStatus === 'thinking' ? 'Thinking' : voiceStatus === 'speaking' ? 'Speaking' : 'Ready. Tap the mic to talk.'
   const voiceLamp = voiceStatus === 'listening' ? 'lamp-green' : voiceStatus === 'thinking' ? 'lamp-amber' : voiceStatus === 'speaking' ? 'lamp-blue' : 'lamp-off'
   const rowWord = 'text-[0.8125rem] font-bold text-text-secondary'
@@ -3809,13 +3811,13 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             <p className="hidden truncate text-[0.875rem] text-text-secondary sm:block">Ask a question, or tell Alpha what to do.</p>
           </div>
           {/* Feature 5: History button */}
-          <button type="button" disabled={busy} onClick={() => setShowHistory(true)} className="btn btn-secondary px-3">
+          <button type="button" disabled={busy} onClick={() => setShowHistory(true)} className="btn btn-secondary px-3" aria-label="History">
             <Icon name="clock" className="h-5 w-5" />
-            History
+            <span className="max-[359px]:hidden">History</span>
           </button>
-          <button type="button" disabled={busy} onClick={startNewChat} className="btn btn-secondary px-3">
+          <button type="button" disabled={busy} onClick={startNewChat} className="btn btn-secondary px-3" aria-label="New chat">
             <Icon name="plus" className="h-5 w-5" />
-            New chat
+            <span className="max-[359px]:hidden">New chat</span>
           </button>
         </div>
       </header>
@@ -3863,42 +3865,25 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             </button>
             {showActivity && (
               <div id="chat-activity" className="max-h-[40dvh] overflow-y-auto border-t border-border pb-3 pt-3">
-                <dl className="grid grid-cols-3 gap-3 text-[0.9375rem]">
-                  <div className="min-w-0">
-                    <dt className={rowWord}>Handled by</dt>
-                    <dd className="truncate font-bold">{activeAgent?.name || 'Router Agent'}</dd>
-                  </div>
-                  <div className="min-w-0">
-                    <dt className={rowWord}>Skill</dt>
-                    <dd className="truncate font-bold">{activeSkills[0] || 'General routing'}</dd>
-                  </div>
-                  <div className="min-w-0">
-                    <dt className={rowWord}>Request type</dt>
-                    <dd className="truncate font-bold">{routeDecision ? `${routeDecision.intent} (${Math.round(routeDecision.confidence * 100)}%)` : 'Waiting'}</dd>
-                  </div>
-                </dl>
-                {(isDesktop || routeDecision?.requiresConfirmation || routeDecision?.requiresToolResult || routeDecision?.reasons?.length) ? (
-                  <div className="mt-3 flex flex-wrap gap-1.5">
+                {(isDesktop || routeDecision?.requiresConfirmation) ? (
+                  <div className="flex flex-wrap gap-1.5">
                     {isDesktop && <span className="tag tag-gray">{features.desktopTools ? 'Desktop tools on' : 'Desktop tools off'}</span>}
                     {routeDecision?.requiresConfirmation && <span className="tag tag-amber">Asks before acting</span>}
-                    {routeDecision?.requiresToolResult && <span className="tag tag-gray">Needs a tool result</span>}
-                    {routeDecision?.reasons?.map(reason => <span key={reason} className="tag tag-gray">{reason}</span>)}
                   </div>
                 ) : null}
-                <div className="mb-1 mt-4 flex items-center justify-between gap-2">
+                <div className="mb-1 mt-3 flex items-center justify-between gap-2">
                   <h2 className="section-title">Steps Alpha took</h2>
-                  <a href="/tools" className="inline-flex min-h-[44px] items-center text-[0.9375rem] font-bold text-blue underline-offset-4 hover:underline">Tool registry</a>
+                  <a href="/tools" className="inline-flex min-h-[44px] items-center text-[0.9375rem] font-bold text-blue underline-offset-4 hover:underline">All Alpha tools</a>
                 </div>
-                {toolTimeline.length === 0
-                  ? <p className="text-[0.9375rem] text-text-secondary">No steps yet.</p>
-                  : <ToolRows events={toolTimeline.slice(0, 8)} label="Steps Alpha took" showTime />}
+                <ToolRows events={mergeToolRuns([...realTools].reverse()).filter(row => loading || row.status !== 'running').reverse().slice(0, 8)} label="Steps Alpha took" showTime />
               </div>
             )}
           </div>
         </div>
       )}
 
-      <div data-testid="chat-messages" className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <div className="relative flex min-h-0 flex-1 flex-col">
+      <div data-testid="chat-messages" className="min-h-0 flex-1 overflow-y-auto overscroll-contain" role="log" aria-label="Conversation with Alpha" onScroll={updateJump}>
         <div className="mx-auto w-full max-w-3xl space-y-5 px-4 py-5 sm:px-6 sm:py-6">
           {messages.length === 1 && (
             <section aria-labelledby="chat-empty-title" className="sm:pt-6">
@@ -3915,8 +3900,8 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
                     <button type="button" className="ledger-row" disabled={loading} onClick={() => send(item.prompt)}>
                       <Icon name={item.icon} className="h-5 w-5 shrink-0 text-text-secondary" />
                       <span className="ledger-main">
-                        <span className="ledger-title block">{item.title}</span>
-                        <span className="ledger-sub block">{item.prompt}</span>
+                        <span className="ledger-title block !whitespace-normal">{item.title}</span>
+                        <span className="ledger-sub line-clamp-2 block !whitespace-normal">{item.prompt}</span>
                       </span>
                       <Icon name="chevronRight" className="h-5 w-5 shrink-0 text-text-muted" />
                     </button>
@@ -3929,8 +3914,9 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             if (isGreeting(m, i)) return null
             if (m.role === 'user') {
               return (
-                <div key={i} className="flex justify-end">
+                <div key={i} data-msg={i} className="flex justify-end">
                   <div className="max-w-[88%] rounded-2xl rounded-br-sm bg-blue px-4 py-2.5 text-base leading-6 text-[rgb(var(--c-on-blue))] sm:max-w-[78%]">
+                    <span className="sr-only">You: </span>
                     {/* Feature 12: Image preview */}
                     {m.imageUrl && (
                       <div className="mb-2">
@@ -3947,10 +3933,11 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
               return m.browserSteps ? <div key={i} className="w-full"><BrowserPanel steps={m.browserSteps} /></div> : null
             }
             const failure = !m.html && !m.repairResult ? describeFailure(m.content) : null
-            const canRetry = !!failure && !failure.title.includes('photo')
+            const canRetry = !!failure && !failure.title.includes('photo') && canRetryAt(i)
             if (!m.content && !m.html && !m.repairResult && !m.reasoning) return null
             return (
-              <div key={i} className={m.repairResult ? 'w-full' : m.html ? 'max-w-[40rem]' : 'max-w-[70ch]'}>
+              <div key={i} data-msg={i} className={m.repairResult ? 'w-full' : m.html ? 'max-w-[40rem]' : 'max-w-[70ch]'}>
+                <span className="sr-only">Alpha: </span>
                 {/* Thinking/reasoning collapsible section */}
                 {m.reasoning && (
                   <details className="group/think mb-2">
@@ -3964,10 +3951,10 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
                   </details>
                 )}
                 {failure
-                  ? <FailureRow title={failure.title} detail={failure.detail} busy={busy} onRetry={canRetry ? () => retryFailed(i) : undefined} />
+                  ? <FailureRow title={failure.title} detail={failure.detail} kind={failure.kind} busy={busy} onRetry={canRetry ? () => retryFailed(i) : undefined} />
                   : m.repairResult
                     ? <div className="space-y-4">
-                        {m.content && <div className="max-w-[70ch] break-words text-base leading-[1.7]" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />}
+                        {m.content && <div className="max-w-[70ch]"><div className="break-words text-base leading-[1.7]" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} /><div className="-mb-2 mt-1"><CopyButton text={chatPlainText(m.content)} /></div></div>}
                         <RepairResultCard result={m.repairResult} onAskNext={(text) => {
                           // Send the follow-up inline. The router auto-routes it to the
                           // manuals and carries the vehicle from context — no need to flip
@@ -3978,6 +3965,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
                     : m.html
                       ? <div className="break-words text-base leading-[1.7]" onClick={handleGeneratedHtmlClick} dangerouslySetInnerHTML={{ __html: sanitizeGeneratedHtml((m.content ? renderMarkdown(m.content) : '') + m.html) }} />
                       : <div className="break-words text-base leading-[1.7]" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />}
+                {!failure && !m.html && !m.repairResult && m.content.trim().length >= 80 && <div className="-mb-2 mt-1"><CopyButton text={chatPlainText(m.content)} /></div>}
               </div>
             )
           })}
@@ -3986,8 +3974,9 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             <div role="status" aria-live="polite" className="max-w-[70ch]">
               <div className="flex items-center gap-2.5">
                 <span className="lamp lamp-amber" aria-hidden="true" />
-                <span className="font-bold">{status || 'Thinking…'}</span>
+                <span className="font-bold">{stopping ? 'Stopping…' : (status || 'Thinking…')}</span>
                 {thinkingElapsed > 0 && <span className="num text-[0.875rem] text-text-secondary">{thinkingElapsed}s</span>}
+                {loading && !stopping && <button type="button" onClick={stopRun} className="btn btn-ghost -my-1 ml-auto px-3 text-blue">Stop</button>}
               </div>
               {turnRows.length > 0 && <div className="mt-2"><ToolRows events={turnRows} /></div>}
             </div>
@@ -3995,79 +3984,6 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
           {!(loading || status) && turnRows.length > 0 && messages.length > 1 && <ToolRows events={turnRows} />}
 
           {workflowApproval && <WorkflowReview approval={workflowApproval} busy={loading || confirmingAction} onDecision={confirmWorkflow} />}
-
-          {/* Live AI Voice Call Panel */}
-          {voiceCall && voiceCall.status !== 'ended' && (
-            <section aria-label="AI voice call" className="w-full max-w-[40rem] rounded-lg border border-line bg-bg-card p-4">
-              <div className="flex items-center gap-2.5 font-bold">
-                <span className={`lamp ${voiceCall.status === 'active' ? 'lamp-green' : voiceCall.status === 'error' ? 'lamp-red' : 'lamp-amber'}`} aria-hidden="true" />
-                AI voice call
-                <span className="ml-auto text-[0.9375rem]">{voiceCall.status === 'active' ? 'Live' : voiceCall.status === 'error' ? 'Failed' : 'Dialing…'}</span>
-              </div>
-              <p className="mt-2 text-[0.9375rem] text-text-secondary">Calling {voiceCall.to}</p>
-              <p className="mt-1">{voiceCall.task}</p>
-
-              {/* Live Transcript */}
-              {voiceCall.transcript && voiceCall.transcript.length > 0 && (
-                <div className="mt-3 max-h-40 overflow-y-auto rounded-md bg-bg-base px-3 py-2.5">
-                  <h3 className={`${rowWord} mb-1.5`}>Live transcript</h3>
-                  {voiceCall.transcript.map((t, i) => (
-                    <p key={i} className="mt-1 text-[0.9375rem]">
-                      <span className="font-bold">{t.speaker === 'ai' ? 'Alpha: ' : 'Person: '}</span>
-                      {t.text}
-                    </p>
-                  ))}
-                </div>
-              )}
-
-              {/* Jump In */}
-              {voiceCall.status === 'active' && (
-                <div className="mt-3">
-                  {!showJumpIn ? (
-                    <button
-                      onClick={() => setShowJumpIn(true)}
-                      className="btn btn-secondary"
-                    >
-                      Jump into the call
-                    </button>
-                  ) : (
-                    <div className="flex flex-wrap items-center gap-2">
-                      <input
-                        type="tel"
-                        aria-label="Your phone number"
-                        placeholder="Your phone number"
-                        value={jumpInPhone}
-                        onChange={e => setJumpInPhone(e.target.value)}
-                        className="form-input min-w-0 flex-1"
-                      />
-                      <button
-                        onClick={async () => {
-                          if (!jumpInPhone) return
-                          setJumpingIn(true)
-                          try {
-                            const r = await fetch(`/api/voice-join/${voiceCall.callId}`, {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ ownerPhone: jumpInPhone }),
-                            })
-                            const d = await r.json()
-                            showToast(d.ok ? `Dialing ${jumpInPhone} to join call...` : `Failed: ${d.error}`)
-                            if (d.ok) setShowJumpIn(false)
-                          } catch { showToast('Jump-in failed') }
-                          setJumpingIn(false)
-                        }}
-                        disabled={jumpingIn}
-                        className="btn btn-primary shrink-0"
-                      >
-                        {jumpingIn ? 'Dialing…' : 'Call me'}
-                      </button>
-                      <button onClick={() => setShowJumpIn(false)} className="btn btn-secondary">Cancel</button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </section>
-          )}
 
           {/* Shop action confirmation card */}
           {pendingAction && (
@@ -4091,10 +4007,11 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
               title={`Send this ${smsLabel}${pendingSms.customerName ? ` to ${pendingSms.customerName}` : ''}?`}
               effect={`Alpha will send it exactly as written. It reaches ${pendingSms.customerName || 'the recipient'} right away.`}
               tags={<span className="tag tag-gray">Sends a message</span>}
+              warnings={smsError ? [smsError] : []}
               busy={sendingSms}
               approveLabel={sendingSms ? 'Sending…' : `Approve and send ${smsLabel}`}
               onApprove={confirmSendSms}
-              onCancel={() => setPendingSms(null)}
+              onCancel={() => { setPendingSms(null); setSmsError('') }}
             >
               <dl className="space-y-3 text-[0.9375rem]">
                 <div>
@@ -4117,6 +4034,17 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         </div>
         <div ref={bottomRef} />
       </div>
+      {showJump && (
+        <button
+          type="button"
+          onClick={() => { const scroller = bottomRef.current?.parentElement; if (scroller) { stickRef.current = true; scrollChatTo(scroller.scrollHeight) } }}
+          className="btn btn-secondary absolute bottom-3 left-1/2 -translate-x-1/2 border-line"
+        >
+          <Icon name="chevronDown" className="h-5 w-5" />
+          Latest
+        </button>
+      )}
+      </div>
 
       <div data-testid="chat-composer" className="shrink-0 border-t border-border bg-bg-base pb-3 pt-3 lg:pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <div className="mx-auto w-full max-w-3xl px-4 sm:px-6">
@@ -4129,14 +4057,14 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
 
           {/* Attached file chip */}
           {attachedFile && (
-            <div className="mb-2 flex items-center gap-2">
+            <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
               <div className="flex min-w-0 max-w-full items-center gap-2 rounded-md border border-line bg-bg-card py-1 pl-3 pr-1 text-[0.9375rem]">
                 <Icon name={attachedFile.type === 'image' ? 'image' : 'doc'} className="h-4 w-4 shrink-0 text-text-secondary" />
                 <span className="min-w-0 truncate font-bold">{attachedFile.name}</span>
                 <button
                   type="button"
                   onClick={() => setAttachedFile(null)}
-                  className="btn-icon h-9 w-9 shrink-0 sm:h-9 sm:w-9"
+                  className="btn-icon -my-1 h-11 w-11 shrink-0"
                   aria-label={`Remove ${attachedFile.name}`}
                   title="Remove file"
                 >
@@ -4146,6 +4074,9 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
               {attachedFile.content === '[Reading PDF...]' && (
                 <span role="status" className="text-[0.875rem] text-text-secondary">Reading the PDF…</span>
               )}
+              {attachedFile.type === 'text' && attachedFile.content.length > 8000 && (
+                <span className="text-[0.875rem] text-text-secondary">Long file. Alpha reads the first 8,000 characters.</span>
+              )}
             </div>
           )}
 
@@ -4153,7 +4084,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             {/* Feature 12: Photo button */}
             <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) sendImage(f); e.target.value = '' }} />
             {/* File attach (hidden input) */}
-            <input ref={attachInputRef} type="file" accept="image/*,.pdf,.txt,.csv,.doc,.docx" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFileAttach(f); e.target.value = '' }} />
+            <input ref={attachInputRef} type="file" accept=".pdf,.txt,.csv,application/pdf,text/plain,text/csv" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFileAttach(f); e.target.value = '' }} />
             <button
               type="button"
               onClick={() => setShowAttach(true)}
@@ -4168,10 +4099,16 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
               aria-label="Message Alpha"
               className="form-input min-h-[44px] flex-1 resize-none py-2.5 leading-6"
               rows={1}
-              placeholder={repairOnlyMode ? 'Year, make, model and the problem' : 'Ask Alpha anything'}
+              placeholder={repairOnlyMode ? 'Year, make, model, problem' : 'Ask anything'}
               value={input}
               onChange={e => setInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
+              onKeyDown={e => {
+                if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return
+                // On a phone the Enter key starts a new line and the Send button sends.
+                if (window.matchMedia?.('(pointer: coarse)').matches) return
+                e.preventDefault()
+                send()
+              }}
             />
             <button
               type="button"
@@ -4194,21 +4131,35 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
             >
               <Icon name={(listening || (voiceActive && voiceStatus === 'listening')) ? 'chatStop' : 'mic'} className="h-5 w-5" />
             </button>
-            <button
-              type="button"
-              className="btn btn-primary h-11 w-11 shrink-0 p-0 sm:h-11 sm:w-11"
-              aria-label="Send message"
-              onClick={() => send()}
-              disabled={loading || !input.trim()}
-            >
-              {loading
-                ? <span className="spinner h-5 w-5 rounded-full border-2 border-current border-t-transparent" aria-hidden="true" />
-                : <Icon name="send" className="h-5 w-5" />
-              }
-            </button>
+            {loading ? (
+              <button
+                type="button"
+                className="btn btn-primary h-11 w-11 shrink-0 p-0 sm:h-11 sm:w-11"
+                aria-label={stopping ? 'Stopping' : 'Stop'}
+                title="Stop"
+                onClick={stopRun}
+                disabled={stopping}
+              >
+                {stopping
+                  ? <span className="spinner h-5 w-5 rounded-full border-2 border-current border-t-transparent" aria-hidden="true" />
+                  : <Icon name="chatStop" className="h-6 w-6 fill-current" />
+                }
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-primary h-11 w-11 shrink-0 p-0 sm:h-11 sm:w-11"
+                aria-label="Send message"
+                title="Send"
+                onClick={() => send()}
+                disabled={!input.trim()}
+              >
+                <Icon name="send" className="h-5 w-5" />
+              </button>
+            )}
           </div>
 
-          <div className="mt-2 flex items-center gap-2">
+          <div className={`mt-2 items-center gap-2 ${keyboardInset ? 'hidden' : 'flex'}`}>
             <button type="button" onClick={toggleTalk} aria-pressed={voiceActive} className={`btn px-3 ${voiceActive ? 'btn-primary' : 'btn-secondary'}`}>
               <Icon name="mic" className="h-5 w-5" />
               {voiceActive ? 'Stop talking' : 'Talk to Alpha'}
@@ -4293,7 +4244,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
               <Icon name="doc" className="h-5 w-5 shrink-0 text-text-secondary" />
               <span className="ledger-main">
                 <span className="ledger-title block">File to send with your message</span>
-                <span className="ledger-sub block !whitespace-normal">A PDF, text file, spreadsheet export or picture. It goes along with the next message you send.</span>
+                <span className="ledger-sub block !whitespace-normal">A PDF, text file or CSV spreadsheet export. It goes along with the next message you send. For a picture, use the photo option above.</span>
               </span>
             </button>
           </li>
