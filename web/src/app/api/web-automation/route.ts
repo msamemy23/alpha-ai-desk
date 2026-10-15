@@ -7,6 +7,7 @@ import type { SearchResultRow } from '@/lib/browser/automation'
 import { describeRefusal, LIMITS, makeCheck, makeResourceFetcher } from '@/lib/browser/guard'
 import { hasAiKey, makeAskModel } from '@/lib/browser/model'
 import type { PolicyContext } from '@/lib/browser/policy'
+import { verifyRetailerLeads } from '@/lib/browser/price-evidence'
 import { readPage, searchWeb } from '@/lib/browser/read-page'
 import type { ReadResult } from '@/lib/browser/read-page'
 import { cleanPageText, injectionNotice, inspectPageText, wrapUntrusted } from '@/lib/browser/untrusted'
@@ -190,13 +191,29 @@ export async function POST(req: Request) {
         await logRun(caller, 'parts_price', partQuery, found.message, false)
         return reply({ ok: false, price_verified: false, error: found.message }, 502)
       }
-      const verified = found.rows.length > 0
-      const block = verified ? resultsBlock(found.rows, 'auto parts search results') : ''
-      const analysis = verified ? await analyze(`The shop wants the best price for this auto part: "${partQuery}".\n\n${block}\n\nList the prices and part numbers that appear in the results above and recommend the best option. Do not guess a number that is not in the results.`) : ''
-      notices.push(verified ? 'These prices come from search result text. Check the vendor page before you quote a customer.' : 'No price results were found. Try the part number or a different description.')
-      await logRun(caller, 'parts_price', partQuery, analysis || (verified ? 'Price results found' : 'No verified price results'), verified)
-      await audit(caller, 'browser.search', { actor: 'ai', detail: `Looked up a part price (${found.rows.length} results)` })
-      return finish({ ok: true, type: 'parts_price', query: partQuery, analysis, raw: block, price_verified: verified, untrusted: true })
+      const resultsFound = found.rows.length > 0
+      // A price is "verified" only when Alpha opened a parts-store page and the page itself shows it. Search text alone is not.
+      const evidence = resultsFound ? await verifyRetailerLeads(found.rows, async address => {
+        const read = await readPage(address, rules.ctx, 'ai')
+        if (!read.ok) return { ok: false }
+        await audit(caller, 'browser.read', { url: read.finalUrl, actor: 'ai', detail: 'Checked a parts store page for a price' })
+        return { ok: true, title: read.doc.title, text: read.doc.text, finalUrl: read.finalUrl }
+      }) : []
+      const verified = evidence.length > 0
+      const block = resultsFound ? resultsBlock(found.rows, 'auto parts search results') : ''
+      const evidenceBlock = verified
+        ? wrapUntrusted(evidence.map(e => `${e.store}: $${e.price.toFixed(2)} on ${e.url} (page says: ${e.shownAs})`).join('\n'), 'parts store pages', 1500)
+        : ''
+      const analysis = resultsFound ? await analyze(`The shop wants the best price for this auto part: "${partQuery}".\n\n${verified ? `Prices Alpha read on the store pages themselves:\n${evidenceBlock}\n\n` : ''}${block}\n\nList the prices and part numbers that appear above and recommend the best option. Say which prices were read on a store page and which come only from search result text. Do not guess a number that is not shown.`) : ''
+      notices.push(verified
+        ? `Alpha opened ${evidence.length} parts store page${evidence.length === 1 ? '' : 's'} and read the price there. Confirm fitment and availability before you quote a customer.`
+        : resultsFound ? 'These prices come from search result text, not from a store page Alpha could read. Check the vendor page before you quote a customer.' : 'No price results were found. Try the part number or a different description.')
+      await logRun(caller, 'parts_price', partQuery, analysis || (verified ? 'Store page prices found' : resultsFound ? 'Search results only, no store page price' : 'No price results'), resultsFound)
+      await audit(caller, 'browser.search', { actor: 'ai', detail: `Looked up a part price (${found.rows.length} results, ${evidence.length} store pages with a price)` })
+      return finish({
+        ok: true, type: 'parts_price', query: partQuery, analysis, raw: block, price_verified: verified, search_results_found: resultsFound,
+        verified_price_evidence: evidence, untrusted: true,
+      })
     }
 
     /* ---- competitor ---- */
