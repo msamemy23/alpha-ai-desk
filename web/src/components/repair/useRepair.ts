@@ -37,12 +37,12 @@ function networkText(err: unknown, timedOut: boolean, fallback: string, slow: st
 }
 
 /** Runs a JSON request with a time limit. The caller can cancel it, and the limit is reported separately from a cancel. */
-async function postJson(url: string, payload: unknown, limitMs: number, cancel?: AbortController) {
+async function postJson(url: string, payload: unknown, limitMs: number, cancel?: AbortController, extraHeaders?: Record<string, string>) {
   const ctl = cancel || new AbortController()
   let timedOut = false
   const timer = setTimeout(() => { timedOut = true; ctl.abort() }, limitMs)
   try {
-    const res = await fetch(url, { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify(payload), signal: ctl.signal })
+    const res = await fetch(url, { method: 'POST', headers: { ...(await getAuthJsonHeaders()), ...(extraHeaders || {}) }, body: JSON.stringify(payload), signal: ctl.signal })
     const body = (await res.json().catch(() => ({}))) as ApiBody
     return { res, body }
   } catch (err) {
@@ -138,6 +138,8 @@ export function useRepair() {
   const lastCombined = useRef('')
   const lastManual = useRef<{ url: string; quiet: boolean; open: boolean; literal: boolean } | null>(null)
   const creatingRef = useRef(false)
+  // One key per exact estimate. Trying again after a dropped connection reuses it, so the server makes the estimate once.
+  const estimateKey = useRef<{ fingerprint: string; key: string } | null>(null)
   const savingRef = useRef(false)
   const urlHandled = useRef(false)
 
@@ -374,7 +376,7 @@ export function useRepair() {
     setCreating(true); setEstimateSay(null)
     try {
       const unique = [...pinned, ...result.sources.slice(0, 5)].filter((item, i, all) => all.findIndex(o => o.url === item.url) === i)
-      const { res, body } = await postJson('/api/repair-estimate', {
+      const payload = {
         customerName: customerName.trim() || 'Customer',
         customerEmail: customerEmail.trim(),
         customerPhone: customerPhone.trim(),
@@ -382,10 +384,14 @@ export function useRepair() {
         estimateDraft: draft,
         operationLines: result.operationLines,
         notes: `Source links:\n${unique.map(item => `${item.provider}: ${item.title} ${item.url}`).join('\n')}`,
-      }, 30000)
+      }
+      const fingerprint = JSON.stringify(payload)
+      if (!estimateKey.current || estimateKey.current.fingerprint !== fingerprint) estimateKey.current = { fingerprint, key: `repair-estimate-${crypto.randomUUID()}` }
+      const { res, body } = await postJson('/api/repair-estimate', payload, 30000, undefined, { 'Idempotency-Key': estimateKey.current.key })
       if (!res.ok || !body.ok) throw new Error(failText(res, body, 'The estimate was not created.'))
       const docNumber = String((body.data as { docNumber?: unknown } | undefined)?.docNumber || '')
       setCreated(docNumber || 'draft')
+      estimateKey.current = null
       setEstimateSay({ kind: 'success', text: docNumber ? `Estimate ${docNumber} created as a draft.` : 'Estimate created as a draft.' })
     } catch (err) {
       setEstimateSay({ kind: 'error', text: `Not created. ${thenTryAgain(networkText(err, wasTimeout(err), 'Check your connection and try again.', 'The estimate took too long. Check Estimates before you try again, so you do not make two.'))}` })

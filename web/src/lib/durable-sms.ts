@@ -82,6 +82,7 @@ async function saveSmsRecords(
       job_id: input.jobId || null,
       document_id: input.documentId || null,
       telnyx_message_id: providerMessageId,
+      idempotency_key: operationKey,
       ai_handled: false,
       read: true,
     }

@@ -1,10 +1,14 @@
-# Migration status (checked 2026-10-14)
+# Migration status (checked 2026-10-15)
 
-The live Supabase project ("alpha desk") has database changes that are **not saved
-in this repository**. If the database were ever lost or a second environment
-were needed (a staging copy, a new region), these files alone could not rebuild it.
+The live Supabase project ("alpha desk") is the source of truth for what is applied.
+This file records how the repository relates to it.
 
-## Missing from the repo (applied to production on 2026-09-13)
+## Saved in the repo on 2026-10-15 (already applied to production on 2026-09-13)
+
+The 16 files whose names start with `20260913` are word-for-word copies of the SQL
+that production recorded in `supabase_migrations.schema_migrations`. They were
+copied here so the repository can rebuild the database that is live today.
+**They are already applied. Do not run them against production again.**
 
 | Version          | Name                                       |
 | ---------------- | ------------------------------------------ |
@@ -25,19 +29,35 @@ were needed (a staging copy, a new region), these files alone could not rebuild 
 | 20260913231234   | validate_inventory_replays_20260913        |
 | 20260913231945   | extend_ai_workflow_lease_window_20260913   |
 
-The exact SQL is stored in production in `supabase_migrations.schema_migrations`
-(column `statements`). Export it with the Supabase CLI instead of retyping it:
+## Numbered files that production already has (under dated names)
 
-```
-supabase link --project-ref fztnsqrhjesqcnsszqdb
-supabase migration fetch
-```
+`web/supabase/migrations` files 035-060 are all in production already, recorded
+there under their dated versions (for example `039_payment_idempotency_required`
+is `20260910161213 payment_idempotency_required`). Two need a note:
+
+- `038_audit_log_error_reporting.sql` contains only comments (a marker), so there is nothing to apply.
+- `059_durable_operation_constraints.sql` has no entry of its own in production's history, but
+  all three of its changes are present in the live database (checked 2026-10-15: the `unknown`
+  status on `ai_action_operations`, the unique index `messages_shop_telnyx_message_id_idx`,
+  and the `idempotency_payload_hash` column on `growth_campaigns`).
+
+## In the repo but NOT in production
+
+The folder `supabase/migrations` at the top of the repository holds files 034-059 for the new
+screens (shop logo, time-clock breaks, AI shop rules, document links and history, scheduling,
+customer and vehicle records, reports, parts purchasing, the built-in browser, and more).
+None of them appear in production's history. The app code degrades gracefully without
+them (documents, payments, signing, messaging and the assistant all work against the current
+database), but the features that depend on them stay off until the owner reviews and
+approves applying them. Nothing in these folders is applied automatically.
 
 ## Other things to know
 
-- Migrations live in two folders: `supabase/migrations` (010-033 and two dated
-  files) and `web/supabase/migrations` (001-006, 035-060 and dated files). There is
-  no 034, and the numbers 005 and 006 are each used by two files here.
+- Migrations live in two folders: `supabase/migrations` (010-041, 043-059 and one
+  dated file) and `web/supabase/migrations` (001-006, 035-060 and the dated files).
+  The numbers 005 and 006 are each used by two files in `web/`, and 042 is not used at the top level.
+  The numbers 035-041 also appear in both folders for different changes, so always go by the dated
+  version recorded in production, not by the number.
 - Only the dated, versioned history in production is authoritative. Do not run the
   older numbered files against production again.
 - The original `20250101_growth_tables.sql` created growth tables with

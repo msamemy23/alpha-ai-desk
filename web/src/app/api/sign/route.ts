@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { sendEmail } from '@/lib/email'
 import { calculateDocumentTotals, getLaborFlatAmount, nonNegativeDecimal, quantityFromUnknown } from '@/lib/document-money'
-import crypto from 'crypto'
+import crypto, { createHash } from 'crypto'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -20,8 +20,10 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
   total: number
   parts_total: number
   labor_total: number
+  core_total: number
   tax_amount: number
   shop_supplies: number
+  sublet_total: number
   balance_due: number
 } {
   if (!doc) return doc as never
@@ -81,14 +83,78 @@ function normalizeDocForSigning<T extends Record<string, unknown>>(doc: T): T & 
     total: number
     parts_total: number
     labor_total: number
+    core_total: number
     tax_amount: number
     shop_supplies: number
+    sublet_total: number
     balance_due: number
   }
 }
 
 function roundDocumentLine(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100
+}
+
+type CustomerFacingLine = { description: string; qty: number; unit_price: number; unitPrice: number; total: number }
+
+/**
+ * Signing links are bearer tokens, not staff sessions. Never serialize the
+ * document row itself here: it carries shop-only notes, cost data, contacts,
+ * and operational metadata that a customer does not need to sign.
+ */
+function customerFacingDocument(doc: Record<string, unknown>) {
+  const normalized = normalizeDocForSigning(doc)
+  const line_items: CustomerFacingLine[] = normalized.line_items.map((line) => ({
+    description: String(line.description || ''),
+    qty: Number(line.qty || 0),
+    unit_price: Number(line.unit_price || 0),
+    unitPrice: Number(line.unitPrice || 0),
+    total: Number(line.total || 0),
+  }))
+
+  return {
+    type: normalized.type,
+    doc_number: normalized.doc_number,
+    customer_name: normalized.customer_name,
+    vehicle_year: normalized.vehicle_year,
+    vehicle_make: normalized.vehicle_make,
+    vehicle_model: normalized.vehicle_model,
+    vehicle_vin: normalized.vehicle_vin,
+    vehicle_plate: normalized.vehicle_plate,
+    vehicle_mileage: normalized.vehicle_mileage,
+    doc_date: normalized.doc_date,
+    due_date: normalized.due_date,
+    // `notes` can be internal in legacy documents. Only expose the expressly
+    // customer-facing field under the name expected by the public sign page.
+    notes: normalized.customer_notes,
+    warranty_type: normalized.warranty_type,
+    warranty_months: normalized.warranty_months,
+    warranty_mileage: normalized.warranty_mileage,
+    // Warranty wording is printed on the paperwork the customer signs, so the signing page shows it too.
+    warranty_start: normalized.warranty_start,
+    warranty_exclusions: normalized.warranty_exclusions,
+    line_items,
+    total: normalized.total,
+    parts_total: normalized.parts_total,
+    labor_total: normalized.labor_total,
+    core_total: normalized.core_total,
+    shop_supplies: normalized.shop_supplies,
+    sublet_total: normalized.sublet_total,
+    tax_amount: normalized.tax_amount,
+    balance_due: normalized.balance_due,
+  }
+}
+
+function customerFacingDocumentHash(doc: Record<string, unknown>) {
+  return createHash('sha256').update(JSON.stringify(doc)).digest('hex')
+}
+
+function isStaleSigningLink(signature: Record<string, unknown>, document: Record<string, unknown>): boolean {
+  const issuedAt = typeof signature.created_at === 'string' ? Date.parse(signature.created_at) : Number.NaN
+  const updatedAt = typeof document.updated_at === 'string' ? Date.parse(document.updated_at) : Number.NaN
+  // Legacy rows without timestamps retain their existing behavior. All current
+  // rows have both timestamps; edits after the request invalidate the token.
+  return Number.isFinite(issuedAt) && Number.isFinite(updatedAt) && updatedAt > issuedAt
 }
 
 function escapeHtml(value: unknown): string {
@@ -100,8 +166,6 @@ function escapeHtml(value: unknown): string {
     .replace(/'/g, '&#39;')
 }
 
-// One-click approval from the estimate email. Uses the same token as signing —
-// the customer taps Approve and the estimate is marked approved, no pen needed.
 async function loadSignatureDocument(db: ReturnType<typeof getServiceClient>, token: string) {
   const { data: signature, error: signatureError } = await db
     .from('signatures')
@@ -119,42 +183,7 @@ async function loadSignatureDocument(db: ReturnType<typeof getServiceClient>, to
   return { signature, document, error: documentError }
 }
 
-function approvalPage(title: string, message: string) {
-  return new NextResponse(
-    `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head>
-<body style="font-family:Arial,sans-serif;background:#f4f4f4;margin:0;padding:40px 16px;text-align:center">
-<div style="max-width:440px;margin:0 auto;background:#fff;border-radius:12px;padding:32px 24px">
-<div style="font-size:44px">✅</div>
-<h2 style="margin:12px 0 8px">${escapeHtml(title)}</h2>
-<p style="color:#555;margin:0">${escapeHtml(message)}</p>
-</div></body></html>`,
-    { headers: { 'content-type': 'text/html; charset=utf-8' } },
-  )
-}
-
 export async function GET(req: NextRequest) {
-  const approveToken = req.nextUrl.searchParams.get('approve')
-  if (approveToken) {
-    const db = getServiceClient()
-    const { signature: sig, document: doc, error: loadError } = await loadSignatureDocument(db, approveToken)
-    if (loadError || !sig || !doc) return approvalPage('Link not found', 'This approval link is invalid. Call the shop and we will sort it out.')
-    if (sig.expires_at && new Date(sig.expires_at) < new Date()) {
-      return approvalPage('Link expired', 'This approval link has expired. Call the shop for a fresh one.')
-    }
-    if (!doc.approved_at) {
-      const { error: approvalError } = await db.from('documents').update({
-        approved_at: new Date().toISOString(),
-        approved_by: sig.customer_email || 'customer',
-        ...(doc.type === 'Estimate' ? { status: 'Approved' } : {}),
-      }).eq('id', doc.id as string).eq('shop_id', sig.shop_id)
-      if (approvalError) {
-        console.error('[sign] approval update failed:', approvalError.message)
-        return approvalPage('Approval not recorded', 'We could not save your approval. Please try again or call the shop.')
-      }
-    }
-    return approvalPage('You\'re approved!', `Thanks — ${String(doc.type || 'document')} #${String(doc.doc_number || '')} is approved and we\'ll get started. We\'ll text you when it\'s ready.`)
-  }
-
   const token = req.nextUrl.searchParams.get('token')
   if (!token) return NextResponse.json({ error: 'Token required' }, { status: 400 })
   const db = getServiceClient()
@@ -165,8 +194,9 @@ export async function GET(req: NextRequest) {
   if (sig.expires_at && new Date(sig.expires_at) < new Date()) {
     return NextResponse.json({ error: 'This signing link has expired' }, { status: 410 })
   }
-  // Normalize so the sign page sees line_items + total, not $0.00.
-  const normalized = normalizeDocForSigning(doc)
+  if (isStaleSigningLink(sig, doc)) {
+    return NextResponse.json({ error: 'This signing link is no longer current. Ask the shop for an updated document.' }, { status: 409 })
+  }
   // The page shows the shop that sent the document. Return only the public
   // business details (the same ones that already appear in the signing email),
   // never the whole settings row, which also holds provider configuration.
@@ -180,7 +210,7 @@ export async function GET(req: NextRequest) {
     address: typeof shopSettings?.shop_address === 'string' ? shopSettings.shop_address.trim() : '',
     phone: typeof shopSettings?.shop_phone === 'string' ? shopSettings.shop_phone.trim() : '',
   }
-  return NextResponse.json({ doc: normalized, signature_id: sig.id, shop })
+  return NextResponse.json({ doc: customerFacingDocument(doc), signature_id: sig.id, shop })
 }
 
 export async function POST(req: NextRequest) {
@@ -192,6 +222,7 @@ export async function POST(req: NextRequest) {
   if (body.action === 'send') {
     const auth = await getAuthedShop()
     if (!auth) return unauthorized()
+    if (auth.role === 'viewer') return NextResponse.json({ error: 'Viewer accounts cannot send signature requests' }, { status: 403 })
     const { documentId } = body as { documentId: string }
     if (typeof documentId !== 'string' || !documentId) return NextResponse.json({ error: 'documentId required' }, { status: 400 })
     const [{ data: docRaw, error: docError }, { data: settings, error: settingsError }] = await Promise.all([
@@ -200,11 +231,13 @@ export async function POST(req: NextRequest) {
     ])
     if (docError || settingsError) return NextResponse.json({ error: 'The document or shop settings could not be loaded' }, { status: 500 })
     if (!docRaw) return NextResponse.json({ error: 'Document not found' }, { status: 404 })
-    const doc = normalizeDocForSigning(docRaw)
+    if (!settings?.resend_api_key || !settings?.from_email) return NextResponse.json({ error: 'Email is not configured for this shop' }, { status: 503 })
+    const doc = customerFacingDocument(docRaw)
+    const documentHash = customerFacingDocumentHash(doc)
 
-    let email = (doc.customer_email as string) || ''
-    if (!email && doc.customer_id) {
-      const { data: cust } = await db.from('customers').select('email').eq('id', doc.customer_id).eq('shop_id', auth.shopId).maybeSingle()
+    let email = typeof docRaw.customer_email === 'string' ? docRaw.customer_email : ''
+    if (!email && docRaw.customer_id) {
+      const { data: cust } = await db.from('customers').select('email').eq('id', docRaw.customer_id).eq('shop_id', auth.shopId).maybeSingle()
       email = cust?.email || ''
     }
     if (!email) return NextResponse.json({ error: 'No email address on file for this customer' }, { status: 400 })
@@ -214,6 +247,24 @@ export async function POST(req: NextRequest) {
     // "link expired". Multiple valid tokens for the same document are fine —
     // whichever the customer clicks marks the document signed.
 
+    const requestedAt = new Date().toISOString()
+    // Set the revision boundary before creating the token. A later document
+    // edit advances updated_at and makes the token unusable rather than
+    // allowing a customer to sign changed terms.
+    const { error: requestUpdateError } = await db.from('documents').update({ signature_requested_at: requestedAt }).eq('id', documentId).eq('shop_id', auth.shopId)
+    if (requestUpdateError) return NextResponse.json({ error: 'The document could not be prepared for signing' }, { status: 500 })
+
+    // Read the revision after the request marker is saved. Some installations
+    // maintain updated_at with a trigger, so the token must bind to the
+    // revision that actually exists in the database, not the pre-update row.
+    const { data: preparedDocument, error: preparedDocumentError } = await db
+      .from('documents')
+      .select('updated_at')
+      .eq('id', documentId)
+      .eq('shop_id', auth.shopId)
+      .maybeSingle()
+    if (preparedDocumentError || !preparedDocument) return NextResponse.json({ error: 'The document revision could not be prepared for signing' }, { status: 500 })
+
     const token = crypto.randomUUID()
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
     const { data: signatureRecord, error: insertErr } = await db.from('signatures').insert({
@@ -222,6 +273,9 @@ export async function POST(req: NextRequest) {
       document_id: documentId,
       customer_email: email,
       expires_at: expiresAt,
+      document_hash: documentHash,
+      document_updated_at: preparedDocument.updated_at || docRaw.updated_at || null,
+      document_snapshot: doc,
     }).select('id').single()
     if (insertErr) return NextResponse.json({ error: insertErr.message }, { status: 500 })
 
@@ -237,7 +291,6 @@ export async function POST(req: NextRequest) {
     const safeVehicle = escapeHtml(vehicle)
     const safeDocDate = escapeHtml(doc.doc_date)
     const safeSignUrl = escapeHtml(signUrl)
-    const safeApproveUrl = escapeHtml(`${siteUrl}/api/sign?approve=${token}`)
 
     // Build a small line-item table for the email so the customer sees the
     // breakdown right in the inbox, not just a button to click.
@@ -291,9 +344,6 @@ export async function POST(req: NextRequest) {
     <p style="text-align:center;margin:24px 0 8px">
       <a href="${safeSignUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:14px 32px;border-radius:6px;font-size:16px;font-weight:600">Review and Sign</a>
     </p>
-    ${doc.type === 'Estimate' ? `<p style="text-align:center;margin:0 0 24px">
-      <a href="${safeApproveUrl}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;padding:12px 32px;border-radius:6px;font-size:15px;font-weight:600">Approve — Start the Work</a>
-    </p>` : ''}
     <p style="font-size:12px;color:#888">Questions? Call us at ${escapeHtml(settings?.shop_phone)}.</p>
   </div>
   <div style="border-top:1px solid #eee;padding:16px;text-align:center;font-size:12px;color:#888">${safeShopName} · ${escapeHtml(settings?.shop_address)}</div>
@@ -307,6 +357,8 @@ export async function POST(req: NextRequest) {
         subject: `${doc.type} #${doc.doc_number} — Please review and sign`,
         html,
         replyTo: settings?.shop_email,
+        apiKey: settings.resend_api_key,
+        from: settings.from_email,
         idempotencyKey: signatureRecord?.id ? `signature-request-${signatureRecord.id}` : undefined,
       })
     } catch (err: unknown) {
@@ -314,10 +366,37 @@ export async function POST(req: NextRequest) {
       console.error('Sign email error:', emailError)
     }
 
-    const { error: requestUpdateError } = await db.from('documents').update({ signature_requested_at: new Date().toISOString() }).eq('id', documentId).eq('shop_id', auth.shopId)
-    if (requestUpdateError) return NextResponse.json({ error: 'Signature request created, but the document could not be updated' }, { status: 500 })
     const siteUrl2 = process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || req.nextUrl.origin
-    return NextResponse.json({ success: !emailError, emailSent: !emailError, email, token, signUrl: `${siteUrl2}/sign/${token}`, emailError })
+    return NextResponse.json({ success: !emailError, emailAccepted: !emailError, email, token, signUrl: `${siteUrl2}/sign/${token}`, emailError })
+  }
+
+  // ── EXPLICIT estimate approval ────────────────────────────────────────────
+  // GET/HEAD must remain read-only because mail scanners and link previews
+  // routinely request links before the customer sees them.
+  if (body.action === 'approve') {
+    const { token, signerName } = body as { token: string; signerName?: string }
+    if (typeof token !== 'string' || !token) return NextResponse.json({ error: 'Valid token required' }, { status: 400 })
+    const { signature: sig, document: doc, error } = await loadSignatureDocument(db, token)
+    if (error || !sig || !doc) return NextResponse.json({ error: 'Invalid signing link' }, { status: 404 })
+    if (sig.expires_at && new Date(sig.expires_at) < new Date()) return NextResponse.json({ error: 'This signing link has expired' }, { status: 410 })
+    if (isStaleSigningLink(sig, doc)) return NextResponse.json({ error: 'This signing link is no longer current. Ask the shop for an updated document.' }, { status: 409 })
+    if (doc.type !== 'Estimate') return NextResponse.json({ error: 'Only estimates can be approved with this link' }, { status: 400 })
+
+    const approvedBy = typeof signerName === 'string' && signerName.trim()
+      ? signerName.trim().slice(0, 160)
+      : String(sig.customer_email || 'customer')
+    const { data: approvedDocument, error: approvalError } = await db.from('documents').update({
+      approved_at: new Date().toISOString(),
+      approved_by_name: approvedBy,
+      status: 'Approved',
+    }).eq('id', sig.document_id).eq('shop_id', sig.shop_id).is('approved_at', null).select('id,approved_at,status').maybeSingle()
+    if (approvalError) return NextResponse.json({ error: 'We could not save your approval. Please try again or call the shop.' }, { status: 500 })
+    if (!approvedDocument) {
+      const { data: currentDocument } = await db.from('documents').select('approved_at,status').eq('id', sig.document_id).eq('shop_id', sig.shop_id).maybeSingle()
+      if (currentDocument?.status === 'Approved' && currentDocument.approved_at) return NextResponse.json({ success: true, approved: true, alreadyApproved: true })
+      return NextResponse.json({ error: 'This estimate changed before approval. Ask the shop for an updated link.' }, { status: 409 })
+    }
+    return NextResponse.json({ success: true, approved: true })
   }
 
   // ── COMPLETE signature ─────────────────────────────────────────────────────
@@ -338,24 +417,32 @@ export async function POST(req: NextRequest) {
     if (!docRecord || typeof docRecord !== 'object') {
       return NextResponse.json({ error: 'The document for this signing link is unavailable' }, { status: 404 })
     }
+    if (isStaleSigningLink(sig, docRecord)) {
+      return NextResponse.json({ error: 'This signing link is no longer current. Ask the shop for an updated document.' }, { status: 409 })
+    }
 
     const now = new Date().toISOString()
     const ip = req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || ''
-    const { data: signedSignature, error: signatureUpdateError } = await db.from('signatures').update({
-      signed_at: now,
-      signer_name: signerName.trim(),
-      signature_data: signatureData,
-      ip_address: ip,
-    }).eq('token', token).eq('shop_id', sig.shop_id).is('signed_at', null).select('id').maybeSingle()
-    if (signatureUpdateError) return NextResponse.json({ error: 'Could not save signature' }, { status: 500 })
-    if (!signedSignature) return NextResponse.json({ error: 'This document has already been signed' }, { status: 409 })
-
-    const doc = normalizeDocForSigning(docRecord)
-    const { error: documentUpdateError } = await db.from('documents').update({
-      signature_signed_at: now,
-      signature_signer_name: signerName.trim(),
-    }).eq('id', sig.document_id).eq('shop_id', sig.shop_id)
-    if (documentUpdateError) return NextResponse.json({ error: 'Signature saved, but document status could not be updated' }, { status: 500 })
+    const doc = customerFacingDocument(docRecord)
+    const documentHash = customerFacingDocumentHash(doc)
+    const { data: completion, error: completionError } = await db.rpc('complete_signature', {
+      p_token: token,
+      p_shop_id: sig.shop_id,
+      p_document_id: sig.document_id,
+      p_signer_name: signerName.trim(),
+      p_signature_data: signatureData,
+      p_ip_address: ip,
+      p_document_hash: documentHash,
+      p_document_snapshot: doc,
+      p_expected_updated_at: docRecord.updated_at || null,
+      p_signed_at: now,
+    })
+    if (completionError) return NextResponse.json({ error: 'Could not save signature safely. Please try again.' }, { status: 503 })
+    const completionStatus = completion && typeof completion === 'object' ? String((completion as Record<string, unknown>).status || '') : ''
+    if (completionStatus === 'already_signed') return NextResponse.json({ error: 'This document has already been signed' }, { status: 409 })
+    if (completionStatus === 'expired') return NextResponse.json({ error: 'This signing link has expired' }, { status: 410 })
+    if (completionStatus === 'stale') return NextResponse.json({ error: 'This signing link is no longer current. Ask the shop for an updated document.' }, { status: 409 })
+    if (completionStatus !== 'signed') return NextResponse.json({ error: 'This signing link is invalid.' }, { status: 404 })
 
     const { data: settings } = await db.from('settings').select('*').eq('shop_id', sig.shop_id).maybeSingle()
     const shopName = settings?.shop_name || 'your shop'
@@ -403,13 +490,17 @@ body{font-family:Arial,sans-serif;background:#f0f0f0;margin:0;padding:20px}
   <div class="ftr">${safeShopName} · ${escapeHtml(settings?.shop_address)}</div>
 </div></body></html>`
 
+    // The signature is already durable. A receipt delivery failure must not
+    // make the customer retry the signature and receive a false failure.
     await sendEmail({
       to: sig.customer_email,
       subject: `Signature Confirmed — ${doc.type} #${doc.doc_number}`,
       html: confirmHtml,
       replyTo: settings?.shop_email,
+      apiKey: settings?.resend_api_key,
+      from: settings?.from_email,
       idempotencyKey: `signature-confirmation-${sig.id}`,
-    })
+    }).catch((emailError: unknown) => console.error('Signature confirmation email error:', emailError))
 
     // Also notify shop
     if (settings?.shop_email) {
@@ -418,6 +509,8 @@ body{font-family:Arial,sans-serif;background:#f0f0f0;margin:0;padding:20px}
         subject: `Customer signed ${doc.type} #${doc.doc_number} — ${signerName}`,
         html: `<p><strong>${safeSignerName}</strong> signed <strong>${safeType} #${safeDocNumber}</strong> for ${safeVehicle} on ${escapeHtml(new Date(now).toLocaleString())} — Total: $${total}.</p>`,
         replyTo: settings.shop_email,
+        apiKey: settings.resend_api_key,
+        from: settings.from_email,
         idempotencyKey: `signature-shop-notification-${sig.id}`,
       }).catch(() => {})
     }

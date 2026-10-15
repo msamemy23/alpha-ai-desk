@@ -3,12 +3,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { formatPhone } from '@/lib/telnyx'
-import { sendEmail } from '@/lib/email'
 import { getIdempotencyKey } from '@/lib/api-response'
 import { normalizePhoneDigits } from '@/lib/sms-normalize'
 import { isSmsOptedOut } from '@/lib/sms-consent'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
 import { sendDurableSms } from '@/lib/durable-sms'
+import { sendDurableEmail } from '@/lib/durable-email'
 import { outgoingLinks } from '@/lib/voice/media-store'
 import { closeStaleDrafts, resolveNeedsPerson } from '@/lib/voice/actions'
 import { appUrl } from '@/lib/voice-runtime'
@@ -119,7 +119,7 @@ export async function POST(req: NextRequest) {
       smsOptedOut = smsOptedOut || cust?.sms_opted_out === true
     }
 
-    let messageId: string | null = null
+    const idempotencyKey = getIdempotencyKey(req, [auth.shopId, 'send-message', channel, resolvedCustomerId || (channel === 'email' ? resolvedEmail || to : formattedPhone), body, mediaIds.join(',')])
 
     if (channel === 'sms') {
       if (smsOptedOut || await isSmsOptedOut(db, auth.shopId, formattedPhone)) {
@@ -130,8 +130,10 @@ export async function POST(req: NextRequest) {
       }
       const links = await outgoingLinks(db, auth.shopId, mediaIds, appUrl())
       if (!links.ok) return NextResponse.json({ ok: false, error: links.error }, { status: 409 })
+      const durableHeaders = new Headers(req.headers)
+      durableHeaders.set('Idempotency-Key', idempotencyKey)
       const smsResult = await sendDurableSms({
-        request: req,
+        request: new Request(req.url, { headers: durableHeaders }),
         db,
         shopId: auth.shopId,
         userId: auth.userId,
@@ -161,35 +163,30 @@ export async function POST(req: NextRequest) {
       if (!emailTo || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTo)) {
         return NextResponse.json({ error: `Invalid email address: "${emailTo}". Please provide a valid email.` }, { status: 400 })
       }
-      await sendEmail({
+      const emailSubject = subject || `Message from ${settings?.shop_name || 'Your Auto Shop'}`
+      const emailHeaders = new Headers(req.headers)
+      emailHeaders.set('Idempotency-Key', idempotencyKey)
+      const emailResult = await sendDurableEmail({
+        request: new Request(req.url, { headers: emailHeaders }),
+        db,
+        shopId: auth.shopId,
+        userId: auth.userId,
         to: emailTo,
-        subject: subject || `Message from ${settings?.shop_name || 'Your Auto Shop'}`,
+        subject: emailSubject,
         html: `<div style="font-family:Arial,sans-serif;padding:20px;max-width:600px"><p>${escapeHtml(body).replace(/\n/g,'<br>')}</p><hr><p style="color:#888;font-size:12px">${escapeHtml(String(settings?.shop_name || ''))} | ${escapeHtml(String(settings?.shop_phone || ''))}</p></div>`,
+        messageBody: body,
         apiKey: settings?.resend_api_key,
-        from: settings?.from_email,
-        idempotencyKey: getIdempotencyKey(req, [auth.shopId, 'send-message', channel, resolvedCustomerId || emailTo, body.slice(0, 80)]),
+        fromAddress: String(settings?.from_email || settings?.shop_email || ''),
+        replyTo: settings?.shop_email || undefined,
+        customerId: resolvedCustomerId,
+        jobId: jobId || null,
+        documentId: documentId || null,
       })
+      if (!emailResult.ok) return NextResponse.json({ ok: false, error: emailResult.error, uncertain: emailResult.uncertain === true }, { status: emailResult.status })
+      return NextResponse.json({ ok: true, message: emailResult.message, idempotent: emailResult.idempotent, ...(emailResult.auditPending ? { audit_pending: true } : {}) })
     }
 
-    // Log to DB
-    const { data: msg, error: messageError } = await db.from('messages').insert({
-      shop_id: auth.shopId,
-      direction: 'outbound',
-      channel: channel || 'sms',
-      from_address: channel === 'sms' ? String(settings?.telnyx_phone_number || '') : String(settings?.from_email || ''),
-      to_address: resolvedEmail || to,
-      subject: subject || null,
-      body,
-      status: 'sent',
-      customer_id: resolvedCustomerId,
-      job_id: jobId || null,
-      document_id: documentId || null,
-      telnyx_message_id: messageId,
-      read: true,
-    }).select().single()
-    if (messageError) throw messageError
-
-    return NextResponse.json({ ok: true, message: msg })
+    return NextResponse.json({ ok: false, error: 'Unsupported message channel' }, { status: 400 })
   } catch (e: unknown) {
     console.error('Send message error:', e)
     return NextResponse.json({ error: (e as Error).message }, { status: 500 })

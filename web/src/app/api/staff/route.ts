@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
 
   const params = new URL(req.url).searchParams
   const role = params.get('role') // "technician" and so on, or none for everyone
-  const everyone = params.get('include_inactive') === '1'
+  const everyone = params.get('include_inactive') === '1' || params.get('includeInactive') === 'true'
 
   try {
     const sb = getServiceClient()

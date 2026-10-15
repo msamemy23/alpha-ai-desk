@@ -1,17 +1,20 @@
 export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient, calcTotals } from '@/lib/supabase'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
-import { sendEmail, estimateEmailHtml } from '@/lib/email'
-import { sendSMS, formatPhone } from '@/lib/telnyx'
+import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { estimateEmailHtml } from '@/lib/email'
+import { formatPhone } from '@/lib/telnyx'
 import { getIdempotencyKey } from '@/lib/api-response'
 import { normalizePhoneDigits } from '@/lib/sms-normalize'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { sendDurableSms } from '@/lib/durable-sms'
+import { sendDurableEmail } from '@/lib/durable-email'
 
 export async function POST(req: NextRequest) {
   try {
     const auth = await getAuthedShop()
     if (!auth) return unauthorized()
+    if (auth.role === 'viewer') return forbidden()
 
     const { documentId, channel, email: reqEmail, phone: reqPhone } = await req.json()
     if (!['email', 'sms'].includes(channel)) return NextResponse.json({ error: 'channel must be email or sms' }, { status: 400 })
@@ -51,38 +54,33 @@ export async function POST(req: NextRequest) {
 
     const shopName = settings?.shop_name || 'Your Auto Shop'
     const docType = doc.type as string
-    const idempotencyKey = getIdempotencyKey(req, [auth.shopId, 'send-document', documentId, channel, custEmail || custPhone])
+    const idempotencyKey = getIdempotencyKey(req, [auth.shopId, 'send-document', documentId, channel, custEmail || custPhone, String(doc.updated_at || '')])
 
     if (channel === 'email') {
       const email = custEmail
       if (!email) return NextResponse.json({ error: 'No email on file for this customer' }, { status: 400 })
 
       if (!settings?.resend_api_key || !settings?.from_email) return NextResponse.json({ error: 'Email is not configured for this shop' }, { status: 503 })
+      const emailSubject = `${docType} #${doc.doc_number} from ${shopName}`
       const html = estimateEmailHtml(doc, settings || {})
-      await sendEmail({
+      const emailHeaders = new Headers(req.headers)
+      emailHeaders.set('Idempotency-Key', idempotencyKey)
+      const emailResult = await sendDurableEmail({
+        request: new Request(req.url, { headers: emailHeaders }),
+        db,
+        shopId: auth.shopId,
+        userId: auth.userId,
         to: email,
-        subject: `${docType} #${doc.doc_number} from ${shopName}`,
+        subject: emailSubject,
         html,
-        replyTo: settings?.shop_email,
+        messageBody: `${docType} #${doc.doc_number} sent`,
+        fromAddress: settings.from_email,
+        replyTo: settings.shop_email,
         apiKey: settings.resend_api_key,
-        from: settings.from_email,
-        idempotencyKey,
+        documentId,
+        customerId: doc.customer_id,
       })
-
-      const { error: emailMessageError } = await db.from('messages').insert({
-        shop_id: auth.shopId,
-        direction: 'outbound',
-        channel: 'email',
-        from_address: settings?.from_email || settings?.shop_email,
-        to_address: email,
-        subject: `${docType} #${doc.doc_number}`,
-        body: `${docType} #${doc.doc_number} sent`,
-        document_id: documentId,
-        customer_id: doc.customer_id,
-        status: 'sent',
-        read: true,
-      })
-      if (emailMessageError) return NextResponse.json({ error: 'Email sent, but its message record could not be saved' }, { status: 502 })
+      if (!emailResult.ok) return NextResponse.json({ ok: false, error: emailResult.error, uncertain: emailResult.uncertain === true }, { status: emailResult.status })
 
       const { error: emailDocumentError } = await db
         .from('documents')
@@ -90,6 +88,7 @@ export async function POST(req: NextRequest) {
         .eq('id', documentId)
         .eq('shop_id', auth.shopId)
       if (emailDocumentError) return NextResponse.json({ error: 'Email sent, but the document could not be marked as sent' }, { status: 502 })
+      return NextResponse.json({ ok: true, idempotent: emailResult.idempotent, message: emailResult.message, ...(emailResult.auditPending ? { audit_pending: true } : {}) })
     }
 
     if (channel === 'sms') {
@@ -99,24 +98,30 @@ export async function POST(req: NextRequest) {
       const formatted = formatPhone(phone)
       if (smsOptedOut || await isSmsOptedOut(db, auth.shopId, formatted)) return NextResponse.json({ error: 'This destination has opted out of SMS' }, { status: 409 })
       const smsBody = `Hi! Your ${docType} #${doc.doc_number} from ${shopName} is ready. Total: ${calcTotals(doc).total.toFixed(2)}. Call us at ${settings?.shop_phone || ''} with any questions.`
-      await sendSMS(formatted, smsBody, settings.telnyx_phone_number, {
-        apiKey: settings.telnyx_api_key,
-        messagingProfileId: settings.telnyx_messaging_profile_id || '',
-        idempotencyKey,
+      const durableHeaders = new Headers(req.headers)
+      durableHeaders.set('Idempotency-Key', idempotencyKey)
+      const smsResult = await sendDurableSms({
+        request: new Request(req.url, { headers: durableHeaders }),
+        db,
+        shopId: auth.shopId,
+        userId: auth.userId,
+        to: formatted,
+        text: smsBody,
+        customerId: doc.customer_id,
+        documentId,
+        settings: {
+          telnyx_api_key: settings.telnyx_api_key,
+          telnyx_phone_number: settings.telnyx_phone_number,
+          telnyx_messaging_profile_id: settings.telnyx_messaging_profile_id || '',
+        },
       })
-      const { error: smsMessageError } = await db.from('messages').insert({
-        shop_id: auth.shopId,
-        direction: 'outbound',
-        channel: 'sms',
-        from_address: settings?.telnyx_phone_number,
-        to_address: phone,
-        body: smsBody,
-        document_id: documentId,
-        customer_id: doc.customer_id,
-        status: 'sent',
-        read: true,
-      })
-      if (smsMessageError) return NextResponse.json({ error: 'SMS sent, but its message record could not be saved' }, { status: 502 })
+      if (!smsResult.ok) return NextResponse.json({ ok: false, error: smsResult.error, uncertain: smsResult.uncertain === true }, { status: smsResult.status })
+      if (!smsResult.messageRecordSaved) return NextResponse.json({ ok: true, message_record_saved: false, warning: 'SMS was accepted, but its local message record still needs repair. Retry this send; the provider will not be called again.' })
+      const { error: smsDocumentError } = await db.from('documents')
+        .update({ sent_at: new Date().toISOString() })
+        .eq('id', documentId)
+        .eq('shop_id', auth.shopId)
+      if (smsDocumentError) return NextResponse.json({ ok: true, message_record_saved: true, document_marked_sent: false, warning: 'SMS sent, but the document still needs to be marked as sent. Retry this send; the provider will not be called again.' })
     }
 
     return NextResponse.json({ ok: true })
