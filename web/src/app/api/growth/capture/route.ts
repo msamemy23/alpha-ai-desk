@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 
 // Leads are shop data — every caller must resolve to one shop.
 
@@ -10,6 +10,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null)
     const auth = await getRouteShop(req, body?.shopId)
     if (!auth) return unauthorized()
+    if (auth.role === 'viewer') return forbidden()
     const supabase = getServiceClient()
     const { action } = body || {}
 

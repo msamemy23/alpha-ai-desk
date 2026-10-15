@@ -151,6 +151,62 @@ export function partLineTotal(line: Record<string, unknown>): number {
   ), 2))
 }
 
+export type ScheduledPayment = { date: string; amount: number; paid: boolean }
+
+/**
+ * Split the unpaid balance into cent-accurate scheduled payments. The final
+ * installment receives the residual cent(s), so the schedule always sums to
+ * the balance shown by the payment ledger. Dates are calendar dates in the
+ * browser's local timezone; converting them through UTC can move a payment to
+ * the previous day for shops west of UTC.
+ */
+export function buildPaymentSchedule(
+  total: number,
+  alreadyPaid: number,
+  downPayment: number,
+  installments: number,
+  frequency: 'weekly' | 'biweekly' | 'monthly',
+  startDate = new Date(),
+): ScheduledPayment[] {
+  const totalCents = Math.round(Math.max(0, Number(total) || 0) * 100)
+  const alreadyPaidCents = Math.round(Math.max(0, Number(alreadyPaid) || 0) * 100)
+  const downPaymentCents = Math.round(Math.max(0, Number(downPayment) || 0) * 100)
+  if (!Number.isInteger(installments) || installments < 1 || installments > 60) throw new Error('Installments must be between 1 and 60')
+  if (alreadyPaidCents + downPaymentCents > totalCents) throw new Error('Down payment cannot exceed the remaining balance')
+
+  const remainingCents = totalCents - alreadyPaidCents - downPaymentCents
+  const baseCents = Math.floor(remainingCents / installments)
+  const residualCents = remainingCents - (baseCents * installments)
+  const payments: ScheduledPayment[] = []
+  const date = new Date(startDate)
+  date.setHours(12, 0, 0, 0)
+  // Keep the original calendar anchor. A January 31 payment may clamp to
+  // February 28, but it must return to the 31st in March instead of drifting
+  // permanently to the 28th.
+  const monthlyAnchorDay = date.getDate()
+  const addFrequency = () => {
+    if (frequency === 'monthly') {
+      const nextMonth = date.getMonth() + 1
+      date.setDate(1)
+      date.setMonth(nextMonth)
+      const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate()
+      date.setDate(Math.min(monthlyAnchorDay, lastDay))
+    } else date.setDate(date.getDate() + (frequency === 'weekly' ? 7 : 14))
+  }
+  const localDate = () => {
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
+  }
+  for (let index = 0; index < installments; index += 1) {
+    addFrequency()
+    const cents = baseCents + (index === installments - 1 ? residualCents : 0)
+    payments.push({ date: localDate(), amount: cents / 100, paid: false })
+  }
+  return payments
+}
+
 /**
  * The one financial calculation used by the editor, reports, signing pages,
  * and outbound document messages. Keeping this here prevents an email or
@@ -159,7 +215,10 @@ export function partLineTotal(line: Record<string, unknown>): number {
 export function calculateDocumentTotals(doc: Record<string, unknown>) {
   const parts = Array.isArray(doc.parts) ? doc.parts.filter((line): line is Record<string, unknown> => Boolean(line && typeof line === 'object')) : []
   const labors = Array.isArray(doc.labors) ? doc.labors.filter((line): line is Record<string, unknown> => Boolean(line && typeof line === 'object')) : []
-  const taxRateText = nonNegativeDecimalText(doc.tax_rate, '8.25')
+  // A missing rate is configuration/data debt, not permission to invent a
+  // regional tax rate. Setup supplies an explicit shop value; legacy rows with
+  // no rate are calculated as no tax until the shop config is repaired.
+  const taxRateText = nonNegativeDecimalText(doc.tax_rate, '0')
   const taxRate = Number(taxRateText)
   const applyTax = doc.apply_tax !== false
   const shopSupplies = nonNegativeMoney(doc.shop_supplies)

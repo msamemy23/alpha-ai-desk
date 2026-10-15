@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
-import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 import { NEEDS_CITY, cityName, resolveSearchCity } from '@/lib/growth-city'
 import { emailFoundIn, phoneFoundIn } from '@/lib/lead-grounding'
@@ -59,6 +59,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}))
     const auth = await getRouteShop(req, body.shopId)
     if (!auth) return unauthorized()
+    if (auth.role === 'viewer') return forbidden()
     const db = getServiceClient()
     const city = await resolveSearchCity(db, auth.shopId, body.city)
     if (!city) return NextResponse.json({ error: NEEDS_CITY }, { status: 400 })

@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { assertPublicUrl } from '@/lib/public-url'
 import { NEEDS_CITY, resolveSearchCity } from '@/lib/growth-city'
 
@@ -12,6 +12,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null)
     const auth = await getRouteShop(req, body?.shopId)
     if (!auth) return unauthorized()
+    if (auth.role === 'viewer') return forbidden()
     const rawKeywords = Array.isArray(body?.keywords) ? body.keywords : []
     const keywords = rawKeywords
       .filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)

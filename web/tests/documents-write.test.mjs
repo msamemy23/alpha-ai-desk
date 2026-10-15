@@ -57,6 +57,40 @@ test('payment errors show plain words, not database text', () => {
   assert.doesNotMatch(rules.paymentErrorText('relation "public.payments" violates something'), /public|relation/)
 })
 
+test('a saved document: the payment lock freezes money fields and nothing else', () => {
+  const open = { type: 'Invoice', status: 'Draft', amount_paid: 0 }
+  const partial = { type: 'Invoice', status: 'Partial', amount_paid: 40 }
+  const edit = rules.checkUpdate({ parts: [], tax_rate: 8.25, notes: 'x', shop_id: 'other', amount_paid: 999, id: 'forced' }, open)
+  assert.equal(edit.ok, true)
+  assert.equal(edit.touchesMoney, true)
+  assert.deepEqual(Object.keys(edit.fields).sort(), ['notes', 'parts', 'tax_rate'])
+  const notesOnly = rules.checkUpdate({ notes: 'call before pickup', customer_name: 'Ana', warranty_type: '12 months' }, partial)
+  assert.equal(notesOnly.ok, true)
+  assert.equal(notesOnly.touchesMoney, false)
+  for (const field of ['parts', 'labors', 'shop_supplies', 'sublet', 'tax_rate', 'apply_tax', 'deposit', 'payment_plan', 'line_items', 'payment_method']) {
+    const r = rules.checkUpdate({ [field]: field === 'apply_tax' ? false : 1 }, partial)
+    assert.equal(r.ok, false, field)
+    assert.equal(r.status, 409, field)
+  }
+  // Money already taken, even with a stale status, still locks the lines.
+  assert.equal(rules.checkUpdate({ parts: [] }, { type: 'Invoice', status: 'Sent', amount_paid: 5 }).ok, false)
+  // The same type sent back is not a change; a different type is money-changing.
+  assert.equal(rules.checkUpdate({ type: 'Invoice', notes: 'ok' }, partial).ok, true)
+  assert.equal(rules.checkUpdate({ type: 'Estimate' }, partial).ok, false)
+  assert.equal(rules.checkUpdate({ type: 'Contract' }, open).ok, false)
+})
+
+test('a saved document: Paid and Partial are never set by hand', () => {
+  const open = { type: 'Invoice', status: 'Sent', amount_paid: 0 }
+  assert.equal(rules.checkUpdate({ status: 'Paid' }, open).ok, false)
+  assert.equal(rules.checkUpdate({ status: 'Partial' }, open).ok, false)
+  assert.equal(rules.checkUpdate({ status: 'Approved' }, open).ok, true)
+  // Sending back the status it already has is allowed, so a notes-only save on a paid invoice works.
+  assert.equal(rules.checkUpdate({ status: 'Paid', notes: 'thanks' }, { type: 'Invoice', status: 'Paid', amount_paid: 100 }).ok, true)
+  assert.equal(rules.checkUpdate({ status: 'Draft' }, { type: 'Invoice', status: 'Paid', amount_paid: 100 }).ok, false)
+  assert.equal(rules.checkUpdate([], open).ok, false)
+})
+
 /* ───────── the route, with a fake database ───────── */
 
 function makeDb(script) {
@@ -290,6 +324,88 @@ test('payment: sending the same payment again keeps one history line', async () 
   const res = await call(route, { action: 'payment', documentId: 'doc-1', amount: 10, method: 'Cash', idempotencyKey: 'pay-doc-1-abcdef' })
   assert.equal(res.status, 200)
   assert.equal(route.events.length, 0)
+})
+
+const unpaid = { id: 'doc-1', doc_number: 'INV-1', type: 'Invoice', status: 'Draft', amount_paid: 0 }
+
+test('update: changes a document of the caller shop, with the status in the filter', async () => {
+  const db = makeDb({
+    from: (s) => {
+      if (s.op === 'update') return { data: { ...unpaid, ...s.payload }, error: null }
+      if (s.table === 'documents') return { data: unpaid, error: null }
+      if (s.table === 'payments') return { data: [], error: null }
+      return { data: { id: 'cust-1' }, error: null }
+    },
+  })
+  const res = await call(loadRoute({ auth: owner, db }), { action: 'update', documentId: 'doc-1', data: { notes: 'new', parts: [{ name: 'Pads' }], customer_id: 'cust-1', shop_id: 'shop-B', amount_paid: 500, id: 'x' } })
+  assert.equal(res.status, 200)
+  const update = writes(db)[0]
+  assert.deepEqual(plain(update.filters), [['id', 'doc-1'], ['shop_id', 'shop-A'], ['status', 'Draft']])
+  assert.equal(update.payload.notes, 'new')
+  for (const forbidden of ['shop_id', 'amount_paid', 'id']) assert.equal(forbidden in update.payload, false, forbidden)
+})
+
+test('update: a paid document keeps its lines but takes a notes change', async () => {
+  const paid = { ...unpaid, status: 'Partial', amount_paid: 25 }
+  const make = () => makeDb({ from: (s) => (s.op === 'update' ? { data: { ...paid, ...s.payload }, error: null } : { data: paid, error: null }) })
+  const blocked = make()
+  const refused = await call(loadRoute({ auth: owner, db: blocked }), { action: 'update', documentId: 'doc-1', data: { labors: [], notes: 'x' } })
+  assert.equal(refused.status, 409)
+  assert.equal(writes(blocked).length, 0)
+  const allowed = make()
+  const ok = await call(loadRoute({ auth: owner, db: allowed }), { action: 'update', documentId: 'doc-1', data: { notes: 'call me', status: 'Partial' } })
+  assert.equal(ok.status, 200)
+  assert.equal(writes(allowed)[0].payload.notes, 'call me')
+})
+
+test('update: a payment row on the ledger freezes the lines even if the status is behind', async () => {
+  const db = makeDb({ from: (s) => (s.table === 'payments' ? { data: [{ id: 'pay-1' }], error: null } : { data: unpaid, error: null }) })
+  const res = await call(loadRoute({ auth: owner, db }), { action: 'update', documentId: 'doc-1', data: { tax_rate: 0 } })
+  assert.equal(res.status, 409)
+  assert.equal(writes(db).length, 0)
+})
+
+test('update: a payment that lands during the save turns the save away', async () => {
+  const db = makeDb({ from: (s) => (s.op === 'update' ? { data: null, error: null } : s.table === 'payments' ? { data: [], error: null } : { data: unpaid, error: null }) })
+  const res = await call(loadRoute({ auth: owner, db }), { action: 'update', documentId: 'doc-1', data: { parts: [] } })
+  assert.equal(res.status, 409)
+  assert.match(res.body.error, /changed while you were editing/)
+})
+
+test('update: Paid cannot be typed in, and another shop customer or job is refused', async () => {
+  const db = makeDb({ from: (s) => (s.table === 'documents' ? { data: unpaid, error: null } : { data: null, error: null }) })
+  const route = loadRoute({ auth: owner, db })
+  assert.equal((await call(route, { action: 'update', documentId: 'doc-1', data: { status: 'Paid' } })).status, 409)
+  assert.equal((await call(route, { action: 'update', documentId: 'doc-1', data: { customer_id: 'cust-of-shop-B' } })).status, 400)
+  assert.equal((await call(route, { action: 'update', documentId: 'doc-1', data: { job_id: 'job-of-shop-B' } })).status, 400)
+  assert.equal(writes(db).length, 0)
+})
+
+test('update: another shop document looks like it does not exist; a number clash gets plain words', async () => {
+  const missing = makeDb({ from: () => ({ data: null, error: null }) })
+  const res = await call(loadRoute({ auth: owner, db: missing }), { action: 'update', documentId: 'doc-of-shop-B', data: { notes: 'x' } })
+  assert.equal(res.status, 404)
+  assert.deepEqual(plain(missing.calls[0].filters), [['id', 'doc-of-shop-B'], ['shop_id', 'shop-A']])
+  const clash = makeDb({ from: (s) => (s.op === 'update' ? { data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint "documents_shop_id_doc_number_key"' } } : { data: unpaid, error: null }) })
+  const refused = await call(loadRoute({ auth: owner, db: clash }), { action: 'update', documentId: 'doc-1', data: { doc_number: 'INV-2' } })
+  assert.equal(refused.status, 409)
+  assert.doesNotMatch(JSON.stringify(refused.body), /constraint|documents_shop_id/)
+})
+
+test('create: the same save sent twice returns the first document instead of an error', async () => {
+  const made = { id: 'doc-9', type: 'Estimate', customer_name: 'Ana', doc_number: 'EST-9', amount_paid: 0, created_at: new Date(Date.now() - 4000).toISOString() }
+  const dup = { code: '23505', message: 'duplicate key' }
+  const db = makeDb({ from: (s) => (s.op === 'insert' ? { data: null, error: dup } : { data: made, error: null }) })
+  const res = await call(loadRoute({ auth: owner, db }), { action: 'create', data: { type: 'Estimate', customer_name: 'Ana', doc_number: 'EST-9' } })
+  assert.equal(res.status, 200)
+  assert.equal(res.body.document.id, 'doc-9')
+  assert.equal(res.body.replayed, true)
+  // A different customer on the same number is a real clash.
+  const other = await call(loadRoute({ auth: owner, db }), { action: 'create', data: { type: 'Estimate', customer_name: 'Bo', doc_number: 'EST-9' } })
+  assert.equal(other.status, 409)
+  // An old document with that number is also a real clash.
+  const old = makeDb({ from: (s) => (s.op === 'insert' ? { data: null, error: dup } : { data: { ...made, created_at: '2020-01-01T00:00:00Z' }, error: null }) })
+  assert.equal((await call(loadRoute({ auth: owner, db: old }), { action: 'create', data: { type: 'Estimate', customer_name: 'Ana', doc_number: 'EST-9' } })).status, 409)
 })
 
 test('an unknown action and a flood are both turned away', async () => {

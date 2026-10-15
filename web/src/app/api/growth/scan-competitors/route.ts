@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 
 // Scan competitor auto shops near this shop for low-rated reviews
 // Uses Google Places API (Text Search + Place Details)
@@ -10,6 +10,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null)
     const auth = await getRouteShop(req, body?.shopId)
     if (!auth) return unauthorized()
+    if (auth.role === 'viewer') return forbidden()
     const query = typeof body?.query === 'string' ? body.query.trim().slice(0, 200) : ''
     const rawRadius = Number(body?.radius ?? 15000)
     const searchRadius = Number.isFinite(rawRadius) && rawRadius >= 100 && rawRadius <= 50000 ? Math.floor(rawRadius) : 15000

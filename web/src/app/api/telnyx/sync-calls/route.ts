@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
-import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 
 export const maxDuration = 300
 
@@ -153,6 +153,8 @@ export async function POST(req: NextRequest) {
         const body = await req.json().catch(() => null)
         const auth = await getRouteShop(req, body?.shopId || url.searchParams.get('shop_id'))
         if (!auth) return unauthorized()
+        const action = url.searchParams.get('action') || 'sync-all'
+        if (auth.role === 'viewer') return forbidden()
         const db = getServiceClient()
         const { data: settings, error: settingsError } = await db.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle()
         if (settingsError) return NextResponse.json({ error: 'Unable to load shop settings' }, { status: 500 })
@@ -160,8 +162,6 @@ export async function POST(req: NextRequest) {
         const shopNumber = String(settings?.telnyx_phone_number || '')
         const inboundConnection = String(settings?.telnyx_connection_id || '')
         if (!apiKey || !shopNumber || !inboundConnection) return NextResponse.json({ error: 'Telnyx sync is not configured for this shop' }, { status: 503 })
-        const action = url.searchParams.get('action') || 'sync-all'
-
         if (action === 'sync') {
             const result = await syncFromActivities(db, auth.shopId, shopNumber)
             return NextResponse.json({ success: !result.error, activities: result }, { status: result.error ? 502 : 200 })

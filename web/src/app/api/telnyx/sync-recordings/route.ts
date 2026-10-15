@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
-import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 
 export const maxDuration = 300
 
@@ -32,13 +32,13 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null)
     const auth = await getRouteShop(req, body?.shopId || url.searchParams.get('shop_id'))
     if (!auth) return unauthorized()
+    const action = url.searchParams.get('action') || 'sync'
+    if (auth.role === 'viewer' && action !== 'stats') return forbidden()
     const db = getServiceClient()
     const { data: settings, error: settingsError } = await db.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle()
     if (settingsError) return NextResponse.json({ error: 'Unable to load shop settings' }, { status: 500 })
     const apiKey = String(settings?.telnyx_api_key || '')
     if (!apiKey) return NextResponse.json({ error: 'Telnyx is not configured for this shop' }, { status: 503 })
-    const action = url.searchParams.get('action') || 'sync'
-
     if (action === 'stats') {
       const { count: total } = await db.from('call_history').select('id', { count: 'exact', head: true }).eq('shop_id', auth.shopId)
       const { data: sample } = await db.from('call_history').select('call_id').eq('shop_id', auth.shopId).limit(5)

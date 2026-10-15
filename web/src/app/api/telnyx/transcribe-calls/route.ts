@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
-import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 export const maxDuration = 300
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
 
@@ -87,6 +87,8 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null)
     const auth = await getRouteShop(req, body?.shopId || url.searchParams.get('shop_id'))
     if (!auth) return unauthorized()
+    const requestedAction = String(body?.action || url.searchParams.get('action') || 'batch')
+    if (auth.role === 'viewer' && requestedAction !== 'stats') return forbidden()
     const db = getServiceClient()
     const { data: settings, error: settingsError } = await db.from('settings').select('*').eq('shop_id', auth.shopId).maybeSingle()
     if (settingsError) return NextResponse.json({ error: 'Unable to load shop settings' }, { status: 500 })
@@ -96,7 +98,7 @@ export async function POST(req: NextRequest) {
     const aiModel = normalizeAiModel(settings?.ai_model, aiBaseUrl)
     const shopName = String(settings?.shop_name || 'this auto repair shop')
     if (!telnyxApiKey) return NextResponse.json({ error: 'Telnyx is not configured for this shop' }, { status: 503 })
-    const action = url.searchParams.get('action') || 'batch'
+    const action = requestedAction
     const rawLimit = Number(url.searchParams.get('limit') || '10')
     const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.floor(rawLimit), 1), 50) : 10
 

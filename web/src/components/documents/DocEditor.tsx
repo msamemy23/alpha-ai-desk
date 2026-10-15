@@ -314,7 +314,7 @@ export default function DocEditor(p: EditorProps) {
                     <NumInput id="f-supplies" money value={form.shop_supplies || 0} readOnly={locked} onChange={v => setForm(f => ({ ...f, shop_supplies: v as unknown as number }))} />
                   </Field>
                   <Field id="f-taxrate" label="Tax rate (%)">
-                    <NumInput id="f-taxrate" value={(form.tax_rate as number) ?? 8.25} readOnly={locked} onChange={v => setForm(f => ({ ...f, tax_rate: v as unknown as number }))} />
+                    <NumInput id="f-taxrate" value={(form.tax_rate as number) ?? 0} readOnly={locked} onChange={v => setForm(f => ({ ...f, tax_rate: v as unknown as number }))} />
                   </Field>
                   <label className="col-span-2 flex min-h-[44px] cursor-pointer items-center gap-2.5 text-[0.9375rem]">
                     <input type="checkbox" className="h-5 w-5 accent-[rgb(var(--c-blue))]" checked={form.apply_tax !== false} disabled={locked} onChange={e => setForm(f => ({ ...f, apply_tax: e.target.checked }))} />

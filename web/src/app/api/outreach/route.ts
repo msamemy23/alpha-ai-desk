@@ -23,6 +23,7 @@ export async function POST(req: NextRequest) {
   try {
     const auth = await getAuthedShop()
     if (!auth) return unauthorized()
+    if (auth.role === 'viewer') return forbidden()
     if (!WRITERS.has(auth.role)) return forbidden()
 
     const body = await req.json().catch(() => ({})) as { type?: unknown; filter?: { daysSinceLastVisit?: unknown }; template?: unknown; channel?: unknown }

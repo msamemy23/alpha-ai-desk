@@ -3,7 +3,7 @@
  * Provider resources are stored on the authenticated shop's settings row.
  */
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
 
 const TELNYX_BASE = 'https://api.telnyx.com/v2'
@@ -205,6 +205,7 @@ async function buildToken(config: ShopConfig) {
 async function requireConfig() {
   const auth = await getAuthedShop()
   if (!auth) return { response: unauthorized() as Response }
+  if (auth.role === 'viewer') return { response: forbidden() as Response }
   const config = await getShopConfig(auth.shopId)
   if (!config.apiKey || !config.fromPhone) {
     return { response: NextResponse.json({ ok: false, error: 'Telnyx is not configured for this shop' }, { status: 503 }) }

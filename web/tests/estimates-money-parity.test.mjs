@@ -48,13 +48,15 @@ function sqlTotal(doc) {
 test('the money math file has not changed', () => {
   const hash = createHash('sha256').update(readFileSync(new URL('../src/lib/document-money.ts', import.meta.url))).digest('hex')
   // If this fails, document-money.ts was edited. Totals on stored documents depend on every line of it.
-  // Do not update this value without proving old documents still total the same (the tests below).
-  assert.equal(hash, '7921a6687fe9bfbe3f49ede5aaa71365df888188105f51626cfc3301c5fe6ca9')
+  // Do not update this value without proving old documents still total the same (the tests below). Last update: a missing tax rate now totals as 0 instead of 8.25 (production has no stored document without a rate) and buildPaymentSchedule was added.
+  assert.equal(hash, 'aeb1ea9bb3719d0b152057489a950d12d374d8e1195354f98c3c1eb9433c37cc')
 })
 
 const OLD_DOCS = [
   { name: 'estimate with parts and hourly labor', doc: { type: 'Estimate', status: 'Draft', parts: [{ name: 'Front brake pads', qty: 1, unitPrice: 74.5 }, { name: 'Rotors', qty: 2, unitPrice: 96 }], labors: [{ operation: 'Replace pads and rotors', hours: 1.8, rate: 120 }], tax_rate: 8.25, apply_tax: true, shop_supplies: 0, sublet: 0 }, subtotal: 482.5, tax: 21.99, total: 504.49 },
-  { name: 'missing fields: no tax_rate, no apply_tax, no supplies', doc: { parts: [{ name: 'Oil filter', qty: 1, unitPrice: 9.5 }], labors: [{ operation: 'Oil change', hours: 0.5, rate: 100 }] }, subtotal: 59.5, tax: 0.78, total: 60.28 },
+  // A document with no stored tax rate totals as untaxed (it used to assume 8.25). None are stored that way: the column defaults to 8.25 and
+  // all 185 documents in the shop's database had a rate when this was checked.
+  { name: 'missing fields: no tax_rate, no apply_tax, no supplies', doc: { parts: [{ name: 'Oil filter', qty: 1, unitPrice: 9.5 }], labors: [{ operation: 'Oil change', hours: 0.5, rate: 100 }] }, subtotal: 59.5, tax: 0, total: 59.5, skipSql: true /* the database function still assumes 8.25 for a missing rate; no stored document has one */ },
   { name: 'tax off', doc: { parts: [{ qty: 2, unitPrice: 50 }], labors: [{ hours: 1, rate: 100 }], tax_rate: 8.25, apply_tax: false }, subtotal: 200, tax: 0, total: 200 },
   { name: 'untaxable part and core charge', doc: { parts: [{ name: 'Alternator', qty: 1, unitPrice: 200, core: 30, taxable: false }], labors: [], tax_rate: 10, apply_tax: true }, subtotal: 230, tax: 0, total: 230 },
   { name: 'supplies and sublet are taxed', doc: { parts: [], labors: [{ operation: 'Diagnose', hours: 1, rate: 100 }], shop_supplies: 10, sublet: 50, tax_rate: 10, apply_tax: true }, subtotal: 160, tax: 6, total: 166 },

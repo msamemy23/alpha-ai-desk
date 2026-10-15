@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { apiFail, apiOk, getIdempotencyKey, readJsonObject, requireString } from '@/lib/api-response'
 import { writeAuditLog } from '@/lib/audit-log'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
@@ -69,6 +69,7 @@ export async function POST(req: NextRequest) {
   try {
     const auth = await getAuthedShop()
     if (!auth) return unauthorized()
+    if (auth.role === 'viewer') return forbidden()
 
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'local'
     const limited = checkRateLimit(rateLimitKey('repair-procedures-write', auth.userId, auth.shopId, ip), 30, 60_000)
@@ -81,13 +82,19 @@ export async function POST(req: NextRequest) {
     const operation = requireString(parsedBody.body, 'operation', 'Operation')
     if (!operation.ok) return apiFail(operation.error, 400, 'BAD_REQUEST')
 
+    const requestedStatus = parsedBody.body.status === 'verified' ? 'verified' : 'draft'
+    const canVerify = ['owner', 'admin', 'manager'].includes(auth.role)
+    if (requestedStatus === 'verified' && !canVerify) return forbidden()
+    const approvedBy = typeof parsedBody.body.approvedBy === 'string' ? parsedBody.body.approvedBy.trim().slice(0, 120) : ''
+    if (requestedStatus === 'verified' && !approvedBy) return apiFail('A verifier name is required before publishing a procedure card', 400, 'BAD_REQUEST')
+
     const vehicle = vehicleRecord(parsedBody.body.vehicle)
     const db = getServiceClient()
     const insert = {
       shop_id: auth.shopId,
       title: title.value.slice(0, 180),
-      status: parsedBody.body.status === 'verified' ? 'verified' : 'draft',
-      confidence: parsedBody.body.confidence === 'shop_verified' ? 'shop_verified' : parsedBody.body.confidence === 'source_linked' ? 'source_linked' : 'needs_review',
+      status: requestedStatus,
+      confidence: requestedStatus === 'verified' ? 'shop_verified' : parsedBody.body.confidence === 'source_linked' ? 'source_linked' : 'needs_review',
       vehicle_year: typeof vehicle.year === 'string' ? vehicle.year : null,
       vehicle_make: typeof vehicle.make === 'string' ? vehicle.make : null,
       vehicle_model: typeof vehicle.model === 'string' ? vehicle.model : null,
@@ -104,8 +111,8 @@ export async function POST(req: NextRequest) {
       operation_lines: jsonArray(parsedBody.body.operationLines),
       source_links: jsonArray(parsedBody.body.sourceLinks),
       technician_notes: typeof parsedBody.body.technicianNotes === 'string' ? parsedBody.body.technicianNotes.slice(0, 5000) : '',
-      approved_by: typeof parsedBody.body.approvedBy === 'string' ? parsedBody.body.approvedBy.slice(0, 120) : null,
-      approved_at: parsedBody.body.status === 'verified' ? new Date().toISOString() : null,
+      approved_by: approvedBy || null,
+      approved_at: requestedStatus === 'verified' ? new Date().toISOString() : null,
       created_by: auth.userId,
       updated_by: auth.userId,
       updated_at: new Date().toISOString(),

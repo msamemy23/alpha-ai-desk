@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
 import { DEFAULT_OPENROUTER_MODEL, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 
@@ -9,6 +9,7 @@ export async function POST(req: NextRequest) {
   try {
     const auth = await getAuthedShop()
     if (!auth) return unauthorized()
+    if (auth.role === 'viewer') return forbidden()
 
     const body = await req.json().catch(() => null)
     const recordingId = typeof body?.recording_id === 'string' ? body.recording_id.trim().slice(0, 200) : ''

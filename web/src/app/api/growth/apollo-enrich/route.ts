@@ -13,7 +13,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
-import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { resolveSearchCity } from '@/lib/growth-city'
 
 const GOOGLE_MAPS_KEY = process.env.GOOGLE_MAPS_API_KEY || ''
@@ -266,6 +266,7 @@ export async function POST(req: NextRequest) {
   try {    const body = await req.json().catch(() => ({}))
     const auth = await getRouteShop(req, body.shopId)
     if (!auth) return unauthorized()
+    if (auth.role === 'viewer') return forbidden()
     const { lead_id, bulk_lead_ids } = body
     const db = getServiceClient()
     const shopCity = await resolveSearchCity(db, auth.shopId, null)

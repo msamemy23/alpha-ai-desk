@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { withOptOut } from '@/lib/growth-text'
 import { getServiceClient } from '@/lib/supabase'
 import { sendEmail } from '@/lib/email'
-import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { calcTotals } from '@/lib/supabase'
 import { isSmsOptedOut } from '@/lib/sms-consent'
 import { revalidateAutomationInvocation, validateAutomationInvocation } from '@/lib/automation-fencing'
@@ -26,6 +26,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   const auth = await getRouteShop(req, body?.shopId)
   if (!auth) return unauthorized()
+  if (auth.role === 'viewer') return forbidden()
   const automationCheck = await validateAutomationInvocation(req, body as Record<string, unknown> | null, auth.shopId, ['estimate_followups'])
   if (!automationCheck.ok) return NextResponse.json({ ok: false, error: automationCheck.error }, { status: automationCheck.status })
 

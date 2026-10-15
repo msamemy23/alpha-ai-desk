@@ -26,6 +26,7 @@ export async function GET(req: NextRequest) {
     const q = req.nextUrl.searchParams
     const auth = await getRouteShop(req, q.get('shop_id'))
     if (!auth) return unauthorized()
+    if (auth.role === 'viewer') return forbidden()
     const db = getServiceClient()
 
     // Find an invoice to credit: recent invoices that have not been credited yet.

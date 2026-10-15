@@ -15,7 +15,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
-import { getRouteShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 import { NEEDS_CITY, cityName, resolveSearchCity } from '@/lib/growth-city'
 import { firstEmailIn, matchSource, nameFoundIn, scoreOf } from '@/lib/lead-grounding'
@@ -235,6 +235,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}))
     const auth = await getRouteShop(req, body.shopId)
     if (!auth) return unauthorized()
+    if (auth.role === 'viewer') return forbidden()
     const automationCheck = await validateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['lead_discovery'])
     if (!automationCheck.ok) return NextResponse.json({ ok: false, error: automationCheck.error }, { status: automationCheck.status })
     const { city: rawCity, scan_type = 'both', categories } = body

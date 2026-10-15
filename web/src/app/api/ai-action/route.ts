@@ -30,6 +30,59 @@ function pickFields(payload: Record<string, unknown>, allowed: readonly string[]
   return Object.fromEntries(allowed.filter((key) => Object.prototype.hasOwnProperty.call(payload, key)).map((key) => [key, payload[key]]))
 }
 
+const DOCUMENT_STATUSES = new Set(['Draft', 'Sent', 'Approved', 'Unpaid', 'Partial', 'Paid', 'Void'])
+
+function validateDocumentLines(value: unknown, kind: 'parts' | 'labors'): string | null {
+  if (value === undefined) return null
+  if (!Array.isArray(value) || value.length > 100) return `${kind} must be an array of at most 100 lines`
+  for (const [index, line] of value.entries()) {
+    if (!line || typeof line !== 'object' || Array.isArray(line)) return `Invalid ${kind}.${index}`
+    const record = line as Record<string, unknown>
+    const label = kind === 'parts' ? record.name || record.description : record.operation || record.description
+    if (typeof label !== 'string' || !label.trim()) return `${kind}.${index} needs a description`
+    const numeric = (value: unknown, minimum = 0) => {
+      const number = Number(value)
+      return typeof value === 'number' && Number.isFinite(number) && number >= minimum
+    }
+    if (kind === 'parts') {
+      const qty = record.qty === undefined || record.qty === null || record.qty === '' ? 1 : record.qty
+      const unitPrice = record.unitPrice
+      if (!numeric(qty, 0.000001) || !numeric(unitPrice) || (record.core !== undefined && record.core !== null && !numeric(record.core))) return `Invalid numeric value in ${kind}.${index}`
+    } else {
+      const hasFlat = record.amount !== undefined && record.amount !== null
+      const hasHourly = record.hours !== undefined || record.rate !== undefined
+      if (hasFlat && hasHourly) return `${kind}.${index} cannot mix a flat amount with hours/rate`
+      if (hasFlat ? !numeric(record.amount) : !numeric(record.hours, 0.000001) || !numeric(record.rate)) return `Invalid labor pricing in ${kind}.${index}`
+    }
+  }
+  return null
+}
+
+function validateActionPayload(action: string, payload: Record<string, unknown>): string | null {
+  if (action === 'createCustomer' && (typeof payload.name !== 'string' || !payload.name.trim())) return 'Customer name is required'
+  if (action === 'createCustomer' && payload.email !== undefined && payload.email !== null && (typeof payload.email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payload.email.trim()))) return 'The customer email address is invalid'
+  if (action === 'createInvoice' || action === 'updateDocument') {
+    if (payload.type !== undefined && !['Invoice', 'Estimate', 'Receipt'].includes(String(payload.type))) return 'Document type is invalid'
+    if (payload.status !== undefined && !DOCUMENT_STATUSES.has(String(payload.status))) return 'Document status is invalid'
+    if (payload.apply_tax !== undefined && typeof payload.apply_tax !== 'boolean') return 'apply_tax must be true or false'
+    for (const field of ['tax_rate', 'shop_supplies', 'sublet', 'deposit']) {
+      if (payload[field] !== undefined && (typeof payload[field] !== 'number' || !Number.isFinite(payload[field] as number) || Number(payload[field]) < 0)) return `Invalid ${field}`
+    }
+    const partsError = validateDocumentLines(payload.parts, 'parts')
+    if (partsError) return partsError
+    const laborError = validateDocumentLines(payload.labors, 'labors')
+    if (laborError) return laborError
+    if (action === 'createInvoice' && (!Array.isArray(payload.parts) || !Array.isArray(payload.labors) || (payload.parts.length + payload.labors.length) === 0)) {
+      return 'At least one priced part or labor line is required before saving a document'
+    }
+  }
+  if (action === 'updateJobStatus') {
+    const allowedStatuses = new Set(['New', 'Waiting on Parts', 'Waiting on Customer', 'Approved', 'In Progress', 'Completed', 'Ready for Pickup', 'Paid', 'Closed'])
+    if (!allowedStatuses.has(String(payload.status))) return 'Job status is invalid'
+  }
+  return null
+}
+
 export async function POST(req: NextRequest) {
   let failureMessage: string | null = null
   let isMutation = false
@@ -72,6 +125,8 @@ export async function POST(req: NextRequest) {
   const payloadHash = createHash('sha256').update(JSON.stringify(safePayload)).digest('hex')
   isMutation = mutatingActions.has(action)
   if (isMutation && caller.role === 'viewer') return forbidden()
+  const payloadError = validateActionPayload(action, safePayload)
+  if (payloadError) return fail(payloadError)
   // The shop's own rules come first. They can switch off a whole kind of action or one
   // action by name, and they apply to every caller. If the rules cannot be read, nothing runs.
   const shopRules = await loadShopRules(sb, shopId)
@@ -283,7 +338,7 @@ export async function POST(req: NextRequest) {
           customer_name: customer_name || 'Walk-in',
           vehicle_year: vehicle_year || '', vehicle_make: vehicle_make || '',
           vehicle_model: vehicle_model || '', vehicle_vin: vin || '',
-           status: status || 'Pending', customer_notes: notes || '',
+           status: status || 'New', customer_notes: notes || '',
           shop_id: shopId,
           created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
         }).select().single()
@@ -295,10 +350,23 @@ export async function POST(req: NextRequest) {
       case 'createInvoice': {
         const docType = (payload.type as string) || 'Invoice'
         if (!['Invoice', 'Estimate', 'Receipt'].includes(docType)) return fail('Document type must be Invoice, Estimate, or Receipt')
+        const { data: shopSettings, error: shopSettingsError } = await sb.from('settings').select('tax_rate').eq('shop_id', shopId).limit(1).maybeSingle()
+        if (shopSettingsError) return fail('Shop tax settings could not be loaded', 500)
+        const configuredTaxRate = nonNegativeMoney(shopSettings?.tax_rate, 0)
+        const hasConfiguredTaxRate = shopSettings?.tax_rate !== undefined && shopSettings?.tax_rate !== null && Number.isFinite(Number(shopSettings.tax_rate)) && Number(shopSettings.tax_rate) >= 0
+        const explicitTaxRate = payload.tax_rate !== undefined && payload.tax_rate !== null
+        if (payload.apply_tax !== false && !explicitTaxRate && !hasConfiguredTaxRate) return fail('Shop tax is not configured. Set a tax rate or explicitly disable tax before saving the document')
+        if (payload.customer_id !== undefined && payload.customer_id !== null && typeof payload.customer_id !== 'string') return fail('customer_id must be a string')
         if (payload.customer_id) {
           const { data: customer, error: customerError } = await sb.from('customers').select('id').eq('id', payload.customer_id).eq('shop_id', shopId).maybeSingle()
           if (customerError) return fail(customerError.message, 500)
           if (!customer) return fail('Customer not found in this shop', 404)
+        }
+        if (payload.job_id !== undefined && payload.job_id !== null && typeof payload.job_id !== 'string') return fail('job_id must be a string')
+        if (payload.job_id) {
+          const { data: job, error: jobError } = await sb.from('jobs').select('id').eq('id', payload.job_id).eq('shop_id', shopId).maybeSingle()
+          if (jobError) return fail('Job lookup failed', 500)
+          if (!job) return fail('Job not found in this shop', 404)
         }
         const { data: doc_number, error: numberingError } = await sb.rpc('next_document_number', { p_shop_id: shopId, p_type: docType })
         if (numberingError || typeof doc_number !== 'string') return fail('Document numbering failed', 500)
@@ -308,12 +376,29 @@ export async function POST(req: NextRequest) {
           doc_date: new Date().toISOString().split('T')[0],
           customer_name: (payload.customer_name as string) || 'Customer',
           customer_id: payload.customer_id || null,
+          job_id: payload.job_id || null,
           customer_phone: payload.customer_phone || null,
           customer_email: payload.customer_email || null,
           vehicle_year: payload.vehicle_year || '', vehicle_make: payload.vehicle_make || '',
           vehicle_model: payload.vehicle_model || '',
+          vehicle_vin: payload.vehicle_vin || '',
+          vehicle_plate: payload.vehicle_plate || '',
+          vehicle_mileage: payload.vehicle_mileage || null,
           parts: payload.parts || [], labors: payload.labors || [],
-          notes: payload.notes || '', tax_rate: nonNegativeMoney(payload.tax_rate, 8.25),
+          notes: payload.notes || '',
+          internal_notes: payload.internal_notes || null,
+          warranty_type: payload.warranty_type || null,
+          warranty_months: payload.warranty_months ?? null,
+          warranty_mileage: payload.warranty_mileage ?? null,
+          warranty_start: payload.warranty_start || null,
+          warranty_exclusions: payload.warranty_exclusions || null,
+          warranty_claim: payload.warranty_claim || null,
+          locked: payload.locked === true,
+          due_date: payload.due_date || null,
+          expires_date: payload.expires_date || null,
+          line_items: payload.line_items || null,
+          payment_plan: payload.payment_plan || null,
+          tax_rate: payload.apply_tax === false ? 0 : nonNegativeMoney(payload.tax_rate, configuredTaxRate),
           apply_tax: payload.apply_tax !== false, shop_supplies: nonNegativeMoney(payload.shop_supplies),
           sublet: nonNegativeMoney(payload.sublet), deposit: nonNegativeMoney(payload.deposit),
           created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
@@ -489,15 +574,9 @@ export async function POST(req: NextRequest) {
           let resolvedEmail = (c.email as string) || null
           if (!resolvedEmail) {
             const cName = (c.name as string || '').toLowerCase()
-            const docWithEmail = allDocs.find((d: Record<string, unknown>) => {
-              const dName = (d.customer_name as string || '').toLowerCase()
-              const emailVal = d.customer_email as string | null
-              return emailVal && (d.customer_id === c.id || dName.includes(cName) || cName.includes(dName))
-            })
+            const docWithEmail = allDocs.find((d: Record<string, unknown>) => d.customer_id === c.id && d.customer_email)
             if (docWithEmail) {
               resolvedEmail = docWithEmail.customer_email as string
-              // Save email back to customers table so future searches find it directly
-              sb.from('customers').update({ email: resolvedEmail }).eq('id', c.id as string).eq('shop_id', shopId).then(() => {})
             }
           }
           return { ...c, email: resolvedEmail, vehicles: uniqueVehicles, recent_jobs: custJobs.slice(0, 5) }
@@ -636,7 +715,7 @@ export async function POST(req: NextRequest) {
             idempotencyKey,
           })
         } catch (error) {
-          return fail(error instanceof Error ? error.message : 'Email could not be sent', 502)
+          throw new Error(error instanceof Error ? error.message : 'Email could not be sent')
         }
 
         const { error: messageError } = await sb.from('messages').insert({
@@ -650,15 +729,16 @@ export async function POST(req: NextRequest) {
           customer_id: doc.customer_id,
           shop_id: shopId,
           status: 'sent',
+          idempotency_key: idempotencyKey,
           read: true,
         })
-        if (messageError) return fail('Email sent, but its message record could not be saved', 500)
+        if (messageError && messageError.code !== '23505') throw new Error('Email sent, but its message record could not be saved')
 
         const { error: documentError } = await sb.from('documents')
           .update({ sent_at: new Date().toISOString() })
           .eq('id', doc.id)
           .eq('shop_id', shopId)
-        if (documentError) return fail('Email sent, but the document could not be marked as sent', 500)
+        if (documentError) throw new Error('Email sent, but the document could not be marked as sent')
 
         return await auditedOk({ sent: true, to: toEmail, doc_number: doc.doc_number, type: doc.type }, 'document', doc.id, { subject: subjectOf('documents', doc), summary: `Emailed to ${toEmail}`, undoReason: 'An email cannot be taken back once it is sent.' })
       }
@@ -740,7 +820,41 @@ export async function POST(req: NextRequest) {
          if (!id) return fail('Document id is required')
          const before = await snapshot('documents', id)
          const updates = pickFields(payload, ['type','status','doc_date','due_date','expires_date','customer_id','customer_name','customer_phone','customer_email','job_id','vehicle_year','vehicle_make','vehicle_model','vehicle_vin','vehicle_plate','vehicle_mileage','parts','labors','shop_supplies','sublet','tax_rate','apply_tax','deposit','payment_method','cashier','payment_terms','payment_methods','warranty_type','warranty_months','warranty_mileage','warranty_start','warranty_exclusions','warranty_claim','notes','locked','sent_at','signature_signed_at','signature_signer_name','signature_requested_at','line_items','payment_plan','internal_notes'])
-         if (updates.status && ['Paid', 'Partial'].includes(String(updates.status))) return fail('Use the payment action to change an invoice to Paid or Partial; the payment ledger is protected.')
+         const { data: existingDocument, error: documentLookupError } = await sb.from('documents')
+           .select('id,type,status,amount_paid')
+           .eq('id', id)
+           .eq('shop_id', shopId)
+           .maybeSingle()
+         if (documentLookupError) return fail('Document payment state could not be checked', 500)
+         if (!existingDocument) return fail('Document not found in this shop', 404)
+         if (updates.status && ['Paid', 'Partial'].includes(String(updates.status)) && String(existingDocument.status) !== String(updates.status)) {
+           return fail('Use the payment action to change an invoice to Paid or Partial; the payment ledger is protected.')
+         }
+         const financialFields = new Set(['parts','labors','shop_supplies','sublet','tax_rate','apply_tax','deposit','payment_method','payment_terms','payment_methods','payment_plan','line_items'])
+         const typeChanged = updates.type !== undefined && String(updates.type) !== String(existingDocument.type)
+         if (typeChanged || Object.keys(updates).some(field => financialFields.has(field))) {
+           if (['Paid', 'Partial'].includes(String(existingDocument.status)) || Number(existingDocument.amount_paid || 0) > 0) {
+             return fail('Financial terms cannot be changed after a payment is recorded; reconcile the payment ledger first.', 409)
+           }
+           const { data: existingPayment, error: paymentLookupError } = await sb.from('payments')
+             .select('id')
+             .eq('document_id', id)
+             .eq('shop_id', shopId)
+             .limit(1)
+             .maybeSingle()
+           if (paymentLookupError) return fail('Document payment history could not be checked', 500)
+           if (existingPayment) return fail('Financial terms cannot be changed after a payment ledger entry exists; reconcile it first.', 409)
+         }
+         if (updates.customer_id !== undefined && updates.customer_id !== null) {
+           const { data: customer, error: customerError } = await sb.from('customers').select('id').eq('id', updates.customer_id).eq('shop_id', shopId).maybeSingle()
+           if (customerError) return fail('Customer lookup failed', 500)
+           if (!customer) return fail('Customer not found in this shop', 404)
+         }
+         if (updates.job_id !== undefined && updates.job_id !== null) {
+           const { data: job, error: jobError } = await sb.from('jobs').select('id').eq('id', updates.job_id).eq('shop_id', shopId).maybeSingle()
+           if (jobError) return fail('Job lookup failed', 500)
+           if (!job) return fail('Job not found in this shop', 404)
+         }
          const { data, error } = await sb.from('documents').update({
            ...updates, updated_at: new Date().toISOString(),
         }).eq('id', id).eq('shop_id', shopId).select().single()

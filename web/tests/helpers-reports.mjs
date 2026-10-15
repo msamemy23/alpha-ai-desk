@@ -60,10 +60,12 @@ export const RAW = {
     parts: [], labors: [{ operation: 'Oil change', tech: 'Lee', hours: 0.5, rate: 90 }],
     tax_rate: 8.25, apply_tax: true, amount_paid: 45, payment_method: 'cash',
   },
-  // An old record: no doc_date, no customer id, text amounts, nothing about tax or payment. Marked Paid but no money recorded.
+  // An old record: no doc_date, no customer id, text amounts, nothing about payment. Marked Paid but no money recorded.
+  // It carries the shop's rate: a document with no tax rate at all now totals as untaxed, and none are stored that way
+  // (the documents column defaults to 8.25, and none of the 185 stored documents lacked one when this was checked).
   old: {
     id: 'd-0900', type: 'Invoice', doc_number: 'INV-0900', status: 'Paid', created_at: '2026-08-15T14:00:00Z',
-    customer_name: 'Walk-in', parts: [{ name: 'Spark plugs', qty: '4', unitPrice: '8.50' }], labors: [{ description: 'Tune up', amount: '150' }],
+    customer_name: 'Walk-in', parts: [{ name: 'Spark plugs', qty: '4', unitPrice: '8.50' }], labors: [{ description: 'Tune up', amount: '150' }], tax_rate: 8.25,
   },
   draft: { id: 'd-1006', type: 'Invoice', doc_number: 'INV-1006', status: 'Draft', doc_date: '2026-10-09', customer_name: 'Pat Doe', parts: [], labors: [{ operation: 'Brake inspection', hours: 1, rate: 100 }], tax_rate: 8.25 },
   voided: { id: 'd-1007', type: 'Invoice', doc_number: 'INV-1007', status: 'Void', doc_date: '2026-10-09', customer_name: 'Pat Doe', parts: [], labors: [{ operation: 'Tire rotation', hours: 1, rate: 100 }], tax_rate: 8.25 },

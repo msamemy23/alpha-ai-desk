@@ -52,6 +52,42 @@ export function checkNewDocument(data: unknown): CreateCheck {
   return { ok: true, fields }
 }
 
+/** Lines, tax and totals. Once money is taken (or a payment ledger row exists) none of these can change from a screen. */
+export const MONEY_FIELDS = ['parts', 'labors', 'shop_supplies', 'sublet', 'tax_rate', 'apply_tax', 'deposit', 'payment_method', 'payment_terms', 'payment_methods', 'payment_plan', 'line_items'] as const
+
+/** The columns the server owns. A screen can never set them, even on its own document. */
+const SERVER_ONLY = new Set(['id', 'shop_id', 'amount_paid', 'created_at'])
+
+export interface ExistingDoc { type?: unknown; status?: unknown; amount_paid?: unknown }
+export type UpdateCheck =
+  | { ok: true; fields: Record<string, unknown>; touchesMoney: boolean }
+  | { ok: false; error: string; status: number }
+
+/**
+ * What a screen may change on a saved document. Same rules as the assistant's updateDocument action:
+ * Paid and Partial come only from a recorded payment, and once any money is taken the lines, tax and totals are frozen.
+ * Customer, notes, warranty and dates stay editable.
+ */
+export function checkUpdate(data: unknown, existing: ExistingDoc): UpdateCheck {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return { ok: false, status: 400, error: 'Document data must be an object.' }
+  const fields = pickDocFields(data)
+  for (const key of SERVER_ONLY) delete fields[key]
+  const currentStatus = String(existing.status ?? '')
+  const locked = PAID.has(currentStatus) || Number(existing.amount_paid ?? 0) > 0
+  if (fields.status !== undefined && fields.status !== null) {
+    const next = String(fields.status)
+    if (PAID.has(next) && next !== currentStatus) return { ok: false, status: 409, error: 'A document becomes Paid or Partial only when a payment is recorded.' }
+    if (locked && next !== currentStatus) return { ok: false, status: 409, error: 'This document has a payment on it, so its status changes only with payments.' }
+  }
+  if (fields.type !== undefined && !isDocType(fields.type)) return { ok: false, status: 400, error: 'Choose a document type: estimate, invoice or receipt.' }
+  const typeChanged = fields.type !== undefined && String(fields.type) !== String(existing.type ?? '')
+  const touchesMoney = typeChanged || MONEY_FIELDS.some((key) => Object.prototype.hasOwnProperty.call(fields, key))
+  if (touchesMoney && locked) {
+    return { ok: false, status: 409, error: 'A payment is recorded, so the lines, tax and totals are locked. Customer, notes and warranty can still be changed.' }
+  }
+  return { ok: true, fields, touchesMoney }
+}
+
 export interface PaymentInput { amount: number; method: string; note: string; key: string }
 export type PaymentCheck = { ok: true; input: PaymentInput } | { ok: false; error: string }
 

@@ -4,15 +4,18 @@ import { getServiceClient } from '@/lib/supabase'
 import { forbidden, getAuthedShop, getSessionUser, unauthorized } from '@/lib/api-auth'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { jsonError, jsonOk, logEvent, staffLabel } from '@/lib/doc-server'
-import { checkConvert, checkNewDocument, checkPayment, isDocType, paymentErrorText } from '@/lib/doc-write'
+import { checkConvert, checkNewDocument, checkPayment, checkUpdate, isDocType, paymentErrorText } from '@/lib/doc-write'
 
 // The estimate, invoice and receipt screens write through here. The database no longer lets the browser add, change
 // or number documents or take payments itself, so each of those happens on the server after checking who is asking:
 //   number   hands out the next document number for the shop
 //   create   adds a new document to the caller's shop
+//   update   changes a saved document (lines, tax and totals are frozen once money is taken)
 //   convert  turns an open estimate into an invoice with its own number
 //   payment  records one payment (the same payment sent twice is recorded once)
-// Editing and deleting stay in /api/save-document and /api/document-actions.
+// Void, restore and delete stay in /api/document-actions. These rules are the same ones the assistant's
+// createInvoice / updateDocument actions follow, but a person using the screen is never held up by the
+// assistant's own switches in Settings, so the screen has its own route.
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : v === null || v === undefined ? '' : String(v))
 
@@ -62,7 +65,17 @@ export async function POST(req: NextRequest) {
     const row = { ...fields, doc_number: docNumber, shop_id: auth.shopId, created_at: now, updated_at: now }
     const { data: created, error } = await db.from('documents').insert(row).select('*').single()
     if (error || !created) {
-      if (error?.code === '23505') return jsonError('That document number is already used. Try saving again.', 409)
+      if (error?.code === '23505') {
+        // The same save sent twice (a double tap, a retry after a dropped connection) lands here on the second try.
+        // If the number already belongs to the same document made moments ago, hand it back instead of an error.
+        const same = await db.from('documents').select('*').eq('shop_id', auth.shopId).eq('doc_number', docNumber).maybeSingle()
+        const row = (same.data || null) as Record<string, unknown> | null
+        const age = row ? Date.now() - Date.parse(str(row.created_at)) : Infinity
+        if (row && str(row.type) === str(fields.type) && str(row.customer_name) === str(fields.customer_name) && Number(row.amount_paid || 0) === 0 && age >= 0 && age < 5 * 60_000) {
+          return jsonOk({ ok: true, document: row, replayed: true })
+        }
+        return jsonError('That document number is already used. Try saving again.', 409)
+      }
       return jsonError('The document could not be saved. Nothing was changed.', 500)
     }
     const user = await getSessionUser().catch(() => null)
@@ -71,6 +84,50 @@ export async function POST(req: NextRequest) {
       summary: `Created ${str(fields.type).toLowerCase()} ${docNumber}`.trim(),
     })
     return jsonOk({ ok: true, document: created })
+  }
+
+  if (action === 'update') {
+    const documentId = str(input.documentId)
+    if (!documentId) return jsonError('documentId required', 400)
+    const { data: found, error: loadError } = await db.from('documents').select('id,doc_number,type,status,amount_paid').eq('id', documentId).eq('shop_id', auth.shopId).maybeSingle()
+    if (loadError) return jsonError('The document could not be loaded. Nothing was changed.', 500)
+    if (!found) return jsonError('Document not found', 404)
+    const existing = found as Record<string, unknown>
+    const check = checkUpdate(input.data, existing)
+    if (!check.ok) return jsonError(check.error, check.status)
+    const fields = check.fields
+
+    // Customer and job must belong to this shop. The service client skips RLS, so this is the check that counts.
+    for (const [field, table] of [['customer_id', 'customers'], ['job_id', 'jobs']] as const) {
+      const value = fields[field]
+      if (value === undefined || value === null || value === '') { if (value === '') fields[field] = null; continue }
+      if (typeof value !== 'string') return jsonError(`${field} must be a valid identifier`, 400)
+      const { data: linked, error: linkError } = await db.from(table).select('id').eq('id', value).eq('shop_id', auth.shopId).maybeSingle()
+      if (linkError) return jsonError('The customer or job could not be checked. Nothing was saved.', 500)
+      if (!linked) return jsonError(`${field === 'customer_id' ? 'That customer' : 'That job'} does not belong to this shop.`, 400)
+    }
+
+    // A payment row can exist even when the document status has not caught up. Lines and totals stay frozen then too.
+    if (check.touchesMoney) {
+      const { data: ledger, error: ledgerError } = await db.from('payments').select('id').eq('document_id', documentId).eq('shop_id', auth.shopId).limit(1)
+      if (ledgerError) return jsonError('The payment history could not be checked. Nothing was changed.', 500)
+      if (Array.isArray(ledger) && ledger.length > 0) return jsonError('A payment is recorded, so the lines, tax and totals are locked. Customer, notes and warranty can still be changed.', 409)
+    }
+
+    // A document number is not renumbered by a screen unless it is a real change to a free number.
+    if (typeof fields.doc_number === 'string' && fields.doc_number.trim() === '') delete fields.doc_number
+
+    // The status is part of the filter, so a payment that lands while this save is in flight turns the save away
+    // instead of letting it rewrite lines that have just been paid against.
+    let write = db.from('documents').update({ ...fields, updated_at: now }).eq('id', documentId).eq('shop_id', auth.shopId)
+    if (existing.status !== null && existing.status !== undefined) write = write.eq('status', str(existing.status))
+    const { data: updated, error } = await write.select('*').maybeSingle()
+    if (error) {
+      if (error.code === '23505') return jsonError('That document number is already used by another document.', 409)
+      return jsonError('The document could not be saved. Nothing was changed.', 500)
+    }
+    if (!updated) return jsonError('This document changed while you were editing it (a payment or a status change). Reload and look again. Nothing was overwritten.', 409)
+    return jsonOk({ ok: true, document: updated })
   }
 
   if (action === 'convert') {

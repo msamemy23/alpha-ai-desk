@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { getShopId, supabase, calcTotals } from '@/lib/supabase'
-import { getLaborFlatAmount, nonNegativeMoney } from '@/lib/document-money'
+import { buildPaymentSchedule, getLaborFlatAmount, nonNegativeMoney } from '@/lib/document-money'
 import Sheet from '@/components/Sheet'
 import DocList from './documents/DocList'
 import type { ListFilter } from './documents/DocList'
@@ -15,6 +15,7 @@ import { useShopLogo } from '@/lib/shop-logo'
 import { cleanDecisions, estimateLines, findings, normalizeSections } from '@/lib/dvi'
 import { docWord, isLocked } from './documents/types'
 import { convertEstimate, createDocument, docAction, nextDocNumber, postPayment, saveDocumentFields } from './documents/api'
+import { MONEY_FIELDS } from '@/lib/doc-write'
 import type { Customer, Doc, DocType, Notice } from './documents/types'
 
 const PAYMENT_OPERATION_STORAGE_KEY = 'alpha_ai_payment_operations_v1'
@@ -246,7 +247,7 @@ export default function DocumentsPage({ type }: { type: DocType }) {
       const rate = shop.tax_rate !== undefined && shop.tax_rate !== null && String(shop.tax_rate).trim() !== '' ? Number(shop.tax_rate) : NaN
       const next: Partial<Doc> = {
         type, doc_number: docNumber, doc_date: localToday(), status: 'Draft',
-        tax_rate: Number.isFinite(rate) ? rate : 8.25, apply_tax: true,
+        tax_rate: Number.isFinite(rate) && rate >= 0 ? rate : 0, apply_tax: true,
         warranty_type: 'No Warranty', parts: [], labors: [],
       }
       // Started from a customer (for example from the schedule): fill in who and what car.
@@ -292,9 +293,11 @@ export default function DocumentsPage({ type }: { type: DocType }) {
       }
       setForm(next); setBaseline(JSON.stringify(next)); setEditing('new')
       setSignatureImg(null)
+      const taxUnset = !(Number.isFinite(rate) && rate >= 0)
       setNotice(carried
         ? { kind: 'ok', text: carried.count === 0 ? 'The customer has not approved anything yet, so this starts empty.' : `Added ${carried.count} approved ${carried.count === 1 ? 'repair' : 'repairs'} from the inspection${carried.priced < carried.count ? `. ${carried.count - carried.priced} still need a price` : ''}. Add parts and labor, then save.` }
-        : carryFailed ? { kind: 'error', text: 'The inspection could not be loaded, so this estimate starts empty.' } : null)
+        : carryFailed ? { kind: 'error', text: 'The inspection could not be loaded, so this estimate starts empty.' }
+        : taxUnset ? { kind: 'error', text: `Your shop's tax rate is not set, so this ${noun} starts at 0% tax. Type the rate in the Tax field, or set it once in Settings.` } : null)
     } catch (e) {
       setActionError(`Could not start a new ${noun}. ${errText(e)}`)
     }
@@ -394,6 +397,11 @@ export default function DocumentsPage({ type }: { type: DocType }) {
     const data: Record<string, unknown> = {}
     for (const k of Object.keys(raw)) { if (VALID_COLS.has(k)) data[k] = raw[k] }
     data.shop_id = shopId
+    // Once a payment is recorded the lines, tax and totals are locked on the server. Send only what can still change
+    // (customer, notes, warranty, dates) so a notes edit on a paid invoice is a normal save, not a refusal.
+    if (editing !== 'new' && isLocked(merged.status)) {
+      for (const field of MONEY_FIELDS) delete data[field]
+    }
     // Auto-detect warranty only when creating a new document, never override on edits
     if (editing === 'new' && (!data.warranty_type || data.warranty_type === 'No Warranty')) {
       const detected = detectWarranty(data)
@@ -573,16 +581,10 @@ export default function DocumentsPage({ type }: { type: DocType }) {
     if (!target) return
     setBusy(true); setSheetError('')
     try {
+      if (isLocked(target.status) || Number(target.amount_paid || 0) > 0) throw new Error('A payment is already recorded, so a plan cannot be added now. Set up the plan before taking the first payment; a down payment can be recorded right after.')
       const t = calcTotals(target as unknown as Record<string, unknown>)
-      const remaining = t.total - planForm.down_payment
-      const perPayment = remaining / planForm.installments
-      const payments: { date: string; amount: number; paid: boolean }[] = []
-      const freqDays = planForm.frequency === 'weekly' ? 7 : planForm.frequency === 'biweekly' ? 14 : 30
-      for (let i = 0; i < planForm.installments; i++) {
-        const d = new Date()
-        d.setDate(d.getDate() + freqDays * (i + 1))
-        payments.push({ date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`, amount: Math.round(perPayment * 100) / 100, paid: false })
-      }
+      const frequency = planForm.frequency === 'weekly' || planForm.frequency === 'biweekly' ? planForm.frequency : 'monthly'
+      const payments = buildPaymentSchedule(t.total, 0, planForm.down_payment, planForm.installments, frequency)
       const plan = { enabled: true, down_payment: planForm.down_payment, installments: planForm.installments, frequency: planForm.frequency, payments }
       const saved = await saveDocumentFields(target.id, { payment_plan: plan })
       if (!saved.ok) throw new Error(saved.error)

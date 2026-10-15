@@ -1,119 +1,67 @@
-﻿export const dynamic = "force-dynamic"
+export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
-import { getServiceClient } from '@/lib/supabase'
-import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
-import { nonNegativeMoney } from '@/lib/document-money'
+import { createHash } from 'node:crypto'
+import { POST as runAiAction } from '@/app/api/ai-action/route'
 
+/**
+ * Backwards-compatible document endpoint.
+ *
+ * Older clients still post here, but document creation must have exactly one
+ * implementation. Forwarding to ai-action keeps those clients on the same
+ * tenant, approval, line-validation, numbering, idempotency, audit, and
+ * payment-safety rules as the current chat workflow.
+ */
 export async function POST(req: NextRequest) {
-  const auth = await getAuthedShop()
-  if (!auth) return unauthorized()
-  if (auth.role === 'viewer') return forbidden()
-
-  const sb = getServiceClient()
-  const body = await req.json().catch(() => null)
-  if (!body || typeof body !== 'object') return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
-  const shopId = auth.shopId
-
-  // Accept both "customer" (from proposeDocument) and "customer_name"
-  const customerName: string = body.customer || body.customer_name || ''
-  const customerEmail: string = body.customer_email || ''
-  const customerPhone: string = body.customer_phone || ''
-  const { vehicle, vehicle_year, vehicle_make, vehicle_model, parts, labors, notes } = body
-
-  // Keep the requested document type. A receipt starts as a draft until a
-  // real payment is recorded; it must never claim to be paid by itself.
-  const rawType: string = body.type || 'Estimate'
-  if (!['Invoice', 'Estimate', 'Receipt'].includes(rawType)) return NextResponse.json({ error: 'Type must be Invoice, Estimate, or Receipt' }, { status: 400 })
-  const docType: string = rawType
-  const prefix = docType === 'Estimate' ? 'EST' : docType === 'Receipt' ? 'REC' : 'INV'
-
-  // Parse vehicle string like "2019 Toyota Camry" if individual fields aren't provided
-  let vYear = vehicle_year || ''
-  let vMake = vehicle_make || ''
-  let vModel = vehicle_model || ''
-  if (vehicle && typeof vehicle === 'string' && (!vYear || !vMake)) {
-    const vParts = vehicle.trim().split(/\s+/)
-    if (vParts.length >= 1 && /^\d{4}$/.test(vParts[0])) vYear = vYear || vParts[0]
-    if (vParts.length >= 2) vMake = vMake || vParts[1]
-    if (vParts.length >= 3) vModel = vModel || vParts.slice(2).join(' ')
+  const body = await req.json().catch(() => null) as Record<string, unknown> | null
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return NextResponse.json({ ok: false, error: 'Invalid request body' }, { status: 400 })
   }
 
-  // Look up or auto-create customer to get customer_id
-  let customer_id: string | null = null
-  if (customerName) {
-    const { data: existing, error: existingError } = await sb
-      .from('customers')
-      .select('id, email, phone')
-      .eq('shop_id', shopId)
-      .ilike('name', customerName)
-      .limit(1)
-    if (existingError) return NextResponse.json({ error: 'Customer lookup failed' }, { status: 500 })
-
-    if (existing && existing.length > 0) {
-      customer_id = existing[0].id
-      const updates: Record<string, string> = {}
-      if (customerEmail && !existing[0].email) updates.email = customerEmail
-      if (customerPhone && !existing[0].phone) updates.phone = customerPhone
-      if (Object.keys(updates).length > 0) {
-        const { error: updateError } = await sb.from('customers').update(updates).eq('id', customer_id).eq('shop_id', shopId)
-        if (updateError) return NextResponse.json({ error: 'Customer update failed' }, { status: 500 })
-      }
-    } else {
-      const insertData: Record<string, string | null> = {
-        name: customerName,
-        created_at: new Date().toISOString(),
-        shop_id: shopId,
-      }
-      if (customerEmail) insertData.email = customerEmail
-      if (customerPhone) insertData.phone = customerPhone
-      const { data: created, error: createCustomerError } = await sb
-        .from('customers')
-        .insert(insertData)
-        .select('id')
-        .single()
-      if (createCustomerError) return NextResponse.json({ error: 'Customer creation failed' }, { status: 500 })
-      if (created) customer_id = created.id
-    }
+  const vehicle = typeof body.vehicle === 'string' ? body.vehicle.trim().split(/\s+/) : []
+  const vehicleYear = typeof body.vehicle_year === 'string' ? body.vehicle_year : (/^\d{4}$/.test(vehicle[0] || '') ? vehicle[0] : '')
+  const vehicleMake = typeof body.vehicle_make === 'string' ? body.vehicle_make : (vehicle[1] || '')
+  const vehicleModel = typeof body.vehicle_model === 'string' ? body.vehicle_model : vehicle.slice(2).join(' ')
+  const documentType = typeof body.type === 'string' ? body.type : 'Estimate'
+  const customerName = typeof body.customer_name === 'string' ? body.customer_name : (typeof body.customer === 'string' ? body.customer : '')
+  const payload = {
+    type: documentType,
+    customer_name: customerName,
+    customer_email: typeof body.customer_email === 'string' ? body.customer_email : '',
+    customer_phone: typeof body.customer_phone === 'string' ? body.customer_phone : '',
+    vehicle_year: vehicleYear,
+    vehicle_make: vehicleMake,
+    vehicle_model: vehicleModel,
+    parts: Array.isArray(body.parts) ? body.parts : [],
+    labors: Array.isArray(body.labors) ? body.labors : [],
+    notes: typeof body.notes === 'string' ? body.notes : '',
+    apply_tax: body.apply_tax,
+    tax_rate: body.tax_rate,
+    shop_supplies: body.shop_supplies,
+    sublet: body.sublet,
+    deposit: body.deposit,
   }
 
-  // Numbering is serialized in the database so concurrent browser/API writes
-  // cannot receive the same document number.
-  const { data: generatedNumber, error: numberingError } = await sb.rpc('next_document_number', {
-    p_shop_id: shopId,
-    p_type: docType,
+  const requestKey = typeof body.request_id === 'string' && body.request_id.trim()
+    ? body.request_id.trim()
+    : createHash('sha256').update(JSON.stringify(payload)).digest('hex')
+  const headers = new Headers(req.headers)
+  headers.set('X-AI-Approval', 'confirm')
+  headers.set('Idempotency-Key', requestKey.slice(0, 160))
+  const forwarded = new NextRequest(req.url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ action: 'createInvoice', payload }),
   })
-  if (numberingError || typeof generatedNumber !== 'string') return NextResponse.json({ error: 'Document numbering failed' }, { status: 500 })
-  const doc_number = generatedNumber
-
-  // Handle tax - if type is Receipt and body.apply_tax is explicitly false, no tax
-  const applyTax = body.apply_tax !== undefined ? body.apply_tax !== false : true
-  const taxRate = nonNegativeMoney(body.tax_rate, 8.25)
-
-  const { data, error } = await sb.from('documents').insert({
-    type: docType,
-    doc_number,
-    shop_id: shopId,
-    status: 'Draft',
-    doc_date: new Date().toISOString().split('T')[0],
-    customer_id: customer_id,
-    customer_name: customerName || 'Customer',
-    customer_phone: customerPhone || null,
-    customer_email: customerEmail || null,
-    vehicle_year: vYear,
-    vehicle_make: vMake,
-    vehicle_model: vModel,
-    parts: parts || [],
-    labors: labors || [],
-    notes: notes || `Generated from AI conversation`,
-    tax_rate: taxRate,
-    apply_tax: applyTax,
-    shop_supplies: nonNegativeMoney(body.shop_supplies),
-    sublet: nonNegativeMoney(body.sublet),
-    deposit: nonNegativeMoney(body.deposit),
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  }).select().single()
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ success: true, estimate: data, document: data, doc_number, type: docType })
+  const response = await runAiAction(forwarded)
+  const result = await response.json().catch(() => ({ ok: false, error: 'Document creation failed' })) as Record<string, unknown>
+  if (!response.ok) return NextResponse.json(result, { status: response.status })
+  const document = result.data
+  return NextResponse.json({
+    ok: true,
+    success: true,
+    estimate: document,
+    document,
+    doc_number: document && typeof document === 'object' ? (document as Record<string, unknown>).doc_number : undefined,
+    type: documentType,
+  })
 }

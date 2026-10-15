@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
 
 export const dynamic = 'force-dynamic'
@@ -9,6 +9,7 @@ const SERVICES = new Set(['facebook', 'instagram', 'google_business', 'google_ca
 export async function POST(req: NextRequest) {
   const auth = await getAuthedShop()
   if (!auth) return unauthorized()
+  if (auth.role === 'viewer') return forbidden()
 
   const body = await req.json().catch(() => null) as Record<string, unknown> | null
   const service = typeof body?.service === 'string' ? body.service : ''

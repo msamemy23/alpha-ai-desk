@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
 
 export async function GET() {
   const auth = await getAuthedShop()
@@ -20,6 +20,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const auth = await getAuthedShop()
   if (!auth) return unauthorized()
+  if (auth.role === 'viewer') return forbidden()
 
   const svc = getServiceClient()
   const { content, note_date } = await req.json()
@@ -36,6 +37,7 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const auth = await getAuthedShop()
   if (!auth) return unauthorized()
+  if (auth.role === 'viewer') return forbidden()
 
   const svc = getServiceClient()
   const { id } = await req.json()

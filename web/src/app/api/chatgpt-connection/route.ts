@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { chatGptConnectionStatus, disconnectChatGpt, pollChatGptConnection, startChatGptConnection } from '@/lib/chatgpt-connection'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
 
@@ -17,6 +17,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const auth = await getAuthedShop()
   if (!auth || auth.role === 'service') return unauthorized()
+  if (auth.role === 'viewer') return forbidden()
   if (req.headers.get('origin') !== new URL(req.url).origin) return json({ error: 'Same-origin request required' }, 403)
   if (!checkRateLimit(rateLimitKey('chatgpt-connect', auth.userId), 30, 60_000).ok) return json({ error: 'Please wait a minute before trying again.' }, 429)
   try {

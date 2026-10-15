@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { isSmsOptedOut } from '@/lib/sms-consent'
 import { earliestSend, normalizeRules, validTimezone, windowFromRules } from '@/lib/automation-rules'
 
@@ -23,6 +23,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const auth = await getAuthedShop()
   if (!auth) return unauthorized()
+  if (auth.role === 'viewer') return forbidden()
 
   const sb = getServiceClient()
   const body = await req.json()
@@ -99,6 +100,7 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   const auth = await getAuthedShop()
   if (!auth) return unauthorized()
+  if (auth.role === 'viewer') return forbidden()
 
   const sb = getServiceClient()
   const body = await req.json().catch(() => ({}))

@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { randomUUID } from 'node:crypto'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
 
 const BUCKET = 'social-post-media'
@@ -10,6 +10,7 @@ const MAX_BYTES = 10 * 1024 * 1024
 export async function POST(req: NextRequest) {
   const auth = await getAuthedShop()
   if (!auth) return unauthorized()
+  if (auth.role === 'viewer') return forbidden()
   const form = await req.formData()
   const file = form.get('file')
   if (!(file instanceof File)) return NextResponse.json({ error: 'file is required' }, { status: 400 })

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getConnector, getValidGoogleToken } from '@/lib/connectors'
 
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
@@ -18,6 +18,7 @@ export async function POST(req: NextRequest) {
 
   const auth = await getAuthedShop()
   if (!auth) return unauthorized()
+  if (auth.role === 'viewer' && ['create_event', 'delete_event'].includes(String(action))) return forbidden()
 
   const connector = await getConnector('google_calendar')
   if (!connector?.enabled) return fail('Google Calendar not connected', 401)
