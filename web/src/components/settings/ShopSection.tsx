@@ -26,7 +26,7 @@ export default function ShopSection() {
 
       <Group title="Rates and paperwork">
         <div className="grid gap-4 min-[420px]:grid-cols-2">
-          <TextField k="labor_rate" label="Labor rate (dollars per hour)" type="number" inputMode="decimal" step="0.01" fallback={120} hint="The starting labor rate on new estimates and invoices." />
+          <TextField k="labor_rate" label="Labor rate (dollars per hour)" type="number" inputMode="decimal" step="0.01" hint="The starting labor rate on new estimates and invoices. Until it is set, new labor lines start at $0 an hour." />
           <TextField k="tax_rate" label="Tax rate (percent)" type="number" inputMode="decimal" step="0.01" hint="For example 8.25. Use 0 for no tax. New estimates and invoices start at this rate; until it is set they start at 0%." />
         </div>
         <div className="grid gap-4 min-[420px]:grid-cols-2">

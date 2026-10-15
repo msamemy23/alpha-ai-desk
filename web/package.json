@@ -44,7 +44,7 @@
     "postcss": "8.5.15"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.9.0"
   },
   "pnpm": {
     "overrides": {

@@ -140,7 +140,8 @@ export default function DocumentsPage({ type }: { type: DocType }) {
   const shopAddress = settings.shop_address?.trim() || ''
   const shopPhone = settings.shop_phone?.trim() || ''
   const shopEmail = settings.shop_email?.trim() || ''
-  const laborRate = Number(settings.labor_rate) > 0 ? Number(settings.labor_rate) : 120
+  // No made-up rate: until the shop sets one, a new labor line starts at $0 an hour and the person types the rate.
+  const laborRate = Number(settings.labor_rate) > 0 ? Number(settings.labor_rate) : 0
   const shopMethods = useMemo(() => String(settings.payment_methods || '').split(',').map(s => s.trim()).filter(Boolean), [settings.payment_methods])
   const formatWarrantyText = (value: unknown) => String(value || '')
     .replace(/Alpha International Auto Center/g, shopName || 'our shop')
@@ -294,10 +295,13 @@ export default function DocumentsPage({ type }: { type: DocType }) {
       setForm(next); setBaseline(JSON.stringify(next)); setEditing('new')
       setSignatureImg(null)
       const taxUnset = !(Number.isFinite(rate) && rate >= 0)
+      const laborUnset = !(laborRate > 0)
       setNotice(carried
         ? { kind: 'ok', text: carried.count === 0 ? 'The customer has not approved anything yet, so this starts empty.' : `Added ${carried.count} approved ${carried.count === 1 ? 'repair' : 'repairs'} from the inspection${carried.priced < carried.count ? `. ${carried.count - carried.priced} still need a price` : ''}. Add parts and labor, then save.` }
         : carryFailed ? { kind: 'error', text: 'The inspection could not be loaded, so this estimate starts empty.' }
-        : taxUnset ? { kind: 'error', text: `Your shop's tax rate is not set, so this ${noun} starts at 0% tax. Type the rate in the Tax field, or set it once in Settings.` } : null)
+        : taxUnset && laborUnset ? { kind: 'error', text: `Your shop's tax rate and labor rate are not set, so this ${noun} starts at 0% tax and new labor lines start at $0 an hour. Type them here, or set them once in Settings.` }
+        : taxUnset ? { kind: 'error', text: `Your shop's tax rate is not set, so this ${noun} starts at 0% tax. Type the rate in the Tax field, or set it once in Settings.` }
+        : laborUnset ? { kind: 'error', text: `Your shop's labor rate is not set, so new labor lines start at $0 an hour. Type the rate on the line, or set it once in Settings.` } : null)
     } catch (e) {
       setActionError(`Could not start a new ${noun}. ${errText(e)}`)
     }
