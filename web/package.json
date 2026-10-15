@@ -10,6 +10,8 @@
     "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
+    "@fontsource-variable/overpass": "^5.3.0",
+    "@fontsource/atkinson-hyperlegible-next": "^5.3.0",
     "@openai-oauth/core": "2.0.0",
     "@openai-oauth/react": "2.0.0",
     "@openai-oauth/web": "2.0.0",

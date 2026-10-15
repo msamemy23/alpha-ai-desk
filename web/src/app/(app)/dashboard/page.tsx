@@ -1,30 +1,24 @@
 ﻿'use client'
-import { useEffect, useState, useCallback } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase, calcTotals, formatCurrency, getShopProfile, getShopId } from '@/lib/supabase'
 import { addOpenAIOAuthHeaders } from '@/lib/openai-oauth-client'
 import { laborLineTotal } from '@/lib/document-money'
+import { summarizeToday, money0, ageLabel, DAY, type FeedItem, type Lamp } from '@/lib/today'
+import Icon from '@/components/Icon'
 
-interface ShopProfile {
-  shop_name: string
-  phone: string
-  address: string
-  city_state_zip: string
-}
+type Row = Record<string, unknown>
 
-interface Stats {
-  openJobs: number
-  unpaidTotal: number
+interface ShopProfile { shop_name: string; phone: string; address: string; city_state_zip: string }
+
+interface Data {
+  jobs: Row[]
+  docs: Row[]
   customersCount: number
-  monthRevenue: number
-  recentJobs: Record<string, unknown>[]
-  recentMessages: Record<string, unknown>[]
-  allJobs: Record<string, unknown>[]
-  allDocs: Record<string, unknown>[]
-  staleJobs: Record<string, unknown>[]
-  overdueInvoices: Record<string, unknown>[]
-  recentCalls: Record<string, unknown>[]
-  chartDays: { label: string; revenue: number }[]
+  unreadTexts: (Row & { customer_name?: string })[]
+  missedCalls: Row[]
+  appointments: Row[]
+  aiCalls: Row[]
 }
 
 async function getAuthJsonHeaders(): Promise<Record<string, string>> {
@@ -39,124 +33,168 @@ async function getAuthJsonHeaders(): Promise<Record<string, string>> {
   return addOpenAIOAuthHeaders(headers)
 }
 
-export default function DashboardPage() {
-  const [stats, setStats] = useState<Stats | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [briefingDismissed, setBriefingDismissed] = useState(false)
-  const [briefingExpanded, setBriefingExpanded] = useState(true)
-  const [aiInsight, setAiInsight] = useState('')
-  const [insightLoading, setInsightLoading] = useState(false)
-  const [slowDayMsg, setSlowDayMsg] = useState('')
-  const [slowDaySending, setSlowDaySending] = useState(false)
-  const [slowDayResult, setSlowDayResult] = useState<{sent:number;total:number}|null>(null)
-  const [aiAlerts, setAiAlerts] = useState<{id:string;title:string;body:string;priority?:string}[]>([])
-  const [shopProfile, setShopProfile] = useState<ShopProfile | null>(null)
-  const [profileLoaded, setProfileLoaded] = useState(false)
+const JOB_LAMP: Record<string, Lamp | 'green'> = {
+  'New': 'blue', 'Approved': 'blue', 'In Progress': 'blue',
+  'Waiting on Parts': 'amber', 'Waiting on Customer': 'amber',
+  'Completed': 'green', 'Ready for Pickup': 'green',
+}
 
+const ASK_IDEAS = [
+  'Who owes me money right now?',
+  'Write a text to customers with old estimates',
+  'What should I do first today?',
+]
+
+const timeOf = (hhmm: string) => {
+  const [h, m] = String(hhmm || '').split(':').map(Number)
+  if (!Number.isFinite(h)) return ''
+  const d = new Date(); d.setHours(h, m || 0, 0, 0)
+  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+}
+
+const dayLabel = (ymd: string) => {
+  const d = new Date(ymd + 'T12:00:00')
+  const today = new Date(); today.setHours(12, 0, 0, 0)
+  const diff = Math.round((d.getTime() - today.getTime()) / DAY)
+  if (diff === 0) return 'Today'
+  if (diff === 1) return 'Tomorrow'
+  return d.toLocaleDateString('en-US', { weekday: 'long' })
+}
+
+export default function DashboardPage() {
+  const [data, setData] = useState<Data | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [shop, setShop] = useState<ShopProfile | null>(null)
+  const [shopLoaded, setShopLoaded] = useState(false)
+  const [aiAlerts, setAiAlerts] = useState<{ id: string; title: string; body: string }[]>([])
+  const [showAll, setShowAll] = useState(false)
+  const [question, setQuestion] = useState('')
+  const [insight, setInsight] = useState('')
+  const [insightBusy, setInsightBusy] = useState(false)
+  const [outreachMsg, setOutreachMsg] = useState('')
+  const [outreachBusy, setOutreachBusy] = useState(false)
+  const [outreachResult, setOutreachResult] = useState<{ sent: number; total: number } | null>(null)
+  const [outreachError, setOutreachError] = useState('')
 
   useEffect(() => {
-    // Settings are initialized by onboarding/settings; this page never calls the admin-only seed endpoint.
-    const today = new Date().toISOString().split('T')[0]
-    const dismissed = localStorage.getItem('briefing_dismissed')
-    if (dismissed === today) setBriefingDismissed(true)
     fetch('/api/notifications').then(r => r.json()).then(d => {
-      if (d.notifications) setAiAlerts(d.notifications.slice(0, 3))
+      if (Array.isArray(d.notifications)) setAiAlerts(d.notifications.slice(0, 2))
     }).catch(() => {})
-    getShopProfile().then(p => {
-      setShopProfile(p)
-      setProfileLoaded(true)
-    }).catch(() => setProfileLoaded(true))
+    getShopProfile().then(p => { setShop(p); setShopLoaded(true) }).catch(() => setShopLoaded(true))
   }, [])
 
   const load = useCallback(async () => {
-    const shopId = await getShopId()
+    try {
+      const shopId = await getShopId()
+      if (!shopId) { setError('We could not find your shop. Refresh, or sign out and back in.'); return }
+      const today = new Date().toISOString().slice(0, 10)
+      const [jobs, docs, customers, texts, calls, appts, aiCalls] = await Promise.all([
+        supabase.from('jobs').select('*').eq('shop_id', shopId).order('created_at', { ascending: false }),
+        supabase.from('documents').select('*').eq('shop_id', shopId).order('created_at', { ascending: false }),
+        supabase.from('customers').select('id', { count: 'exact', head: true }).eq('shop_id', shopId),
+        supabase.from('messages').select('id,body,from_address,customer_id,created_at,read,direction').eq('shop_id', shopId).eq('direction', 'inbound').eq('read', false).order('created_at', { ascending: false }).limit(8),
+        supabase.from('call_history').select('id,from_number,start_time,duration_secs,status,direction').eq('shop_id', shopId).eq('direction', 'inbound').lt('duration_secs', 15).gte('start_time', new Date(Date.now() - 3 * DAY).toISOString()).order('start_time', { ascending: false }).limit(8),
+        supabase.from('appointments').select('*').eq('shop_id', shopId).gte('date', today).order('date').order('time').limit(12),
+        supabase.from('ai_calls').select('*').eq('shop_id', shopId).order('started_at', { ascending: false }).limit(3),
+      ])
+      if (docs.error) throw docs.error
 
-    const [{ data: jobs }, { data: docs }, { data: customers }, { data: messages }, { data: calls }] = await Promise.all([
-      supabase.from('jobs').select('*').eq('shop_id', shopId ?? '').order('created_at', { ascending: false }),
-      supabase.from('documents').select('*').eq('shop_id', shopId ?? '').order('created_at', { ascending: false }),
-      supabase.from('customers').select('id').eq('shop_id', shopId ?? ''),
-      supabase.from('messages').select('*').eq('shop_id', shopId ?? '').order('created_at', { ascending: false }).limit(5),
-      supabase.from('ai_calls').select('*').eq('shop_id', shopId ?? '').order('started_at', { ascending: false }).limit(5),
-    ])
+      // Put names on unread texts where we know the customer.
+      const unread = (texts.data || []) as Row[]
+      const ids = Array.from(new Set(unread.map(m => m.customer_id).filter(Boolean) as string[]))
+      let names: Record<string, string> = {}
+      if (ids.length) {
+        const { data: named } = await supabase.from('customers').select('id,name').eq('shop_id', shopId).in('id', ids)
+        names = Object.fromEntries((named || []).map((c: Row) => [String(c.id), String(c.name || '')]))
+      }
 
-    const openJobs = (jobs || []).filter((j: Record<string,unknown>) => !['Paid','Closed'].includes(j.status as string)).length
-    const unpaidDocs = (docs || []).filter((d: Record<string,unknown>) => ['Unpaid','Partial','Draft'].includes(d.status as string))
-    const unpaidTotal = unpaidDocs.reduce((s: number, d: Record<string,unknown>) => s + calcTotals(d).balanceDue, 0)
-    const now = new Date(); const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
-    const monthDocs = (docs || []).filter((d: Record<string,unknown>) => (d.type === 'Receipt' || d.type === 'Invoice') && (d.created_at as string) >= monthStart)
-    const collected = (d: Record<string,unknown>) => { const value = Number(d.amount_paid); return Number.isFinite(value) && value > 0 ? value : 0 }
-    const monthRevenue = monthDocs.reduce((s: number, d: Record<string,unknown>) => s + collected(d), 0)
-
-    const chartDays: { label: string; revenue: number }[] = []
-    for (let i = 6; i >= 0; i--) {
-      const day = new Date(); day.setDate(day.getDate() - i); day.setHours(0,0,0,0)
-      const next = new Date(day); next.setDate(next.getDate() + 1)
-      const dayRevenue = (docs || []).filter((d: Record<string,unknown>) =>
-        (d.type === 'Receipt' || d.type === 'Invoice') && collected(d) > 0 &&
-        (d.created_at as string) >= day.toISOString() && (d.created_at as string) < next.toISOString()
-      ).reduce((s: number, d: Record<string,unknown>) => s + collected(d), 0)
-      chartDays.push({ label: day.toLocaleDateString('en-US',{weekday:'short'}), revenue: dayRevenue })
+      setData({
+        jobs: (jobs.data || []) as Row[],
+        docs: (docs.data || []) as Row[],
+        customersCount: customers.count || 0,
+        unreadTexts: unread.map(m => ({ ...m, customer_name: m.customer_id ? names[String(m.customer_id)] : undefined })),
+        missedCalls: (calls.data || []) as Row[],
+        appointments: ((appts.data || []) as Row[]).filter(a => !['Cancelled', 'Completed'].includes(String(a.status))),
+        aiCalls: (aiCalls.data || []) as Row[],
+      })
+      setError(null)
+    } catch {
+      setError('Today could not load. Check your connection and try again.')
     }
-
-    const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString()
-    const staleJobs = (jobs || []).filter((j: Record<string,unknown>) =>
-      !['Paid','Closed','Completed','Ready for Pickup'].includes(j.status as string) &&
-      (j.updated_at as string || j.created_at as string) < threeDaysAgo
-    ) as Record<string,unknown>[]
-
-    const overdueInvoices = (docs || []).filter((d: Record<string,unknown>) =>
-      d.type === 'Invoice' && ['Unpaid','Partial'].includes(d.status as string)
-    ) as Record<string,unknown>[]
-
-    setStats({
-      openJobs,
-      unpaidTotal,
-      customersCount: (customers || []).length,
-      monthRevenue,
-      recentJobs: (jobs || []).filter((j: Record<string,unknown>) => !['Paid','Closed'].includes(j.status as string)).slice(0, 8) as Record<string,unknown>[],
-      recentMessages: (messages || []) as Record<string,unknown>[],
-      allJobs: (jobs || []) as Record<string,unknown>[],
-      allDocs: (docs || []) as Record<string,unknown>[],
-      staleJobs,
-      overdueInvoices,
-      chartDays,
-      recentCalls: (calls || []) as Record<string,unknown>[],
-    })
-    setLoading(false)
   }, [])
 
   useEffect(() => {
     load()
-    const channel = supabase.channel('dashboard')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs' }, () => load())
+    const channel = supabase.channel('today')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'documents' }, () => load())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, () => load())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'ai_calls' }, () => load())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs' }, () => load())
       .subscribe()
     return () => { supabase.removeChannel(channel) }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [load])
 
-  const dismissBriefing = () => {
-    setBriefingDismissed(true)
-    localStorage.setItem('briefing_dismissed', new Date().toISOString().split('T')[0])
+  const view = useMemo(() => {
+    if (!data) return null
+    const now = Date.now()
+    const threeDaysAgo = new Date(now - 3 * DAY).toISOString()
+    const openJobs = data.jobs.filter(j => !['Paid', 'Closed'].includes(String(j.status)))
+    const staleJobs = openJobs.filter(j => !['Completed', 'Ready for Pickup'].includes(String(j.status)) && String(j.updated_at || j.created_at) < threeDaysAgo)
+    const summary = summarizeToday({
+      docs: data.docs, unreadTexts: data.unreadTexts, missedCalls: data.missedCalls, staleJobs, aiAlerts,
+      setupIncomplete: shopLoaded && !(shop && shop.shop_name),
+    })
+
+    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString()
+    const collected = (d: Row) => { const v = Number(d.amount_paid); return Number.isFinite(v) && v > 0 ? v : 0 }
+    const paidDocs = data.docs.filter(d => (d.type === 'Receipt' || d.type === 'Invoice') && collected(d) > 0)
+    const monthDocs = paidDocs.filter(d => String(d.created_at) >= monthStart)
+    const monthRevenue = monthDocs.reduce((s, d) => s + collected(d), 0)
+
+    const days: { label: string; short: string; revenue: number }[] = []
+    for (let i = 13; i >= 0; i--) {
+      const start = new Date(); start.setDate(start.getDate() - i); start.setHours(0, 0, 0, 0)
+      const end = new Date(start); end.setDate(end.getDate() + 1)
+      const revenue = paidDocs.filter(d => String(d.created_at) >= start.toISOString() && String(d.created_at) < end.toISOString()).reduce((s, d) => s + collected(d), 0)
+      days.push({ label: start.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }), short: start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), revenue })
+    }
+
+    const techMap: Record<string, { jobs: number; hours: number; revenue: number }> = {}
+    data.jobs.forEach(j => {
+      const labors = (j.labors as Row[]) || []
+      labors.forEach(l => {
+        const tech = String(l.tech || '')
+        if (!tech) return
+        const t = (techMap[tech] ||= { jobs: 0, hours: 0, revenue: 0 })
+        t.jobs++; t.hours += Number(l.hours) || 0; t.revenue += laborLineTotal(l)
+      })
+    })
+
+    return {
+      summary, openJobs, monthRevenue, monthPaidCount: monthDocs.length, days,
+      techs: Object.entries(techMap).sort((a, b) => b[1].revenue - a[1].revenue),
+    }
+  }, [data, aiAlerts, shop, shopLoaded])
+
+  const callBack = (number: string, name?: string) => {
+    window.dispatchEvent(new CustomEvent('phone:call', { detail: { number, name } }))
   }
 
-  const generateInsight = async () => {
-    if (!stats) return
-    setInsightLoading(true)
+  const askAlpha = (text: string) => {
+    const t = text.trim()
+    if (!t) return
+    try { localStorage.setItem('ai_prefill', t) } catch { /* private mode: they can retype */ }
+    window.location.href = '/ai'
+  }
+
+  const runInsight = async () => {
+    if (!data) return
+    setInsightBusy(true)
     try {
-      const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString()
-      const recentJobs = stats.allJobs.filter(j => (j.created_at as string) >= thirtyDaysAgo)
-      const recentDocs = stats.allDocs.filter(d => (d.created_at as string) >= thirtyDaysAgo)
-
-      const statusCounts: Record<string,number> = {}
-      recentJobs.forEach(j => { statusCounts[j.status as string] = (statusCounts[j.status as string] || 0) + 1 })
-
-      const revenue = recentDocs.filter(d => d.type === 'Receipt').reduce((s, d) => s + calcTotals(d).total, 0)
-      const avgJobValue = recentDocs.length > 0 ? revenue / Math.max(recentDocs.filter(d => d.type === 'Receipt').length, 1) : 0
-
-      const summary = `Last 30 days: ${recentJobs.length} jobs, ${formatCurrency(revenue)} revenue, avg ticket ${formatCurrency(avgJobValue)}. Status breakdown: ${Object.entries(statusCounts).map(([k,v]) => `${k}:${v}`).join(', ')}. ${stats.staleJobs.length} stale jobs, ${stats.overdueInvoices.length} overdue invoices, ${stats.customersCount} total customers.`
-
+      const since = new Date(Date.now() - 30 * DAY).toISOString()
+      const recentDocs = data.docs.filter(d => String(d.created_at) >= since)
+      const sales = recentDocs.filter(d => d.type === 'Receipt' || d.type === 'Invoice')
+      const revenue = sales.reduce((s, d) => s + calcTotals(d).total, 0)
+      const summary = `Last 30 days: ${recentDocs.length} documents, ${sales.length} invoices worth ${formatCurrency(revenue)}, average ${formatCurrency(revenue / Math.max(sales.length, 1))}. ${view?.summary.estimatesWaiting.count ?? 0} estimates waiting, ${view?.summary.owed.count ?? 0} unpaid invoices worth ${formatCurrency(view?.summary.owed.total ?? 0)}, ${data.customersCount} customers.`
       const res = await fetch('/api/ai-completions', {
         method: 'POST',
         headers: await getAuthJsonHeaders(),
@@ -164,324 +202,331 @@ export default function DashboardPage() {
           model: 'meta-llama/llama-3.3-70b-instruct:free',
           messages: [
             { role: 'system', content: 'You are a business analyst for an auto repair shop. Give 2-3 brief, actionable insights based on the data. Keep it under 150 words. Be specific with numbers.' },
-            { role: 'user', content: summary }
+            { role: 'user', content: summary },
           ],
           max_tokens: 300,
-        })
+        }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'AI request failed')
-      setAiInsight(data.choices?.[0]?.message?.content || 'Unable to generate insight.')
-    } catch { setAiInsight('Failed to generate insight. Check your AI settings.') }
-    finally { setInsightLoading(false) }
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'AI request failed')
+      setInsight(json.choices?.[0]?.message?.content || 'Alpha did not have anything to add.')
+    } catch {
+      setInsight('Alpha could not check your numbers right now. Check your AI settings and try again.')
+    } finally { setInsightBusy(false) }
   }
 
-  const sendSlowDayOutreach = async () => {
-    if (!window.confirm('Send this outreach to matching customers now?')) return
-    setSlowDaySending(true); setSlowDayResult(null)
+  const sendOutreach = async () => {
+    if (!window.confirm('Text every customer who has not visited in 60 days? This sends real messages.')) return
+    setOutreachBusy(true); setOutreachResult(null); setOutreachError('')
     try {
       const res = await fetch('/api/outreach', {
         method: 'POST',
         headers: await getAuthJsonHeaders(),
-        body: JSON.stringify({
-          type: 'follow_up_cold',
-          filter: { daysSinceLastVisit: 60 },
-          template: slowDayMsg || undefined,
-          channel: 'sms',
-        })
+        body: JSON.stringify({ type: 'follow_up_cold', filter: { daysSinceLastVisit: 60 }, template: outreachMsg || undefined, channel: 'sms' }),
       })
-      const data = await res.json()
-       if (!res.ok || data.ok === false || data.error) throw new Error(data.error || 'Outreach could not be sent')
-       setSlowDayResult({ sent: data.sent || 0, total: data.total || 0 })
-    } catch { setSlowDayResult({ sent: 0, total: 0 }) }
-    finally { setSlowDaySending(false) }
+      const json = await res.json()
+      if (!res.ok || json.ok === false || json.error) throw new Error(json.error || 'Outreach could not be sent')
+      setOutreachResult({ sent: json.sent || 0, total: json.total || 0 })
+    } catch (e) {
+      setOutreachError(e instanceof Error ? e.message : 'Outreach could not be sent')
+    } finally { setOutreachBusy(false) }
   }
 
-  if (loading) return <div className="p-8 text-text-muted">Loading...</div>
-
-  const STATUS_COLOR: Record<string,string> = {
-    'New': 'bg-blue', 'In Progress': 'bg-amber', 'Completed': 'bg-green',
-    'Ready for Pickup': 'bg-green', 'Waiting on Parts': 'bg-amber', 'Paid': 'bg-bg-hover', 'Closed': 'bg-bg-hover'
+  // ---------- Loading and error ----------
+  if (error && !data) {
+    return (
+      <div className="page-container">
+        <div role="alert" className="card max-w-xl">
+          <h1 className="section-title">Today could not load</h1>
+          <p className="mt-1 text-text-secondary">{error}</p>
+          <button className="btn btn-primary mt-4" onClick={() => { setError(null); load() }}>Try again</button>
+        </div>
+      </div>
+    )
+  }
+  if (!data || !view) {
+    return (
+      <div className="page-container" aria-busy="true" aria-label="Loading Today">
+        <div className="skeleton h-9 w-3/4 max-w-sm" />
+        <div className="skeleton mt-3 h-4 w-1/2 max-w-xs" />
+        <div className="mt-8 space-y-3">
+          {[0, 1, 2, 3].map(i => <div key={i} className="skeleton h-16 w-full" />)}
+        </div>
+      </div>
+    )
   }
 
-  const CALL_STATUS_COLOR: Record<string,string> = {
-    'ringing': 'text-amber',
-    'active':  'text-green',
-    'ended':   'text-text-muted',
-  }
-
-  const techMap: Record<string, { jobs: number; hours: number; revenue: number }> = {}
-  stats!.allJobs.forEach(j => {
-    const labors = (j.labors as Record<string,unknown>[]) || []
-    labors.forEach(l => {
-      const tech = (l.tech as string) || ''
-      if (!tech) return
-      if (!techMap[tech]) techMap[tech] = { jobs: 0, hours: 0, revenue: 0 }
-      techMap[tech].jobs++
-      techMap[tech].hours += Number(l.hours) || 0
-      techMap[tech].revenue += laborLineTotal(l)
-    })
-  })
-  const techs = Object.entries(techMap).sort((a, b) => b[1].revenue - a[1].revenue)
-
-  const isSlowDay = stats!.openJobs < 3
-  const shopName = shopProfile?.shop_name || 'My Shop'
-  const hasProfile = profileLoaded && shopProfile && shopProfile.shop_name
-
-  // Helper: extract caller number from task string or caller field
-  const getCallerDisplay = (call: Record<string,unknown>) => {
-    if (call.caller) return call.caller as string
-    const task = (call.task as string) || ''
-    const match = task.match(/Inbound call from ([^\s.]+)/)
-    return match ? match[1] : 'Unknown'
-  }
-
-  const formatCallTime = (call: Record<string,unknown>) => {
-    const ts = call.started_at as number
-    if (!ts) return ''
-    const d = new Date(ts)
-    return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
-  }
+  const { summary } = view
+  const needs = summary.feed.filter(f => f.lamp !== 'blue')
+  const headLamp: Lamp | 'green' = needs.some(f => f.lamp === 'red') ? 'red' : needs.length ? 'amber' : 'green'
+  const shown = showAll ? summary.feed : summary.feed.slice(0, 6)
+  const maxDay = Math.max(...view.days.map(d => d.revenue), 1)
+  const rangeTotal = view.days.reduce((s, d) => s + d.revenue, 0)
+  const todayAppts = data.appointments.slice(0, 5)
 
   return (
-    <div className="p-4 sm:p-6 lg:p-8 space-y-6 lg:space-y-8 animate-fade-in">
-      <div>
-        <h1 className="text-xl sm:text-2xl font-bold">Dashboard</h1>
-        <p className="text-text-muted text-sm mt-1">{shopName}</p>
-      </div>
+    <div className="page-container animate-fade-in">
+      {/* ---------- Headline ---------- */}
+      <header className="mb-6">
+        <p className="text-[0.9375rem] text-text-secondary">
+          {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
+        </p>
+        <h1 className="page-title mt-1 flex items-center gap-3">
+          <span className={`lamp lamp-${headLamp}`} aria-hidden="true" style={{ width: '0.9rem', height: '0.9rem' }} />
+          {needs.length === 0 ? 'You are all caught up' : `${needs.length} thing${needs.length === 1 ? '' : 's'} need${needs.length === 1 ? 's' : ''} you`}
+        </h1>
+      </header>
 
-      {/* Onboarding banner - show if profile is missing */}
-      {profileLoaded && !hasProfile && (
-        <div className="card border-amber/40 bg-amber/5 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <span className="grid h-9 w-9 place-items-center rounded-lg bg-amber/15 text-[10px] font-black text-amber">SET</span>
-            <div>
-              <p className="text-sm font-semibold">Finish setting up your shop</p>
-              <p className="text-xs text-text-muted">Add your shop name, phone, and services to get started.</p>
-            </div>
-          </div>
-          <Link href="/onboarding" className="btn btn-primary btn-sm shrink-0">Complete Setup</Link>
-        </div>
-      )}
-
-      {/* Feature 2: Morning Briefing */}
-      {!briefingDismissed && (
-        <div className="card border-blue/30 bg-blue/5">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-3">
-            <div className="flex items-center gap-2">
-              <span className="grid h-8 w-8 place-items-center rounded-lg bg-blue/15 text-[10px] font-black text-blue">NOW</span>
-              <h2 className="text-sm font-bold uppercase tracking-wider text-blue">{(() => { const h = new Date().getHours(); return h < 5 ? 'Good Night' : h < 12 ? 'Good Morning' : h < 17 ? 'Good Afternoon' : h < 21 ? 'Good Evening' : 'Good Night' })()} - Daily Briefing</h2>
-            </div>
-            <div className="flex gap-2">
-              <button className="btn btn-secondary btn-sm" onClick={() => setBriefingExpanded(!briefingExpanded)}>
-                {briefingExpanded ? 'Collapse' : 'Expand'}
-              </button>
-              <button className="btn btn-secondary btn-sm" onClick={dismissBriefing}>Dismiss</button>
-            </div>
-          </div>
-          {briefingExpanded && (
-            <div className="grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mt-4">
-              <div className="bg-bg-card border border-border rounded-lg p-3">
-                <div className="text-xs text-text-muted">Open Jobs</div>
-                <div className="text-lg font-bold text-blue">{stats!.openJobs}</div>
+      <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_21rem] lg:gap-10">
+        <div className="min-w-0 space-y-8">
+          {/* ---------- Needs you ---------- */}
+          <section aria-labelledby="needs-h">
+            <h2 id="needs-h" className="sr-only">Needs you</h2>
+            {summary.feed.length === 0 ? (
+              <div className="empty-state">
+                No unanswered texts, missed calls, unpaid invoices or stale estimates. Check back after your next customer.
               </div>
-              <div className="bg-bg-card border border-border rounded-lg p-3">
-                <div className="text-xs text-text-muted">Stale Jobs (&gt;3 days)</div>
-                <div className="text-lg font-bold text-amber">{stats!.staleJobs.length}</div>
-                {stats!.staleJobs.length > 0 && (
-                  <div className="text-xs text-text-muted mt-1 truncate">{(stats!.staleJobs[0].customer_name as string) || 'Unknown'}{stats!.staleJobs.length > 1 ? ` +${stats!.staleJobs.length - 1} more` : ''}</div>
+            ) : (
+              <>
+                <ul className="ledger">
+                  {shown.map(item => <FeedRow key={item.id} item={item} onCall={callBack} />)}
+                </ul>
+                {summary.feed.length > 6 && (
+                  <button type="button" className="btn btn-ghost btn-sm mt-2" onClick={() => setShowAll(v => !v)}>
+                    {showAll ? 'Show fewer' : `Show ${summary.feed.length - 6} more`}
+                  </button>
                 )}
-              </div>
-              <div className="bg-bg-card border border-border rounded-lg p-3">
-                <div className="text-xs text-text-muted">Overdue Invoices</div>
-                <div className="text-lg font-bold text-red">{stats!.overdueInvoices.length}</div>
-                <div className="text-xs text-text-muted mt-1">{formatCurrency(stats!.overdueInvoices.reduce((s, d) => s + calcTotals(d).balanceDue, 0))} outstanding</div>
-              </div>
-              <div className="bg-bg-card border border-border rounded-lg p-3">
-                <div className="text-xs text-text-muted">Unread Messages</div>
-                <div className="text-lg font-bold text-green">{stats!.recentMessages.filter(m => !m.read && m.direction === 'inbound').length}</div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Stats */}
-      <div className="grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        {[
-          { label: 'Open Jobs', value: stats!.openJobs, color: 'text-blue', icon: 'JOB' },
-          { label: 'Unpaid Balance', value: formatCurrency(stats!.unpaidTotal), color: 'text-red', icon: 'DUE' },
-          { label: 'Total Customers', value: stats!.customersCount, color: 'text-green', icon: 'CUS' },
-          { label: 'Month Revenue', value: formatCurrency(stats!.monthRevenue), color: 'text-amber', icon: 'REV' },
-        ].map(s => (
-          <div key={s.label} className="card relative overflow-hidden">
-            <div className="absolute right-4 top-4 grid h-9 w-9 place-items-center rounded-lg bg-white/5 text-[10px] font-black text-text-secondary">{s.icon}</div>
-            <div className={`text-lg sm:text-2xl font-bold ${s.color}`}>{s.value}</div>
-            <div className="text-xs text-text-muted mt-1">{s.label}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* AI Alert Card */}
-      {aiAlerts.length > 0 && (
-        <div className="card border-amber/30 bg-amber/5">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-amber mb-3">AI Alerts</h2>
-          <div className="space-y-3">
-            {aiAlerts.map(alert => (
-              <div key={alert.id} className="flex items-start justify-between gap-3 bg-bg-card border border-border rounded-lg p-3">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium">{alert.title}</p>
-                  <p className="text-xs text-text-muted mt-0.5 truncate">{alert.body}</p>
-                </div>
-                <button
-                  className="btn btn-primary btn-sm shrink-0"
-                  onClick={() => {
-                    localStorage.setItem('ai_prefill', alert.body)
-                    window.location.href = '/ai'
-                  }}
-                >
-                  Ask AI
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Feature 11: AI Insights + Feature 19: Slow Day Outreach */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="card">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-2">
-            <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary">AI Business Insights</h2>
-            <button className="btn btn-primary btn-sm" onClick={generateInsight} disabled={insightLoading}>
-              {insightLoading ? 'Analyzing...' : 'Generate Insight'}
-            </button>
-          </div>
-          {aiInsight ? (
-            <div className="text-sm text-text-primary whitespace-pre-wrap leading-relaxed">{aiInsight}</div>
-          ) : (
-            <p className="text-sm text-text-muted">Click &quot;Generate Insight&quot; to get AI-powered analysis of your shop&apos;s last 30 days.</p>
-          )}
-        </div>
-
-        {isSlowDay && (
-          <div className="card border-amber/30 bg-amber/5">
-            <h2 className="text-sm font-bold uppercase tracking-wider text-amber mb-3">Slow Day - Send Outreach?</h2>
-            <p className="text-sm text-text-muted mb-3">Only {stats!.openJobs} open jobs today. Reach out to customers who haven&apos;t visited in 60+ days.</p>
-            <textarea
-              className="form-textarea mb-3"
-              rows={2}
-              placeholder="Custom message (optional)..."
-              value={slowDayMsg}
-              onChange={e => setSlowDayMsg(e.target.value)}
-            />
-            <button className="btn btn-primary w-full" onClick={sendSlowDayOutreach} disabled={slowDaySending}>
-              {slowDaySending ? 'Sending...' : 'Send Outreach SMS'}
-            </button>
-            {slowDayResult && (
-              <div className="mt-3 bg-green/10 border border-green/30 rounded-lg p-3 text-sm text-green">
-                Sent {slowDayResult.sent} of {slowDayResult.total} eligible customers.
-              </div>
+              </>
             )}
-          </div>
-        )}
-      </div>
+          </section>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recent Jobs */}
-        <div className="card">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary mb-4">Active Jobs</h2>
-          <div className="space-y-3">
-            {stats!.recentJobs.length === 0 && <p className="text-text-muted text-sm">No jobs yet</p>}
-            {stats!.recentJobs.map((j: Record<string,unknown>) => (
-              <div key={j.id as string} className="flex items-center gap-3">
-                <span className={`w-2 h-2 rounded-full ${STATUS_COLOR[j.status as string] || 'bg-bg-hover'}`} />
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium truncate">{j.customer_name as string || 'Unknown'}</div>
-                  <div className="text-xs text-text-muted truncate">{j.concern as string}</div>
-                </div>
-                <span className="tag tag-gray text-xs shrink-0">{j.status as string}</span>
+          {/* ---------- In the shop ---------- */}
+          {view.openJobs.length > 0 && (
+            <section aria-labelledby="shop-h">
+              <div className="mb-3 flex items-end justify-between">
+                <h2 id="shop-h" className="section-title">In the shop</h2>
+                <Link href="/shopboard" className="text-[0.9375rem] font-bold text-blue underline-offset-4 hover:underline">Open shop board</Link>
               </div>
-            ))}
-          </div>
-        </div>
+              <ul className="-mx-4 flex snap-x gap-3 overflow-x-auto px-4 pb-2 sm:mx-0 sm:grid sm:grid-cols-2 sm:overflow-visible sm:px-0">
+                {view.openJobs.slice(0, 6).map(j => {
+                  const lamp = JOB_LAMP[String(j.status)] || 'off'
+                  const car = [j.vehicle_year, j.vehicle_make, j.vehicle_model].filter(Boolean).join(' ')
+                  return (
+                    <li key={String(j.id)} className="w-[17rem] shrink-0 snap-start sm:w-auto">
+                      <Link href="/jobs" className={`rotag lamp-${lamp}`}>
+                        <span className="flex items-center gap-2 text-[0.875rem] font-bold text-text-secondary">
+                          <span className={`lamp lamp-${lamp}`} aria-hidden="true" />
+                          {String(j.status)}
+                          {j.ro_number ? <span className="ml-auto num font-normal">RO {String(j.ro_number)}</span> : null}
+                        </span>
+                        <span className="display mt-2 block truncate text-[1.125rem] font-bold">{car || 'Vehicle not entered'}</span>
+                        <span className="block truncate text-[0.9375rem] text-text-secondary">{String(j.customer_name || 'No customer')}</span>
+                        {j.concern ? <span className="mt-1.5 line-clamp-2 block text-[0.9375rem]">{String(j.concern)}</span> : null}
+                        <span className="mt-2 block text-[0.8125rem] text-text-muted">In {ageLabel(String(j.created_at)).replace(' ago', '')}{j.promise_date ? ` · promised ${String(j.promise_date)}` : ''}</span>
+                      </Link>
+                    </li>
+                  )
+                })}
+              </ul>
+            </section>
+          )}
 
-        {/* Recent Messages */}
-        <div className="card">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary mb-4">Recent Messages</h2>
-          <div className="space-y-3">
-            {stats!.recentMessages.length === 0 && <p className="text-text-muted text-sm">No messages yet</p>}
-            {stats!.recentMessages.map((m: Record<string,unknown>) => (
-              <div key={m.id as string} className={`flex items-start gap-3 p-3 rounded-lg ${!m.read && m.direction === 'inbound' ? 'bg-blue/5 border border-blue/20' : 'bg-bg-hover'}`}>
-                <span className="grid h-7 w-7 place-items-center rounded bg-white/5 text-[10px] font-black text-text-secondary">{m.channel === 'sms' ? 'SMS' : 'EML'}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs font-semibold text-text-secondary">{m.direction === 'inbound' ? m.from_address as string : `To: ${m.to_address as string}`}</div>
-                  <div className="text-sm truncate mt-0.5">{m.body as string}</div>
-                </div>
-                {!m.read && m.direction === 'inbound' && (
-                  <span className="w-2 h-2 rounded-full bg-blue mt-1.5 shrink-0" />
-                )}
+          {/* ---------- Coming up ---------- */}
+          {todayAppts.length > 0 && (
+            <section aria-labelledby="up-h">
+              <div className="mb-2 flex items-end justify-between">
+                <h2 id="up-h" className="section-title">Coming up</h2>
+                <Link href="/appointments" className="text-[0.9375rem] font-bold text-blue underline-offset-4 hover:underline">Open schedule</Link>
               </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Live Calls */}
-      {stats!.recentCalls.length > 0 && (
-        <div className="card">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary">Recent Calls</h2>
-            <Link href="/voicemail" className="text-xs text-blue hover:underline">View all -&gt;</Link>
-          </div>
-          <div className="space-y-3">
-            {stats!.recentCalls.map((call: Record<string,unknown>) => {
-              const status = (call.status as string) || 'ended'
-              const caller = getCallerDisplay(call)
-              const summary = (call.summary as string) || ''
-              return (
-                <div key={call.id as string} className={`flex items-start gap-3 p-3 rounded-lg border ${status === 'ringing' ? 'bg-amber/5 border-amber/30 animate-pulse' : status === 'active' ? 'bg-green/5 border-green/30' : 'bg-bg-hover border-border'}`}>
-                  <span className="grid h-7 w-7 shrink-0 place-items-center rounded bg-white/5 text-[10px] font-black text-text-secondary">{status === 'ringing' ? 'IN' : status === 'active' ? 'LIVE' : 'END'}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold">{caller}</span>
-                      <span className={`text-xs font-bold uppercase ${CALL_STATUS_COLOR[status] || 'text-text-muted'}`}>{status}</span>
-                    </div>
-                    <div className="text-xs text-text-muted mt-0.5">{formatCallTime(call)}</div>
-                    {summary && <div className="text-xs text-text-muted mt-1 truncate">{summary}</div>}
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Feature 18: Tech Performance Dashboard */}
-      {techs.length > 0 && (
-        <div className="card">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary mb-4">Technician Performance</h2>
-          <div className="overflow-x-auto">
-            <table className="data-table w-full">
-              <thead>
-                <tr><th>Technician</th><th>Jobs</th><th>Hours</th><th>Revenue</th><th>Avg $/Job</th></tr>
-              </thead>
-              <tbody>
-                {techs.map(([name, data]) => (
-                  <tr key={name}>
-                    <td className="font-medium">{name}</td>
-                    <td>{data.jobs}</td>
-                    <td>{data.hours.toFixed(1)}</td>
-                    <td className="font-semibold text-green">{formatCurrency(data.revenue)}</td>
-                    <td>{formatCurrency(data.jobs > 0 ? data.revenue / data.jobs : 0)}</td>
-                  </tr>
+              <ul className="ledger">
+                {todayAppts.map(a => (
+                  <li key={String(a.id)}>
+                    <Link href="/appointments" className="ledger-row">
+                      <span className="w-[4.5rem] shrink-0">
+                        <span className="display num block font-bold leading-tight">{timeOf(String(a.time))}</span>
+                        <span className="block text-[0.8125rem] text-text-secondary">{dayLabel(String(a.date))}</span>
+                      </span>
+                      <span className="ledger-main">
+                        <span className="ledger-title block">{String(a.customer_name || 'Walk-in')}</span>
+                        <span className="ledger-sub block">{[a.service, a.vehicle].filter(Boolean).join(' · ') || 'No details yet'}</span>
+                      </span>
+                      <Icon name="chevronRight" className="h-5 w-5 text-text-muted" />
+                    </Link>
+                  </li>
                 ))}
-              </tbody>
-            </table>
-          </div>
+              </ul>
+            </section>
+          )}
+
+          {/* ---------- Tech table (only when techs are logged) ---------- */}
+          {view.techs.length > 0 && (
+            <section aria-labelledby="tech-h">
+              <h2 id="tech-h" className="section-title mb-2">Technicians</h2>
+              <div className="overflow-x-auto rounded-lg border border-border">
+                <table className="data-table">
+                  <thead><tr><th>Technician</th><th className="text-right">Jobs</th><th className="text-right">Hours</th><th className="text-right">Labor billed</th></tr></thead>
+                  <tbody>
+                    {view.techs.map(([name, t]) => (
+                      <tr key={name}>
+                        <td className="font-bold">{name}</td>
+                        <td className="text-right num">{t.jobs}</td>
+                        <td className="text-right num">{t.hours.toFixed(1)}</td>
+                        <td className="text-right num font-bold">{formatCurrency(t.revenue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
         </div>
-      )}
+
+        {/* ---------- Side column ---------- */}
+        <div className="min-w-0 space-y-8">
+          <section aria-labelledby="money-h">
+            <h2 id="money-h" className="section-title mb-2">Money</h2>
+            <ul className="ledger">
+              <li>
+                <Link href="/invoices" className="ledger-row">
+                  <span className="ledger-main">
+                    <span className="ledger-title block">Collected this month</span>
+                    <span className="ledger-sub block">{view.monthPaidCount} invoice{view.monthPaidCount === 1 ? '' : 's'} with payments</span>
+                  </span>
+                  <span className="ledger-amt text-[1.375rem]">{money0(view.monthRevenue)}</span>
+                </Link>
+              </li>
+              <li>
+                <Link href="/invoices" className="ledger-row">
+                  <span className="ledger-main">
+                    <span className="ledger-title block">Customers owe you</span>
+                    <span className="ledger-sub block">{summary.owed.count === 0 ? 'Every invoice is paid' : `${summary.owed.count} unpaid invoice${summary.owed.count === 1 ? '' : 's'}`}</span>
+                  </span>
+                  <span className={`ledger-amt text-[1.375rem] ${summary.owed.total > 0 ? 'text-red' : ''}`}>{money0(summary.owed.total)}</span>
+                </Link>
+              </li>
+              <li>
+                <Link href="/estimates" className="ledger-row">
+                  <span className="ledger-main">
+                    <span className="ledger-title block">Estimates out</span>
+                    <span className="ledger-sub block">{summary.estimatesWaiting.count === 0 ? 'No open estimates' : `${summary.estimatesWaiting.count} waiting, oldest ${summary.estimatesWaiting.oldDays} days`}</span>
+                  </span>
+                  <span className="ledger-amt text-[1.375rem]">{money0(summary.estimatesWaiting.total)}</span>
+                </Link>
+              </li>
+            </ul>
+
+            <figure className="mt-5" aria-label={`Payments collected over the last 14 days: ${money0(rangeTotal)} in total`}>
+              <div className="flex h-24 items-end gap-1" role="img" aria-label={`Bar chart of payments over 14 days, total ${money0(rangeTotal)}`}>
+                {view.days.map((d, i) => (
+                  <div key={i} className="flex h-full flex-1 items-end" title={`${d.label}: ${money0(d.revenue)}`}>
+                    <div
+                      className={d.revenue > 0 ? 'w-full rounded-t-sm bg-blue' : 'w-full rounded-t-sm bg-border'}
+                      style={{ height: d.revenue > 0 ? `${Math.max(8, (d.revenue / maxDay) * 100)}%` : '4px', opacity: i === view.days.length - 1 ? 1 : 0.78 }}
+                    />
+                  </div>
+                ))}
+              </div>
+              <figcaption className="mt-1.5 flex justify-between text-[0.8125rem] text-text-secondary">
+                <span>{view.days[0].short}</span>
+                <span className="num">{money0(rangeTotal)} in 14 days</span>
+                <span>Today</span>
+              </figcaption>
+            </figure>
+          </section>
+
+          <section aria-labelledby="ask-h">
+            <h2 id="ask-h" className="section-title mb-2">Ask Alpha</h2>
+            <form onSubmit={e => { e.preventDefault(); askAlpha(question) }} className="flex gap-2">
+              <label className="min-w-0 flex-1">
+                <span className="sr-only">Ask Alpha a question</span>
+                <input className="form-input" value={question} onChange={e => setQuestion(e.target.value)} placeholder="What do you need done?" />
+              </label>
+              <button type="submit" className="btn btn-primary" disabled={!question.trim()}>Ask</button>
+            </form>
+            <ul className="mt-3 flex flex-wrap gap-2">
+              {ASK_IDEAS.map(t => (
+                <li key={t}><button type="button" className="rounded-full border border-line bg-bg-card px-3 py-1.5 text-[0.875rem] font-bold hover:bg-bg-hover" onClick={() => askAlpha(t)}>{t}</button></li>
+              ))}
+            </ul>
+
+            <div className="mt-5">
+              <button type="button" className="btn btn-secondary btn-sm" onClick={runInsight} disabled={insightBusy}>
+                {insightBusy ? 'Checking your numbers…' : 'Check up on my shop'}
+              </button>
+              {insight && <p className="mt-3 whitespace-pre-wrap text-[0.9375rem] leading-relaxed" aria-live="polite">{insight}</p>}
+            </div>
+
+            <details className="mt-5 rounded-lg border border-border">
+              <summary className="cursor-pointer list-none px-4 py-3 text-[0.9375rem] font-bold">Bring back customers who have gone quiet</summary>
+              <div className="border-t border-border px-4 pb-4 pt-3">
+                <p className="text-[0.9375rem] text-text-secondary">Sends a text to customers who have not visited in 60 days. Leave the message blank to use Alpha&apos;s default.</p>
+                <label className="form-label mt-3" htmlFor="outreach-msg">Your message (optional)</label>
+                <textarea id="outreach-msg" className="form-textarea" rows={3} value={outreachMsg} onChange={e => setOutreachMsg(e.target.value)} />
+                <button type="button" className="btn btn-primary mt-3 w-full" onClick={sendOutreach} disabled={outreachBusy}>{outreachBusy ? 'Sending…' : 'Review and send'}</button>
+                {outreachResult && <p className="mt-3 text-[0.9375rem] font-bold text-green" aria-live="polite">Sent {outreachResult.sent} of {outreachResult.total} eligible customers.</p>}
+                {outreachError && <p className="form-error" role="alert">{outreachError}</p>}
+              </div>
+            </details>
+          </section>
+
+          {data.aiCalls.length > 0 && (
+            <section aria-labelledby="calls-h">
+              <div className="mb-2 flex items-end justify-between">
+                <h2 id="calls-h" className="section-title">Alpha answered</h2>
+                <Link href="/voicemail" className="text-[0.9375rem] font-bold text-blue underline-offset-4 hover:underline">All calls</Link>
+              </div>
+              <ul className="ledger">
+                {data.aiCalls.map(c => {
+                  const task = String(c.task || '')
+                  const m = task.match(/Inbound call from ([^\s.]+)/)
+                  const caller = String(c.caller && c.caller !== 'unknown' ? c.caller : m ? m[1] : 'Unknown caller')
+                  return (
+                    <li key={String(c.id)}>
+                      <Link href="/voicemail" className="ledger-row">
+                        <span className="ledger-main">
+                          <span className="ledger-title block">{caller}</span>
+                          <span className="ledger-sub block">{String(c.summary || 'No summary yet')}</span>
+                        </span>
+                        <span className="text-[0.8125rem] text-text-muted">{c.started_at ? ageLabel(new Date(Number(c.started_at) || String(c.started_at)).toISOString()).replace(' ago', '') : ''}</span>
+                      </Link>
+                    </li>
+                  )
+                })}
+              </ul>
+            </section>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
 
+function FeedRow({ item, onCall }: { item: FeedItem; onCall: (n: string, name?: string) => void }) {
+  const inner = (
+    <>
+      <span className={`lamp lamp-${item.lamp}`} aria-hidden="true" />
+      <span className="ledger-main">
+        <span className="ledger-title block !whitespace-normal">{item.title}</span>
+        <span className="ledger-sub block !whitespace-normal">{item.detail}</span>
+      </span>
+    </>
+  )
+  return (
+    <li className="flex items-center">
+      {item.href ? (
+        <Link href={item.href} className="ledger-row min-w-0 flex-1">
+          {inner}
+          {!item.call && <Icon name="chevronRight" className="h-5 w-5 shrink-0 text-text-muted" />}
+        </Link>
+      ) : (
+        <div className="ledger-row min-w-0 flex-1">{inner}</div>
+      )}
+      {item.call && (
+        <button type="button" className="btn btn-secondary btn-sm mr-2 shrink-0" onClick={() => onCall(item.call!.number, item.call!.name)}>
+          <Icon name="phone" className="h-4 w-4" />
+          Call back
+        </button>
+      )}
+    </li>
+  )
+}

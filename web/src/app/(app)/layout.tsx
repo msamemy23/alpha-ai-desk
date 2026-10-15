@@ -2,378 +2,276 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { supabase, getUnreadCount, getShopProfile } from '@/lib/supabase'
+import { supabase, getUnreadCount, getShopProfile, getShopId } from '@/lib/supabase'
 import PhoneWidget from '@/components/PhoneWidget'
+import Icon from '@/components/Icon'
+import Sheet from '@/components/Sheet'
+import SearchPanel from '@/components/shell/SearchPanel'
+import { PRIMARY, MORE_GROUPS, matches } from '@/components/shell/nav'
 
-const NAV_GROUPS = [
-  {
-    label: 'Daily work',
-    items: [
-      { href: '/dashboard', icon: 'dashboard', label: 'Dashboard' },
-      { href: '/briefing', icon: 'briefing', label: 'Daily Briefing' },
-      { href: '/appointments', icon: 'calendar', label: 'Appointments' },
-      { href: '/shopboard', icon: 'board', label: 'Shop Board' },
-      { href: '/jobs', icon: 'wrench', label: 'Jobs' },
-      { href: '/customers', icon: 'customer', label: 'Customers' },
-      { href: '/vehicles', icon: 'vehicle', label: 'Vehicles' },
-    ],
-  },
-  {
-    label: 'Work & money',
-    items: [
-      { href: '/estimates', icon: 'doc', label: 'Estimates' },
-      { href: '/invoices', icon: 'invoice', label: 'Invoices' },
-      { href: '/canned-jobs', icon: 'bolt', label: 'Canned Jobs' },
-      { href: '/insurance', icon: 'shield', label: 'Insurance' },
-      { href: '/repair', icon: 'manual', label: 'Repair' },
-      { href: '/parts', icon: 'parts', label: 'Parts Lookup' },
-      { href: '/inventory', icon: 'box', label: 'Inventory' },
-      { href: '/dvi', icon: 'inspect', label: 'Inspections (DVI)' },
-    ],
-  },
-  {
-    label: 'Communications & growth',
-    items: [
-      { href: '/messages', icon: 'message', label: 'Calls & Messages' },
-      { href: '/voicemail', icon: 'phone', label: 'AI Voicemail' },
-      { href: '/ai', icon: 'spark', label: 'Alpha AI' },
-      { href: '/growth', icon: 'growth', label: 'Growth' },
-      { href: '/automations', icon: 'clock', label: 'Automations' },
-    ],
-  },
-  {
-    label: 'Administration',
-    items: [
-      { href: '/reports', icon: 'reports', label: 'Reports' },
-      { href: '/tools', icon: 'tools', label: 'Agents & Tools' },
-      { href: '/onboarding', icon: 'rocket', label: 'Onboarding' },
-      { href: '/settings', icon: 'settings', label: 'Settings' },
-    ],
-  },
-]
+interface Notice { id: string; kind: 'text' | 'call'; title: string; body: string; when: string; href: string }
+interface ShopProfile { id?: string; shop_name: string; phone: string; address: string; city_state_zip: string }
 
-const NAV = NAV_GROUPS.flatMap(group => group.items)
-
-const PAGE_TITLES: Record<string, string> = Object.fromEntries(NAV.map(item => [item.href, item.label]))
-
-interface Notification { id: string; type: string; title: string; body: string; time: string }
-
-interface ShopProfile {
-  shop_name: string
-  phone: string
-  address: string
-  city_state_zip: string
-}
-
-function Icon({ name, className = 'h-4 w-4' }: { name: string; className?: string }) {
-  const common = { fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const }
-  switch (name) {
-    case 'dashboard':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /></svg>
-    case 'briefing':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M8 2v4" /><path d="M16 2v4" /><rect x="3" y="4" width="18" height="18" rx="2" /><path d="M3 10h18" /><path d="M8 15h5" /><path d="M8 18h8" /></svg>
-    case 'calendar':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M8 2v4" /><path d="M16 2v4" /><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M3 10h18" /></svg>
-    case 'customer':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></svg>
-    case 'vehicle':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M5 12l2-5h10l2 5" /><path d="M3 12h18v6H3z" /><circle cx="7" cy="18" r="2" /><circle cx="17" cy="18" r="2" /></svg>
-    case 'wrench':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M14.7 6.3a4 4 0 0 0-5 5L3 18l3 3 6.7-6.7a4 4 0 0 0 5-5l-2.4 2.4-3-3z" /></svg>
-    case 'board':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M9 3h6v4H9z" /><path d="M8 12h8" /><path d="M8 16h6" /></svg>
-    case 'doc':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /><path d="M8 13h8" /><path d="M8 17h5" /></svg>
-    case 'invoice':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M6 2h12v20l-3-2-3 2-3-2-3 2z" /><path d="M9 8h6" /><path d="M9 12h6" /><path d="M9 16h4" /></svg>
-    case 'bolt':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M13 2L4 14h7l-1 8 10-13h-7z" /></svg>
-    case 'shield':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
-    case 'manual':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5z" /><path d="M8 6h8" /><path d="M8 10h8" /><path d="M8 14h5" /></svg>
-    case 'parts':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a8 8 0 0 0 .1-6l2.1-1.6-2-3.5-2.6 1a8 8 0 0 0-5.1-3L11.5 0h-4l-.4 2.9a8 8 0 0 0-5.1 3l-2.6-1-2 3.5L-0.5 10a8 8 0 0 0 .1 6l-2.1 1.6 2 3.5 2.6-1a8 8 0 0 0 5.1 3l.4 2.9h4l.4-2.9a8 8 0 0 0 5.1-3l2.6 1 2-3.5z" transform="translate(2 0) scale(.83)" /></svg>
-    case 'box':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M21 8l-9-5-9 5 9 5z" /><path d="M3 8v8l9 5 9-5V8" /><path d="M12 13v8" /></svg>
-    case 'inspect':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" /></svg>
-    case 'message':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" /></svg>
-    case 'phone':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M22 16.9v3a2 2 0 0 1-2.2 2A19.8 19.8 0 0 1 3.1 5.2 2 2 0 0 1 5.1 3h3a2 2 0 0 1 2 1.7l.4 2.5a2 2 0 0 1-.6 1.8L8.7 10a16 16 0 0 0 5.3 5.3l1.1-1.2a2 2 0 0 1 1.8-.6l2.5.4a2 2 0 0 1 1.6 2z" /></svg>
-    case 'spark':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8z" /><path d="M19 15l.8 2.7L22 18.5l-2.2.8L19 22l-.8-2.7-2.2-.8 2.2-.8z" /></svg>
-    case 'tools':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M14.7 6.3a4 4 0 0 0-5 5L4 17v3h3l5.7-5.7a4 4 0 0 0 5-5l-2.4 2.4-3-3z" /><path d="M18 2l4 4" /><path d="M19 5l-5 5" /></svg>
-    case 'growth':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M3 19h18" /><path d="M7 16l4-4 3 3 6-8" /><path d="M17 7h3v3" /></svg>
-    case 'clock':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><circle cx="12" cy="12" r="9" /><path d="M12 7v6l4 2" /></svg>
-    case 'reports':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M4 19V5" /><path d="M4 19h16" /><rect x="7" y="11" width="3" height="5" rx="1" /><rect x="12" y="7" width="3" height="9" rx="1" /><rect x="17" y="3" width="3" height="13" rx="1" /></svg>
-    case 'rocket':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M4.5 16.5c-1 1-1.5 3-1.5 4.5 1.5 0 3.5-.5 4.5-1.5" /><path d="M9 15l-3-3 4-6c2-3 5-4 10-4 0 5-1 8-4 10z" /><path d="M15 9h.01" /><path d="M9 15l-1 5 5-1" /></svg>
-    case 'settings':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.6V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.6h.1a1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.6 1h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.6 1z" /></svg>
-    case 'menu':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M4 6h16" /><path d="M4 12h16" /><path d="M4 18h16" /></svg>
-    case 'close':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
-    case 'bell':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg>
-    case 'sun':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><circle cx="12" cy="12" r="4" /><path d="M12 2v2" /><path d="M12 20v2" /><path d="M4.9 4.9l1.4 1.4" /><path d="M17.7 17.7l1.4 1.4" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="M4.9 19.1l1.4-1.4" /><path d="M17.7 6.3l1.4-1.4" /></svg>
-    case 'moon':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.5 6.5 0 0 0 9.8 9.8z" /></svg>
-    case 'signout':
-      return <svg className={className} viewBox="0 0 24 24" {...common}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /></svg>
-    default:
-      return <span className={className} />
-  }
+const timeLabel = (iso: string) => {
+  const d = new Date(iso)
+  const today = new Date()
+  const sameDay = d.toDateString() === today.toDateString()
+  return sameDay
+    ? d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+    : d.toLocaleDateString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' })
 }
 
 export default function AppLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname()
   const [unread, setUnread] = useState(0)
-  const [notifOpen, setNotifOpen] = useState(false)
-  const [notifications, setNotifications] = useState<Notification[]>([])
-  const [notifLoading, setNotifLoading] = useState(false)
-  const [location, setLocation] = useState('main')
-  const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [lightMode, setLightMode] = useState(false)
-  const [shopProfile, setShopProfile] = useState<ShopProfile | null>(null)
+  const [shop, setShop] = useState<ShopProfile | null>(null)
+  const [dark, setDark] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [noticeOpen, setNoticeOpen] = useState(false)
+  const [notices, setNotices] = useState<Notice[]>([])
+  const [noticeState, setNoticeState] = useState<'idle' | 'loading' | 'error'>('idle')
 
   useEffect(() => {
-    getUnreadCount().then(setUnread)
-    getShopProfile().then(p => { if (p) setShopProfile(p) })
+    getUnreadCount().then(setUnread).catch(() => {})
+    getShopProfile().then(p => { if (p) setShop(p) }).catch(() => {})
     const channel = supabase
-      .channel('messages_unread')
+      .channel('shell_unread')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, () => {
-        getUnreadCount().then(setUnread)
+        getUnreadCount().then(setUnread).catch(() => {})
       })
       .subscribe()
-    const saved = localStorage.getItem('alpha_location')
-    if (saved) setLocation(saved)
-    const savedMode = localStorage.getItem('alpha_light_mode')
-    if (savedMode === 'true') {
-      setLightMode(true)
-      document.documentElement.classList.add('light')
-    }
+    const c = document.documentElement.classList
+    setDark(c.contains('dark') || (!c.contains('light') && window.matchMedia('(prefers-color-scheme: dark)').matches))
     return () => { supabase.removeChannel(channel) }
   }, [])
 
-  useEffect(() => { setSidebarOpen(false) }, [pathname])
+  // Close any open sheet when the page changes.
+  useEffect(() => { setMenuOpen(false); setSearchOpen(false); setNoticeOpen(false) }, [pathname])
 
-  const pageTitle = useMemo(() => {
-    const match = NAV.find(item => pathname.startsWith(item.href))
-    return match ? PAGE_TITLES[match.href] : 'Alpha AI Desk'
-  }, [pathname])
-
-  const toggleLightMode = () => {
-    const next = !lightMode
-    setLightMode(next)
-    localStorage.setItem('alpha_light_mode', String(next))
-    document.documentElement.classList.toggle('light', next)
+  const toggleTheme = () => {
+    const next = !dark
+    setDark(next)
+    const c = document.documentElement.classList
+    c.toggle('dark', next)
+    c.toggle('light', !next)
+    try { localStorage.setItem('alpha_theme', next ? 'dark' : 'light') } catch { /* private mode */ }
   }
 
-  const loadNotifications = async () => {
-    setNotifLoading(true)
+  const signOut = async () => {
+    try { await supabase.auth.signOut() } catch { /* the cookie is cleared below either way */ }
+    document.cookie = 'alpha_authed=; max-age=0; path=/'
+    window.location.href = '/login'
+  }
+
+  const loadNotices = useCallback(async () => {
+    setNoticeState('loading')
     try {
-      const shopId = (await getShopProfile())?.id
-      if (!shopId) { setNotifications([]); return }
-      const [{ data: msgs }, { data: calls }] = await Promise.all([
-        supabase.from('messages').select('id,body,from_address,created_at').eq('shop_id', shopId).eq('direction','inbound').eq('read',false).order('created_at',{ascending:false}).limit(5),
-        supabase.from('calls').select('id,from_number,start_time').eq('shop_id', shopId).eq('direction','inbound').lt('duration_secs',15).order('start_time',{ascending:false}).limit(5)
+      const shopId = await getShopId()
+      if (!shopId) { setNotices([]); setNoticeState('idle'); return }
+      const [msgs, calls] = await Promise.all([
+        supabase.from('messages').select('id,body,from_address,created_at').eq('shop_id', shopId).eq('direction', 'inbound').eq('read', false).order('created_at', { ascending: false }).limit(6),
+        supabase.from('call_history').select('id,from_number,start_time,duration_secs,status').eq('shop_id', shopId).eq('direction', 'inbound').lt('duration_secs', 15).order('start_time', { ascending: false }).limit(6),
       ])
-      const items: Notification[] = []
-      for (const m of (msgs||[])) {
-        items.push({ id: m.id, type:'sms', title:'New SMS from ' + (m.from_address||'Unknown'), body: (m.body||'').slice(0,80), time: new Date(m.created_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) })
-      }
-      for (const c of (calls||[])) {
-        items.push({ id: c.id, type:'call', title:'Missed call from ' + (c.from_number||'Unknown'), body: 'Short call - likely needs callback', time: new Date(c.start_time).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) })
-      }
-      setNotifications(items)
-    } catch { setNotifications([]) }
-    finally { setNotifLoading(false) }
-  }
+      if (msgs.error && calls.error) throw msgs.error
+      const items: Notice[] = [
+        ...(msgs.data || []).map((m: Record<string, unknown>) => ({
+          id: `m-${m.id}`, kind: 'text' as const, title: `Text from ${m.from_address || 'unknown number'}`,
+          body: String(m.body || '').slice(0, 90), when: String(m.created_at), href: '/messages',
+        })),
+        ...(calls.data || []).map((c: Record<string, unknown>) => ({
+          id: `c-${c.id}`, kind: 'call' as const, title: `Missed call from ${c.from_number || 'unknown number'}`,
+          body: 'Call them back', when: String(c.start_time), href: '/messages',
+        })),
+      ].sort((a, b) => b.when.localeCompare(a.when))
+      setNotices(items)
+      setNoticeState('idle')
+    } catch {
+      setNoticeState('error')
+    }
+  }, [])
 
-  const toggleNotif = () => {
-    if (!notifOpen) loadNotifications()
-    setNotifOpen(!notifOpen)
-  }
+  const openNotices = () => { setNoticeOpen(true); loadNotices() }
 
-  const switchLocation = (loc: string) => {
-    setLocation(loc)
-    localStorage.setItem('alpha_location', loc)
-  }
-
-  const shopName = shopProfile?.shop_name || 'My Shop'
-  const shopPhone = shopProfile?.phone || ''
+  const shopName = shop?.shop_name || 'Your shop'
+  const isChat = pathname === '/ai'
+  const closeMenu = useCallback(() => setMenuOpen(false), [])
+  const closeSearch = useCallback(() => setSearchOpen(false), [])
+  const closeNotices = useCallback(() => setNoticeOpen(false), [])
 
   return (
     <div className="flex h-dvh overflow-hidden bg-bg-base text-text-primary">
-      {sidebarOpen && (
-        <div className="fixed inset-0 bg-black/70 z-40 backdrop-blur-sm lg:hidden" onClick={() => setSidebarOpen(false)} />
-      )}
+      <a href="#main" className="skip-link">Skip to content</a>
 
-      <aside className={`
-        fixed inset-y-0 left-0 z-50 w-72 border-r border-white/10 flex flex-col shrink-0
-        bg-[#111318]/98 backdrop-blur-xl shadow-2xl shadow-black/35
-        transform transition-transform duration-200 ease-in-out
-        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
-        lg:static lg:translate-x-0 lg:w-64
-      `}>
-        <div className="px-4 py-4 border-b border-white/10">
-          <div className="flex items-center gap-3">
-            <div className="grid h-10 w-10 place-items-center rounded-lg bg-blue text-sm font-black text-[#061114] shadow-lg shadow-blue/10">A</div>
-            <div className="min-w-0">
-              <div className="text-sm font-bold leading-tight truncate">Alpha AI Desk</div>
-              <div className="text-xs text-text-secondary truncate">Shop command center</div>
-            </div>
-            <button className="ml-auto grid h-9 w-9 place-items-center rounded-lg border border-white/10 bg-white/[0.03] hover:bg-white/10 lg:hidden" onClick={() => setSidebarOpen(false)} aria-label="Close menu">
-              <Icon name="close" className="h-5 w-5" />
-            </button>
-          </div>
-          <div className="mt-3 flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.035] px-3 py-2">
-            <div className="text-[11px] font-bold uppercase text-text-muted">Desktop AI</div>
-            <div className="flex items-center gap-2 text-[11px] font-bold text-blue">
-              <span className="h-1.5 w-1.5 rounded-full bg-blue shadow-[0_0_10px_rgba(34,199,216,0.7)]" />
-              Tools check
-            </div>
-          </div>
+      {/* ---------- Desktop rail ---------- */}
+      <aside className="shell-rail no-print hidden w-[15.5rem] shrink-0 flex-col lg:flex" aria-label="Main">
+        <div className="px-5 pb-4 pt-5">
+          <Link href="/dashboard" className="flex items-center gap-2.5 no-underline">
+            <span className="lamp lamp-green" aria-hidden="true" />
+            <span className="display text-[1.25rem] font-bold leading-none">Alpha Desk</span>
+          </Link>
+          <p className="mt-2 truncate text-[0.875rem] text-text-secondary" title={shopName}>{shopName}</p>
         </div>
 
-        <div className="px-3 pt-3">
-          <select className="form-select text-xs w-full bg-white/[0.04] border-white/10" value={location} onChange={e => switchLocation(e.target.value)}>
-            <option value="main">{shopProfile?.address || 'Set address in Settings'}</option>
-            <option value="south">South - Coming Soon</option>
-            <option value="north">North - Coming Soon</option>
-          </select>
-        </div>
-
-        <nav className="flex-1 p-3 overflow-y-auto" aria-label="Shop navigation">
-          {NAV_GROUPS.map(group => (
-            <div key={group.label} className="mb-4 last:mb-0">
-              <div className="px-3 pb-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-text-muted">{group.label}</div>
-              <div className="space-y-1">
-                {group.items.map(item => {
-                  const active = pathname.startsWith(item.href)
-                  return (
-                    <Link key={item.href} href={item.href} className={`nav-item group ${active ? 'active' : ''}`}>
-                      <span className={`grid h-7 w-7 place-items-center rounded-md shrink-0 transition-colors ${active ? 'bg-blue/20 text-blue' : 'bg-white/[0.04] text-text-secondary group-hover:bg-white/[0.08] group-hover:text-text-primary'}`}>
-                        <Icon name={item.icon} className="h-4 w-4" />
-                      </span>
-                      <span className="flex-1 truncate">{item.label}</span>
-                      {item.href === '/messages' && unread > 0 && (
-                        <span className="bg-red text-white text-xs font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
-                          {unread > 99 ? '99+' : unread}
-                        </span>
-                      )}
+        <nav className="flex-1 overflow-y-auto px-3 pb-4" aria-label="Shop navigation">
+          <ul className="space-y-0.5">
+            {PRIMARY.map(item => (
+              <li key={item.href}>
+                <Link href={item.href} className="rail-link" aria-current={matches(pathname, item) ? 'page' : undefined}>
+                  <Icon name={item.icon} className="h-5 w-5 shrink-0" />
+                  <span className="flex-1">{item.label}</span>
+                  {item.href === '/messages' && unread > 0 && (
+                    <span className="rounded-full bg-[rgb(var(--lamp-red))] px-1.5 text-[0.75rem] font-bold leading-5 text-white">{unread > 99 ? '99+' : unread}</span>
+                  )}
+                </Link>
+              </li>
+            ))}
+          </ul>
+          {MORE_GROUPS.map(group => (
+            <div key={group.label} className="mt-5">
+              <p className="rail-group">{group.label}</p>
+              <ul className="space-y-0.5">
+                {group.items.map(item => (
+                  <li key={item.href}>
+                    <Link href={item.href} className="rail-link" aria-current={pathname === item.href || pathname.startsWith(item.href + '/') ? 'page' : undefined}>
+                      <Icon name={item.icon} className="h-5 w-5 shrink-0" />
+                      <span className="flex-1">{item.label}</span>
                     </Link>
-                  )
-                })}
-              </div>
+                  </li>
+                ))}
+              </ul>
             </div>
           ))}
         </nav>
 
-        <div className="p-4 border-t border-white/10">
-          <div className="rounded-lg border border-white/10 bg-white/[0.035] p-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-xs font-semibold truncate">{shopName}</div>
-              <span className="rounded-full border border-green/30 bg-green/10 px-2 py-0.5 text-[10px] font-bold text-green">Open</span>
-            </div>
-            <div className="text-xs text-text-secondary mt-1 truncate">{shopPhone}</div>
+        <div className="border-t border-border px-3 py-3">
+          <div className="flex items-center gap-1">
+            <button type="button" className="rail-link flex-1 border-0 bg-transparent text-left" onClick={toggleTheme}>
+              <Icon name={dark ? 'sun' : 'moon'} className="h-5 w-5 shrink-0" />
+              {dark ? 'Light mode' : 'Dark mode'}
+            </button>
+            <button type="button" className="btn-icon" onClick={signOut} aria-label="Sign out" title="Sign out">
+              <Icon name="signout" className="h-5 w-5" />
+            </button>
           </div>
         </div>
       </aside>
 
-      <div className="min-h-0 min-w-0 flex-1 flex flex-col overflow-hidden w-full">
-        <div className="h-16 border-b border-border/80 flex items-center justify-between px-3 sm:px-5 shrink-0 bg-bg-card/90 backdrop-blur">
-          <div className="flex items-center gap-3 min-w-0">
-            <button className="grid h-10 w-10 place-items-center rounded-lg border border-border bg-bg-hover/60 hover:border-blue/40 transition-colors lg:hidden" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
-              <Icon name="menu" className="h-5 w-5" />
-            </button>
-            <div className="min-w-0">
-              <div className="text-base font-black truncate">{pageTitle}</div>
-              <div className="hidden sm:block text-xs text-text-muted truncate">{shopName}</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Link
-              href="/ai"
-              className="hidden sm:inline-flex min-h-9 items-center gap-2 rounded-lg border border-blue/25 bg-blue/10 px-3 text-xs font-bold text-blue transition-colors hover:bg-blue/15"
-            >
-              <Icon name="spark" className="h-4 w-4" />
-              Ask Alpha
-            </Link>
-            <button
-              className="grid h-9 w-9 place-items-center rounded-lg border border-border bg-bg-hover/60 text-text-secondary hover:text-text-primary hover:border-blue/40 transition-colors"
-              onClick={toggleLightMode}
-              title={lightMode ? 'Switch to dark mode' : 'Switch to light mode'}
-              aria-label={lightMode ? 'Switch to dark mode' : 'Switch to light mode'}
-            >
-              <Icon name={lightMode ? 'moon' : 'sun'} className="h-4 w-4" />
-            </button>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {/* ---------- Top bar ---------- */}
+        <header className="shell-top no-print flex h-14 shrink-0 items-center gap-2 border-b border-border bg-bg-chrome px-3 sm:px-5 lg:h-16">
+          <Link href="/dashboard" className="flex min-w-0 flex-1 items-center gap-2.5 no-underline lg:hidden">
+            <span className="lamp lamp-green" aria-hidden="true" />
+            <span className="display truncate text-[1.125rem] font-bold">{shopName}</span>
+          </Link>
 
-            <div className="relative">
-              <button
-                className="relative grid h-9 w-9 place-items-center rounded-lg border border-border bg-bg-hover/60 text-text-secondary hover:text-text-primary hover:border-blue/40 transition-colors"
-                onClick={toggleNotif}
-                aria-label="Notifications"
-              >
-                <Icon name="bell" className="h-4 w-4" />
-                {notifications.length > 0 && (
-                  <span className="absolute -top-1 -right-1 bg-red text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
-                    {notifications.length > 9 ? '9+' : notifications.length}
-                  </span>
-                )}
-              </button>
-              {notifOpen && (
-                <div className="absolute right-0 top-full mt-2 w-80 max-w-[calc(100vw-2rem)] bg-bg-card border border-border rounded-lg shadow-xl shadow-black/30 z-50 max-h-96 overflow-y-auto">
-                  <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-                    <span className="text-sm font-bold">Notifications</span>
-                    <button className="text-xs text-text-muted hover:text-text-primary" onClick={() => setNotifOpen(false)}>Close</button>
-                  </div>
-                  {notifLoading ? (
-                    <div className="p-4 text-sm text-text-muted text-center">Loading...</div>
-                  ) : notifications.length === 0 ? (
-                    <div className="p-4 text-sm text-text-muted text-center">All caught up.</div>
-                  ) : (
-                    notifications.map(n => (
-                      <div key={n.id} className="px-4 py-3 border-b border-border last:border-0 hover:bg-bg-hover">
-                        <div className="text-sm font-medium">{n.title}</div>
-                        <div className="text-xs text-text-muted mt-0.5">{n.body}</div>
-                        <div className="text-xs text-text-muted mt-1 opacity-60">{n.time}</div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              )}
-            </div>
+          <button
+            type="button"
+            onClick={() => setSearchOpen(true)}
+            className="hidden h-10 w-full max-w-md items-center gap-2 rounded-md border border-line bg-bg-input px-3 text-left text-[0.9375rem] text-text-muted hover:bg-bg-hover lg:flex"
+          >
+            <Icon name="search" className="h-5 w-5" />
+            <span className="flex-1">Search customers and paperwork</span>
+          </button>
+          <div className="hidden flex-1 lg:block" />
 
-            <button
-              className="grid h-9 w-9 place-items-center rounded-lg border border-border bg-bg-hover/60 text-text-secondary hover:text-red hover:border-red/40 transition-colors"
-              title="Sign out"
-              aria-label="Sign out"
-              onClick={async () => {
-                try { await supabase.auth.signOut() } catch {}
-                document.cookie = 'alpha_authed=; max-age=0; path=/'
-                window.location.href = '/login'
-              }}
-            >
-              <Icon name="signout" className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-        <main className={`min-h-0 flex-1 bg-bg-base ${pathname === '/ai' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+          <Link href="/ai" className="btn btn-secondary btn-sm hidden lg:inline-flex">
+            <Icon name="alpha" className="h-4 w-4" />
+            Ask Alpha
+          </Link>
+          <button type="button" className="btn-icon lg:hidden" onClick={() => setSearchOpen(true)} aria-label="Search">
+            <Icon name="search" className="h-5 w-5" />
+          </button>
+          <button type="button" className="btn-icon relative" onClick={openNotices} aria-label={unread > 0 ? `Alerts, ${unread} unread` : 'Alerts'}>
+            <Icon name="bell" className="h-5 w-5" />
+            {unread > 0 && <span className="absolute right-1.5 top-1.5 h-2.5 w-2.5 rounded-full bg-[rgb(var(--lamp-red))] ring-2 ring-[rgb(var(--c-chrome))]" />}
+          </button>
+          <button type="button" className="btn-icon lg:hidden" onClick={() => setMenuOpen(true)} aria-label="Open menu">
+            <Icon name="menu" className="h-5 w-5" />
+          </button>
+        </header>
+
+        <main id="main" className={`min-h-0 flex-1 ${isChat ? 'overflow-hidden' : 'overflow-y-auto'} ${isChat ? '' : 'app-main-pad'}`}>
           {children}
           <PhoneWidget />
         </main>
       </div>
+
+      {/* ---------- Phone tab bar ---------- */}
+      <nav className="tabbar no-print lg:hidden" aria-label="Main">
+        {PRIMARY.map(item => (
+          <Link key={item.href} href={item.href} className="tab" aria-current={matches(pathname, item) ? 'page' : undefined}>
+            <Icon name={item.icon} className="h-6 w-6" />
+            <span>{item.label}</span>
+            {item.href === '/messages' && unread > 0 && <span className="tab-badge">{unread > 99 ? '99+' : unread}</span>}
+          </Link>
+        ))}
+      </nav>
+
+      {/* ---------- Sheets ---------- */}
+      <Sheet open={menuOpen} onClose={closeMenu} title={shopName}>
+        <p className="-mt-2 mb-4 text-[0.9375rem] text-text-secondary">{shop?.phone || 'Everything else in Alpha Desk'}</p>
+        {MORE_GROUPS.map(group => (
+          <section key={group.label} className="mb-5">
+            <h3 className="mb-2 text-[0.8125rem] font-bold text-text-secondary">{group.label}</h3>
+            <ul className="grid grid-cols-2 gap-2">
+              {group.items.map(item => (
+                <li key={item.href}>
+                  <Link href={item.href} className="flex min-h-[52px] items-center gap-2.5 rounded-md border border-border bg-bg-base px-3 text-[0.9375rem] font-bold no-underline hover:bg-bg-hover">
+                    <Icon name={item.icon} className="h-5 w-5 shrink-0 text-text-secondary" />
+                    <span className="leading-tight">{item.label}</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
+        <div className="flex gap-2 border-t border-border pt-4">
+          <button type="button" className="btn btn-secondary flex-1" onClick={toggleTheme}>
+            <Icon name={dark ? 'sun' : 'moon'} className="h-5 w-5" />
+            {dark ? 'Light mode' : 'Dark mode'}
+          </button>
+          <button type="button" className="btn btn-secondary flex-1" onClick={signOut}>
+            <Icon name="signout" className="h-5 w-5" />
+            Sign out
+          </button>
+        </div>
+      </Sheet>
+
+      <Sheet open={searchOpen} onClose={closeSearch} title="Search" hideTitle>
+        <SearchPanel autoFocus onNavigate={closeSearch} />
+      </Sheet>
+
+      <Sheet open={noticeOpen} onClose={closeNotices} title="Alerts">
+        {noticeState === 'loading' && <p className="py-4 text-text-secondary">Checking for new texts and missed calls…</p>}
+        {noticeState === 'error' && (
+          <div className="py-2">
+            <p className="text-red">Alerts could not be loaded.</p>
+            <button type="button" className="btn btn-secondary btn-sm mt-3" onClick={loadNotices}>Try again</button>
+          </div>
+        )}
+        {noticeState === 'idle' && notices.length === 0 && (
+          <p className="py-4 text-text-secondary">No unread texts or missed calls. You are caught up.</p>
+        )}
+        {noticeState === 'idle' && notices.length > 0 && (
+          <ul className="ledger">
+            {notices.map(n => (
+              <li key={n.id}>
+                <Link href={n.href} className="ledger-row" onClick={closeNotices}>
+                  <span className={`lamp ${n.kind === 'call' ? 'lamp-red' : 'lamp-blue'}`} aria-hidden="true" />
+                  <span className="ledger-main">
+                    <span className="ledger-title block">{n.title}</span>
+                    <span className="ledger-sub block">{n.body}</span>
+                  </span>
+                  <span className="text-[0.8125rem] text-text-muted">{timeLabel(n.when)}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Sheet>
     </div>
   )
 }
