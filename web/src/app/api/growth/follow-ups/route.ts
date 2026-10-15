@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { withOptOut } from '@/lib/growth-text'
 import { getServiceClient } from '@/lib/supabase'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
@@ -174,7 +175,7 @@ export async function POST(req: NextRequest) {
       const visit = lastVisit[customer.id]
       const monthsAgo = Math.floor((Date.now() - new Date(visit.date).getTime()) / (1000 * 60 * 60 * 24 * 30))
       
-      const message = await generateFollowUpMessage(customer.name, visit.service, monthsAgo, shopName, shopPhone, aiKey, aiBase, aiModel)
+      const message = withOptOut(await generateFollowUpMessage(customer.name, visit.service, monthsAgo, shopName, shopPhone, aiKey, aiBase, aiModel))
 
       if (customer.sms_opted_out || await isSmsOptedOut(supabase, auth.shopId, customer.phone)) {
         results.push({

@@ -8,29 +8,8 @@ import type { ToastKind } from '@/components/ScreenParts'
 import { phonePretty } from '@/lib/today'
 import { getAuthJsonHeaders, safeUrl, sourceLabel } from './helpers'
 import type { Rec } from './helpers'
-
-export type OutreachMethod = 'sms' | 'email' | 'ai_call'
-
-/** Text, email and phone buttons for one lead. Each says what it does; the page asks before anything is sent. */
-export function OutreachButtons({
-  lead, sending, aiMode, onOutreach,
-}: { lead: Rec; sending: string | null; aiMode: boolean; onOutreach: (lead: Rec, method: OutreachMethod) => void }) {
-  const busy = sending !== null
-  const key = (m: OutreachMethod) => `${lead.id}:${m}`
-  return (
-    <div className="flex flex-wrap gap-2">
-      <button type="button" className="btn btn-secondary" disabled={busy || !lead.phone} onClick={() => onOutreach(lead, 'sms')} aria-label={`Text ${lead.name || 'lead'}`} title={lead.phone ? undefined : 'No phone number'}>
-        <Icon name="send" className="h-4 w-4" />{sending === key('sms') ? 'Sending…' : 'Text'}
-      </button>
-      <button type="button" className="btn btn-secondary" disabled={busy || !lead.email || !aiMode} onClick={() => onOutreach(lead, 'email')} aria-label={`Email ${lead.name || 'lead'}`} title={!lead.email ? 'No email address' : !aiMode ? 'Turn on "Let Alpha write the message" to send email' : undefined}>
-        <Icon name="mail" className="h-4 w-4" />{sending === key('email') ? 'Sending…' : 'Email'}
-      </button>
-      <button type="button" className="btn btn-secondary" disabled={busy || !lead.phone} onClick={() => onOutreach(lead, 'ai_call')} aria-label={`Have Alpha call ${lead.name || 'lead'}`} title={lead.phone ? undefined : 'No phone number'}>
-        <Icon name="phone" className="h-4 w-4" />{sending === key('ai_call') ? 'Calling…' : 'Have Alpha call'}
-      </button>
-    </div>
-  )
-}
+import OutreachButtons from './OutreachButtons'
+import type { OutreachMethod } from './OutreachButtons'
 
 interface Props {
   title: string
@@ -39,8 +18,6 @@ interface Props {
   scanHint: string
   onClose: () => void
   onOutreach: (lead: Rec, method: OutreachMethod) => void
-  sending: string | null
-  aiMode: boolean
   onRefresh: () => Promise<void>
   notify: (message: string, kind?: ToastKind) => void
 }
@@ -51,7 +28,7 @@ const parseJson = (v: unknown): Rec => {
   try { return JSON.parse(v) || {} } catch { return {} }
 }
 
-export default function LeadReport({ title, leads, scanning, scanHint, onClose, onOutreach, sending, aiMode, onRefresh, notify }: Props) {
+export default function LeadReport({ title, leads, scanning, scanHint, onClose, onOutreach, onRefresh, notify }: Props) {
   const [filter, setFilter] = useState({ size: 'all', industry: 'all', sort: 'score' })
   const [search, setSearch] = useState('')
   const [enriching, setEnriching] = useState<string | null>(null)
@@ -66,7 +43,7 @@ export default function LeadReport({ title, leads, scanning, scanHint, onClose, 
       if (search && !JSON.stringify(l).toLowerCase().includes(search.toLowerCase())) return false
       if (filter.industry !== 'all' && (l.industry || l.business_type) !== filter.industry) return false
       if (filter.size === 'small' && parseInt(l.fleet_size || l.employee_count || '0') > 10) return false
-      if (filter.size === 'large' && parseInt(l.fleet_size || l.employee_count || '0') < 10) return false
+      if (filter.size === 'large' && parseInt(l.fleet_size || l.employee_count || '0') <= 10) return false
       return true
     })
     if (filter.sort === 'score') r.sort((a, b) => score(b) - score(a))
@@ -127,7 +104,7 @@ export default function LeadReport({ title, leads, scanning, scanHint, onClose, 
               <select id="rep-size" className="form-select" value={filter.size} onChange={e => setFilter(p => ({ ...p, size: e.target.value }))}>
                 <option value="all">Any size</option>
                 <option value="small">Small (1 to 10)</option>
-                <option value="large">Large (10 or more)</option>
+                <option value="large">Large (11 or more)</option>
               </select>
             </div>
             <div className="col-span-2 sm:col-span-1">
@@ -173,7 +150,7 @@ export default function LeadReport({ title, leads, scanning, scanHint, onClose, 
               </div>
               {l.owner_name && <p className="mt-0.5 text-[0.9375rem] text-text-secondary">{l.owner_title || 'Owner'}: <span className="font-bold text-text-primary">{l.owner_name}</span></p>}
 
-              {l.id && <div className="mt-3"><OutreachButtons lead={l} sending={sending} aiMode={aiMode} onOutreach={onOutreach} /></div>}
+              {l.id && <div className="mt-3"><OutreachButtons lead={l} onOutreach={onOutreach} /></div>}
 
               <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
                 {l.phone && <Fact label="Phone"><a href={`tel:${l.phone}`} className="font-bold text-blue underline-offset-2 hover:underline">{phonePretty(l.phone)}</a></Fact>}

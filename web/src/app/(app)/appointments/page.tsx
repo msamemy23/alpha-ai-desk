@@ -1,8 +1,9 @@
 'use client'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getShopId, supabase } from '@/lib/supabase'
 import Sheet from '@/components/Sheet'
 import Icon from '@/components/Icon'
+import Notice from '@/components/Notice'
 import Segmented from '@/components/inbox/Segmented'
 import Timeline from '@/components/schedule/Timeline'
 import type { TimelineColumn } from '@/components/schedule/Timeline'
@@ -12,10 +13,12 @@ import ApptRows from '@/components/schedule/ApptRows'
 import {
   addDays, byTime, dayLong, dayShort, fromMin, hhmm, isClosed, parseYmd, startOfWeek, weekRange, ymd,
 } from '@/components/schedule/types'
-import type { Appointment, ApptCustomer } from '@/components/schedule/types'
+import type { Appointment } from '@/components/schedule/types'
+import { plainError, textProblem } from '@/components/appointments/errors'
+import { useLookups } from '@/components/appointments/useLookups'
 
 type View = 'day' | 'week' | 'list'
-const errText = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback)
+const newKey = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`)
 
 export default function SchedulePage() {
   // Date-dependent screens wait until the browser knows today's date, so the server and browser never disagree.
@@ -25,10 +28,8 @@ export default function SchedulePage() {
   const [picked, setPicked] = useState<Date | null>(null)
 
   const [appts, setAppts] = useState<Appointment[]>([])
-  const [customers, setCustomers] = useState<ApptCustomer[]>([])
+  const { customers, customersError, reloadCustomers, serviceIdeas, shop, isStopped } = useLookups()
   const [techs, setTechs] = useState<string[]>(['Unassigned'])
-  const [serviceIdeas, setServiceIdeas] = useState<string[]>([])
-  const [shop, setShop] = useState({ name: '', phone: '' })
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [notice, setNotice] = useState('')
@@ -42,6 +43,10 @@ export default function SchedulePage() {
   const [detailError, setDetailError] = useState('')
   const [textSent, setTextSent] = useState('')
   const [search, setSearch] = useState('')
+  // A second tap or Enter before the screen has redrawn must not save, change or send twice.
+  const working = useRef(false)
+  const attempt = useRef<{ sig: string; key: string } | null>(null)
+  const lastSent = useRef<{ sig: string; at: number } | null>(null)
 
   useEffect(() => {
     const t = new Date()
@@ -54,6 +59,19 @@ export default function SchedulePage() {
     return () => mq.removeEventListener('change', apply)
   }, [])
 
+  // A schedule left open on a shop screen overnight moves to the new day by itself.
+  useEffect(() => {
+    if (!today) return
+    const next = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)
+    const id = window.setTimeout(() => {
+      const t = new Date()
+      const fresh = new Date(t.getFullYear(), t.getMonth(), t.getDate())
+      setPicked(p => (p && ymd(p) === ymd(today) ? fresh : p))
+      setToday(fresh)
+    }, Math.max(1000, next.getTime() - Date.now() + 500))
+    return () => window.clearTimeout(id)
+  }, [today])
+
   const load = useCallback(async () => {
     try {
       const shopId = await getShopId()
@@ -64,7 +82,7 @@ export default function SchedulePage() {
       setAppts(((data || []) as Appointment[]).map(a => ({ ...a, time: hhmm(a.time) })))
       setLoadError('')
     } catch (e) {
-      setLoadError(`The schedule did not load. ${errText(e, 'Check your connection and try again.')}`)
+      setLoadError(`The schedule did not load. ${plainError(e, 'Check your connection and try again.')}`)
     } finally { setLoading(false) }
   }, [])
 
@@ -73,14 +91,6 @@ export default function SchedulePage() {
     fetch('/api/staff?role=technician').then(r => r.json()).then(d => {
       if (d?.ok && Array.isArray(d.staff)) setTechs(['Unassigned', ...d.staff.map((s: { name: string }) => s.name).filter(Boolean)])
     }).catch(() => { /* typing a tech name still works */ })
-    getShopId().then(shopId => {
-      if (!shopId) return
-      supabase.from('customers').select('id,name,phone,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).order('name').then(({ data }) => setCustomers((data || []) as ApptCustomer[]))
-      supabase.from('canned_jobs').select('name').eq('shop_id', shopId).eq('active', true).order('name').limit(8).then(({ data }) => setServiceIdeas((data || []).map((r: { name: string }) => r.name)))
-      supabase.from('settings').select('shop_name,shop_phone').eq('shop_id', shopId).maybeSingle().then(({ data }) => {
-        if (data) setShop({ name: String(data.shop_name || ''), phone: String(data.shop_phone || '') })
-      })
-    }).catch(() => { /* the form still works without the customer list */ })
     const ch = supabase.channel('appts').on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => { void load() }).subscribe()
     return () => { supabase.removeChannel(ch) }
   }, [load])
@@ -116,11 +126,15 @@ export default function SchedulePage() {
     if (!form.customer_name?.trim()) { setFormError('Add the customer’s name.'); return }
     if (!form.date) { setFormError('Choose a date.'); return }
     if (!form.time) { setFormError('Choose a start time.'); return }
+    if (working.current) return
+    working.current = true
     setSaving(true); setFormError('')
     try {
       const shopId = await getShopId()
       if (!shopId) throw new Error('No shop is associated with the signed-in user')
-      const data = { ...form, shop_id: shopId, updated_at: new Date().toISOString() }
+      const data: Record<string, unknown> = { ...form, shop_id: shopId, updated_at: new Date().toISOString() }
+      // A new day needs a new reminder, so the one already sent for the old day is cleared.
+      if (openId && current && current.date !== form.date) data.reminder_sent_at = null
       if (!openId) {
         const r = await supabase.from('appointments').insert({ ...data, status: data.status || 'Scheduled', created_at: new Date().toISOString() })
         if (r.error) throw new Error(r.error.message)
@@ -134,12 +148,13 @@ export default function SchedulePage() {
       setNotice(`${openId ? 'Saved' : 'Booked'}: ${form.customer_name} on ${when ? dayShort(when) : form.date}.`)
       await load()
     } catch (e) {
-      setFormError(`Not saved. ${errText(e, 'Check your connection and try again.')}`)
-    } finally { setSaving(false) }
+      setFormError(`Not saved. ${plainError(e, 'Check your connection and try again.')}`)
+    } finally { working.current = false; setSaving(false) }
   }
 
   const setStatus = async (status: string) => {
-    if (!current) return
+    if (!current || working.current) return
+    working.current = true
     setBusy(true); setDetailError('')
     try {
       const shopId = await getShopId()
@@ -148,27 +163,43 @@ export default function SchedulePage() {
       if (r.error) throw new Error(r.error.message)
       await load()
       if (status === 'Cancelled' || status === 'No Show') { setSheet(null); setNotice(`${current.customer_name} marked ${status === 'No Show' ? 'as a no show' : 'cancelled'}.`) }
-    } catch (e) { setDetailError(`Status not changed. ${errText(e, 'Try again.')}`) }
-    finally { setBusy(false) }
+    } catch (e) { setDetailError(`Status not changed. ${plainError(e, 'Try again.')}`) }
+    finally { working.current = false; setBusy(false) }
   }
 
-  const sendText = async (body: string) => {
-    if (!current) return
-    setBusy(true); setDetailError(''); setTextSent('')
+  const sendText = async (raw: string) => {
+    if (!current || working.current) return
+    const body = raw.trim()
+    if (!body) return
+    setDetailError(''); setTextSent('')
+    if (isStopped(current)) { setDetailError(textProblem(409, 'This destination has opted out of SMS')); return }
+    const sig = `${current.id}|${current.phone}|${body}`
+    if (lastSent.current && lastSent.current.sig === sig && Date.now() - lastSent.current.at < 10 * 60_000) {
+      setDetailError(`This exact text already went to ${current.customer_name}. Change the words if you want to send another.`)
+      return
+    }
+    working.current = true
+    setBusy(true)
+    // The same words to the same number reuse one key, so a retry after a dropped connection cannot send two.
+    const key = attempt.current && attempt.current.sig === sig ? attempt.current.key : newKey()
+    attempt.current = { sig, key }
     try {
       const res = await fetch('/api/send-message', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
         body: JSON.stringify({ to: current.phone, body, channel: 'sms', ...(current.customer_id ? { customerId: current.customer_id } : {}) }),
       })
       const d = await res.json().catch(() => ({}))
-      if (!res.ok || d.error) throw new Error(d.error || 'The text did not send. Check your connection and try again.')
+      if (!res.ok || d.error || d.ok === false) { setDetailError(textProblem(res.status, typeof d.error === 'string' ? d.error : '')); return }
+      attempt.current = null
+      lastSent.current = { sig, at: Date.now() }
       setTextSent(`Text sent to ${current.customer_name}.`)
-    } catch (e) { setDetailError(errText(e, 'The text did not send.')) }
-    finally { setBusy(false) }
+    } catch { setDetailError(textProblem(0, '')) }
+    finally { working.current = false; setBusy(false) }
   }
 
   const del = async () => {
-    if (!openId) return
+    if (!openId || working.current) return
+    working.current = true
     setBusy(true); setFormError('')
     try {
       const shopId = await getShopId()
@@ -178,8 +209,8 @@ export default function SchedulePage() {
       setSheet(null); setOpenId(null)
       setNotice('Appointment deleted.')
       await load()
-    } catch (e) { setFormError(`Not deleted. ${errText(e, 'Try again.')}`) }
-    finally { setBusy(false) }
+    } catch (e) { setFormError(`Not deleted. ${plainError(e, 'Try again.')}`) }
+    finally { working.current = false; setBusy(false) }
   }
 
   /* ---------- what to show ---------- */
@@ -365,6 +396,13 @@ export default function SchedulePage() {
       )}
 
       <Sheet open={sheet === 'form'} onClose={closeSheet} title={openId ? 'Edit appointment' : 'New appointment'} wide>
+        {customersError && (
+          <Notice kind="warn" className="mb-4">
+            <p className="font-bold">{customersError}</p>
+            <p className="mt-0.5">Searching will not find anyone. You can still type a name to book a walk-in.</p>
+            <button type="button" className="btn btn-secondary btn-sm mt-2" onClick={() => void reloadCustomers()}>Try again</button>
+          </Notice>
+        )}
         <ApptForm
           key={`${openId || 'new'}-${sheet === 'form' ? 'open' : 'closed'}`}
           form={form}
@@ -383,6 +421,12 @@ export default function SchedulePage() {
       </Sheet>
 
       <Sheet open={sheet === 'detail'} onClose={closeSheet} title={current ? current.customer_name : 'Appointment'}>
+        {current && isStopped(current) && (
+          <Notice kind="warn" className="mb-3">
+            <p className="font-bold">{current.customer_name} replied STOP.</p>
+            <p className="mt-0.5">Alpha cannot text them, and reminders skip them. Call them to confirm the visit.</p>
+          </Notice>
+        )}
         {current && (
           <ApptDetail
             key={current.id}

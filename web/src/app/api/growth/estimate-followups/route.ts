@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { withOptOut } from '@/lib/growth-text'
 import { getServiceClient } from '@/lib/supabase'
 import { sendEmail } from '@/lib/email'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
@@ -85,7 +86,7 @@ export async function POST(req: NextRequest) {
     if (existing && existing.length > 0) continue
 
     const total = `$${calcTotals(est as Record<string, unknown>).total.toFixed(2)}`
-    const msg = `Hi ${customer.name}! Just checking in — we sent you an estimate for ${total} for your vehicle. We'd love to help you get it done. ${contactLine} ${shopName}`
+    const msg = withOptOut(`Hi ${customer.name}! Just checking in — we sent you an estimate for ${total} for your vehicle. We'd love to help you get it done. ${contactLine} ${shopName}`)
 
     let sent = false
     if (!dryRun) {

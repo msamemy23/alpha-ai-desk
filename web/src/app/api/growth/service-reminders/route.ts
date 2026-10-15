@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { withOptOut } from '@/lib/growth-text'
 import { getServiceClient } from '@/lib/supabase'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { isSmsOptedOut } from '@/lib/sms-consent'
@@ -106,7 +107,7 @@ export async function POST(req: NextRequest) {
 
       if (recentReminder && recentReminder.length > 0) continue
 
-      const msg = `Hi ${customer.name}! Your ${vehicle.year || ''} ${vehicle.make || ''} ${vehicle.model || ''} is due for an oil change. ${shopName} is ready for you${shopPhone ? ` — call ${shopPhone}` : ''} or just reply to this text!`
+      const msg = withOptOut(`Hi ${customer.name}! Your ${vehicle.year || ''} ${vehicle.make || ''} ${vehicle.model || ''} is due for an oil change. ${shopName} is ready for you${shopPhone ? ` — call ${shopPhone}` : ''} or just reply to this text!`)
 
       if (customer.sms_opted_out || await isSmsOptedOut(sb, auth.shopId, customer.phone)) {
         results.push({ vehicle: `${vehicle.year} ${vehicle.make} ${vehicle.model}`, customer: customer.name, sent: false, skipped: true, error: 'Customer has opted out of SMS' })

@@ -36,15 +36,13 @@ export function timeAgo(d: string | null | undefined): string {
   return `${y} ${y === 1 ? 'year' : 'years'} ago`
 }
 
-export const firstName = (name: unknown): string => String(name || '').trim().split(' ')[0] || 'there'
-
 export async function getAuthJsonHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   try {
     const { data } = await supabase.auth.getSession()
     const token = data.session?.access_token
     if (token) headers.Authorization = `Bearer ${token}`
-  } catch {}
+  } catch { /* the request still goes out and the server says if you are signed out */ }
   return headers
 }
 
@@ -56,23 +54,24 @@ export function safeUrl(value: unknown): string | null {
   return null
 }
 
-/** "Houston, TX 77025" becomes the city the lead scans search near. */
-export function cityFromProfile(cityStateZip: unknown): { search: string; label: string } | null {
-  const raw = String(cityStateZip || '').trim()
-  if (!raw) return null
-  const label = raw.split(',')[0].trim()
-  const search = raw.replace(/\s*\d{5}(-\d{4})?\s*$/, '').replace(/,/g, '').trim()
-  if (!label || !search) return null
-  return { search, label }
-}
-
 export type LampName = 'green' | 'amber' | 'red' | 'blue' | 'off'
+
+export const LEAD_STATUSES: { value: string; label: string; lamp: LampName }[] = [
+  { value: 'new', label: 'New', lamp: 'blue' },
+  { value: 'contacted', label: 'Contacted', lamp: 'amber' },
+  { value: 'converted', label: 'Became a customer', lamp: 'green' },
+  { value: 'not_interested', label: 'Not interested', lamp: 'off' },
+]
 
 /** Lead status as a lamp and a word. */
 export function leadStatus(status: unknown): { lamp: LampName; word: string } {
   const s = String(status || 'new')
-  if (s === 'new') return { lamp: 'blue', word: 'New' }
-  if (s === 'contacted') return { lamp: 'amber', word: 'Contacted' }
-  if (s === 'converted') return { lamp: 'green', word: 'Became a customer' }
-  return { lamp: 'off', word: s.charAt(0).toUpperCase() + s.slice(1) }
+  const known = LEAD_STATUSES.find(x => x.value === s)
+  if (known) return { lamp: known.lamp, word: known.label }
+  return { lamp: 'off', word: s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' ') }
 }
+
+export const errText = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback)
+
+/** Shop details the messages are written from. Always from this shop's own settings. */
+export interface ShopInfo { name: string; phone: string; reviewUrl: string; state: 'loading' | 'ready' | 'error' }

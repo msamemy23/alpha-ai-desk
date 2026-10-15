@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { withOptOut } from '@/lib/growth-text'
 import { getServiceClient } from '@/lib/supabase'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
@@ -44,7 +45,7 @@ async function sendReviewRequestSMS(phone: string, customerName: string, shopNam
     return { success: false, error: 'Telnyx not configured' }
   }
 
-  const message = `Hi ${customerName}! Thank you for choosing ${shopName}. If you had a great experience, we'd love a Google review!${reviewLink ? ` ${reviewLink}` : ''} It means the world to us!`
+  const message = withOptOut(`Hi ${customerName}! Thank you for choosing ${shopName}. If you had a great experience, we'd love a Google review!${reviewLink ? ` ${reviewLink}` : ''} It means the world to us!`)
 
   try {
     const res = await fetch('https://api.telnyx.com/v2/messages', {

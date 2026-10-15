@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { withOptOut } from '@/lib/growth-text'
 import { getServiceClient } from '@/lib/supabase-service'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 import { getRouteShop, unauthorized } from '@/lib/api-auth'
@@ -182,7 +183,7 @@ async function runSmsBlast(
   for (const customer of customers || []) {
     if (customer.sms_opted_out || !customer.phone || await isSmsOptedOut(db, shopId, customer.phone)) continue
     const firstName = String(customer.name || 'there').trim().split(/\s+/)[0] || 'there'
-    const message = template.replace(/\{name\}/gi, firstName)
+    const message = withOptOut(template.replace(/\{name\}/gi, firstName))
     try {
       const result = await sendSMS(customer.phone, message, shop.telnyxApiKey, shop.telnyxPhone, idempotencyKey([shopId, 'sms-blast', String(customer.id), message]))
       const { error: logError } = await db.from('messages').insert({
@@ -242,7 +243,7 @@ export async function POST(req: NextRequest) {
       if (!lead.phone) return NextResponse.json({ error: 'No phone number for this lead' }, { status: 400 })
       if (await isSmsOptedOut(db, auth.shopId, lead.phone)) return NextResponse.json({ error: 'This destination has opted out of SMS' }, { status: 409 })
       toContact = lead.phone
-      const outboundMessage = finalMessage || `Hi ${lead.name?.split(' ')[0]}! ${shop.shopName} here. We can help with ${lead.service_needed || 'your vehicle'}. Call ${shop.shopPhone}!`
+      const outboundMessage = withOptOut(finalMessage || `Hi ${lead.name?.split(' ')[0]}! ${shop.shopName} here. We can help with ${lead.service_needed || 'your vehicle'}. Call ${shop.shopPhone}!`)
       const smsResult = await sendSMS(lead.phone, outboundMessage, shop.telnyxApiKey, shop.telnyxPhone, idempotencyKey([auth.shopId, 'lead-sms', String(lead.id), outboundMessage]))
       result.sms = smsResult
     } else if (method === 'email') {
