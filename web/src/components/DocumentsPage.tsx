@@ -11,6 +11,7 @@ import { DocPreview, printPreview } from './documents/DocPreview'
 import { ActionsMenu, CustomerPicker, ErrorMsg, NewCustomerForm, PaymentForm, PlanForm, SendForm, SignatureForm, WarnMsg } from './documents/Dialogs'
 import type { MenuItem, SigResult } from './documents/Dialogs'
 import { WARRANTY_PRESETS } from './documents/warranty'
+import { useShopLogo } from '@/lib/shop-logo'
 import { docWord, isLocked } from './documents/types'
 import type { Customer, Doc, DocType, Notice } from './documents/types'
 
@@ -138,6 +139,7 @@ export default function DocumentsPage({ type }: { type: DocType }) {
   }
 
   /* ---------- the shop's own details ---------- */
+  const { logo: shopLogo } = useShopLogo()
   const shopName = settings.shop_name?.trim() || ''
   const shopAddress = settings.shop_address?.trim() || ''
   const shopPhone = settings.shop_phone?.trim() || ''
@@ -829,6 +831,7 @@ export default function DocumentsPage({ type }: { type: DocType }) {
             shopPhone={shopPhone}
             shopEmail={shopEmail}
             paymentMethods={String(settings.payment_methods || '')}
+            logo={shopLogo}
             signatureImg={signatureImg}
             formatWarrantyText={formatWarrantyText}
           />

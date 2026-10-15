@@ -58,11 +58,13 @@ else { imgs[i].onload = imgs[i].onerror = function(){ if (++done === n) go(); };
  * The paper version of the document: what gets printed, saved as a PDF and shown on screen as a preview.
  * Paper is always white with dark ink, so its colours are fixed on purpose and do not follow dark mode.
  */
-export function DocPreview({ form, type, totals, shopName, shopAddress, shopPhone, shopEmail, paymentMethods, signatureImg, formatWarrantyText }: {
+export function DocPreview({ form, type, totals, shopName, shopAddress, shopPhone, shopEmail, paymentMethods, logo, signatureImg, formatWarrantyText }: {
   form: Partial<Doc>; type: string; totals: Totals
   shopName: string; shopAddress: string; shopPhone: string; shopEmail: string
   /** Shown in the footer when the document does not carry its own list. */
   paymentMethods?: string
+  /** The shop's logo as a data URL; the header is text only without one. */
+  logo?: string | null
   signatureImg: string | null
   formatWarrantyText: (v: unknown) => string
 }) {
@@ -71,9 +73,12 @@ export function DocPreview({ form, type, totals, shopName, shopAddress, shopPhon
   return (
     <div id="doc-preview-panel" className="overflow-hidden rounded-lg border border-border" style={{fontFamily:'Arial,Helvetica,sans-serif',background:'#fff',color:'#111'}}>
       {/* Header */}
-      <div style={{background:'#1a1a2e',padding:'24px 28px',textAlign:'center'}}>
-        <h2 style={{margin:0,fontSize:'18px',fontWeight:700,color:'#fff',letterSpacing:'0.5px'}}>{shopName || 'Your shop'}</h2>
-        {(shopAddress || shopPhone) && <p style={{margin:'4px 0 0',fontSize:'11px',color:'#9ca3af'}}>{[shopAddress, shopPhone].filter(Boolean).join('  ·  ')}</p>}
+      <div style={{background:'#1a1a2e',padding:'20px 28px',textAlign:'center',display:'flex',alignItems:'center',justifyContent:'center',gap:'16px'}}>
+        {logo && <img src={logo} alt="" width={68} height={68} style={{width:'68px',height:'68px',flex:'none',objectFit:'contain',background:'#fff',borderRadius:'12px',padding:'3px'}} />}
+        <div style={{textAlign: logo ? 'left' : 'center'}}>
+          <h2 style={{margin:0,fontSize:'18px',fontWeight:700,color:'#fff',letterSpacing:'0.5px'}}>{shopName || 'Your shop'}</h2>
+          {(shopAddress || shopPhone) && <p style={{margin:'4px 0 0',fontSize:'11px',color:'#9ca3af'}}>{[shopAddress, shopPhone].filter(Boolean).join('  ·  ')}</p>}
+        </div>
       </div>
 
       {/* Doc type badge + info */}

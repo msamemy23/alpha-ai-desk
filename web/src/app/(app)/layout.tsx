@@ -5,6 +5,8 @@ import { usePathname } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { supabase, getUnreadCount, getShopProfile, getShopId } from '@/lib/supabase'
+import { useShopLogo } from '@/lib/shop-logo'
+import ShopLogoTile from '@/components/ShopLogoTile'
 import PhoneWidget from '@/components/PhoneWidget'
 import Icon from '@/components/Icon'
 import Sheet from '@/components/Sheet'
@@ -27,6 +29,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname()
   const [unread, setUnread] = useState(0)
   const [shop, setShop] = useState<ShopProfile | null>(null)
+  const { logo } = useShopLogo()
   const [dark, setDark] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -112,7 +115,10 @@ export default function AppLayout({ children }: { children: ReactNode }) {
             <span className="lamp lamp-green" aria-hidden="true" />
             <span className="display text-[1.25rem] font-bold leading-none">Alpha Desk</span>
           </Link>
-          <p className="mt-2 truncate text-[0.875rem] text-text-secondary" title={shopName}>{shopName}</p>
+          <div className="mt-3 flex items-center gap-2.5">
+            {logo && <ShopLogoTile src={logo} size={40} />}
+            <p className="min-w-0 flex-1 truncate text-[0.875rem] text-text-secondary" title={shopName}>{shopName}</p>
+          </div>
         </div>
 
         <nav className="flex-1 overflow-y-auto px-3 pb-4" aria-label="Shop navigation">
@@ -163,7 +169,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         {/* ---------- Top bar ---------- */}
         <header className="shell-top no-print flex h-14 shrink-0 items-center gap-2 border-b border-border bg-bg-chrome px-3 sm:px-5 lg:h-16">
           <Link href="/dashboard" className="flex min-w-0 flex-1 items-center gap-2.5 no-underline lg:hidden">
-            <span className="lamp lamp-green" aria-hidden="true" />
+            {logo ? <ShopLogoTile src={logo} size={32} /> : <span className="lamp lamp-green" aria-hidden="true" />}
             <span className="display truncate text-[1.125rem] font-bold">{shopName}</span>
           </Link>
 
