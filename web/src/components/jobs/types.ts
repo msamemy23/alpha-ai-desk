@@ -227,7 +227,7 @@ export function nextStep(j: Job, docs: JobDoc[]): NextStep | null {
 
 /** Sort: late first, then by promise date, then newest. */
 export function byUrgency(todayKey: string) {
-  return (a: Job, b: Job) => {
+  return (a: Pick<Job, 'promise_date' | 'created_at'>, b: Pick<Job, 'promise_date' | 'created_at'>) => {
     const ak = a.promise_date ? a.promise_date.slice(0, 10) : '9999-12-31'
     const bk = b.promise_date ? b.promise_date.slice(0, 10) : '9999-12-31'
     const aLate = ak < todayKey ? 0 : 1

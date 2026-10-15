@@ -4,7 +4,7 @@ import { carLine, dueInfo, nextStep, roShort, statusLamp, statusWord } from './t
 import type { Job, JobDoc } from './types'
 
 /** Late, due soon, or just a date. A word always rides with the colour. */
-function DueLine({ job, todayKey }: { job: Job; todayKey: string }) {
+export function DueLine({ job, todayKey }: { job: Pick<Job, 'promise_date' | 'status'>; todayKey: string }) {
   const due = dueInfo(job, todayKey)
   if (!due) return null
   return (

@@ -13,11 +13,15 @@ export default function Sheet({
   open, onClose, title, children, wide = false, hideTitle = false,
 }: { open: boolean; onClose: () => void; title: string; children: ReactNode; wide?: boolean; hideTitle?: boolean }) {
   const boxRef = useRef<HTMLDivElement>(null)
+  // Kept in a ref so a page that passes a new onClose on every render does not re-run the effect below,
+  // which would pull focus out of whatever field the person is typing in.
+  const closeRef = useRef(onClose)
+  useEffect(() => { closeRef.current = onClose })
 
   useEffect(() => {
     if (!open) return
     const previous = document.activeElement as HTMLElement | null
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeRef.current() }
     document.addEventListener('keydown', onKey)
     const overflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
@@ -27,7 +31,7 @@ export default function Sheet({
       document.body.style.overflow = overflow
       previous?.focus?.()
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
   return (
