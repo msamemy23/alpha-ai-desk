@@ -45,6 +45,18 @@ export interface PartsLookupResult {
   searchUrls: Array<{ store: string; url: string }>
   sourceConfidence: Confidence | 'price_unavailable'
   warnings?: string[]
+  /** Why there is, or is not, a verified price. The lookup always says; the screen shows it when nothing was priced. */
+  availability?: PriceAvailability
+}
+
+export interface PriceAvailability {
+  state: 'priced' | 'price_unavailable'
+  reason: 'source_backed_price_found' | 'vehicle_context_missing' | 'retailer_page_did_not_expose_prices' | 'research_provider_unavailable' | 'no_source_backed_price'
+  /** One plain sentence saying what to do next. */
+  actionable: string
+  fitmentRequired: boolean
+  fitmentFields: string[]
+  coverage?: { requestedCategories: number; sourceResults: number; sourceBackedItems: number }
 }
 
 /** The columns of the shop's own inventory that the lookup compares against. */

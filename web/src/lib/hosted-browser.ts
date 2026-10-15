@@ -195,6 +195,8 @@ export interface HostedHooks {
   vet?: (step: { action: BrowserAction; element: { tag: string; type: string; name: string; id: string; label: string; text: string; href: string; autocomplete: string; placeholder: string; inForm: boolean; formMethod: string; formHasPassword: boolean }; value?: string }) => string | null
   /** Cleans page text before it is returned (invisible characters, block markers). */
   cleanText?: (text: string) => string
+  /** Overall time limit for the task in milliseconds, kept between 5 and 35 seconds. Short lookups use less than the default. */
+  timeoutMs?: number
 }
 
 /** A new isolated browser for each bounded task; no user-machine/browser access. */
@@ -202,10 +204,11 @@ export async function runHostedBrowser(url: string, input: unknown, hooks: Hoste
   const actions = validateBrowserActions(input)
   await assertPublicUrl(url)
   for (const action of actions) if (action.type === 'navigate') await assertPublicUrl(action.url!)
+  const timeoutMs = Math.min(35_000, Math.max(5_000, Math.floor(hooks.timeoutMs || 35_000)))
   const browser = await launchLockedBrowser({ width: 1280, height: 800 })
   const steps: BrowserStep[] = []
-  const watchdog = setTimeout(() => { void browser.close().catch(() => {}) }, 40_000)
-  const deadline = AbortSignal.timeout(35_000)
+  const watchdog = setTimeout(() => { void browser.close().catch(() => {}) }, timeoutMs + 1_000)
+  const deadline = AbortSignal.timeout(timeoutMs)
   try {
     const page = await browser.newPage()
     const guard = await installNetworkGuard(page, { deadline, fetchResource: hooks.fetchResource, check: hooks.check })
@@ -216,13 +219,13 @@ export async function runHostedBrowser(url: string, input: unknown, hooks: Hoste
       steps.push({ action, screenshot: `data:image/jpeg;base64,${Buffer.from(shot).toString('base64')}`, url: page.url(), title: await page.title() })
       if (steps.length > 5) steps.splice(1, 1)
     }
-    const first = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+    const first = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: Math.min(15_000, timeoutMs) })
     if (!first || !first.ok()) throw new Error(`Page could not be opened (${first?.status() || 'network blocked'})`)
     await capture('Opened in Alpha’s browser')
     for (const action of actions) {
       if (deadline.aborted) throw new Error('Browser task reached its time limit')
       if (action.type === 'navigate') {
-        const response = await page.goto(action.url!, { waitUntil: 'domcontentloaded', timeout: 12000 })
+        const response = await page.goto(action.url!, { waitUntil: 'domcontentloaded', timeout: Math.min(12_000, timeoutMs) })
         if (!response?.ok()) throw new Error('Navigation failed')
       } else if (action.type === 'wait') await new Promise(resolve => setTimeout(resolve, action.ms))
       else {
@@ -251,7 +254,7 @@ export async function runHostedBrowser(url: string, input: unknown, hooks: Hoste
         else if (action.type === 'select') await page.select(action.selector!, action.value!)
         else if (action.type === 'click') {
           const navigates = await target.evaluate(el => el instanceof HTMLAnchorElement && !!el.href && new URL(el.href).href.split('#')[0] !== location.href.split('#')[0])
-          const navigation = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: navigates ? 15000 : 2000 })
+          const navigation = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: navigates ? Math.min(15_000, timeoutMs) : 2_000 })
           const [response] = await Promise.all([navigates ? navigation : navigation.catch(() => null), target.click()])
           assertBrowserPage(page.url(), response?.status())
         }

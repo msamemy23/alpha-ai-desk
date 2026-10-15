@@ -10,13 +10,17 @@ import { getUserChatGptTransport } from '@/lib/chatgpt-connection'
 import { chatGptModel, fetchOpenAIChatCompletion } from '@/lib/openai-oauth-server'
 import { parseAutoZoneCategoryEvidence } from '@/lib/ai/autozone-category-parser'
 import { hasExactlyOneVisiblePrice, hasVisiblePrice, priceAppearsInEvidence, visiblePriceMatches } from '@/lib/ai/price-evidence'
+import { runHostedBrowser } from '@/lib/hosted-browser'
 import type { OpenAIOAuthTransport } from '@openai-oauth/core'
 
 export const dynamic = 'force-dynamic'
 
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY || ''
 const SERPER_API_KEY = process.env.SERPER_API_KEY || ''
-const PARTS_AI_TIMEOUT_MS = 45_000
+// Parts research must remain useful when the connected model is slow or
+// unavailable. Common vehicle/brake requests are parsed locally, and model
+// parsing is only a bounded enrichment step.
+const PARTS_AI_TIMEOUT_MS = 12_000
 
 interface PartResult {
   position: string
@@ -69,6 +73,14 @@ interface PartsLookupResult {
   }
   searchUrls: { store: string; url: string }[]
   sourceConfidence: 'verified_exact_product_page' | 'search_result_only' | 'price_unavailable'
+  availability: {
+    state: 'priced' | 'price_unavailable'
+    reason: 'source_backed_price_found' | 'vehicle_context_missing' | 'retailer_page_did_not_expose_prices' | 'research_provider_unavailable' | 'no_source_backed_price'
+    actionable: string
+    fitmentRequired: boolean
+    fitmentFields: string[]
+    coverage: { requestedCategories: number; sourceResults: number; sourceBackedItems: number }
+  }
   warnings: string[]
 }
 
@@ -94,6 +106,23 @@ function normalizeStoreFilter(stores?: string[]) {
     .filter(Boolean)
     .filter(store => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(store))
   return Array.from(new Set(domains)).slice(0, 6)
+}
+
+function inferStoresFromQuery(query: string) {
+  const normalized = ` ${query.toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim()} `
+  const aliases: { names: string[]; domain: string }[] = [
+    { names: ['autozone', 'auto zone'], domain: 'autozone.com' },
+    { names: ['oreilly', 'o reilly'], domain: 'oreillyauto.com' },
+    { names: ['napa'], domain: 'napaonline.com' },
+    { names: ['advance', 'advance auto'], domain: 'advanceautoparts.com' },
+    { names: ['pepboys', 'pep boys'], domain: 'pepboys.com' },
+    { names: ['rockauto', 'rock auto'], domain: 'rockauto.com' },
+    { names: ['amazon'], domain: 'amazon.com' },
+    { names: ['ebay', 'e bay'], domain: 'ebay.com' },
+  ]
+  return aliases
+    .filter(({ names }) => names.some(name => normalized.includes(` ${name} `)))
+    .map(({ domain }) => domain)
 }
 
 function urlMatchesStores(url: string, stores: string[]) {
@@ -301,6 +330,110 @@ function sanitizeParsedParts(parsed: { options?: PartOption[]; kits?: KitOption[
   }
 }
 
+type PartsSearchDiagnostics = {
+  requestedQueries: number
+  completedQueries: number
+  providerResults: number
+  retailerResults: number
+  shoppingCandidates: number
+  shoppingResults: number
+  shoppingCompletedQueries: number
+  directPageCandidates: number
+  directPagesFetched: number
+  tavilyExtractCandidates: number
+  tavilyExtractFetched: number
+  browserPageCandidates: number
+  browserPagesFetched: number
+  browserFailures: number
+  providerAttempts: number
+  providerFailures: number
+  providers: string[]
+}
+
+/**
+ * This is intentionally separate from product parsing. A failed search or a
+ * client-rendered retailer page is a research availability problem, not proof
+ * that a vehicle needs more fitment details. We ask for trim/engine only when
+ * a returned retailer source explicitly asks for it.
+ */
+export function describePriceAvailability(input: {
+  vehicle: VehicleFitment
+  results: SearchResult[]
+  diagnostics: PartsSearchDiagnostics
+  sourceBackedItems: number
+}) {
+  const requestedCategories = input.diagnostics.directPageCandidates || input.diagnostics.requestedQueries
+  const sourceText = input.results.map(result => `${result.title}\n${result.content}`).join('\n').toLowerCase()
+  const fitmentFields = [
+    /(?:select|choose|enter|provide)[^\n.]{0,80}\btrim\b/.test(sourceText) ? 'trim' : '',
+    /(?:select|choose|enter|provide)[^\n.]{0,80}\bengine\b/.test(sourceText) ? 'engine' : '',
+  ].filter(Boolean)
+  const fitmentRequired = fitmentFields.length > 0
+  const coverage = {
+    requestedCategories,
+    sourceResults: input.results.length,
+    sourceBackedItems: input.sourceBackedItems,
+  }
+  if (input.sourceBackedItems > 0) {
+    return {
+      state: 'priced' as const,
+      reason: 'source_backed_price_found' as const,
+      actionable: 'Prices are tied to the listed retailer evidence. Confirm availability and final vehicle fitment with the retailer before checkout.',
+      fitmentRequired: false,
+      fitmentFields: [] as string[],
+      coverage,
+    }
+  }
+  if (!/^\d{4}$/.test(input.vehicle.year) || !input.vehicle.make.trim() || !input.vehicle.model.trim()) {
+    return {
+      state: 'price_unavailable' as const,
+      reason: 'vehicle_context_missing' as const,
+      actionable: 'Add the vehicle year, make, and model before looking up compatible parts.',
+      fitmentRequired: false,
+      fitmentFields: [] as string[],
+      coverage,
+    }
+  }
+  if (fitmentRequired) {
+    return {
+      state: 'price_unavailable' as const,
+      reason: 'no_source_backed_price' as const,
+      actionable: `The retailer source requests ${fitmentFields.join(' and ')} before it can select a compatible product.`,
+      fitmentRequired: true,
+      fitmentFields,
+      coverage,
+    }
+  }
+  if (input.diagnostics.providerAttempts > 0 && input.diagnostics.providerFailures >= input.diagnostics.providerAttempts && input.diagnostics.retailerResults === 0 && input.diagnostics.browserPagesFetched === 0) {
+    return {
+      state: 'price_unavailable' as const,
+      reason: 'research_provider_unavailable' as const,
+      actionable: 'The search provider did not return usable retailer evidence. Retry later; additional trim or engine details are not needed for this failure.',
+      fitmentRequired: false,
+      fitmentFields: [] as string[],
+      coverage,
+    }
+  }
+  if (input.diagnostics.directPageCandidates > 0) {
+    return {
+      state: 'price_unavailable' as const,
+      reason: 'retailer_page_did_not_expose_prices' as const,
+      actionable: 'The retailer did not expose a source-bound public price for this vehicle/category. Retry later or choose a specific source-backed product; trim is not required unless the retailer asks for it.',
+      fitmentRequired: false,
+      fitmentFields: [] as string[],
+      coverage,
+    }
+  }
+  return {
+    state: 'price_unavailable' as const,
+    reason: 'no_source_backed_price' as const,
+    actionable: 'No source-backed price was returned. Retry later or provide a retailer product link; no additional fitment details are needed yet.',
+    fitmentRequired: false,
+    fitmentFields: [] as string[],
+    coverage,
+  }
+}
+
 type PartsAiMessage = { role: 'system' | 'user'; content: string }
 
 type PartsAiConfig = {
@@ -311,6 +444,7 @@ type PartsAiConfig = {
 }
 
 async function callPartsAi(config: PartsAiConfig, messages: PartsAiMessage[], maxTokens: number) {
+  if (!config.oauthTransport && !config.key) throw new Error('Parts AI enrichment is unavailable')
   const signal = AbortSignal.timeout(PARTS_AI_TIMEOUT_MS)
   if (config.oauthTransport) {
     const completion = await fetchOpenAIChatCompletion(config.oauthTransport, {
@@ -338,7 +472,47 @@ async function callPartsAi(config: PartsAiConfig, messages: PartsAiMessage[], ma
   return data
 }
 
-// Use DeepSeek to decompose a parts request into structured search queries
+function fallbackDecomposition(query: string) {
+  const vehicleMatch = query.match(/\b((?:19|20)\d{2})\s+([A-Za-z][A-Za-z-]+)\s+([A-Za-z0-9][A-Za-z0-9-]*)\b/i)
+  const vehicle = {
+    year: vehicleMatch?.[1] || '',
+    make: vehicleMatch?.[2] || '',
+    model: vehicleMatch?.[3] || '',
+  }
+  const lower = query.toLowerCase()
+  const allFour = /\b(?:all\s+four|four|4)\s+(?:wheel\s+)?brakes?\b/.test(lower)
+    || (/\bfront\b/.test(lower) && /\brear\b/.test(lower))
+  const rear = /\brear\b/.test(lower) && !/\bfront\b/.test(lower)
+  const front = /\bfront\b/.test(lower) || (!rear && /\bbrakes?\b/.test(lower))
+  const positions = allFour
+    ? ['Front Left', 'Front Right', 'Rear Left', 'Rear Right']
+    : rear
+      ? ['Rear Left', 'Rear Right']
+      : front
+        ? ['Front Left', 'Front Right']
+        : []
+  const vehicleText = [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ')
+  const brakeRequest = /\b(?:brake|pad|pads|rotor|rotors|disc|discs)\b/.test(lower)
+  const partType = brakeRequest ? 'brake pads and rotors' : query.trim().slice(0, 160)
+  const axleQueries = allFour
+    ? ['front brake pads', 'front brake rotors', 'rear brake pads', 'rear brake rotors']
+    : rear
+      ? ['rear brake pads', 'rear brake rotors']
+      : front
+        ? ['front brake pads', 'front brake rotors']
+        : [partType]
+  return {
+    vehicle,
+    partType,
+    positions,
+    searchQueries: axleQueries.map(item => `${vehicleText} ${item}`.trim()).filter(Boolean).slice(0, 6),
+    laborHours: null,
+  }
+}
+
+// Use the model only when the request cannot be decomposed safely from its
+// explicit vehicle/part wording. This keeps retailer lookup independent from
+// a slow ChatGPT/OAuth response for ordinary shop requests.
 async function decomposeRequest(query: string, config: PartsAiConfig): Promise<{
   vehicle: { year: string; make: string; model: string };
   partType: string;
@@ -346,7 +520,11 @@ async function decomposeRequest(query: string, config: PartsAiConfig): Promise<{
   searchQueries: string[];
   laborHours: number | null;
 }> {
-  const data = await callPartsAi(config, [
+  const fallback = fallbackDecomposition(query)
+  if (fallback.vehicle.year && fallback.vehicle.make && fallback.vehicle.model && fallback.positions.length) return fallback
+  let data
+  try {
+    data = await callPartsAi(config, [
         { role: 'system', content: `You are an auto parts expert. Given a parts request, decompose it into structured data.
 Return ONLY valid JSON with this exact structure:
 {
@@ -374,17 +552,32 @@ Rules:
 - ALWAYS include the vehicle year make model in each search query` },
         { role: 'user', content: query }
       ], 500)
+  } catch {
+    return fallback
+  }
   const raw = data.choices?.[0]?.message?.content || '{}'
   try {
     const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
-    return JSON.parse(cleaned)
+    const parsed = JSON.parse(cleaned) as Partial<{
+      vehicle: Partial<VehicleFitment>
+      partType: string
+      positions: string[]
+      searchQueries: string[]
+    }>
+    return {
+      vehicle: {
+        year: typeof parsed.vehicle?.year === 'string' ? parsed.vehicle.year.trim().slice(0, 4) : fallback.vehicle.year,
+        make: typeof parsed.vehicle?.make === 'string' ? parsed.vehicle.make.trim().slice(0, 48) : fallback.vehicle.make,
+        model: typeof parsed.vehicle?.model === 'string' ? parsed.vehicle.model.trim().slice(0, 64) : fallback.vehicle.model,
+      },
+      partType: typeof parsed.partType === 'string' && parsed.partType.trim() ? parsed.partType.trim().slice(0, 160) : fallback.partType,
+      positions: Array.isArray(parsed.positions) && parsed.positions.length ? parsed.positions.filter(position => typeof position === 'string').map(position => position.trim().slice(0, 64)).filter(Boolean).slice(0, 8) : fallback.positions,
+      searchQueries: Array.isArray(parsed.searchQueries) && parsed.searchQueries.length ? parsed.searchQueries.filter(search => typeof search === 'string').map(search => search.trim().slice(0, 240)).filter(Boolean).slice(0, 6) : fallback.searchQueries,
+      laborHours: null,
+    }
   } catch {
     return {
-      vehicle: { year: '', make: '', model: '' },
-      partType: query,
-      positions: [],
-      searchQueries: [query],
-      laborHours: null
+      ...fallback,
     }
   }
 }
@@ -564,14 +757,40 @@ async function extractAutoZoneCategoryEvidence(urls: string[]): Promise<SearchRe
   }
 }
 
+/**
+ * AutoZone category pages often render their product cards after the initial
+ * HTML response. The hosted browser is a final, read-only evidence source for
+ * those deterministic category URLs. It never signs in, submits a form, or
+ * treats a page without a visible price as price evidence.
+ */
+async function browseAutoZoneCategoryEvidence(urls: string[]): Promise<{ results: SearchResult[]; failed: number }> {
+  const candidates = urls.filter(isStrictAutoZoneCategoryUrl).slice(0, 3)
+  const attempts = await Promise.allSettled(candidates.map(async url => {
+    // Give client-rendered product cards a short settle window. The browser
+    // remains bounded and read-only, but an immediate DOM snapshot only sees
+    // AutoZone's shell and falsely reports that prices are unavailable.
+    const browser = await runHostedBrowser(url, [{ type: 'wait', ms: 1_500 }], { timeoutMs: 10_000 })
+    if (!browser.success || canonicalUrl(browser.url || '') !== canonicalUrl(url)) return { result: null, failed: true }
+    const evidence = typeof browser.text === 'string' ? browser.text.slice(0, 18_000) : ''
+    if (!hasVisiblePrice(evidence)) return { result: null, failed: false }
+    return { result: { title: 'AutoZone fitment category (hosted browser)', url, content: evidence }, failed: false }
+  }))
+  return {
+    results: attempts.flatMap(attempt => attempt.status === 'fulfilled' && attempt.value.result ? [attempt.value.result] : []),
+    failed: attempts.filter(attempt => attempt.status === 'rejected' || (attempt.status === 'fulfilled' && attempt.value.failed)).length,
+  }
+}
+
 async function searchParts(queries: string[], stores: string[] = [], vehicle: VehicleFitment = { year: '', make: '', model: '' }, partType = ''): Promise<{
   results: {title: string; url: string; content: string}[]
-  diagnostics: { requestedQueries: number; completedQueries: number; providerResults: number; retailerResults: number; shoppingCandidates: number; shoppingResults: number; shoppingCompletedQueries: number; directPageCandidates: number; directPagesFetched: number; tavilyExtractCandidates: number; tavilyExtractFetched: number; providers: string[] }
+  diagnostics: { requestedQueries: number; completedQueries: number; providerResults: number; retailerResults: number; shoppingCandidates: number; shoppingResults: number; shoppingCompletedQueries: number; directPageCandidates: number; directPagesFetched: number; tavilyExtractCandidates: number; tavilyExtractFetched: number; browserPageCandidates: number; browserPagesFetched: number; browserFailures: number; providerAttempts: number; providerFailures: number; providers: string[] }
 }> {
   const allResults: SearchResult[] = []
   let shoppingCandidates = 0
   let shoppingResults = 0
   let shoppingCompletedQueries = 0
+  let providerAttempts = 0
+  let providerFailures = 0
 
   const domains = normalizeStoreFilter(stores)
   const expandedQueries: string[] = []
@@ -588,9 +807,16 @@ async function searchParts(queries: string[], stores: string[] = [], vehicle: Ve
   // six-query cap dropped the rear pad/rotor searches for four-wheel jobs.
   const selectedQueries = expandedQueries.slice(0, domains.length ? Math.max(queries.length, 4) : 12)
   const providers = [TAVILY_API_KEY ? 'tavily' : '', SERPER_API_KEY ? 'serper' : ''].filter(Boolean)
+  // These deterministic retailer requests do not depend on search-provider
+  // results. Start them now so a slow provider cannot add another full round
+  // trip before the canonical AutoZone pages are tried.
+  const directPageUrls = autoZoneCategoryUrls(vehicle, partType, queries, domains)
+  const directEvidencePromise = fetchAutoZoneCategoryEvidence(directPageUrls)
+  const tavilyExtractPromise = extractAutoZoneCategoryEvidence(directPageUrls)
   const searchPromises = selectedQueries.map(async (query) => {
     const providerResults: {title: string; url: string; content: string}[] = []
     if (TAVILY_API_KEY) {
+      providerAttempts += 1
       try {
         const r = await fetch('https://api.tavily.com/search', {
           method: 'POST',
@@ -612,10 +838,11 @@ async function searchParts(queries: string[], stores: string[] = [], vehicle: Ve
             url: result.url || '',
             content: [result.content || '', result.raw_content || ''].filter(Boolean).join('\n').slice(0, 5000),
           })))
-        }
-      } catch { /* use the second provider when available */ }
+        } else providerFailures += 1
+      } catch { providerFailures += 1 }
     }
     if (SERPER_API_KEY) {
+      providerAttempts += 1
       try {
         const r = await fetch('https://google.serper.dev/search', {
           method: 'POST',
@@ -641,35 +868,35 @@ async function searchParts(queries: string[], stores: string[] = [], vehicle: Ve
           }))
           shoppingResults += shopping.length
           providerResults.push(...shopping)
-        }
-      } catch { /* both providers are best-effort; sanitize what was returned */ }
+        } else providerFailures += 1
+      } catch { providerFailures += 1 }
     }
     return providerResults.filter(result => result.url && urlMatchesStores(result.url, domains))
   })
-  
-  const results = await Promise.allSettled(searchPromises)
-  for (const r of results) {
-    if (r.status === 'fulfilled') allResults.push(...r.value)
-  }
 
   // Organic snippets often omit prices even when Google has a merchant offer.
   // Pull the shopping feed for the requested categories so prices remain
   // source-backed instead of forcing the language model to guess them.
-  if (SERPER_API_KEY) {
-    const shoppingSearches = await Promise.allSettled(selectedQueries.slice(0, 4).map(async (query) => {
+  const shoppingSearchesPromise = SERPER_API_KEY
+    ? Promise.allSettled(selectedQueries.slice(0, 4).map(async (query) => {
+      try {
       const cleanQuery = query
         .replace(/\s+site:[^\s]+/gi, '')
         .replace(/\s+OR\s+/gi, ' ')
         .replace(/\s{2,}/g, ' ')
         .trim()
       const shoppingQuery = `${cleanQuery} ${domains.map(domain => domain.split('.')[0]).join(' ')}`.trim()
+      providerAttempts += 1
       const r = await fetch('https://google.serper.dev/shopping', {
         method: 'POST',
         headers: { 'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json' },
         body: JSON.stringify({ q: shoppingQuery, num: 8 }),
         signal: AbortSignal.timeout(15000),
       })
-      if (!r.ok) return []
+      if (!r.ok) {
+        providerFailures += 1
+        return []
+      }
       const d = await r.json() as { shopping?: { title?: string; link?: string; price?: string; source?: string; delivery?: string }[] }
       shoppingCandidates += (d.shopping || []).length
       return (d.shopping || []).slice(0, 4).map(result => ({
@@ -677,14 +904,31 @@ async function searchParts(queries: string[], stores: string[] = [], vehicle: Ve
         url: result.link || '',
         content: [result.price ? `Price: ${result.price}` : '', result.delivery || ''].filter(Boolean).join('\n').slice(0, 800),
       }))
-    }))
-    for (const result of shoppingSearches) {
-      if (result.status === 'fulfilled') {
-        shoppingCompletedQueries += 1
-        const retailerShopping = result.value.filter(item => item.url && urlMatchesStores(item.url, domains))
-        shoppingResults += retailerShopping.length
-        allResults.push(...retailerShopping)
+      } catch {
+        providerFailures += 1
+        return []
       }
+    }))
+    : Promise.resolve([] as PromiseSettledResult<SearchResult[]>[])
+
+  // Provider searches, direct retailer pages, retailer extraction, and the
+  // shopping feed are independent reads. Await them together so the request
+  // has one bounded provider round instead of four serial ones.
+  const [results, directEvidence, tavilyExtractEvidence, shoppingSearches] = await Promise.all([
+    Promise.allSettled(searchPromises),
+    directEvidencePromise,
+    tavilyExtractPromise,
+    shoppingSearchesPromise,
+  ])
+  for (const r of results) {
+    if (r.status === 'fulfilled') allResults.push(...r.value)
+  }
+  for (const result of shoppingSearches) {
+    if (result.status === 'fulfilled') {
+      shoppingCompletedQueries += 1
+      const retailerShopping = result.value.filter(item => item.url && urlMatchesStores(item.url, domains))
+      shoppingResults += retailerShopping.length
+      allResults.push(...retailerShopping)
     }
   }
 
@@ -692,13 +936,17 @@ async function searchParts(queries: string[], stores: string[] = [], vehicle: Ve
   // though AutoZone's canonical vehicle-fitment category pages show them.
   // Fetch only deterministic, generated AutoZone category URLs; never follow
   // a URL supplied by the model or by untrusted request content.
-  const directPageUrls = autoZoneCategoryUrls(vehicle, partType, queries, domains)
-  const directEvidence = await fetchAutoZoneCategoryEvidence(directPageUrls)
   allResults.push(...directEvidence)
   const directEvidenceUrls = new Set(directEvidence.map(result => canonicalUrl(result.url)))
   const extractFallbackUrls = directPageUrls.filter(url => !directEvidenceUrls.has(canonicalUrl(url)))
-  const tavilyExtractEvidence = await extractAutoZoneCategoryEvidence(extractFallbackUrls)
   allResults.push(...tavilyExtractEvidence)
+  const tavilyEvidenceUrls = new Set(tavilyExtractEvidence.map(result => canonicalUrl(result.url)))
+  const browserFallbackUrls = extractFallbackUrls.filter(url => !tavilyEvidenceUrls.has(canonicalUrl(url)))
+  // Fall back per deterministic category, not per request. A successful front
+  // page must not suppress browser recovery for a missing rear page (or a
+  // missing pad/rotor component in the same request).
+  const browserFallback = await browseAutoZoneCategoryEvidence(browserFallbackUrls)
+  allResults.push(...browserFallback.results)
 
   // Dedupe by canonical URL while keeping the richest evidence. Direct
   // category extraction is intentionally appended after provider results; a
@@ -738,7 +986,7 @@ async function searchParts(queries: string[], stores: string[] = [], vehicle: Ve
   // out by a large number of lower-context shopping snippets that also list a
   // price. URL and price validation still happen before any parsed result is
   // returned to the caller.
-  const parserPriority = (result: SearchResult) => result.title === 'AutoZone fitment category (Tavily extract)'
+  const parserPriority = (result: SearchResult) => result.title === 'AutoZone fitment category (Tavily extract)' || result.title === 'AutoZone fitment category (hosted browser)'
     ? 2
     : result.title === 'AutoZone fitment category' ? 1 : 0
   filteredResults.sort((left, right) =>
@@ -760,6 +1008,11 @@ async function searchParts(queries: string[], stores: string[] = [], vehicle: Ve
       directPagesFetched: directEvidence.length,
       tavilyExtractCandidates: extractFallbackUrls.length,
       tavilyExtractFetched: tavilyExtractEvidence.length,
+      browserPageCandidates: browserFallbackUrls.length,
+      browserPagesFetched: browserFallback.results.length,
+      browserFailures: browserFallback.failed,
+      providerAttempts,
+      providerFailures,
       providers,
     },
   }
@@ -781,7 +1034,13 @@ async function parseResults(
     `[${i+1}] ${r.title}\nURL: ${r.url}\n${r.content}`
   ).join('\n\n')
   
-  const data = await callPartsAi(config, [
+  // Deterministic parsing is authoritative for vehicle-specific AutoZone
+  // category evidence. Avoid spending another model round trip when it has
+  // already produced usable source-backed rows.
+  if (deterministic.options.length || deterministic.kits.length || !rawResults.length) return deterministic
+  let data
+  try {
+    data = await callPartsAi(config, [
         { role: 'system', content: `You are an auto parts pricing analyst. Parse search results into structured parts data.
 
 Vehicle: ${vehicle}
@@ -841,6 +1100,9 @@ Rules:
 - If you cannot find real data for a tier, omit it. Do NOT make up prices.` },
         { role: 'user', content: `Search results to parse:\n\n${resultsText}` }
       ], 2000)
+  } catch {
+    return deterministic
+  }
   const raw = data.choices?.[0]?.message?.content || '{}'
   try {
     const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
@@ -885,15 +1147,23 @@ export async function POST(req: NextRequest) {
     if (!storesValue.ok) return apiFail(storesValue.error, 400, 'BAD_REQUEST')
 
     const query = normalizePartsLookupQuery(queryValue.value).slice(0, 240)
-    const stores = normalizeStoreFilter(storesValue.value)
+    // The workflow may omit its optional `stores` field even when the user
+    // said "from AutoZone" in the same message. Infer the retailer from the
+    // normalized request so the canonical retailer fallback still runs.
+    const stores = normalizeStoreFilter([...(storesValue.value || []), ...inferStoresFromQuery(query)])
     const idempotencyKey = getIdempotencyKey(req, [auth.shopId, 'parts-lookup', query])
 
     // Get AI settings
     const sb = getServiceClient()
     const { data: settings } = await sb.from('settings').select('ai_api_key,ai_model,ai_base_url,labor_rate,tax_rate').eq('shop_id', auth.shopId).limit(1).single()
-    const oauthTransport = await getUserChatGptTransport(auth)
     const aiKey = typeof settings?.ai_api_key === 'string' ? settings.ai_api_key.trim() : ''
-    if (!oauthTransport && !aiKey) return apiFail('No AI provider is connected. Connect ChatGPT in Settings or add the shop AI key.', 400, 'BAD_REQUEST')
+    let oauthTransport: OpenAIOAuthTransport | null = null
+    try { oauthTransport = await getUserChatGptTransport(auth) } catch {
+      // Parts lookup has deterministic decomposition/parsing fallbacks. A
+      // stale ChatGPT connection must not turn a retailer search into a
+      // timeout or force the user to provide internal part numbers.
+      oauthTransport = null
+    }
     const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
     const aiModel = oauthTransport ? chatGptModel(settings?.ai_model) : normalizeAiModel(settings?.ai_model, aiBase)
     const aiConfig: PartsAiConfig = { key: aiKey, base: aiBase, model: aiModel, oauthTransport }
@@ -928,6 +1198,14 @@ export async function POST(req: NextRequest) {
     const laborGuidance = standardLaborGuidance(query, decomposed.partType, decomposed.positions || [])
     const warnings = [...sanitized.warnings]
     if (laborGuidance) warnings.push(laborGuidance.note)
+    const sourceBackedItems = sanitized.options.reduce((count, option) => count + option.parts.length, 0) + sanitized.kits.length
+    const availability = describePriceAvailability({
+      vehicle: decomposed.vehicle,
+      results: vehicleBoundResults,
+      diagnostics: search.diagnostics,
+      sourceBackedItems,
+    })
+    if (availability.state === 'price_unavailable') warnings.unshift(availability.actionable)
 
     // Build search URLs for reference
     const searchUrls = vehicleBoundResults
@@ -950,6 +1228,7 @@ export async function POST(req: NextRequest) {
       ...(laborGuidance ? { laborGuidance } : {}),
       searchUrls,
       sourceConfidence: sanitized.sourceConfidence,
+      availability,
       warnings: warnings.slice(0, 8),
     }
 
@@ -976,7 +1255,8 @@ export async function POST(req: NextRequest) {
           kits: sanitized.kits.length,
         },
         sourceConfidence: result.sourceConfidence,
-        verifiedItems: result.options.reduce((count, option) => count + option.parts.length, 0) + result.kits.length,
+        sourceBackedItems,
+        availability: result.availability,
       },
     })
 
@@ -986,4 +1266,3 @@ export async function POST(req: NextRequest) {
     return apiFail(message, 500, 'INTERNAL_ERROR')
   }
 }
-

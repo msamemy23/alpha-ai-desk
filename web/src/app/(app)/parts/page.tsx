@@ -45,6 +45,9 @@ function tidy(raw: Partial<PartsLookupResult> | null | undefined): PartsLookupRe
     searchUrls: Array.isArray(r.searchUrls) ? r.searchUrls : [],
     sourceConfidence: r.sourceConfidence || 'price_unavailable',
     warnings: Array.isArray(r.warnings) ? r.warnings : [],
+    availability: r.availability && typeof r.availability === 'object' && typeof r.availability.actionable === 'string' && r.availability.actionable.trim()
+      ? { ...r.availability, fitmentFields: Array.isArray(r.availability.fitmentFields) ? r.availability.fitmentFields : [] }
+      : undefined,
   }
 }
 
@@ -180,7 +183,8 @@ export default function PartsLookupPage() {
 
   const onShelf = useMemo(() => searchStock(stock, query, 5), [stock, query])
   const laborCost = result?.laborHours && result.laborRate ? roundCents(result.laborHours * result.laborRate) : null
-  const warnings = (result?.warnings || []).filter(w => w !== result?.laborGuidance?.note).slice(0, 6)
+  // The reason a price is missing is already shown in the amber panel, so it is not repeated in the list of notes.
+  const warnings = (result?.warnings || []).filter(w => w !== result?.laborGuidance?.note && w !== result?.availability?.actionable).slice(0, 6)
   const checkedText = checkedAt ? new Date(checkedAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : ''
 
   return (
@@ -333,7 +337,7 @@ export default function PartsLookupPage() {
             {verifiedCount === 0 && (
               <div className="rounded-lg border border-amber/60 bg-amber/[0.1] p-4">
                 <p className="flex items-center gap-2 font-bold text-text-primary"><Icon name="alert" className="h-5 w-5 shrink-0 text-amber" />No exact prices verified</p>
-                <p className="mt-1 text-text-secondary">The lookup found sources, but no price passed verification. Open the source links below and check the price yourself before you build an estimate.</p>
+                <p className="mt-1 text-text-secondary">{result.availability?.actionable || 'The lookup found sources, but no price passed verification.'} Open the source links below and check the price yourself before you build an estimate.</p>
               </div>
             )}
 
