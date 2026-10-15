@@ -1,6 +1,7 @@
 'use client'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getShopId, supabase } from '@/lib/supabase'
+import { writeWithoutMissingColumns } from '@/lib/db-missing'
 import Sheet from '@/components/Sheet'
 import Icon from '@/components/Icon'
 import Segmented from '@/components/inbox/Segmented'
@@ -161,7 +162,8 @@ export default function JobsPage() {
       row.status = row.status || 'New'
       const now = new Date().toISOString()
       if (!openId) {
-        const r = await supabase.from('jobs').insert({ ...row, ro_number: nextRoNumber(jobs), shop_id: shopId, created_at: now, updated_at: now })
+        // The repair order number is a newer column. Until the database has it, the job is saved without a number.
+        const r = await writeWithoutMissingColumns({ ...row, ro_number: nextRoNumber(jobs), shop_id: shopId, created_at: now, updated_at: now }, ['ro_number'], values => supabase.from('jobs').insert(values))
         if (r.error) throw new Error(r.error.message)
       } else {
         const r = await supabase.from('jobs').update({ ...row, updated_at: now }).eq('id', openId).eq('shop_id', shopId)

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
-import { isMissingDbObject } from '@/lib/db-missing'
+import { isMissingDbObject, readWithoutMissingColumns } from '@/lib/db-missing'
 import { readFix } from '@/lib/geo'
 import { isOverlong, normalizeRole, roleLabel, UNDO_WINDOW_MS } from '@/lib/timeclock'
 import {
@@ -100,7 +100,7 @@ export async function GET() {
       loadRules(sb, auth.shopId),
       roster(sb, auth.shopId, nowMs),
       sb.from('settings').select('shop_name').eq('shop_id', auth.shopId).limit(1).maybeSingle(),
-      sb.from('jobs').select('id,ro_number,customer_name,vehicle_year,vehicle_make,vehicle_model,status').eq('shop_id', auth.shopId).not('status', 'in', '("Paid","Closed")').order('created_at', { ascending: false }).limit(60),
+      readWithoutMissingColumns('id,ro_number,customer_name,vehicle_year,vehicle_make,vehicle_model,status', ['ro_number'], columns => sb.from('jobs').select(columns).eq('shop_id', auth.shopId).not('status', 'in', '("Paid","Closed")').order('created_at', { ascending: false }).limit(60)),
     ])
     if (jobs.error) throw jobs.error
     const shopName = settings.error || !settings.data ? '' : cleanText(settings.data.shop_name, 120)
@@ -108,7 +108,7 @@ export async function GET() {
       ok: true, now: new Date(nowMs).toISOString(), shopName,
       requirePin: rules.requirePin, locationMode: rules.locationMode, pinsAvailable: r.pins,
       people: r.people,
-      jobs: (jobs.data || []).map(j => ({
+      jobs: ((jobs.data || []) as unknown as Array<Record<string, unknown>>).map(j => ({
         id: String(j.id), ro: String(j.ro_number ?? ''), customer: cleanText(j.customer_name, 80),
         car: [j.vehicle_year, j.vehicle_make, j.vehicle_model].map(v => String(v ?? '').trim()).filter(Boolean).join(' '),
       })),

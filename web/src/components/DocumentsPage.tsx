@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { getShopId, supabase, calcTotals } from '@/lib/supabase'
+import { readWithoutMissingColumns } from '@/lib/db-missing'
 import { buildPaymentSchedule, getLaborFlatAmount, nonNegativeMoney } from '@/lib/document-money'
 import Sheet from '@/components/Sheet'
 import DocList from './documents/DocList'
@@ -277,9 +278,12 @@ export default function DocumentsPage({ type }: { type: DocType }) {
       let carryFailed = false
       if (dviId) {
         const shopId = await getShopId()
-        const { data: insp, error: inspError } = shopId
-          ? await supabase.from('dvi').select('sections,customer_decisions,customer_name,vehicle,customer_id,job_id').eq('id', dviId).eq('shop_id', shopId).maybeSingle()
+        // The customer's answers and the customer link are newer columns; an inspection still opens without them.
+        const inspResult = shopId
+          ? await readWithoutMissingColumns('sections,customer_decisions,customer_name,vehicle,customer_id,job_id', ['customer_decisions', 'customer_id'], columns => supabase.from('dvi').select(columns).eq('id', dviId).eq('shop_id', shopId).maybeSingle())
           : { data: null, error: null }
+        const inspError = inspResult.error
+        const insp = inspResult.data as unknown as Record<string, unknown> | null
         if (inspError || !insp) carryFailed = true
         else {
           const lines = estimateLines(findings(normalizeSections(insp.sections)), cleanDecisions(insp.customer_decisions, findings(normalizeSections(insp.sections)).map(f => f.id)))

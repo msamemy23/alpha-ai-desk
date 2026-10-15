@@ -1,6 +1,7 @@
 'use client'
 import { useCallback, useEffect, useState } from 'react'
 import { getShopId, supabase } from '@/lib/supabase'
+import { readWithoutMissingColumns } from '@/lib/db-missing'
 
 export interface OpenJob { id: string; ro: string; customer: string; car: string; tech: string; status: string }
 
@@ -16,15 +17,15 @@ export function useOpenJobs(enabled: boolean) {
     try {
       const shopId = await getShopId()
       if (!shopId) throw new Error('Not signed in.')
-      const { data, error: err } = await supabase
+      const { data, error: err } = await readWithoutMissingColumns('id,ro_number,customer_name,vehicle_year,vehicle_make,vehicle_model,tech,status', ['ro_number'], columns => supabase
         .from('jobs')
-        .select('id,ro_number,customer_name,vehicle_year,vehicle_make,vehicle_model,tech,status')
+        .select(columns)
         .eq('shop_id', shopId)
         .not('status', 'in', '("Paid","Closed")')
         .order('created_at', { ascending: false })
-        .limit(80)
+        .limit(80))
       if (err) throw err
-      setJobs((data || []).map(j => ({
+      setJobs(((data || []) as unknown as Array<Record<string, unknown>>).map(j => ({
         id: String(j.id), ro: String(j.ro_number ?? '').trim(), customer: String(j.customer_name ?? '').trim(),
         car: [j.vehicle_year, j.vehicle_make, j.vehicle_model].map(v => String(v ?? '').trim()).filter(Boolean).join(' '),
         tech: String(j.tech ?? '').trim(), status: String(j.status ?? ''),

@@ -12,6 +12,7 @@ import type { TechChoice } from '@/components/shopboard/AssignSheet'
 import BoardCard from '@/components/shopboard/BoardCard'
 import TechColumn from '@/components/shopboard/TechColumn'
 import { BOARD_COLUMNS } from '@/components/shopboard/types'
+import { readWithoutMissingColumns } from '@/lib/db-missing'
 import type { BoardJob } from '@/components/shopboard/types'
 import { StatusLine } from '@/components/team/parts'
 import { errText, useClock, useStaff } from '@/components/team/useTeam'
@@ -73,13 +74,13 @@ export default function ShopBoardPage() {
     try {
       const shopId = await getShopId()
       if (!shopId) throw new Error('We could not find your shop. Refresh, or sign out and back in.')
-      const { data, error } = await supabase
+      const { data, error } = await readWithoutMissingColumns(BOARD_COLUMNS, ['ro_number'], columns => supabase
         .from('jobs')
-        .select(BOARD_COLUMNS)
+        .select(columns)
         .eq('shop_id', shopId)
         .not('status', 'in', '("Paid","Closed")')
         .order('created_at', { ascending: false })
-        .limit(1000)
+        .limit(1000))
       if (error) throw error
       if (mine !== seq.current || writes.current > 0) return
       setJobs((data || []) as unknown as BoardJob[])

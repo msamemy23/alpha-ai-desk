@@ -1,6 +1,7 @@
 'use client'
 import { useCallback, useEffect, useState } from 'react'
 import { getShopId, supabase } from '@/lib/supabase'
+import { readWithoutMissingColumns } from '@/lib/db-missing'
 import { billedFromRow } from '@/lib/productivity'
 import type { ProdJobRow } from '@/lib/productivity'
 import { billedDocFor, normalizeSegment } from '@/lib/jobtime'
@@ -60,9 +61,9 @@ export function useBilledJobs(range: { from: string; to: string; fromIso: string
       }).map(([id]) => id)
       const jobs: ProdJobRow[] = []
       for (const part of chunks(inPeriod, 80)) {
-        const r = await supabase.from('jobs').select('id,ro_number,status,tech,customer_name,vehicle_year,vehicle_make,vehicle_model').eq('shop_id', shopId).in('id', part).limit(200)
+        const r = await readWithoutMissingColumns('id,ro_number,status,tech,customer_name,vehicle_year,vehicle_make,vehicle_model', ['ro_number'], columns => supabase.from('jobs').select(columns).eq('shop_id', shopId).in('id', part).limit(200))
         if (r.error) throw r.error
-        for (const j of r.data || []) {
+        for (const j of (r.data || []) as unknown as Array<Record<string, unknown>>) {
           jobs.push({
             id: String(j.id), ro: String(j.ro_number ?? '').trim(), status: String(j.status ?? ''), tech: String(j.tech ?? '').trim(), customer: String(j.customer_name ?? '').trim(),
             car: [j.vehicle_year, j.vehicle_make, j.vehicle_model].map(v => String(v ?? '').trim()).filter(Boolean).join(' '),

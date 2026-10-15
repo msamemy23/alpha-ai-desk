@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Sheet from '@/components/Sheet'
 import { EmptyBlock, ErrorCard, RowsSkeleton, SearchField } from '@/components/ListKit'
 import { getShopId, supabase } from '@/lib/supabase'
+import { readWithoutMissingColumns } from '@/lib/db-missing'
 import { reasonOf, roLabel } from '@/lib/list-logic'
 import { carOf, fmtDate, lampOf, statusLabel } from './types'
 import type { Job } from './types'
@@ -22,7 +23,7 @@ export default function AddClaimSheet({ open, onClose, onAdd }: { open: boolean;
     try {
       const shopId = await getShopId()
       if (!shopId) throw new Error('We could not find your shop. Try refreshing, or sign out and back in.')
-      const { data, error: e } = await supabase.from('jobs').select('id,ro_number,customer_name,concern,status,vehicle_year,vehicle_make,vehicle_model,created_at,is_insurance').eq('shop_id', shopId).order('created_at', { ascending: false }).limit(400)
+      const { data, error: e } = await readWithoutMissingColumns('id,ro_number,customer_name,concern,status,vehicle_year,vehicle_make,vehicle_model,created_at,is_insurance', ['ro_number'], columns => supabase.from('jobs').select(columns).eq('shop_id', shopId).order('created_at', { ascending: false }).limit(400))
       if (e) throw new Error(e.message)
       setJobs(((data || []) as Job[]).filter(j => !j.is_insurance))
     } catch (e) {
