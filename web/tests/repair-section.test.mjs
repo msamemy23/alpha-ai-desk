@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { test } from 'node:test'
 import vm from 'node:vm'
 import ts from 'typescript'
@@ -38,7 +38,12 @@ const repairRoute = readFileSync(new URL('../src/app/api/repair-search/route.ts'
 const repairManualRoute = readFileSync(new URL('../src/app/api/repair-manual/route.ts', import.meta.url), 'utf8')
 const repairProcedureRoute = readFileSync(new URL('../src/app/api/repair-procedures/route.ts', import.meta.url), 'utf8')
 const repairEstimateRoute = readFileSync(new URL('../src/app/api/repair-estimate/route.ts', import.meta.url), 'utf8')
-const repairPage = readFileSync(new URL('../src/app/(app)/repair/page.tsx', import.meta.url), 'utf8')
+// The screen is a page plus the files in components/repair, so the checks below read all of them together.
+const repairDir = new URL('../src/components/repair/', import.meta.url)
+const repairPage = [
+  readFileSync(new URL('../src/app/(app)/repair/page.tsx', import.meta.url), 'utf8'),
+  ...readdirSync(repairDir).filter((f) => /\.tsx?$/.test(f)).sort().map((f) => readFileSync(new URL(f, repairDir), 'utf8')),
+].join('\n')
 const shellNav = readFileSync(new URL('../src/components/shell/nav.ts', import.meta.url), 'utf8')
 const capabilities = readFileSync(new URL('../src/lib/ai/capabilities.ts', import.meta.url), 'utf8')
 const router = readFileSync(new URL('../src/lib/ai/router.ts', import.meta.url), 'utf8')
@@ -251,39 +256,49 @@ test('repair UI exposes workflow tabs, manual reader, source stack, saved drafts
   assert.match(repairPage, /LEMON/)
   assert.match(repairPage, /CHARM/)
   assert.match(repairPage, /NHTSA/)
-  assert.match(repairPage, /MAIN_TABS/)
-  assert.match(repairPage, /Easy Answer/)
-  assert.match(repairPage, /AI Repair/)
-  assert.match(repairPage, /Mechanic Answer/)
+  // Tabs and the answer
+  assert.match(repairPage, /value: 'answer', label: 'Answer'/)
+  assert.match(repairPage, /value: 'sources', label: 'Sources'/)
+  assert.match(repairPage, /value: 'estimate', label: 'Estimate'/)
+  assert.match(repairPage, /value: 'workspace', label: 'Workspace'/)
   assert.match(repairPage, /mechanicSummary/)
-  assert.match(repairPage, /Use This Engine/)
-  assert.match(repairPage, /Repair Summary/)
-  assert.match(repairPage, /Ask Next/)
   assert.match(repairPage, /primaryActionLabel/)
-  assert.match(repairPage, /Open The Info/)
-  assert.match(repairPage, /Pick Engine First/)
   assert.match(repairPage, /checkHeading/)
-  assert.match(repairPage, /What To Check First/)
-  assert.match(repairPage, /Do Not Assume/)
-  assert.match(repairPage, /Next Shop Action/)
-  assert.match(repairPage, /Repair Workflow/)
-  assert.match(repairPage, /Source Stack/)
-  assert.match(repairPage, /Manual Reader/)
-  assert.match(repairPage, /Manual Tree/)
-  assert.match(repairPage, /Estimate Builder/)
-  assert.match(repairPage, /Shop Notes/)
-  assert.match(repairPage, /Diagram Viewer/)
-  assert.match(repairPage, /Pinned Sources/)
-  assert.match(repairPage, /Safety Gates/)
+  assert.match(repairPage, /Use this engine/)
+  assert.match(repairPage, /Ask Alpha next/)
+  assert.match(repairPage, /Do not assume/)
+  assert.match(repairPage, /Next step in the shop/)
+  assert.match(repairPage, /plainLabel\(v\.primaryActionLabel/)
+  assert.match(repairPage, /Pick the engine that matches the car/)
+  assert.match(repairPage, /What to check first/)
+  // Workspace, manual reader, diagram viewer, pins, safety, saved lookups
+  assert.match(repairPage, /Steps to finish/)
+  assert.match(repairPage, /Manual page/)
+  assert.match(repairPage, /Pages from here/)
+  assert.match(repairPage, /Diagram viewer/)
+  assert.match(repairPage, /Pinned sources/)
+  assert.match(repairPage, /Before work starts/)
+  assert.match(repairPage, /Saved lookups/)
+  assert.match(repairPage, /Procedure card/)
+  assert.match(repairPage, /Shop notes/)
+  assert.match(repairPage, /Tools and parts/)
+  assert.match(repairPage, /Technician verification required/)
+  assert.match(repairPage, /Create estimate/)
+  // The sources and the endpoints it calls
+  assert.match(repairPage, /LEMON/)
+  assert.match(repairPage, /CHARM/)
+  assert.match(repairPage, /NHTSA/)
+  assert.match(repairPage, /\/api\/repair-search/)
   assert.match(repairPage, /\/api\/repair-manual/)
   assert.match(repairPage, /\/api\/repair-estimate/)
   assert.match(repairPage, /\/api\/repair-procedures/)
   assert.match(repairPage, /URLSearchParams\(window\.location\.search\)/)
-  assert.match(repairPage, /runSearch\(urlQuery\)/)
-  assert.match(repairPage, /Technician verification required/)
+  assert.match(repairPage, /search\(fromUrl\)/)
   assert.match(repairPage, /alpha_repair_drafts/)
-  assert.match(repairPage, /Create Estimate Draft/)
   assert.match(repairPage, /ai_repair_mode/)
+  assert.match(repairPage, /ai_prefill/)
+  // Old title-case labels must not come back
+  assert.doesNotMatch(repairPage, /Easy Answer|Mechanic Answer|Source Stack|Create Estimate Draft/)
 })
 
 test('repair agent, tool, skill, router, and chat handoff are registered', () => {
