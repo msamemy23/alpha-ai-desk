@@ -11,7 +11,7 @@ import JobForm from '@/components/jobs/JobForm'
 import {
   OPEN_STAGES, STAGES, byUrgency, carLine, docTotals, firstName, isDone, localKey, nextRoNumber, stageOf, statusWord,
 } from '@/components/jobs/types'
-import type { Job, JobCustomer, JobDoc, StageKey } from '@/components/jobs/types'
+import type { Job, JobCustomer, JobDoc, JobInspection, StageKey } from '@/components/jobs/types'
 
 type View = 'board' | 'list'
 type Filter = 'open' | StageKey
@@ -36,6 +36,7 @@ export default function JobsPage() {
 
   const [jobs, setJobs] = useState<Job[]>([])
   const [docs, setDocs] = useState<JobDoc[]>([])
+  const [inspections, setInspections] = useState<JobInspection[]>([])
   const [customers, setCustomers] = useState<JobCustomer[]>([])
   const [techs, setTechs] = useState<string[]>(['Unassigned'])
   const [shop, setShop] = useState({ name: '', phone: '' })
@@ -72,15 +73,21 @@ export default function JobsPage() {
     try {
       const shopId = await getShopId()
       if (!shopId) { setJobs([]); setLoadError('We could not find your shop. Refresh, or sign out and back in.'); return }
-      const [j, d] = await Promise.all([
+      const [j, d, v] = await Promise.all([
         supabase.from('jobs').select('*').eq('shop_id', shopId).order('created_at', { ascending: false }).limit(2000),
         supabase.from('documents').select('id,job_id,type,doc_number,status,parts,labors,shop_supplies,sublet,tax_rate,apply_tax,deposit,amount_paid').eq('shop_id', shopId).not('job_id', 'is', null).order('created_at', { ascending: false }).limit(1000),
+        supabase.from('dvi').select('id,job_id,overall_status,sent_to_customer,customer_approved,created_at').eq('shop_id', shopId).not('job_id', 'is', null).order('created_at', { ascending: false }).limit(1000),
       ])
       if (j.error) throw j.error
       setJobs((j.data || []) as Job[])
       // Paperwork is a bonus on this screen: if it fails to load the jobs still show.
       setDocs(((d.data || []) as Record<string, unknown>[]).map(r => ({
         id: String(r.id), job_id: String(r.job_id), type: String(r.type || ''), doc_number: String(r.doc_number || ''), status: String(r.status || ''), ...docTotals(r),
+      })))
+      // Inspections are a bonus on this screen too.
+      setInspections(((v.data || []) as Record<string, unknown>[]).map(r => ({
+        id: String(r.id), job_id: String(r.job_id), overall_status: String(r.overall_status || ''), sent_to_customer: r.sent_to_customer === true,
+        customer_approved: r.customer_approved === true, created_at: String(r.created_at || ''),
       })))
       setLoadError('')
     } catch (e) {
@@ -404,6 +411,7 @@ export default function JobsPage() {
             key={`${current.id}-${textFirst ? 'text' : 'view'}`}
             job={current}
             docs={currentDocs}
+            inspections={inspections.filter(i => i.job_id === openId)}
             phone={currentPhone}
             shopName={shop.name}
             shopPhone={shop.phone}

@@ -22,6 +22,7 @@ const PUBLIC_API_PREFIXES = [
   '/api/calls/webhook',
   '/api/reset-password',
   '/api/sign',
+  '/api/inspection/public',
   '/api/sms',
   '/api/sms-inbound',
   '/api/telnyx-voice-webhook',
@@ -134,6 +135,7 @@ export async function middleware(req: NextRequest) {
     pathname.startsWith('/terms') ||
     pathname.startsWith('/auth/') ||
     pathname.startsWith('/sign/') ||
+    pathname.startsWith('/inspection/') ||
     pathname.startsWith('/_next/') ||
     pathname === '/favicon.ico'
   ) {

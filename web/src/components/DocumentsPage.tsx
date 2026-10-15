@@ -12,6 +12,7 @@ import { ActionsMenu, CustomerPicker, ErrorMsg, NewCustomerForm, PaymentForm, Pl
 import type { MenuItem, SigResult } from './documents/Dialogs'
 import { WARRANTY_PRESETS } from './documents/warranty'
 import { useShopLogo } from '@/lib/shop-logo'
+import { cleanDecisions, estimateLines, findings, normalizeSections } from '@/lib/dvi'
 import { docWord, isLocked } from './documents/types'
 import type { Customer, Doc, DocType, Notice } from './documents/types'
 
@@ -194,7 +195,7 @@ export default function DocumentsPage({ type }: { type: DocType }) {
         if (hit) { handledLink.current = true; openDoc(hit, people) }
       } else if (wantsNew) {
         handledLink.current = true
-        void openNew(shop, params.get('customer') || undefined, people, params.get('job') || undefined)
+        void openNew(shop, params.get('customer') || undefined, people, params.get('job') || undefined, params.get('dvi') || undefined)
       }
     }
     return rows
@@ -246,7 +247,7 @@ export default function DocumentsPage({ type }: { type: DocType }) {
     return data
   }
 
-  async function openNew(shop: Record<string, string> = settings, customerId?: string, people: Customer[] = customers, jobId?: string) {
+  async function openNew(shop: Record<string, string> = settings, customerId?: string, people: Customer[] = customers, jobId?: string, dviId?: string) {
     setActionError(null)
     try {
       const docNumber = await genDocNumber()
@@ -277,8 +278,31 @@ export default function DocumentsPage({ type }: { type: DocType }) {
           })
         }
       }
+      // Started from an inspection: the repairs the customer approved become the first lines.
+      let carried: { count: number; priced: number } | null = null
+      let carryFailed = false
+      if (dviId) {
+        const shopId = await getShopId()
+        const { data: insp, error: inspError } = shopId
+          ? await supabase.from('dvi').select('sections,customer_decisions,customer_name,vehicle,customer_id,job_id').eq('id', dviId).eq('shop_id', shopId).maybeSingle()
+          : { data: null, error: null }
+        if (inspError || !insp) carryFailed = true
+        else {
+          const lines = estimateLines(findings(normalizeSections(insp.sections)), cleanDecisions(insp.customer_decisions, findings(normalizeSections(insp.sections)).map(f => f.id)))
+          Object.assign(next, { labors: lines.map(l => ({ operation: l.operation, tech: '', pricing: 'flat', amount: l.amount })) })
+          carried = { count: lines.length, priced: lines.filter(l => l.amount > 0).length }
+          if (!next.customer_name && insp.customer_name) next.customer_name = String(insp.customer_name)
+          if (!next.customer_id && insp.customer_id) {
+            const owner = people.find(c => c.id === insp.customer_id)
+            if (owner) Object.assign(next, { customer_id: owner.id, customer_name: owner.name, customer_phone: owner.phone, customer_email: owner.email })
+          }
+        }
+      }
       setForm(next); setBaseline(JSON.stringify(next)); setEditing('new')
-      setSignatureImg(null); setNotice(null)
+      setSignatureImg(null)
+      setNotice(carried
+        ? { kind: 'ok', text: carried.count === 0 ? 'The customer has not approved anything yet, so this starts empty.' : `Added ${carried.count} approved ${carried.count === 1 ? 'repair' : 'repairs'} from the inspection${carried.priced < carried.count ? `. ${carried.count - carried.priced} still need a price` : ''}. Add parts and labor, then save.` }
+        : carryFailed ? { kind: 'error', text: 'The inspection could not be loaded, so this estimate starts empty.' } : null)
     } catch (e) {
       setActionError(`Could not start a new ${noun}. ${errText(e)}`)
     }

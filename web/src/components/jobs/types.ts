@@ -237,3 +237,13 @@ export function byUrgency(todayKey: string) {
 }
 
 export const PRIORITIES = ['Low', 'Normal', 'High', 'Rush'] as const
+
+/** An inspection tied to a job, as the job's detail view needs it. */
+export interface JobInspection {
+  id: string
+  job_id: string
+  overall_status: string
+  sent_to_customer: boolean
+  customer_approved: boolean
+  created_at: string
+}

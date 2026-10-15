@@ -4,7 +4,7 @@ import Icon from '@/components/Icon'
 import { formatCurrency } from '@/lib/supabase'
 import { phonePretty } from '@/lib/today'
 import { STATUSES, carLine, dueInfo, firstName, longDate, nextStep, openedLabel, stageOf, statusLamp, statusWord } from './types'
-import type { Job, JobDoc } from './types'
+import type { Job, JobDoc, JobInspection } from './types'
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -16,11 +16,13 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 export default function JobDetail({
-  job: j, docs, phone, shopName, shopPhone, todayKey, busy, error, textSent, note, startTexting,
+  job: j, docs, inspections = [], phone, shopName, shopPhone, todayKey, busy, error, textSent, note, startTexting,
   onStatus, onEdit, onCall, onSendText, onDelete,
 }: {
   job: Job
   docs: JobDoc[]
+  /** Inspections already done for this car, newest first. */
+  inspections?: JobInspection[]
   phone: string
   shopName: string
   shopPhone: string
@@ -145,6 +147,29 @@ export default function JobDetail({
           </select>
         </div>
       </div>
+
+      <section className="mt-5" aria-label="Inspections">
+        <h3 className="section-title mb-1.5">Inspection</h3>
+        {inspections.length === 0 ? (
+          <p className="text-[0.9375rem] text-text-secondary">No inspection yet. Walk the car, rate each part, and text the customer photos and prices.</p>
+        ) : (
+          <ul className="ledger">
+            {inspections.map(i => (
+              <li key={i.id}>
+                <a className="ledger-row no-underline" href={`/dvi?id=${encodeURIComponent(i.id)}`}>
+                  <span className={`lamp lamp-${i.overall_status === 'red' ? 'red' : i.overall_status === 'yellow' ? 'amber' : i.overall_status === 'green' ? 'green' : 'off'} shrink-0`} aria-hidden="true" />
+                  <span className="ledger-main">
+                    <span className="ledger-title block">{i.customer_approved ? 'Customer approved work' : i.sent_to_customer ? 'Sent to the customer' : i.overall_status === 'pending' || !i.overall_status ? 'Not started' : 'Being checked'}</span>
+                    <span className="ledger-sub block">{openedLabel(i.created_at, todayKey)}</span>
+                  </span>
+                  <Icon name="chevronRight" className="h-5 w-5 shrink-0 text-text-muted" />
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+        <a className="btn btn-secondary mt-3 w-full no-underline" href={`/dvi?new=1&job=${encodeURIComponent(j.id)}`}><Icon name="inspect" className="h-5 w-5" />{inspections.length === 0 ? 'Start inspection' : 'Start another inspection'}</a>
+      </section>
 
       <section className="mt-5" aria-label="Estimates and invoices">
         <h3 className="section-title mb-1.5">Estimates and invoices</h3>
