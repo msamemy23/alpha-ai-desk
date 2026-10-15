@@ -1,16 +1,21 @@
 'use client'
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { getShopId, supabase } from '@/lib/supabase'
+import { formatCurrency, getShopId, supabase } from '@/lib/supabase'
 import { ageLabel, phonePretty } from '@/lib/today'
+import { contactProblems, findDuplicates, isDirty, reasonOf } from '@/lib/list-logic'
 import Icon from '@/components/Icon'
 import Sheet from '@/components/Sheet'
+import { EmptyBlock, ErrorCard, FilterChips, RowsSkeleton, SearchField } from '@/components/ListKit'
+import FlashNotice from '@/components/inventory/FlashNotice'
+import type { Flash } from '@/components/inventory/FlashNotice'
 import SentimentMark from '@/components/customers/SentimentMark'
 import CustomerForm from '@/components/customers/CustomerForm'
 import CustomerDetail, { dialCustomer } from '@/components/customers/CustomerDetail'
 import SendPanel from '@/components/customers/SendPanel'
 import { SENTIMENTS, matchesSearch, sentimentOf, text, vehicleLabel } from '@/components/customers/types'
 import type { Customer } from '@/components/customers/types'
+import { docTotals } from '@/components/jobs/types'
 
 type SheetState =
   | { mode: 'view'; id: string }
@@ -18,22 +23,30 @@ type SheetState =
   | { mode: 'new' }
   | { mode: 'send'; id: string; channel: 'sms' | 'email' }
 
+type Filter = 'all' | 'owes' | 'happy' | 'neutral' | 'unhappy' | 'vip' | 'at-risk'
+type Sort = 'name' | 'recent' | 'owes'
+
 interface VisitInfo { jobs: number; last: string }
 
-function ListSkeleton() {
+const OWED = ['Unpaid', 'Partial', 'Sent']
+
+function Header({ onNew, subtitle, disabled = false }: { onNew: () => void; subtitle: string; disabled?: boolean }) {
   return (
-    <div className="page-container" aria-busy="true" aria-label="Loading customers">
-      <div className="skeleton h-9 w-48" />
-      <div className="skeleton mt-3 h-4 w-40" />
-      <div className="skeleton mt-6 h-11 w-full" />
-      <div className="mt-4 space-y-2">{[0, 1, 2, 3, 4, 5, 6, 7].map(i => <div key={i} className="skeleton h-[4.25rem]" />)}</div>
-    </div>
+    <header className="page-header">
+      <div className="min-w-0">
+        <h1 className="page-title">Customers</h1>
+        <p className="page-subtitle num" aria-live="polite">{subtitle}</p>
+      </div>
+      <button type="button" className="btn btn-primary w-full sm:w-auto" onClick={onNew} disabled={disabled}>
+        <Icon name="plus" className="h-5 w-5" />New customer
+      </button>
+    </header>
   )
 }
 
 export default function CustomersPage() {
   return (
-    <Suspense fallback={<ListSkeleton />}>
+    <Suspense fallback={<div className="page-container"><Header onNew={() => {}} subtitle="Loading…" disabled /><RowsSkeleton rows={8} label="Loading customers" /></div>}>
       <CustomersScreen />
     </Suspense>
   )
@@ -44,15 +57,22 @@ function CustomersScreen() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [visits, setVisits] = useState<Record<string, VisitInfo>>({})
+  const [owed, setOwed] = useState<Record<string, number>>({})
   const [search, setSearch] = useState('')
-  const [sentimentFilter, setSentimentFilter] = useState('all')
+  const [filter, setFilter] = useState<Filter>('all')
+  const [sort, setSort] = useState<Sort>('name')
   const [sheet, setSheet] = useState<SheetState | null>(null)
+  const [confirm, setConfirm] = useState<null | 'discard' | 'delete'>(null)
   const [form, setForm] = useState<Partial<Customer>>({})
+  const [baseline, setBaseline] = useState<Partial<Customer>>({})
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
   const [nameError, setNameError] = useState(false)
-  const [notice, setNotice] = useState('')
+  const [tried, setTried] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [flash, setFlash] = useState<Flash | null>(null)
   const sheetBody = useRef<HTMLDivElement>(null)
+  const afterDiscard = useRef<() => void>(() => {})
 
   const params = useSearchParams()
   const qParam = params.get('q')
@@ -64,12 +84,12 @@ function CustomersScreen() {
     try {
       let shopId: string | null = null
       try { shopId = await getShopId() } catch { shopId = null }
-      if (!shopId) { setCustomers([]); setVisits({}); setLoadError('We could not find your shop. Try refreshing, or sign out and back in.'); return }
-      // Customers, jobs and paid paperwork are independent, so fetch them together.
-      const [{ data, error }, { data: jobs }, { data: paid }] = await Promise.all([
+      if (!shopId) { setCustomers([]); setVisits({}); setOwed({}); setLoadError('We could not find your shop. Try refreshing, or sign out and back in.'); return }
+      // Customers, jobs and paperwork are independent, so fetch them together.
+      const [{ data, error }, { data: jobs }, { data: paper }] = await Promise.all([
         supabase.from('customers').select('*').eq('shop_id', shopId).order('name'),
         supabase.from('jobs').select('customer_id,created_at').eq('shop_id', shopId),
-        supabase.from('documents').select('customer_id,created_at').eq('shop_id', shopId).in('type', ['Invoice', 'Receipt']).order('created_at', { ascending: false }).limit(2000),
+        supabase.from('documents').select('customer_id,created_at,type,status,parts,labors,shop_supplies,sublet,tax_rate,apply_tax,deposit,amount_paid').eq('shop_id', shopId).in('type', ['Invoice', 'Receipt']).order('created_at', { ascending: false }).limit(2000),
       ])
       if (error) {
         // Keep the current list on screen; a failed refresh must not look like "no customers".
@@ -79,6 +99,7 @@ function CustomersScreen() {
       setLoadError(null)
       setCustomers((data || []) as Customer[])
       const info: Record<string, VisitInfo> = {}
+      const money: Record<string, number> = {}
       const touch = (id: unknown, when: unknown, isJob: boolean) => {
         if (!id) return
         const k = String(id)
@@ -88,8 +109,18 @@ function CustomersScreen() {
         if (w > row.last) row.last = w
       }
       ;(jobs || []).forEach((j: Record<string, unknown>) => touch(j.customer_id, j.created_at, true))
-      ;(paid || []).forEach((d: Record<string, unknown>) => touch(d.customer_id, d.created_at, false))
+      ;(paper || []).forEach((d: Record<string, unknown>) => {
+        const status = String(d.status || '')
+        if (status === 'Draft' || status === 'Void') return
+        touch(d.customer_id, d.created_at, false)
+        if (d.type === 'Invoice' && OWED.includes(status) && d.customer_id) {
+          const t = docTotals(d)
+          const due = t.total - t.paid
+          if (due > 0.005) money[String(d.customer_id)] = (money[String(d.customer_id)] || 0) + due
+        }
+      })
       setVisits(info)
+      setOwed(money)
     } catch {
       setLoadError('Your customers could not be loaded. Check your connection and try again.')
     } finally { setLoading(false) }
@@ -97,7 +128,7 @@ function CustomersScreen() {
 
   useEffect(() => {
     load()
-    const ch = supabase.channel('customers_page').on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, load).subscribe()
+    const ch = supabase.channel('customers_page').on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, () => { void load() }).subscribe()
     return () => { supabase.removeChannel(ch) }
   }, [load])
 
@@ -111,26 +142,33 @@ function CustomersScreen() {
     if (customerParam) {
       const hit = customers.find(c => c.id === customerParam)
       if (hit) setSheet({ mode: 'view', id: hit.id })
+      else setFlash({ kind: 'error', text: 'That customer was not found. They may have been deleted.' })
     } else if (qParam) {
       const exact = customers.filter(c => text(c.name).trim().toLowerCase() === qParam.trim().toLowerCase())
       if (exact.length === 1) setSheet({ mode: 'view', id: exact[0].id })
     }
   }, [loading, loadError, qParam, customerParam, customers])
 
+  // A confirmation clears itself. Anything with a button (like an error to read) stays until dismissed.
   useEffect(() => {
-    if (!notice) return
-    const t = setTimeout(() => setNotice(''), 6000)
+    if (!flash || flash.kind === 'error' || flash.action) return
+    const t = setTimeout(() => setFlash(null), 8000)
     return () => clearTimeout(t)
-  }, [notice])
+  }, [flash])
 
-  const closeSheet = useCallback(() => { setSheet(null); setForm({}); setSaveError(''); setNameError(false) }, [])
+  const closeSheet = useCallback(() => {
+    setSheet(null); setConfirm(null); setForm({}); setBaseline({}); setSaveError(''); setNameError(false); setTried(false)
+  }, [])
 
   // Keep keyboard and screen reader focus inside the sheet when its content changes.
   const mode = sheet?.mode
   useEffect(() => {
-    if (!mode || mode === 'new') return
+    if (!mode) return
+    // A new view starts at its top, not wherever the last one was scrolled to.
+    sheetBody.current?.closest('[role="dialog"]')?.scrollTo({ top: 0 })
+    if (mode === 'new') return
     sheetBody.current?.focus({ preventScroll: true })
-  }, [mode])
+  }, [mode, confirm])
 
   const current = sheet && 'id' in sheet ? customers.find(c => c.id === sheet.id) || null : null
   useEffect(() => {
@@ -141,73 +179,109 @@ function CustomersScreen() {
   // The "enter a name" message goes away as soon as there is one.
   useEffect(() => { if (nameError && text(form.name).trim()) setNameError(false) }, [nameError, form.name])
 
-  const openNew = () => {
-    setForm({ preferred_contact: 'Call', sentiment: 'neutral' })
-    setSaveError(''); setNameError(false)
-    setSheet({ mode: 'new' })
-  }
-  const openEdit = (c: Customer) => {
-    setForm({ ...c })
-    setSaveError(''); setNameError(false)
-    setSheet({ mode: 'edit', id: c.id })
+  const inForm = sheet?.mode === 'new' || sheet?.mode === 'edit'
+  const dirty = inForm && isDirty(form, baseline)
+
+  /** Leaves the form. Asks first when there are typed changes that would be lost. */
+  const leaveForm = useCallback((then: () => void) => {
+    if (dirty) { afterDiscard.current = then; setConfirm('discard'); return }
+    then()
+  }, [dirty])
+
+  const requestClose = () => {
+    if (confirm) { setConfirm(null); return }
+    if (inForm) leaveForm(closeSheet)
+    else closeSheet()
   }
 
+  const startForm = (initial: Partial<Customer>, next: SheetState) => {
+    setForm(initial); setBaseline(initial)
+    setSaveError(''); setNameError(false); setTried(false); setConfirm(null)
+    setSheet(next)
+  }
+  const openNew = () => startForm({ preferred_contact: 'Call', sentiment: 'neutral' }, { mode: 'new' })
+  const openEdit = (c: Customer) => startForm({ ...c }, { mode: 'edit', id: c.id })
+
   const save = async () => {
+    if (saving) return
+    setTried(true)
     if (!text(form.name).trim()) {
       setNameError(true); setSaveError('')
       requestAnimationFrame(() => document.getElementById('cf-name')?.focus())
       return
     }
+    const problems = contactProblems(form.phone, form.email)
+    if (problems.phone || problems.email) {
+      setSaveError('')
+      requestAnimationFrame(() => document.getElementById(problems.phone ? 'cf-phone' : 'cf-email')?.focus())
+      return
+    }
     setNameError(false); setSaveError(''); setSaving(true)
     try {
       const shopId = await getShopId()
-      if (!shopId) { setSaveError('No shop is associated with the signed-in user'); return }
+      if (!shopId) throw new Error('We could not find your shop. Try refreshing, or sign out and back in.')
       const safeFields = ['name', 'phone', 'email', 'address', 'notes', 'preferred_contact', 'vehicle_year', 'vehicle_make', 'vehicle_model', 'vehicle_vin', 'vehicle_plate', 'vehicle_mileage']
       const data: Record<string, unknown> = { shop_id: shopId, updated_at: new Date().toISOString() }
       for (const k of safeFields) { if ((form as Record<string, string>)[k] !== undefined) data[k] = (form as Record<string, string>)[k] }
+      data.name = text(form.name).trim()
       const extended = ['sentiment', 'vehicle_color', 'vehicle_engine', 'last_contact', 'review_requested']
       for (const k of extended) { if ((form as Record<string, string>)[k] !== undefined) data[k] = (form as Record<string, string>)[k] }
+      let newId: string | null = null
       if (sheet?.mode === 'new') {
-        const { error } = await supabase.from('customers').insert({ ...data, created_at: new Date().toISOString() })
-        if (error) { setSaveError('Save failed: ' + error.message); return }
+        const { data: made, error } = await supabase.from('customers').insert({ ...data, created_at: new Date().toISOString() }).select('id').single()
+        if (error) throw new Error(error.message)
+        newId = made?.id ? String(made.id) : null
       } else if (sheet?.mode === 'edit') {
         const { error } = await supabase.from('customers').update(data).eq('id', sheet.id).eq('shop_id', shopId)
-        if (error) { setSaveError('Save failed: ' + error.message); return }
+        if (error) throw new Error(error.message)
       }
-      const wasNew = sheet?.mode === 'new'
-      const editedId = sheet && 'id' in sheet ? sheet.id : null
+      const editedId = sheet && 'id' in sheet ? sheet.id : newId
       await load()
-      setNotice(wasNew ? 'Customer added.' : 'Changes saved.')
-      if (wasNew || !editedId) closeSheet()
-      else { setForm({}); setSheet({ mode: 'view', id: editedId }) }
+      setFlash({ kind: 'success', text: sheet?.mode === 'new' ? `${data.name} was added.` : 'Changes saved.' })
+      setForm({}); setBaseline({}); setTried(false)
+      if (editedId) setSheet({ mode: 'view', id: editedId })
+      else closeSheet()
+    } catch (e) {
+      setSaveError(`Not saved. ${reasonOf(e, 'Check your connection.')} Everything you typed is still here. Tap ${sheet?.mode === 'new' ? 'Add customer' : 'Save changes'} to try again.`)
     } finally { setSaving(false) }
   }
 
   const del = async () => {
-    if (!sheet || sheet.mode !== 'edit') return
-    if (!confirm('Delete this customer?')) return
-    setSaveError('')
-    const shopId = await getShopId()
-    if (!shopId) { setSaveError('No shop is associated with the signed-in user'); return }
-    const { error } = await supabase.from('customers').delete().eq('id', sheet.id).eq('shop_id', shopId)
-    if (error) { setSaveError('Delete failed: ' + error.message); return }
-    closeSheet()
-    setNotice('Customer deleted.')
-    await load()
+    if (!sheet || sheet.mode !== 'edit' || busy) return
+    const name = current?.name || 'The customer'
+    setBusy(true); setSaveError('')
+    try {
+      const shopId = await getShopId()
+      if (!shopId) throw new Error('We could not find your shop. Try refreshing, or sign out and back in.')
+      const { error } = await supabase.from('customers').delete().eq('id', sheet.id).eq('shop_id', shopId)
+      if (error) throw new Error(error.message)
+      closeSheet()
+      setFlash({ kind: 'success', text: `${name} was deleted. Their estimates, invoices and repair orders are still on file.` })
+      await load()
+    } catch (e) {
+      setSaveError(`Not deleted. ${reasonOf(e, 'Check your connection.')} Try again.`)
+    } finally { setBusy(false) }
   }
 
   const sorted = useMemo(
     () => [...customers].sort((a, b) => {
+      if (sort === 'recent') {
+        const al = visits[a.id]?.last || '', bl = visits[b.id]?.last || ''
+        if (al !== bl) return al ? (bl ? bl.localeCompare(al) : -1) : 1
+      } else if (sort === 'owes') {
+        const d = (owed[b.id] || 0) - (owed[a.id] || 0)
+        if (d) return d
+      }
       const an = text(a.name).trim(), bn = text(b.name).trim()
       if (!an !== !bn) return an ? -1 : 1
       return an.localeCompare(bn, undefined, { sensitivity: 'base' })
     }),
-    [customers],
+    [customers, sort, visits, owed],
   )
 
   const filtered = useMemo(
-    () => sorted.filter(c => matchesSearch(c, search) && (sentimentFilter === 'all' || (c.sentiment || 'neutral') === sentimentFilter)),
-    [sorted, search, sentimentFilter],
+    () => sorted.filter(c => matchesSearch(c, search) && (filter === 'all' || (filter === 'owes' ? (owed[c.id] || 0) > 0.005 : sentimentOf(c).key === filter))),
+    [sorted, search, filter, owed],
   )
 
   const counts = useMemo(() => {
@@ -216,14 +290,27 @@ function CustomersScreen() {
     return m
   }, [customers])
 
-  const filtersOn = search.trim() !== '' || sentimentFilter !== 'all'
-  const clearFilters = () => { setSearch(''); setSentimentFilter('all') }
+  const owingCount = useMemo(() => customers.filter(c => (owed[c.id] || 0) > 0.005).length, [customers, owed])
+  const owedTotal = useMemo(() => customers.reduce((s, c) => s + ((owed[c.id] || 0) > 0.005 ? owed[c.id] : 0), 0), [customers, owed])
 
-  // ---------- Loading and error ----------
-  if (loading && customers.length === 0 && !loadError) return <ListSkeleton />
+  const duplicates = useMemo(
+    () => (sheet?.mode === 'new' || sheet?.mode === 'edit' ? findDuplicates(customers, { id: sheet.mode === 'edit' ? sheet.id : undefined, name: form.name, phone: form.phone, email: form.email }) : []),
+    [sheet, customers, form.name, form.phone, form.email],
+  )
+
+  const filtersOn = search.trim() !== '' || filter !== 'all'
+  const clearFilters = () => { setSearch(''); setFilter('all') }
+  const firstLoad = loading && customers.length === 0 && !loadError
+
+  const subtitle = firstLoad ? 'Loading…'
+    : loadError && customers.length === 0 ? 'Could not load customers'
+    : customers.length === 0 ? 'Your customer book'
+    : `${customers.length} ${customers.length === 1 ? 'customer' : 'customers'}${owingCount > 0 ? `, ${owingCount} ${owingCount === 1 ? 'owes' : 'owe'} you ${formatCurrency(owedTotal)}` : ''}`
 
   const sheetTitle =
     !sheet ? 'Customer'
+    : confirm === 'delete' ? `Delete ${current?.name || 'this customer'}?`
+    : confirm === 'discard' ? 'Discard your changes?'
     : sheet.mode === 'new' ? 'New customer'
     : sheet.mode === 'edit' ? 'Edit customer'
     : sheet.mode === 'send' ? `${sheet.channel === 'sms' ? 'Text' : 'Email'} ${current?.name || 'customer'}`
@@ -233,93 +320,73 @@ function CustomersScreen() {
     const ch = text(c.name).trim().charAt(0).toUpperCase()
     return /[A-Z]/.test(ch) ? ch : '#'
   }
-  const showLetters = filtered.length >= 8
+  const showLetters = sort === 'name' && filtered.length >= 8
+  const GRID = 'md:grid-cols-[minmax(0,1.6fr)_9rem_minmax(0,1.4fr)_8rem_9rem]'
 
   return (
     <div className="page-container animate-fade-in">
-      <header className="mb-5 flex items-end justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="page-title">Customers</h1>
-          <p className="page-subtitle">
-            {customers.length === 0 ? 'Your customer book' : `${customers.length} ${customers.length === 1 ? 'customer' : 'customers'} in your book`}
-          </p>
-        </div>
-        <button type="button" className="btn btn-primary shrink-0" onClick={openNew}>
-          <Icon name="plus" className="h-5 w-5" />New customer
-        </button>
-      </header>
+      <Header onNew={openNew} subtitle={subtitle} disabled={firstLoad} />
 
-      {notice && (
-        <div role="status" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-green/40 bg-green/[0.1] px-4 py-3">
-          <span className="flex items-center gap-2 font-bold text-green"><Icon name="check" className="h-5 w-5" />{notice}</span>
-          <button type="button" className="btn-icon -mr-2 h-9 w-9 sm:h-9 sm:w-9" onClick={() => setNotice('')} aria-label="Dismiss message"><Icon name="close" className="h-4 w-4" /></button>
-        </div>
-      )}
+      {flash && <FlashNotice flash={flash} onDismiss={() => setFlash(null)} />}
 
       {loadError && customers.length === 0 ? (
-        <div role="alert" className="card max-w-xl">
-          <h2 className="section-title">Your customers did not load</h2>
-          <p className="mt-1 text-text-secondary">{loadError}</p>
-          <button className="btn btn-primary mt-4" onClick={() => load()}>Try again</button>
-        </div>
+        <ErrorCard className="max-w-xl" title="Your customers did not load" message={loadError} onRetry={() => void load()} busy={loading} />
+      ) : firstLoad ? (
+        <RowsSkeleton rows={8} label="Loading customers" />
       ) : customers.length === 0 ? (
-        <div className="empty-state">
-          <p className="font-bold text-text-primary">No customers yet</p>
-          <p className="mx-auto mt-1 max-w-md">Add the people you fix cars for. Their phone, email and vehicle save here, so estimates, texts and the schedule fill themselves in.</p>
-          <button className="btn btn-primary mt-4" onClick={openNew}><Icon name="plus" className="h-5 w-5" />Add your first customer</button>
-        </div>
+        <EmptyBlock icon="customers" title="No customers yet" action={<button type="button" className="btn btn-primary" onClick={openNew}><Icon name="plus" className="h-5 w-5" />Add your first customer</button>}>
+          Add the people you fix cars for. Their phone, email and vehicle save here, so estimates, texts and the schedule fill themselves in.
+        </EmptyBlock>
       ) : (
         <>
-          {loadError && (
-            <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red/40 bg-red/[0.08] px-4 py-3">
-              <span className="text-red">{loadError}</span>
-              <button className="btn btn-secondary btn-sm" onClick={() => load()}>Try again</button>
-            </div>
-          )}
+          {loadError && <ErrorCard className="mb-4" message={`${loadError} What you see may be out of date.`} onRetry={() => void load()} busy={loading} />}
 
           <div className="space-y-3">
-            <label className="relative block">
-              <span className="sr-only">Search customers by name, phone, vehicle or email</span>
-              <Icon name="search" className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-text-muted" />
-              <input
-                type="search" inputMode="search" autoComplete="off"
-                className="form-input pl-10" placeholder="Search name, phone, vehicle or email"
-                value={search} onChange={e => setSearch(e.target.value)}
-              />
-            </label>
-
-            <div role="group" aria-label="Filter by how the customer feels" className="flex flex-wrap gap-2">
-              {[{ key: 'all', label: 'All', icon: '', count: customers.length }, ...SENTIMENTS.map(s => ({ key: s.key as string, label: s.label, icon: s.icon, count: counts[s.key] || 0 }))].map(f => {
-                const on = sentimentFilter === f.key
-                return (
-                  <button
-                    key={f.key} type="button" aria-pressed={on} onClick={() => setSentimentFilter(f.key)}
-                    className={`inline-flex min-h-[44px] items-center gap-1.5 rounded-full border px-3.5 text-[0.9375rem] font-bold transition-colors sm:min-h-[40px] ${on ? 'border-blue bg-blue/10 text-blue' : 'border-line bg-bg-card text-text-primary hover:bg-bg-hover'}`}
-                  >
-                    {f.icon && <Icon name={f.icon} className="h-4 w-4" strokeWidth={2.2} />}
-                    {f.label}
-                    <span className="num font-normal opacity-80">{f.count}</span>
-                  </button>
-                )
-              })}
-            </div>
+            <SearchField label="Search customers by name, phone, vehicle or email" placeholder="Search name, phone, vehicle or email" value={search} onChange={setSearch} />
+            <FilterChips<Filter>
+              scroll
+              label="Show customers"
+              value={filter}
+              onChange={setFilter}
+              options={[
+                { key: 'all', label: 'All', count: customers.length },
+                { key: 'owes', label: 'Owes money', count: owingCount },
+                ...SENTIMENTS.map(s => ({ key: s.key as Filter, label: s.label, count: counts[s.key] || 0 })),
+              ]}
+            />
           </div>
 
-          <div className="mt-5" aria-live="polite">
+          <div className="mb-2 mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+            <div className="flex items-center gap-2">
+              <label htmlFor="cust-sort" className="text-[0.9375rem] text-text-secondary">Sort by</label>
+              <select id="cust-sort" className="form-select !w-auto" value={sort} onChange={e => setSort(e.target.value as Sort)}>
+                <option value="name">Name</option>
+                <option value="recent">Last visit</option>
+                <option value="owes">Most owed</option>
+              </select>
+            </div>
+            {filtersOn && (
+              <p className="text-[0.9375rem] text-text-secondary" aria-live="polite">
+                <span className="num font-bold text-text-primary">{filtered.length}</span> of <span className="num">{customers.length}</span> customers
+                <button type="button" className="ml-3 inline-flex min-h-[44px] items-center font-bold text-blue underline-offset-4 hover:underline" onClick={clearFilters}>Show everyone</button>
+              </p>
+            )}
+          </div>
+
+          <div aria-live="polite">
             {filtered.length === 0 ? (
-              <div className="empty-state">
-                <p className="font-bold text-text-primary">
-                  {search.trim() ? <>No customers match &ldquo;{search.trim()}&rdquo;</> : 'No customers with that mood'}
-                </p>
-                <p className="mt-1">Try fewer letters, or the last four digits of a phone number.</p>
-                {filtersOn && <button className="btn btn-secondary mt-4" onClick={clearFilters}>Show all customers</button>}
-              </div>
+              <EmptyBlock
+                icon="search"
+                title={search.trim() ? `No customers match “${search.trim()}”` : filter === 'owes' ? 'Nobody owes you right now' : `No customers marked ${sentimentOf({ sentiment: filter }).label.toLowerCase()}`}
+                action={<button type="button" className="btn btn-secondary" onClick={clearFilters}>Show all customers</button>}
+              >
+                {search.trim() ? 'Try fewer letters, or the last four digits of a phone number.' : filter === 'owes' ? 'Customers with an unpaid invoice show here.' : 'Change a customer’s mood from their Edit screen.'}
+              </EmptyBlock>
             ) : (
               <>
-                {filtersOn && <p className="mb-2 text-[0.9375rem] text-text-secondary">{filtered.length} of {customers.length} customers</p>}
                 {/* Column names on wide screens. Rows below use the same grid. */}
-                <div className="hidden grid-cols-[minmax(0,1.6fr)_9rem_minmax(0,1.4fr)_8.5rem] gap-4 border-t border-border px-3 pb-2 pt-3 pr-[3.5rem] text-[0.8125rem] font-bold text-text-secondary md:grid" aria-hidden="true">
-                  <span>Name</span><span>Phone</span><span>Vehicle</span><span>Last visit</span>
+                <div className={`hidden gap-4 border-t border-border px-3 pb-2 pt-3 pr-[3.5rem] text-[0.875rem] font-bold text-text-secondary md:grid ${GRID}`} aria-hidden="true">
+                  <span>Name</span><span>Phone</span><span>Vehicle</span><span>Last visit</span><span className="text-right">Owes</span>
                 </div>
                 <ul className="ledger">
                   {filtered.map((c, i) => {
@@ -327,18 +394,19 @@ function CustomersScreen() {
                     const car = vehicleLabel(c)
                     const mood = sentimentOf(c)
                     const last = v?.last ? ageLabel(v.last) : ''
+                    const due = owed[c.id] || 0
                     const startsGroup = showLetters && (i === 0 || groupLetter(filtered[i - 1]) !== groupLetter(c))
                     return (
                       <li key={c.id}>
                         {startsGroup && (
-                          <div className="border-b border-border bg-bg-chrome/60 px-3 py-1.5 text-[0.8125rem] font-bold text-text-secondary" aria-hidden="true">{groupLetter(c)}</div>
+                          <div className="border-b border-border bg-bg-chrome/60 px-3 py-1.5 text-[0.875rem] font-bold text-text-secondary" aria-hidden="true">{groupLetter(c)}</div>
                         )}
                         <div className="flex items-center">
                           <button
                             type="button"
-                            className="ledger-row min-w-0 flex-1 md:grid md:grid-cols-[minmax(0,1.6fr)_9rem_minmax(0,1.4fr)_8.5rem] md:gap-4"
+                            className={`ledger-row min-w-0 flex-1 md:grid md:gap-4 ${GRID}`}
                             onClick={() => setSheet({ mode: 'view', id: c.id })}
-                            aria-label={`${c.name || 'Unnamed customer'}${mood.key !== 'neutral' ? `, ${mood.label}` : ''}. Open details`}
+                            aria-label={`${c.name || 'Unnamed customer'}${mood.key !== 'neutral' ? `, ${mood.label}` : ''}${due > 0.005 ? `, owes ${formatCurrency(due)}` : ''}. Open details`}
                           >
                             <span className="ledger-main md:contents">
                               <span className="flex min-w-0 items-center gap-2">
@@ -346,14 +414,17 @@ function CustomersScreen() {
                                 {mood.key !== 'neutral' && <SentimentMark sentiment={c.sentiment} className="shrink-0" />}
                               </span>
                               <span className="ledger-sub block md:contents">
-                                <span className="md:block md:truncate md:text-[0.9375rem] md:text-text-primary">{c.phone ? phonePretty(c.phone) : <span className="text-text-muted">No phone</span>}</span>
+                                <span className="md:block md:truncate md:text-[0.9375rem] md:text-text-primary">{c.phone ? phonePretty(c.phone) : <span className="text-text-secondary">No phone</span>}</span>
                                 {car && <span className="md:hidden"> · </span>}
                                 <span className="md:block md:truncate md:text-[0.9375rem]">{car}</span>
                               </span>
-                              <span className={`text-[0.8125rem] text-text-secondary md:block md:text-[0.9375rem] ${last || (v && v.jobs > 0) ? 'block' : 'hidden'}`}>
+                              <span className={`text-[0.875rem] text-text-secondary md:block md:text-[0.9375rem] ${last || (v && v.jobs > 0) ? 'block' : 'hidden'}`}>
                                 {last && <><span className="md:hidden">Last visit </span>{last}</>}
                                 {v && v.jobs > 0 && <span className="md:hidden">{last ? ' · ' : ''}{v.jobs} {v.jobs === 1 ? 'job' : 'jobs'}</span>}
                               </span>
+                              {due > 0.005
+                                ? <span className="num mt-0.5 flex items-center gap-1.5 whitespace-nowrap text-[0.9375rem] font-bold text-red md:mt-0 md:justify-end"><span className="lamp lamp-red" aria-hidden="true" />Owes {formatCurrency(due)}</span>
+                                : <span className="hidden md:block" aria-hidden="true" />}
                             </span>
                           </button>
                           {c.phone ? (
@@ -372,9 +443,30 @@ function CustomersScreen() {
         </>
       )}
 
-      <Sheet open={sheet !== null} onClose={closeSheet} title={sheetTitle} wide>
+      <Sheet open={sheet !== null} onClose={requestClose} title={sheetTitle} wide>
         <div ref={sheetBody} tabIndex={-1} className="outline-none">
-          {sheet?.mode === 'view' && current && (
+          {confirm === 'discard' && (
+            <div>
+              <p className="text-[0.9375rem]">You typed changes that are not saved yet. If you leave now they are lost.</p>
+              <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <button type="button" className="btn btn-secondary" onClick={() => setConfirm(null)}>Keep editing</button>
+                <button type="button" className="btn btn-danger" onClick={() => { const go = afterDiscard.current; setConfirm(null); go() }}>Discard changes</button>
+              </div>
+            </div>
+          )}
+          {confirm === 'delete' && (
+            <div>
+              <p className="text-[0.9375rem]">
+                This removes {current?.name || 'this customer'} from your customer book for good. Their estimates, invoices, repair orders and messages stay on file, but they are no longer linked to a customer.
+              </p>
+              {saveError && <p role="alert" className="form-error !text-[0.875rem]">{saveError}</p>}
+              <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <button type="button" className="btn btn-secondary" onClick={() => { setConfirm(null); setSaveError('') }} disabled={busy}>Keep customer</button>
+                <button type="button" className="btn btn-danger" onClick={() => void del()} disabled={busy}>{busy ? 'Deleting…' : 'Delete customer'}</button>
+              </div>
+            </div>
+          )}
+          {!confirm && sheet?.mode === 'view' && current && (
             <CustomerDetail
               customer={current}
               onEdit={() => openEdit(current)}
@@ -382,19 +474,21 @@ function CustomersScreen() {
               onEmail={() => setSheet({ mode: 'send', id: current.id, channel: 'email' })}
             />
           )}
-          {(sheet?.mode === 'edit' || sheet?.mode === 'new') && (
+          {!confirm && (sheet?.mode === 'edit' || sheet?.mode === 'new') && (
             <CustomerForm
               form={form} setForm={setForm} isNew={sheet.mode === 'new'} saving={saving} error={saveError} nameError={nameError}
-              onSave={save}
-              onCancel={() => (sheet.mode === 'edit' ? (setForm({}), setSaveError(''), setNameError(false), setSheet({ mode: 'view', id: sheet.id })) : closeSheet())}
-              onDelete={sheet.mode === 'edit' ? del : undefined}
+              tried={tried} duplicates={duplicates}
+              onOpenExisting={id => leaveForm(() => { setForm({}); setBaseline({}); setSheet({ mode: 'view', id }) })}
+              onSave={() => void save()}
+              onCancel={() => leaveForm(() => { if (sheet.mode === 'edit') { setForm({}); setBaseline({}); setSaveError(''); setNameError(false); setSheet({ mode: 'view', id: sheet.id }) } else closeSheet() })}
+              onDelete={sheet.mode === 'edit' ? () => { setSaveError(''); setConfirm('delete') } : undefined}
             />
           )}
-          {sheet?.mode === 'send' && current && (
+          {!confirm && sheet?.mode === 'send' && current && (
             <SendPanel
               customer={current} channel={sheet.channel}
               onBack={() => setSheet({ mode: 'view', id: current.id })}
-              onSent={message => { setNotice(message); setSheet({ mode: 'view', id: current.id }) }}
+              onSent={msg => { setFlash({ kind: 'success', text: msg }); setSheet({ mode: 'view', id: current.id }) }}
             />
           )}
         </div>

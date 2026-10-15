@@ -16,6 +16,8 @@ export interface Customer {
   notes: string
   created_at: string
   sentiment?: string
+  vehicle_color?: string
+  vehicle_engine?: string
 }
 
 export type SentimentKey = 'happy' | 'neutral' | 'unhappy' | 'vip' | 'at-risk'
