@@ -193,7 +193,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           </button>
         </header>
 
-        <main id="main" className={`min-h-0 flex-1 ${isChat ? 'overflow-hidden' : 'overflow-y-auto'} ${isChat ? '' : 'app-main-pad'}`}>
+        <main id="main" className={`app-main-pad min-h-0 flex-1 ${isChat ? 'overflow-hidden' : 'overflow-y-auto'}`}>
           {children}
           <PhoneWidget />
         </main>
