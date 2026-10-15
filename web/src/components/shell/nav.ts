@@ -31,6 +31,7 @@ export const MORE_GROUPS: NavGroup[] = [
       { href: '/inventory', label: 'Inventory', icon: 'box' },
       { href: '/parts', label: 'Parts lookup', icon: 'parts' },
       { href: '/repair', label: 'Repair info', icon: 'manual' },
+      { href: '/browser', label: 'Browser', icon: 'globe' },
     ],
   },
   {
