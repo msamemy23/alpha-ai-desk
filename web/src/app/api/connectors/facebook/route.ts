@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { getConnector } from '@/lib/connectors'
 import { finishSocialPublishingOperation, startSocialPublishingOperation } from '@/lib/social-operation'
+import { cleanMediaUrls, fbPostWithPhotos } from '@/lib/social-media-publish'
 
 export const dynamic = 'force-dynamic'
 
@@ -16,8 +17,13 @@ async function fbPost(
   token: string,
   message: string,
   link?: string,
-  photoUrl?: string
+  photoUrl?: string,
+  photoUrls: string[] = []
 ) {
+  // Several photos: upload each unpublished, then one post attaches them all.
+  if (photoUrls.length > 1) {
+    return fbPostWithPhotos(fetch as unknown as Parameters<typeof fbPostWithPhotos>[0], FB, targetId, token, message, photoUrls)
+  }
   if (photoUrl) {
     const r = await fetch(`${FB}/${targetId}/photos`, {
       method: 'POST',
@@ -47,11 +53,12 @@ export async function POST(req: NextRequest) {
     return fail('This connector action requires explicit approval', 409)
   }
 
-  const auth = await getAuthedShop()
+  // A signed-in person, or the scheduled run naming a shop (repair posts in Auto). The connector is always this shop's own.
+  const auth = await getRouteShop(req, body.shop_id)
   if (!auth) return unauthorized()
   if (auth.role === 'viewer' && ['post', 'reply_comment', 'send_message'].includes(String(action))) return forbidden()
 
-  const connector = await getConnector('facebook')
+  const connector = await getConnector('facebook', auth.shopId)
   if (!connector?.enabled) return fail('Facebook not connected', 401)
 
   const { page_id, page_access_token, access_token } = connector as {
@@ -113,7 +120,9 @@ export async function POST(req: NextRequest) {
           // target: 'page' | 'profile' | 'both' (default: 'both')
           target?: string
         }
-        if (!message && !photo_url) return fail('message or photo_url required')
+        // More than one photo: photo_urls (https only, at most ten).
+        const photoUrls = cleanMediaUrls(body.photo_urls)
+        if (!message && !photo_url && photoUrls.length === 0) return fail('message or photo_url required')
         const blocked = await beginSocialOperation('post')
         if (blocked) return blocked
         const msg = (message || '') as string
@@ -123,14 +132,14 @@ export async function POST(req: NextRequest) {
 
         // Post to the connected Facebook page
         if (postTarget === 'page' || postTarget === 'both') {
-          results.page = await fbPost(page_id, page_access_token, msg, link, photo_url as string | undefined)
+          results.page = await fbPost(page_id, page_access_token, msg, link, photo_url as string | undefined, photoUrls)
           results.page_name = pageLabel
         }
 
         // Post to the connected personal profile
         if ((postTarget === 'profile' || postTarget === 'both') && access_token) {
           try {
-            results.profile = await fbPost('me', access_token, msg, link, photo_url as string | undefined)
+            results.profile = await fbPost('me', access_token, msg, link, photo_url as string | undefined, photoUrls)
             results.profile_name = profileLabel
           } catch (e) {
             results.profile_error = e instanceof Error ? e.message : String(e)

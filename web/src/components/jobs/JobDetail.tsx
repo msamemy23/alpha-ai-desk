@@ -1,6 +1,7 @@
 'use client'
 import { useState } from 'react'
 import Icon from '@/components/Icon'
+import JobPostCard from './JobPostCard'
 import { formatCurrency } from '@/lib/supabase'
 import { phonePretty } from '@/lib/today'
 import { STATUSES, carLine, dueInfo, firstName, longDate, nextStep, openedLabel, stageOf, statusLamp, statusWord } from './types'
@@ -170,6 +171,8 @@ export default function JobDetail({
         )}
         <a className="btn btn-secondary mt-3 w-full no-underline" href={`/dvi?new=1&job=${encodeURIComponent(j.id)}`}><Icon name="inspect" className="h-5 w-5" />{inspections.length === 0 ? 'Start inspection' : 'Start another inspection'}</a>
       </section>
+
+      <JobPostCard jobId={j.id} />
 
       <section className="mt-5" aria-label="Estimates and invoices">
         <h3 className="section-title mb-1.5">Estimates and invoices</h3>

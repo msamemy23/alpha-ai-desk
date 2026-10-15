@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { getConnector, getValidGoogleToken, updateConnector } from '@/lib/connectors'
 import { finishSocialPublishingOperation, startSocialPublishingOperation } from '@/lib/social-operation'
+import { cleanMediaUrls, googleMedia } from '@/lib/social-media-publish'
 
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
 function fail(msg: string, status = 400) { return NextResponse.json({ ok: false, error: msg }, { status }) }
@@ -96,11 +97,12 @@ export async function POST(req: NextRequest) {
     return fail('This connector action requires explicit approval', 409)
   }
 
-  const auth = await getAuthedShop()
+  // A signed-in person, or the scheduled run naming a shop (repair posts in Auto). The connector is always this shop's own.
+  const auth = await getRouteShop(req, body.shop_id)
   if (!auth) return unauthorized()
   if (auth.role === 'viewer' && ['post', 'reply_review'].includes(String(action))) return forbidden()
 
-  const connector = await getConnector('google_business')
+  const connector = await getConnector('google_business', auth.shopId)
   if (!connector?.enabled) return fail('Google Business not connected', 401)
 
   let token: string
@@ -125,7 +127,7 @@ export async function POST(req: NextRequest) {
     // Cache the discovered IDs in Supabase
     if (accountName || locationName) {
       const meta = { ...(connector.metadata || {}), account_name: accountName, location_name: locationName }
-      await updateConnector('google_business', { metadata: meta })
+      await updateConnector('google_business', { metadata: meta }, auth.shopId)
     }
 
     // If action is debug, return discovery results
@@ -209,6 +211,9 @@ export async function POST(req: NextRequest) {
           summary,
           topicType: 'STANDARD',
         }
+        // A standard post carries one photo (https only).
+        const media = googleMedia(cleanMediaUrls(undefined, body.photo_url))
+        if (media) postBody.media = media
         if (call_to_action) {
           postBody.callToAction = { actionType: call_to_action.type, url: call_to_action.url }
         }

@@ -1,22 +1,8 @@
-import { hasEmoji, unsupportedClaims } from '@/lib/automation-rules'
+import { POST_LIMITS, copyFlags } from '@/lib/posts-checks'
 import { getAuthJsonHeaders } from './helpers'
 
-/** The most characters each place takes. Google Business posts stop at 1,500. */
-export const POST_LIMITS: Record<string, number> = { google: 1500, facebook: 2000, instagram: 2200, tiktok: 2200 }
-
-/**
- * What to tell the owner before they approve wording: things an AI must never decide for them.
- * `facts` is everything the owner supplied (the topic they typed, the shop name and phone), so only those numbers and offers pass.
- */
-export function copyFlags(text: string, facts: string[]): string[] {
-  const out: string[] = []
-  const t = text.trim()
-  if (!t) return out
-  if (hasEmoji(t)) out.push('The wording has an emoji. Take it out so it looks professional.')
-  const claims = unsupportedClaims(t, ...facts)
-  if (claims.length) out.push(`The wording has ${claims.join(', ')} that you did not give. Take it out unless it is true for your shop.`)
-  return out
-}
+// The character limits and the wording check live in lib/posts-checks.ts so the repair-post pipeline uses the very same rules.
+export { POST_LIMITS, copyFlags }
 
 type Asked = { ok: true; text: string } | { ok: false; error: string }
 

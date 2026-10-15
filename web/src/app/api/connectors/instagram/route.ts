@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { getConnector } from '@/lib/connectors'
 import { finishSocialPublishingOperation, startSocialPublishingOperation } from '@/lib/social-operation'
+import { cleanMediaUrls, igCreateCarousel } from '@/lib/social-media-publish'
 
 function ok(data: unknown) { return NextResponse.json({ ok: true, data }) }
 function fail(msg: string, status = 400) { return NextResponse.json({ ok: false, error: msg }, { status }) }
@@ -15,11 +16,12 @@ export async function POST(req: NextRequest) {
     return fail('This connector action requires explicit approval', 409)
   }
 
-  const auth = await getAuthedShop()
+  // A signed-in person, or the scheduled run naming a shop (repair posts in Auto). The connector is always this shop's own.
+  const auth = await getRouteShop(req, body.shop_id)
   if (!auth) return unauthorized()
   if (auth.role === 'viewer' && ['post', 'reply_comment'].includes(String(action))) return forbidden()
 
-  const connector = await getConnector('instagram')
+  const connector = await getConnector('instagram', auth.shopId)
   if (!connector?.enabled) return fail('Instagram not connected', 401)
 
   const igId = connector.page_id  // Instagram Business Account ID
@@ -63,17 +65,23 @@ export async function POST(req: NextRequest) {
       // ── Create a post ────────────────────────────────────────────
       case 'post': {
         const { image_url, caption } = body as { image_url: string; caption?: string }
-        if (!image_url) return fail('image_url required for Instagram post')
+        // More than one photo: image_urls (https only, at most ten) makes a carousel.
+        const imageUrls = cleanMediaUrls(body.image_urls)
+        if (!image_url && imageUrls.length === 0) return fail('image_url required for Instagram post')
         const blocked = await beginSocialOperation('post')
         if (blocked) return blocked
 
         // Step 1: Create media container
-        const createRes = await fetch(`${FB}/${igId}/media`, {
+        const carousel = imageUrls.length > 1
+          ? await igCreateCarousel(fetch as unknown as Parameters<typeof igCreateCarousel>[0], FB, igId, token, caption || '', imageUrls)
+          : null
+        const single = carousel ? null : await fetch(`${FB}/${igId}/media`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image_url, caption: caption || '', access_token: token }),
+          body: JSON.stringify({ image_url: image_url || imageUrls[0], caption: caption || '', access_token: token }),
         })
-        const createData = await createRes.json()
+        const createRes = (carousel ?? single) as { ok: boolean; status: number }
+        const createData = carousel ? carousel.data : await (single as Response).json()
         if (!createRes.ok) {
           return finishSocialOperation('failed', createData, createData?.error?.message || createData?.error || `Instagram returned ${createRes.status}`, createRes.status)
         }

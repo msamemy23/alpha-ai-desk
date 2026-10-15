@@ -3,6 +3,7 @@ import { useRef, useState } from 'react'
 import Sheet from '@/components/Sheet'
 import Notice from '@/components/Notice'
 import Icon from '@/components/Icon'
+import { photoBlobFromFile } from '@/components/dvi/photo'
 import { getAuthJsonHeaders } from './helpers'
 import { POST_LIMITS, copyFlags, draftPost } from './post-draft'
 
@@ -62,7 +63,12 @@ export default function PostSheet({ shopName, shopPhone = '', cityLabel = null, 
       const mediaPaths: string[] = []
       for (const file of media) {
         const form = new FormData()
-        form.append('file', file)
+        if (file.type.startsWith('image/')) {
+          // The photo is redrawn here before it is uploaded, which drops its location and camera details.
+          let clean: Blob
+          try { clean = await photoBlobFromFile(file) } catch (e) { throw new Error(`${file.name}: ${e instanceof Error && e.message ? e.message : 'that photo could not be prepared.'}`) }
+          form.append('file', new File([clean], `${file.name.replace(/\.[^.]+$/, '') || 'photo'}.jpg`, { type: 'image/jpeg' }))
+        } else form.append('file', file)
         const headers = await getAuthJsonHeaders()
         delete headers['Content-Type']
         const upload = await fetch('/api/growth/social-media', { method: 'POST', headers, body: form })
@@ -123,11 +129,12 @@ export default function PostSheet({ shopName, shopPhone = '', cityLabel = null, 
         </div>
         <Notice kind="info">
           <p className="font-bold">Saving does not publish anything.</p>
-          <p>Publishing to Google, Facebook, Instagram or TikTok needs each account connected first. Until then, save the draft, then copy it from the list and post it yourself.</p>
+          <p>This is a draft. To copy it into an app, save it and use Copy in the list. To have Alpha publish a repair with real photos to a connected Page, use Repair posts at the top of this page.</p>
         </Notice>
         <div>
           <input ref={fileRef} type="file" multiple accept="image/*,video/*" className="sr-only" tabIndex={-1} aria-label="Choose photos or videos" onChange={e => { if (e.target.files) setMedia(Array.from(e.target.files)) }} />
           <button type="button" className="btn btn-secondary" onClick={() => fileRef.current?.click()}><Icon name="image" className="h-5 w-5" />{media.length ? 'Change photos' : 'Add photos'}</button>
+          <p className="form-hint">Photos are redrawn on this device before they are saved, which removes their location and camera details. Videos are saved as they are. Alpha cannot find license plates or VINs in a picture, so look at each one yourself. Pictures in Google Photos or Apple iCloud are not connected: save them to this device first.</p>
           {media.length > 0 && (
             <ul className="mt-2 divide-y divide-border rounded-md border border-border">
               {media.map((f, i) => (

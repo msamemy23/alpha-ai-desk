@@ -3,6 +3,7 @@ import Icon from '@/components/Icon'
 import { EmptyBlock, ErrorCard, RowsSkeleton } from '@/components/ListKit'
 import Notice from '@/components/Notice'
 import { Section } from './parts'
+import RepairPosts from './posts/RepairPosts'
 import { timeAgo } from './helpers'
 import type { Rec } from './helpers'
 
@@ -29,12 +30,14 @@ export default function PostsTab({ loading, failedPosts, failedCampaigns, posts,
 
   return (
     <>
+      <RepairPosts notify={notify} />
+
       <Section
         title="Social posts"
         hint="Write a post, read the preview and save it as a draft. Nothing is published for you."
         action={<button type="button" className="btn btn-primary" onClick={onWrite}><Icon name="pen" className="h-5 w-5" />Write a post</button>}
       >
-        <Notice kind="info" className="mb-4">Publishing to Google, Facebook, Instagram and TikTok is not connected. Save a draft, copy it, and post it yourself in each app. Connecting your accounts is the step that is still missing.</Notice>
+        <Notice kind="info" className="mb-4">A draft written here is never published by itself. Copy it and paste it into the app. To have Alpha publish a repair with real photos to a connected Page, use Repair posts above; connect your accounts under Connected apps.</Notice>
         {failedPosts ? <ErrorCard title="Your post drafts did not load" message="Check your connection and try again." onRetry={onRetry} busy={loading} />
           : loading ? <RowsSkeleton rows={2} label="Loading drafts" />
           : posts.length === 0 ? (

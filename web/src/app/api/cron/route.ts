@@ -103,6 +103,10 @@ export async function GET(req: NextRequest) {
   results.transcribe_calls = await callForEachShop('/api/telnyx/transcribe-calls?action=batch', { limit: 10 })
   results.score_leads = await callForEachShop('/api/telnyx/transcribe-calls?action=score', { limit: 20 })
 
+  // Repair posts: for shops that turned them on, Alpha prepares posts from finished jobs (Suggest) and, only for shops that
+  // turned Auto on, sends them inside the weekly limit. A shop with posts Off costs one quick read and nothing else.
+  results.repair_posts = await callForEachShop('/api/growth/post-queue', { action: 'run_due' })
+
   const ok = Object.values(results).every((result) => (result as { ok?: boolean })?.ok !== false)
   return NextResponse.json({ success: ok, ran_at: new Date().toISOString(), results }, { status: ok ? 200 : 502 })
 }
