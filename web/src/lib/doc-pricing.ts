@@ -26,9 +26,14 @@ const text = (v: unknown): string => (typeof v === 'string' ? v : v === null || 
 
 export interface MarkupTier { upTo: number | null; pct: number }
 export type RoundTo = 'cent' | 'quarter' | 'dollar'
-export interface MarkupMatrix { mode: 'markup' | 'margin'; tiers: MarkupTier[]; roundTo: RoundTo }
+/**
+ * `enabled` is the shop's own choice to use the rules when pricing a part. It is off until the shop turns it on, so rules
+ * saved before the switch existed do nothing on their own. Turning it on only lets the editor suggest a price for a part
+ * that has a cost; it never changes a price by itself or touches a document already written.
+ */
+export interface MarkupMatrix { enabled: boolean; mode: 'markup' | 'margin'; tiers: MarkupTier[]; roundTo: RoundTo }
 
-export const DEFAULT_MATRIX: MarkupMatrix = { mode: 'markup', tiers: [], roundTo: 'cent' }
+export const DEFAULT_MATRIX: MarkupMatrix = { enabled: false, mode: 'markup', tiers: [], roundTo: 'cent' }
 
 export function normalizeMatrix(raw: unknown): MarkupMatrix {
   if (!raw || typeof raw !== 'object') return { ...DEFAULT_MATRIX, tiers: [] }
@@ -49,7 +54,7 @@ export function normalizeMatrix(raw: unknown): MarkupMatrix {
     .filter((t): t is MarkupTier => t !== null)
     .slice(0, 12)
   tiers.sort((a, b) => (a.upTo === null ? Infinity : a.upTo) - (b.upTo === null ? Infinity : b.upTo))
-  return { mode, tiers, roundTo }
+  return { enabled: r.enabled === true, mode, tiers, roundTo }
 }
 
 export function tierFor(matrix: MarkupMatrix, cost: number): MarkupTier | null {

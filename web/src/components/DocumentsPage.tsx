@@ -11,11 +11,25 @@ import DocEditor from './documents/DocEditor'
 import { DocPreview, printPreview } from './documents/DocPreview'
 import { ActionsMenu, CustomerPicker, ErrorMsg, NewCustomerForm, PaymentForm, PlanForm, SendForm, SignatureForm, WarnMsg } from './documents/Dialogs'
 import type { MenuItem, SigResult } from './documents/Dialogs'
+import { DeleteForm, RestoreForm, VoidForm } from './documents/ActionSheets'
+import HistorySheet from './documents/HistorySheet'
+import DeclinedSheet from './documents/DeclinedSheet'
+import CannedSheet from './documents/CannedSheet'
+import { DiscountForm, FeeForm } from './documents/PricingSheets'
+import { SaveTemplateForm, TemplatePicker } from './documents/TemplateSheet'
+import { useDocPrefs } from './documents/useDocPrefs'
+import { markupSuggestion } from '@/lib/markup-editor'
+import { useDeclinedWork } from './documents/useDeclinedWork'
+import type { DeclinedWork } from './documents/api'
+import { appendNote, applyTemplate, declinedDraft, isVoid, mayHaveLinks, noteDate, removeOffer, snapshotToFormPatch, templateName, voidNoteLine } from '@/lib/doc-screen'
 import { WARRANTY_PRESETS } from './documents/warranty'
 import { useShopLogo } from '@/lib/shop-logo'
 import { cleanDecisions, estimateLines, findings, normalizeSections } from '@/lib/dvi'
 import { docWord, isLocked } from './documents/types'
-import { convertEstimate, createDocument, docAction, nextDocNumber, postPayment, saveDocumentFields } from './documents/api'
+import { convertEstimate, createDocument, deleteTemplate, docAction, getExtras, getTemplates, logHistory, nextDocNumber, postPayment, saveDocumentFields, saveTemplate } from './documents/api'
+import type { Template } from './documents/api'
+import { jobNames } from '@/lib/doc-lines'
+import type { BuiltJob, CannedExtras } from '@/lib/canned-match'
 import { MONEY_FIELDS } from '@/lib/doc-write'
 import type { Customer, Doc, DocType, Notice } from './documents/types'
 
@@ -54,7 +68,7 @@ interface CannedJob {
   parts: { name: string; part_number?: string; cost: number; qty: number }[] | null
 }
 
-type SheetKind = null | 'customer' | 'newcustomer' | 'send' | 'sign' | 'pay' | 'plan' | 'more' | 'preview' | 'convert' | 'delete' | 'canned'
+type SheetKind = null | 'customer' | 'newcustomer' | 'send' | 'sign' | 'pay' | 'plan' | 'more' | 'preview' | 'convert' | 'delete' | 'canned' | 'void' | 'restore' | 'history' | 'declined' | 'discount' | 'fee' | 'templates' | 'savetemplate'
 
 /** Today as yyyy-mm-dd in the shop's own clock, not UTC (UTC is already "tomorrow" on a Houston evening). */
 function localToday() {
@@ -104,6 +118,20 @@ export default function DocumentsPage({ type }: { type: DocType }) {
   const [canned, setCanned] = useState<CannedJob[] | null>(null)
   const [cannedError, setCannedError] = useState('')
   const [cannedQuery, setCannedQuery] = useState('')
+  // The per-car versions, fees and notes saved beside each canned job. Loaded when the sheet opens, never before.
+  const [cannedExtras, setCannedExtras] = useState<Record<string, CannedExtras>>({})
+  const [extrasAvailable, setExtrasAvailable] = useState(true)
+  const [extrasState, setExtrasState] = useState<'idle' | 'loading' | 'ready' | 'failed'>('idle')
+  const extrasLoading = useRef(false)
+  // Saved templates: read when the picker first opens. null means not loaded yet; a failed read is told, never shown as empty.
+  const [templates, setTemplates] = useState<Template[] | null>(null)
+  const [templatesAvailable, setTemplatesAvailable] = useState(true)
+  const [templatesError, setTemplatesError] = useState('')
+  // Declined work: only the estimates list has it. The ref remembers which declined job a new draft was started from.
+  const declined = useDeclinedWork(type === 'Estimate', localToday)
+  const declinedSource = useRef<string | null>(null)
+  // The shop's usual fees (and later its markup rules), read once when the editor opens.
+  const docPrefs = useDocPrefs(editing !== null)
 
   const paymentOperationKeys = useRef(new Map<string, string>())
   const persistPaymentOperationKeys = () => {
@@ -213,6 +241,24 @@ export default function DocumentsPage({ type }: { type: DocType }) {
     }).catch(() => { /* the tech field falls back to typing a name */ })
   }, [])
 
+  // A draft that was started from declined work: once it is saved, that job leaves the declined list.
+  const markDeclinedHandled = declined.handled
+  useEffect(() => {
+    const id = declinedSource.current
+    if (!id || !editing || editing === 'new') return
+    declinedSource.current = null
+    void markDeclinedHandled(id, `Estimate ${String(form.doc_number || '')} started ${noteDate(new Date())}.`)
+  }, [editing, form.doc_number, markDeclinedHandled])
+
+  // The Work screen links here with ?declined=1 to open the declined work list.
+  useEffect(() => {
+    if (type !== 'Estimate' || typeof window === 'undefined') return
+    if (new URLSearchParams(window.location.search).get('declined') === '1') {
+      setSheet('declined')
+      window.history.replaceState(null, '', window.location.pathname)
+    }
+  }, [type])
+
   // Leaving the page with unsaved work asks first.
   useEffect(() => {
     if (!dirty) return
@@ -244,7 +290,7 @@ export default function DocumentsPage({ type }: { type: DocType }) {
     return res.data.docNumber
   }
 
-  async function openNew(shop: Record<string, string> = settings, customerId?: string, people: Customer[] = customers, jobId?: string, dviId?: string) {
+  async function openNew(shop: Record<string, string> = settings, customerId?: string, people: Customer[] = customers, jobId?: string, dviId?: string, seed?: { fields: Partial<Doc>; notice: string; declinedId?: string }) {
     setActionError(null)
     try {
       const docNumber = await genDocNumber()
@@ -298,22 +344,27 @@ export default function DocumentsPage({ type }: { type: DocType }) {
           }
         }
       }
+      // Started from declined work: the customer, car and quoted lines of that job, as an unsaved draft.
+      if (seed) Object.assign(next, seed.fields)
       setForm(next); setBaseline(JSON.stringify(next)); setEditing('new')
+      if (seed?.declinedId) declinedSource.current = seed.declinedId
       setSignatureImg(null)
       const taxUnset = !(Number.isFinite(rate) && rate >= 0)
       const laborUnset = !(laborRate > 0)
-      setNotice(carried
+      const baseNotice: Notice | null = (carried
         ? { kind: 'ok', text: carried.count === 0 ? 'The customer has not approved anything yet, so this starts empty.' : `Added ${carried.count} approved ${carried.count === 1 ? 'repair' : 'repairs'} from the inspection${carried.priced < carried.count ? `. ${carried.count - carried.priced} still need a price` : ''}. Add parts and labor, then save.` }
         : carryFailed ? { kind: 'error', text: 'The inspection could not be loaded, so this estimate starts empty.' }
         : taxUnset && laborUnset ? { kind: 'error', text: `Your shop's tax rate and labor rate are not set, so this ${noun} starts at 0% tax and new labor lines start at $0 an hour. Type them here, or set them once in Settings.` }
         : taxUnset ? { kind: 'error', text: `Your shop's tax rate is not set, so this ${noun} starts at 0% tax. Type the rate in the Tax field, or set it once in Settings.` }
         : laborUnset ? { kind: 'error', text: `Your shop's labor rate is not set, so new labor lines start at $0 an hour. Type the rate on the line, or set it once in Settings.` } : null)
+      setNotice(seed ? { kind: baseNotice?.kind ?? 'ok', text: [seed.notice, baseNotice?.text].filter(Boolean).join(' ') } : baseNotice)
     } catch (e) {
       setActionError(`Could not start a new ${noun}. ${errText(e)}`)
     }
   }
 
   function closeEditor() {
+    declinedSource.current = null
     setEditing(null); setForm({}); setBaseline(''); setNotice(null); setSignatureImg(null); setSheet(null)
     stripLinkParams()
   }
@@ -440,6 +491,9 @@ export default function DocumentsPage({ type }: { type: DocType }) {
       } else if (editing) {
         const result = await saveDocumentFields(editing, data)
         if (!result.ok) throw new Error(result.error || 'Save failed')
+        // After the save worked, the server is told what the document looked like before, so a sent document keeps its
+        // earlier version and a line saying what changed. It never blocks or undoes the save.
+        if (baseline) { try { void logHistory({ documentId: editing, kind: 'edited', before: JSON.parse(baseline) }) } catch { /* history is a record, not part of the save */ } }
       }
       if (saved.id) setEditing(saved.id)
       setForm(saved); setBaseline(JSON.stringify(saved))
@@ -641,16 +695,100 @@ export default function DocumentsPage({ type }: { type: DocType }) {
     try {
       const removed = await docAction(form.id, 'delete')
       // Only an unsent draft can be removed. Anything that was sent, signed or paid stays on record, so say that plainly.
-      if (!removed.ok) throw new Error(removed.status === 409 ? 'This one is kept on record, so it cannot be deleted. Only a draft that was never sent can be.' : removed.error)
+      // A void one can be deleted unless it has payments or a signature, and the server says which in its own words.
+      if (!removed.ok) throw new Error(removed.status === 409 && !isVoid(form) ? 'This one is kept on record, so it cannot be deleted. Only a draft that was never sent can be.' : removed.error)
       closeSheet(); closeEditor()
       await load()
     } catch (e) { setSheetError(`Not deleted. ${errText(e)}`) }
     finally { setBusy(false) }
   }
 
+  /* ---------- history ---------- */
+  // An earlier version goes back into the editor, not into the database: nothing changes until Save changes is pressed,
+  // and the save runs the same checks as any other edit. A locked or voided document is never offered this.
+  const putBack = (snapshot: Record<string, unknown>, label: string) => {
+    if (isLocked(form.status) || isVoid(form)) return
+    const patch = snapshotToFormPatch(snapshot)
+    const previous = form
+    setForm(f => ({ ...f, ...patch }))
+    closeSheet()
+    setNotice({ kind: 'ok', text: `${label} is back in the editor. Check it, then press Save changes. Payments and the number were not touched.`, undo: () => setForm(previous) })
+  }
+
+  /* ---------- declined work ---------- */
+  const openDeclined = () => { setSheetError(''); setSheet('declined'); void declined.load() }
+
+  // Makes a DRAFT estimate to look over. Nothing is saved until Save, and nothing is sent to the customer.
+  const makeFromDeclined = (w: DeclinedWork) => {
+    const owner = customers.find(c => c.id === w.customer_id) || null
+    const when = new Date(w.declined_at)
+    const { fields, lineCount } = declinedDraft(w, owner, noteDate(Number.isNaN(when.getTime()) ? new Date() : when))
+    closeSheet()
+    void openNew(settings, undefined, customers, undefined, undefined, {
+      fields: fields as Partial<Doc>,
+      declinedId: w.id,
+      notice: `Started a draft estimate from the declined ${w.job}. Nothing is sent. The ${lineCount === 1 ? 'line is' : 'lines are'} what the customer was quoted, as flat prices: set which are parts and which are labor, check the prices, then save.`,
+    })
+  }
+
+  /* ---------- void and restore ---------- */
+  // The reason is also written into the private shop notes. The activity log needs a database update that may not be
+  // applied yet, and a void with no reason on record is the one thing that must never happen.
+  const keepNote = async (id: string, line: string): Promise<string | null> => {
+    const next = appendNote(form.internal_notes, line)
+    const saved = await saveDocumentFields(id, { internal_notes: next })
+    return saved.ok ? next : null
+  }
+
+  const voidDoc = async (reason: string) => {
+    const id = form.id
+    if (!id) return
+    setBusy(true); setSheetError('')
+    try {
+      const res = await docAction(id, 'void', { reason })
+      if (!res.ok) throw new Error(res.error)
+      const notes = await keepNote(id, voidNoteLine('voided', noteDate(new Date()), reason))
+      applyServerPatch({ status: 'Void', ...(notes !== null ? { internal_notes: notes } : {}) })
+      closeSheet()
+      const off = Number(res.data.linksTurnedOff) || 0
+      setNotice({ kind: 'ok', text: `Voided. It stays on record${off > 0 ? ' and the customer link no longer works' : ''}.${notes === null ? ' The reason could not be added to the shop notes.' : ''}` })
+      syncFromServer(id, await load())
+    } catch (e) { setSheetError(`Not voided. ${errText(e)}`) }
+    finally { setBusy(false) }
+  }
+
+  const restoreDoc = async () => {
+    const id = form.id
+    if (!id) return
+    setBusy(true); setSheetError('')
+    try {
+      const res = await docAction(id, 'restore')
+      if (!res.ok) throw new Error(res.error)
+      const status = typeof res.data.status === 'string' && res.data.status ? res.data.status : 'Draft'
+      const notes = await keepNote(id, voidNoteLine('restored', noteDate(new Date())))
+      applyServerPatch({ status, ...(notes !== null ? { internal_notes: notes } : {}) })
+      closeSheet()
+      setNotice({ kind: 'ok', text: `Restored to ${status === 'Draft' ? 'draft' : status.toLowerCase()}. Send it again if the customer needs a new link.` })
+      syncFromServer(id, await load())
+    } catch (e) { setSheetError(`Not restored. ${errText(e)}`) }
+    finally { setBusy(false) }
+  }
+
   /* ---------- canned jobs ---------- */
+  const loadExtras = async () => {
+    if (extrasLoading.current) return
+    extrasLoading.current = true
+    setExtrasState('loading')
+    try {
+      const r = await getExtras()
+      if (r.ok) { setCannedExtras(r.data.extras || {}); setExtrasAvailable(r.data.available !== false); setExtrasState('ready') }
+      else setExtrasState('failed')
+    } finally { extrasLoading.current = false }
+  }
+
   const openCanned = async () => {
     setCannedQuery(''); setCannedError(''); setSheet('canned')
+    if (extrasState !== 'ready') void loadExtras()
     if (canned) return
     try {
       const shopId = await getShopId()
@@ -670,23 +808,119 @@ export default function DocumentsPage({ type }: { type: DocType }) {
     setNotice({ kind: 'ok', text: `Added ${j.name}. Check the prices, then save.` })
   }
 
+  // A job from the full sheet: the lines are the ones shown before Add was tapped (the right version for the car, fees and
+  // the customer note). They join the open form like any other lines and are saved only by Save, on the usual save path.
+  const addBuiltJob = (built: BuiltJob, label: string) => {
+    if (isLocked(form.status) || isVoid(form)) { closeSheet(); return }
+    setForm(f => ({ ...f, labors: [...((f.labors || []) as Record<string, unknown>[]), ...built.labors], parts: [...((f.parts || []) as Record<string, unknown>[]), ...built.parts] }))
+    closeSheet()
+    setNotice({ kind: 'ok', text: `Added ${label}${built.variantLabel ? `, the ${built.variantLabel} version` : ''}. Check the prices, then save.` })
+  }
+
+  /* ---------- whole-document discount and fees ---------- */
+  // Both only change the open form, on the lines that save through the usual save path. They are refused here as well as hidden
+  // in the editor, so a paid, part paid or void document can never take a discount or a fee.
+  const linesClosed = () => isLocked(form.status) || isVoid(form)
+
+  const applyDiscount = (r: { parts: Record<string, unknown>[]; labors: Record<string, unknown>[] }, words: string) => {
+    if (linesClosed()) { closeSheet(); return }
+    const before = { parts: form.parts, labors: form.labors }
+    setForm(f => ({ ...f, parts: r.parts, labors: r.labors }))
+    closeSheet()
+    setNotice({ kind: 'ok', text: `${words}. Check the total, then save.`, undo: () => setForm(f => ({ ...f, parts: before.parts, labors: before.labors })) })
+  }
+
+  const addFee = (line: Record<string, unknown>) => {
+    if (linesClosed()) { closeSheet(); return }
+    setForm(f => ({ ...f, parts: [...((f.parts || []) as Record<string, unknown>[]), line] }))
+    closeSheet()
+    setNotice({ kind: 'ok', text: `Added ${String(line.name || 'the charge')} to the parts. Check the total, then save.` })
+  }
+
+  /* ---------- templates ---------- */
+  const loadTemplates = async () => {
+    setTemplatesError('')
+    const r = await getTemplates()
+    if (!r.ok) { setTemplatesError(r.error); return }
+    setTemplates(Array.isArray(r.data.templates) ? r.data.templates : [])
+    setTemplatesAvailable(r.data.available !== false)
+  }
+
+  const openTemplates = () => {
+    if (linesClosed()) return
+    setSheetError(''); setSheet('templates')
+    if (templates === null) void loadTemplates()
+  }
+
+  // Adds a template's lines to the open form. Notes, supplies and warranty fill in only where the document has none.
+  // Nothing is saved until Save, and the customer, the car and the number are never touched.
+  const startFromTemplate = (t: Template) => {
+    const use = linesClosed() ? null : applyTemplate(form as Record<string, unknown>, t)
+    if (!use) { closeSheet(); return }
+    const preset = use.warranty ? WARRANTY_PRESETS.find(x => x.label === use.warranty) : undefined
+    const touched = [...Object.keys(use.patch), ...(preset ? ['warranty_type', 'warranty_months', 'warranty_mileage', 'warranty_exclusions', 'warranty_start'] : [])]
+    const previous = Object.fromEntries(touched.map(k => [k, (form as Record<string, unknown>)[k]]))
+    setForm(f => ({ ...f, ...use.patch }))
+    if (preset) applyWarranty(preset)
+    closeSheet()
+    const added = use.addedParts + use.addedLabors
+    setNotice({ kind: 'ok', text: `Added ${added} ${added === 1 ? 'line' : 'lines'} from ${t.name}. Check the prices, then save.`, undo: () => setForm(f => ({ ...f, ...previous })) })
+  }
+
+  const removeTemplate = async (t: Template) => {
+    setBusy(true); setSheetError('')
+    try {
+      const r = await deleteTemplate(t.id)
+      if (!r.ok) throw new Error(r.error)
+      setTemplates(list => (list ? list.filter(x => x.id !== t.id) : list))
+    } catch (e) { setSheetError(`Not deleted. ${errText(e)}`) }
+    finally { setBusy(false) }
+  }
+
+  const saveAsTemplate = async (v: { name: string; description: string; kind: 'estimate' | 'invoice' | 'any' }) => {
+    setBusy(true); setSheetError('')
+    try {
+      const r = await saveTemplate({
+        name: v.name, description: v.description, kind: v.kind,
+        parts: (form.parts || []) as unknown[], labors: (form.labors || []) as unknown[],
+        shop_supplies: Number(form.shop_supplies) || 0, notes: String(form.notes || ''), warranty_type: String(form.warranty_type || ''),
+      })
+      if (!r.ok) throw new Error(r.needsUpdate ? 'Templates need a database update first. Ask whoever manages your account to apply it.' : r.error)
+      const saved = r.data.template
+      if (saved) setTemplates(list => (list ? [...list, saved].sort((a, b) => a.name.localeCompare(b.name)) : list))
+      closeSheet()
+      setNotice({ kind: 'ok', text: `Saved as the template ${v.name.trim()}. The customer and car were not saved.` })
+    } catch (e) { setSheetError(`Not saved. ${errText(e)}`) }
+    finally { setBusy(false) }
+  }
+
   /* ---------- render ---------- */
   const isNew = editing === 'new'
   const docType = String(form.type || type)
   const { owed: formOwed } = owedOn(form as Doc)
   const formLocked = isLocked(form.status)
 
+  const formVoid = isVoid(form)
+  const removal = isNew ? null : removeOffer(form)
+  const docNoun = docWord(docType)
+
   const menuItems: MenuItem[] = [
     { key: 'preview', label: 'Preview and print', hint: 'See the paper version', icon: 'print', onClick: () => setSheet('preview') },
-    ...(!isNew ? [
+    ...(!isNew && !formVoid ? [
       { key: 'send', label: `Send ${noun}`, hint: 'Text or email it to the customer', icon: 'send', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) openSend(d) } },
       { key: 'sign', label: 'Request signature', hint: 'Email a link the customer signs on their phone', icon: 'pen', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) openSign(d) } },
     ] : []),
-    ...(!isNew && docType !== 'Estimate' && formOwed > 0 ? [{ key: 'pay', label: 'Record payment', hint: 'Money you already received', icon: 'dollar', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) openPay(d) } }] : []),
-    ...(!isNew && docType === 'Invoice' && !formLocked ? [{ key: 'plan', label: form.payment_plan?.enabled ? 'Change payment plan' : 'Set up payment plan', hint: 'Split the balance into payments', icon: 'calendar', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) openPlan(d) } }] : []),
-    ...(!isNew && docType === 'Estimate' ? [{ key: 'convert', label: 'Turn into an invoice', hint: 'Moves it from Estimates to Invoices', icon: 'invoice', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) { setSheetError(''); setSheet('convert') } } }] : []),
+    ...(!isNew && !formVoid && docType !== 'Estimate' && formOwed > 0 ? [{ key: 'pay', label: 'Record payment', hint: 'Money you already received', icon: 'dollar', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) openPay(d) } }] : []),
+    ...(!isNew && !formVoid && docType === 'Invoice' && !formLocked ? [{ key: 'plan', label: form.payment_plan?.enabled ? 'Change payment plan' : 'Set up payment plan', hint: 'Split the balance into payments', icon: 'calendar', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) openPlan(d) } }] : []),
+    ...(!isNew && !formVoid && docType === 'Estimate' ? [{ key: 'convert', label: 'Turn into an invoice', hint: 'Moves it from Estimates to Invoices', icon: 'invoice', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) { setSheetError(''); setSheet('convert') } } }] : []),
+    ...(((form.parts || []).length + (form.labors || []).length) > 0 ? [{ key: 'template', label: 'Save as a template', hint: 'Reuse these lines on later estimates and invoices', icon: 'list', onClick: () => { setSheetError(''); setSheet('savetemplate') } }] : []),
     ...(!isNew ? [{ key: 'copy', label: `Duplicate ${noun}`, hint: 'Copy the customer, vehicle and lines into a new one', icon: 'copy', onClick: duplicate }] : []),
-    ...(!isNew ? [{ key: 'delete', label: `Delete ${noun}`, hint: 'Removes it for good', icon: 'trash', danger: true, onClick: () => { setSheetError(''); setSheet('delete') } }] : []),
+    ...(!isNew ? [{ key: 'history', label: 'Change history', hint: 'What changed, when, and earlier versions', icon: 'clock', onClick: () => setSheet('history') }] : []),
+    ...(formVoid ? [{ key: 'restore', label: `Restore ${docNoun}`, hint: 'Bring it back as it was', icon: 'undo', onClick: () => { setSheetError(''); setSheet('restore') } }] : []),
+    // Draft and void ones can be deleted. Anything sent or worked on is voided instead, and one with payments is kept.
+    ...(removal === 'void' ? [{ key: 'void', label: `Void ${docNoun}`, hint: 'Keeps the record and turns the customer links off', icon: 'close', danger: true, onClick: () => { setSheetError(''); setSheet('void') } }] : []),
+    ...(removal === 'delete' ? [{ key: 'delete', label: `Delete ${noun}`, hint: 'Removes it for good', icon: 'trash', danger: true, onClick: () => { setSheetError(''); setSheet('delete') } }] : []),
+    ...(removal === 'blocked' ? [{ key: 'delete', label: `Delete ${noun}`, hint: 'Has payments, so it stays on record', icon: 'trash', danger: true, onClick: () => { setSheetError(''); setSheet('delete') } }] : []),
   ]
 
   const filteredCanned = (canned || []).filter(j => {
@@ -715,6 +949,8 @@ export default function DocumentsPage({ type }: { type: DocType }) {
           setSearch={setSearch}
           filter={filter}
           setFilter={setFilter}
+          declinedCount={declined.count}
+          onDeclined={type === 'Estimate' ? openDeclined : undefined}
         />
       ) : (
         <DocEditor
@@ -733,6 +969,11 @@ export default function DocumentsPage({ type }: { type: DocType }) {
           warrantyLabels={WARRANTY_PRESETS.map(p => p.label)}
           laborRate={laborRate}
           onAddCanned={openCanned}
+          onTemplates={openTemplates}
+          suggestPrice={docPrefs.prefs.matrix.enabled && docPrefs.prefs.matrix.tiers.length > 0 ? (cost: number) => markupSuggestion(docPrefs.prefs.matrix, cost) : undefined}
+          onDiscount={() => { if (!linesClosed()) { setSheetError(''); setSheet('discount') } }}
+          onAddFee={() => { if (!linesClosed()) { setSheetError(''); setSheet('fee') } }}
+          onRestore={() => { setSheetError(''); setSheet('restore') }}
           onBack={goBack}
           onSave={() => { void save() }}
           onPickCustomer={() => { setSheetError(''); setSheet('customer') }}
@@ -882,14 +1123,70 @@ export default function DocumentsPage({ type }: { type: DocType }) {
       </Sheet>
 
       <Sheet open={sheet === 'delete'} onClose={closeSheet} title={`Delete ${noun}?`}>
-        <p className="text-[0.9375rem]">
-          {docWord(docType)[0].toUpperCase() + docWord(docType).slice(1)} {form.doc_number}{form.customer_name ? ` for ${form.customer_name}` : ''} will be removed for good. This cannot be undone.
-        </p>
-        {sheetError && <div className="mt-3"><ErrorMsg>{sheetError}</ErrorMsg></div>}
-        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <button type="button" className="btn btn-secondary" onClick={closeSheet} disabled={busy}>Keep it</button>
-          <button type="button" className="btn btn-danger" onClick={del} disabled={busy}>{busy ? 'Deleting…' : `Delete ${noun}`}</button>
-        </div>
+        {removal === 'blocked' ? (
+          <div>
+            <p className="text-[0.9375rem]">
+              {docNoun[0].toUpperCase() + docNoun.slice(1)} {form.doc_number} has payments on it, so it can be neither deleted nor voided. A {docNoun} with money taken stays on the books.
+            </p>
+            <div className="mt-5 flex justify-end"><button type="button" className="btn btn-secondary" onClick={closeSheet}>Close</button></div>
+          </div>
+        ) : (
+          <DeleteForm
+            noun={noun}
+            docNumber={String(form.doc_number || '')}
+            customerName={String(form.customer_name || '')}
+            status={String(form.status || 'Draft')}
+            busy={busy}
+            error={sheetError}
+            onConfirm={del}
+            onVoidInstead={() => { setSheetError(''); setSheet('void') }}
+            onClose={closeSheet}
+          />
+        )}
+      </Sheet>
+
+      <Sheet open={sheet === 'declined'} onClose={closeSheet} title="Declined work">
+        <DeclinedSheet
+          work={declined.work}
+          available={declined.available}
+          error={declined.error}
+          busyId={declined.busyId}
+          onMake={makeFromDeclined}
+          onSnooze={w => { void declined.snooze(w) }}
+          onDismiss={w => { void declined.dismiss(w) }}
+          onRetry={() => { void declined.load() }}
+          onClose={closeSheet}
+        />
+      </Sheet>
+
+      <Sheet open={sheet === 'history'} onClose={closeSheet} title="Change history">
+        {form.id && (
+          <HistorySheet
+            documentId={form.id}
+            noun={docNoun}
+            current={form as Record<string, unknown>}
+            canPutBack={!formLocked && !formVoid}
+            onUseVersion={putBack}
+            onClose={closeSheet}
+          />
+        )}
+      </Sheet>
+
+      <Sheet open={sheet === 'void'} onClose={closeSheet} title={`Void ${docNoun}?`}>
+        <VoidForm
+          noun={docNoun}
+          docNumber={String(form.doc_number || '')}
+          customerName={String(form.customer_name || '')}
+          hasLinks={mayHaveLinks(form)}
+          busy={busy}
+          error={sheetError}
+          onConfirm={voidDoc}
+          onClose={closeSheet}
+        />
+      </Sheet>
+
+      <Sheet open={sheet === 'restore'} onClose={closeSheet} title={`Restore ${docNoun}?`}>
+        <RestoreForm noun={docNoun} docNumber={String(form.doc_number || '')} busy={busy} error={sheetError} onConfirm={restoreDoc} onClose={closeSheet} />
       </Sheet>
 
       <Sheet open={sheet === 'canned'} onClose={closeSheet} title="Add a canned job">
@@ -898,14 +1195,32 @@ export default function DocumentsPage({ type }: { type: DocType }) {
             <ErrorMsg>{cannedError}</ErrorMsg>
             <button type="button" className="btn btn-secondary mt-3" onClick={() => { setCanned(null); void openCanned() }}>Try again</button>
           </div>
-        ) : canned === null ? (
+        ) : canned === null || extrasState === 'idle' || extrasState === 'loading' ? (
           <div className="space-y-2" aria-busy="true" aria-label="Loading canned jobs">{[0, 1, 2, 3].map(i => <div key={i} className="skeleton h-14" />)}</div>
         ) : canned.length === 0 ? (
           <p className="py-6 text-center text-[0.9375rem] text-text-secondary">
             No canned jobs yet. Save the jobs you quote often, like a brake job or an oil change, in <a className="text-blue underline" href="/canned-jobs">Canned jobs</a>, and add them here in one tap.
           </p>
+        ) : extrasState === 'ready' ? (
+          <CannedSheet
+            jobs={canned}
+            error=""
+            extras={cannedExtras}
+            extrasAvailable={extrasAvailable}
+            doc={form as Record<string, unknown>}
+            shopRate={laborRate}
+            existingJobs={jobNames(form)}
+            onAdd={addBuiltJob}
+            quickAdd={j => { if (isLocked(form.status) || isVoid(form)) closeSheet(); else addCanned(j) }}
+            onRetry={() => { setCanned(null); void openCanned() }}
+            onClose={closeSheet}
+          />
         ) : (
           <div>
+            <p className="mb-3 text-[0.875rem] text-text-secondary">
+              Versions for different cars did not load, so jobs add as saved.{' '}
+              <button type="button" className="font-bold text-blue underline" onClick={() => void loadExtras()}>Try again</button>
+            </p>
             <input type="search" className="form-input" placeholder="Search canned jobs" aria-label="Search canned jobs" value={cannedQuery} onChange={e => setCannedQuery(e.target.value)} />
             {filteredCanned.length === 0 ? (
               <p className="py-6 text-center text-[0.9375rem] text-text-secondary">No canned job matches “{cannedQuery.trim()}”.</p>
@@ -929,6 +1244,49 @@ export default function DocumentsPage({ type }: { type: DocType }) {
             )}
           </div>
         )}
+      </Sheet>
+
+      <Sheet open={sheet === 'discount'} onClose={closeSheet} title={`Discount the ${docNoun}`}>
+        <DiscountForm doc={form as Record<string, unknown>} onApply={applyDiscount} onClose={closeSheet} />
+      </Sheet>
+
+      <Sheet open={sheet === 'fee'} onClose={closeSheet} title="Add a fee or outside work">
+        <FeeForm presets={docPrefs.prefs.fees} jobNames={jobNames(form)} onAdd={addFee} onClose={closeSheet} />
+      </Sheet>
+
+      <Sheet open={sheet === 'templates'} onClose={closeSheet} title="Start from a template">
+        {templatesError ? (
+          <div>
+            <ErrorMsg>{templatesError}</ErrorMsg>
+            <button type="button" className="btn btn-secondary mt-3" onClick={() => void loadTemplates()}>Try again</button>
+          </div>
+        ) : templates === null ? (
+          <div className="space-y-2" aria-busy="true" aria-label="Loading templates">{[0, 1, 2, 3].map(i => <div key={i} className="skeleton h-14" />)}</div>
+        ) : (
+          <TemplatePicker
+            templates={templates}
+            available={templatesAvailable}
+            kindFilter={docType === 'Estimate' ? 'estimate' : 'invoice'}
+            busy={busy}
+            error={sheetError}
+            onUse={startFromTemplate}
+            onDelete={t => { void removeTemplate(t) }}
+            onClose={closeSheet}
+          />
+        )}
+      </Sheet>
+
+      <Sheet open={sheet === 'savetemplate'} onClose={closeSheet} title="Save as a template">
+        <SaveTemplateForm
+          defaultName={templateName(form as Record<string, unknown>)}
+          partCount={(form.parts || []).length}
+          laborCount={(form.labors || []).length}
+          docKind={docType === 'Estimate' ? 'estimate' : 'invoice'}
+          busy={busy}
+          error={sheetError}
+          onSave={v => { void saveAsTemplate(v) }}
+          onClose={closeSheet}
+        />
       </Sheet>
 
       {/* keeps doneLabel referenced for screen readers announcing the last action */}

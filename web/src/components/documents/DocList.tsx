@@ -7,7 +7,7 @@ import Icon from '@/components/Icon'
 import { docCar, docWord } from './types'
 import type { Doc, DocType } from './types'
 
-export type ListFilter = 'all' | 'draft' | 'waiting' | 'approved' | 'unpaid' | 'part' | 'paid'
+export type ListFilter = 'all' | 'draft' | 'waiting' | 'approved' | 'unpaid' | 'part' | 'paid' | 'void'
 
 const OWED = new Set(['Unpaid', 'Partial', 'Sent'])
 
@@ -40,12 +40,13 @@ function matchesFilter(f: ListFilter, r: Row): boolean {
     case 'unpaid': return r.owes
     case 'part': return s === 'Partial'
     case 'paid': return s === 'Paid'
+    case 'void': return s === 'Void'
   }
 }
 
 export default function DocList({
   type, docs, loading, loadError, actionError, onDismissActionError, onRetry, onNew, onOpen, onQuickSend, onQuickPay,
-  search, setSearch, filter, setFilter,
+  search, setSearch, filter, setFilter, declinedCount, onDeclined,
 }: {
   type: DocType
   docs: Doc[]
@@ -62,11 +63,19 @@ export default function DocList({
   setSearch: (v: string) => void
   filter: ListFilter
   setFilter: (f: ListFilter) => void
+  /** Jobs customers said no to, when known. The Declined work button is drawn only on the estimates list. */
+  declinedCount?: number | null
+  onDeclined?: () => void
 }) {
   const noun = docWord(type)
   const nouns = `${noun}s`
   const isEstimate = type === 'Estimate'
-  const chips = FILTERS[isEstimate ? 'Estimate' : 'Invoice']
+  const hasVoid = docs.some(d => d.status === 'Void')
+  // A voided one stays in All. The Voided chip appears only once there is one, so it can be found and restored.
+  const chips = useMemo(
+    () => [...FILTERS[isEstimate ? 'Estimate' : 'Invoice'], ...(hasVoid ? [{ id: 'void' as ListFilter, label: 'Voided' }] : [])],
+    [isEstimate, hasVoid],
+  )
 
   const rows: Row[] = useMemo(() => docs.map(doc => {
     const t = calcTotals(doc as unknown as Record<string, unknown>)
@@ -115,10 +124,19 @@ export default function DocList({
           <h1 className="page-title">{isEstimate ? 'Estimates' : 'Invoices'}</h1>
           <p className="page-subtitle num" aria-live="polite">{subtitle}</p>
         </div>
-        <button type="button" className="btn btn-primary w-full sm:w-auto" onClick={onNew}>
-          <Icon name="plus" className="h-5 w-5" />
-          New {noun}
-        </button>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          {isEstimate && onDeclined && (
+            <button type="button" className="btn btn-secondary w-full sm:w-auto" onClick={onDeclined}>
+              <Icon name="flag" className="h-5 w-5" />
+              Declined work
+              {declinedCount ? <span className="tag tag-amber num">{declinedCount}<span className="sr-only"> waiting</span></span> : null}
+            </button>
+          )}
+          <button type="button" className="btn btn-primary w-full sm:w-auto" onClick={onNew}>
+            <Icon name="plus" className="h-5 w-5" />
+            New {noun}
+          </button>
+        </div>
       </header>
 
       {actionError && (

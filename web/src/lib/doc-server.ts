@@ -40,10 +40,15 @@ export function todayInZone(zone: string, now = new Date()): string {
   }
 }
 
-export async function loadPrefs(db: Db, shopId: string): Promise<{ prefs: DocPrefs; available: boolean }> {
+/**
+ * The shop's paperwork settings. `failed` is true when the read itself broke (not a missing table, not an empty row), in which
+ * case `prefs` is only the defaults and must not be mistaken for what the shop saved. The settings screen reports that instead
+ * of showing defaults, because saving settings replaces the whole object.
+ */
+export async function loadPrefs(db: Db, shopId: string): Promise<{ prefs: DocPrefs; available: boolean; failed: boolean }> {
   const { data, error } = await db.from('document_settings').select('data').eq('shop_id', shopId).maybeSingle()
-  if (error) return { prefs: normalizePrefs(null), available: !isMissingSchema(error) }
-  return { prefs: normalizePrefs(data?.data), available: true }
+  if (error) return { prefs: normalizePrefs(null), available: !isMissingSchema(error), failed: !isMissingSchema(error) }
+  return { prefs: normalizePrefs(data?.data), available: true, failed: false }
 }
 
 export async function loadOptions(db: Db, shopId: string, documentId: string): Promise<{ options: OptionGroup[]; available: boolean }> {

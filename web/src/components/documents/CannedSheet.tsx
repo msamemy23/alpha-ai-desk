@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react'
 import { formatCurrency } from '@/lib/supabase'
 import { getLaborFlatAmount, quantityFromUnknown } from '@/lib/document-money'
 import { EMPTY_EXTRAS, buildJobLines, jobsForVehicle, matchFinding, searchScore, vehicleOf } from '@/lib/canned-match'
+import { cannedNeedsChoice } from '@/lib/doc-screen'
 import type { BuiltJob, CannedExtras, Variant } from '@/lib/canned-match'
 import Icon from '@/components/Icon'
 import { Field } from './LineCards'
@@ -30,8 +31,9 @@ function describe(b: BuiltJob): { text: string; amount: number }[] {
  * Pick a saved job to add. Jobs that fit the car on the document come first, the inspection's findings point at
  * matching jobs, and a search reaches everything. A job with versions for different cars adds the one that fits,
  * and you can switch before adding. What will be added is shown first, and nothing is added until you tap Add.
+ * With quickAdd given, a job that has no versions, fees or note still adds in one tap, as the plain list always did.
  */
-export default function CannedSheet({ jobs, error, extras, extrasAvailable, doc, shopRate, techRate, findings, existingJobs, onAdd, onRetry, onClose }: {
+export default function CannedSheet({ jobs, error, extras, extrasAvailable, doc, shopRate, techRate, findings, existingJobs, onAdd, quickAdd, onRetry, onClose }: {
   jobs: CannedJob[] | null
   error: string
   extras: Record<string, CannedExtras>
@@ -44,6 +46,8 @@ export default function CannedSheet({ jobs, error, extras, extrasAvailable, doc,
   findings?: string[]
   existingJobs: string[]
   onAdd: (built: BuiltJob, label: string) => void
+  /** One-tap add for a job with nothing to choose. When left out, every job opens its detail first. */
+  quickAdd?: (job: CannedJob) => void
   onRetry: () => void
   onClose: () => void
 }) {
@@ -175,7 +179,7 @@ export default function CannedSheet({ jobs, error, extras, extrasAvailable, doc,
     const variant = hasCar && e ? jobsForVehicle([j], extras, vehicle)[0]?.variant : null
     return (
       <li key={j.id}>
-        <button type="button" className="ledger-row" onClick={() => pick(j)}>
+        <button type="button" className="ledger-row" onClick={() => (quickAdd && !cannedNeedsChoice(e) ? quickAdd(j) : pick(j))}>
           <span className="ledger-main">
             <span className="ledger-title block">{j.name}</span>
             <span className="ledger-sub block">{[note, variant?.label, j.category, `${Number(j.labor_hours) || 0} h labor`, n > 0 ? `${n} ${n === 1 ? 'part' : 'parts'}` : ''].filter(Boolean).join(' · ')}</span>

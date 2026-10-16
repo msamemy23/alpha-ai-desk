@@ -2,6 +2,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { formatCurrency } from '@/lib/supabase'
 import { docLamp, docStatusLabel } from '@/lib/doc-status'
+import { discountSummary } from '@/lib/doc-pricing'
+import { jobNames } from '@/lib/doc-lines'
 import Icon from '@/components/Icon'
 import { Field, NumInput, PartCard, LaborCard } from './LineCards'
 import { useViewportFit } from './useViewportFit'
@@ -44,6 +46,19 @@ export interface EditorProps {
   laborRate: number
   /** Opens the canned job picker. Left out when the shop has none. */
   onAddCanned?: () => void
+  /** Brings a voided document back. Offered only while the document is void. */
+  onRestore?: () => void
+  /**
+   * The shop's suggested selling price for a part cost, from its markup rules. Left out unless the shop turned the rules on in
+   * Settings. It only adds a "Use it" button beside a part that has a cost; it never changes a price by itself.
+   */
+  suggestPrice?: (cost: number) => number | null
+  /** Opens the saved templates. Shown only while the lines can still change. */
+  onTemplates?: () => void
+  /** Opens the whole-document discount. Shown only while the lines can still change. */
+  onDiscount?: () => void
+  /** Opens the fee and outside-work form. Shown only while the lines can still change. */
+  onAddFee?: () => void
 }
 
 export default function DocEditor(p: EditorProps) {
@@ -65,10 +80,16 @@ export default function DocEditor(p: EditorProps) {
   const isEstimate = docType === 'Estimate'
   const status = String(form.status || 'Draft')
   const locked = isLocked(status)
+  // A voided document stays on record but is not active: its lines and totals are read only until it is restored.
+  const closed = status === 'Void'
+  const frozen = locked || closed
   const lamp = docLamp(docType, status)
   const parts = (form.parts || []) as Line[]
   const labors = (form.labors || []) as Line[]
   const owed = Math.max(0, totals.balanceDue)
+  const savedOff = frozen ? 0 : discountSummary(form as Record<string, unknown>).total
+  // Without the shop's markup rules the part cards get nothing extra, exactly as before.
+  const partTools = p.suggestPrice && !frozen ? { jobNames: jobNames(form as Record<string, unknown>), suggestPrice: p.suggestPrice } : undefined
   const customerName = String(form.customer_name || '')
   const sf = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
     setForm(f => ({ ...f, [k]: e.target.value }))
@@ -100,6 +121,7 @@ export default function DocEditor(p: EditorProps) {
   type Step = { title: string; body: string; lamp: string; buttons: { label: string; icon: string; onClick: () => void; primary?: boolean }[] }
   const step: Step = (() => {
     if (isNew) return { title: `New ${noun}`, body: 'Choose the customer, add parts and labor, then save. You can send it right after.', lamp: 'off', buttons: [] }
+    if (closed) return { title: 'Voided', body: `This ${noun} stays on record but is not active. Restore it to work on it, send it or take a payment.`, lamp: 'off', buttons: p.onRestore ? [{ label: `Restore ${noun}`, icon: 'undo', onClick: p.onRestore, primary: true }] : [] }
     if (isEstimate) {
       if (status === 'Draft') return { title: 'Not sent yet', body: `Send it to ${who} so they can approve the work.`, lamp: 'off', buttons: [
         { label: 'Send estimate', icon: 'send', onClick: p.onSend, primary: true },
@@ -190,6 +212,12 @@ export default function DocEditor(p: EditorProps) {
                   A payment is recorded, so the lines, tax and totals are locked. You can still change the customer, notes and warranty.
                 </p>
               )}
+              {closed && (
+                <p className="flex items-start gap-2 text-[0.9375rem] text-text-secondary">
+                  <Icon name="lock" className="mt-0.5 h-5 w-5 shrink-0" />
+                  This {noun} is voided, so the lines, tax and totals are read only. Restore it to change them.
+                </p>
+              )}
             </div>
 
             {/* Details */}
@@ -199,10 +227,10 @@ export default function DocEditor(p: EditorProps) {
                 <Field id="f-date" label="Date">
                   <input id="f-date" className="form-input" type="date" value={form.doc_date || ''} onChange={sf('doc_date')} />
                 </Field>
-                <Field id="f-status" label="Status" hint={locked ? 'Changes with payments.' : undefined}>
-                  <select id="f-status" className="form-select" value={status} onChange={sf('status')} disabled={locked}>
-                    {statusesFor(type)
-                      .filter(s => (['Paid', 'Partial'].includes(status) ? s === status : !['Paid', 'Partial'].includes(s)))
+                <Field id="f-status" label="Status" hint={locked ? 'Changes with payments.' : closed ? 'Use Restore to bring it back.' : undefined}>
+                  <select id="f-status" className="form-select" value={status} onChange={sf('status')} disabled={frozen}>
+                    {(closed ? ['Void'] : statusesFor(type)
+                      .filter(s => (['Paid', 'Partial'].includes(status) ? s === status : !['Paid', 'Partial'].includes(s))))
                       .map(s => <option key={s} value={s}>{docStatusLabel(docType, s)}</option>)}
                   </select>
                 </Field>
@@ -255,13 +283,23 @@ export default function DocEditor(p: EditorProps) {
             </section>
 
             {/* Canned job */}
-            {!locked && p.onAddCanned && (
+            {!frozen && (p.onAddCanned || p.onTemplates) && (
               <div className="min-w-0 xl:col-start-1">
-                <button type="button" className="btn btn-secondary w-full justify-center sm:w-auto" onClick={p.onAddCanned}>
-                  <Icon name="list" className="h-5 w-5" />
-                  Add a canned job
-                </button>
-                <p className="mt-1 text-[0.8125rem] text-text-secondary">Start from a saved job. Its labor and parts are added below, and you can change them.</p>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  {p.onAddCanned && (
+                    <button type="button" className="btn btn-secondary w-full justify-center sm:w-auto" onClick={p.onAddCanned}>
+                      <Icon name="list" className="h-5 w-5" />
+                      Add a canned job
+                    </button>
+                  )}
+                  {p.onTemplates && (
+                    <button type="button" className="btn btn-secondary w-full justify-center sm:w-auto" onClick={p.onTemplates}>
+                      <Icon name="copy" className="h-5 w-5" />
+                      Start from a template
+                    </button>
+                  )}
+                </div>
+                <p className="mt-1 text-[0.8125rem] text-text-secondary">{p.onTemplates ? 'Start from a saved job or a saved template.' : 'Start from a saved job.'} Its labor and parts are added below, and you can change them.</p>
               </div>
             )}
 
@@ -271,13 +309,13 @@ export default function DocEditor(p: EditorProps) {
                 <h2 id="sec-parts" className={sectionTitle}>Parts</h2>
                 <span className="num text-[0.9375rem] text-text-secondary">{parts.length} {parts.length === 1 ? 'line' : 'lines'}, {formatCurrency(totals.partsTotal)}</span>
               </div>
-              {parts.length === 0 && <p className="mb-3 rounded-lg border border-dashed border-border px-4 py-5 text-center text-[0.9375rem] text-text-secondary">No parts on this {noun}.{locked ? '' : ' Add the parts you will use.'}</p>}
+              {parts.length === 0 && <p className="mb-3 rounded-lg border border-dashed border-border px-4 py-5 text-center text-[0.9375rem] text-text-secondary">No parts on this {noun}.{frozen ? '' : ' Add the parts you will use.'}</p>}
               <ul className="space-y-3">
                 {parts.map((line, i) => (
-                  <PartCard key={i} index={i} part={line} readOnly={locked} autoFocus={justAdded?.kind === 'part' && justAdded.index === i} onChange={patch => updatePart(i, patch)} onRemove={() => removePart(i)} />
+                  <PartCard key={i} index={i} part={line} readOnly={frozen} autoFocus={justAdded?.kind === 'part' && justAdded.index === i} tools={partTools} onChange={patch => updatePart(i, patch)} onRemove={() => removePart(i)} />
                 ))}
               </ul>
-              {!locked && (
+              {!frozen && (
                 <button type="button" className="btn btn-secondary mt-3 w-full sm:w-auto" onClick={addPart}>
                   <Icon name="plus" className="h-5 w-5" />
                   Add part
@@ -291,13 +329,13 @@ export default function DocEditor(p: EditorProps) {
                 <h2 id="sec-labor" className={sectionTitle}>Labor</h2>
                 <span className="num text-[0.9375rem] text-text-secondary">{labors.length} {labors.length === 1 ? 'line' : 'lines'}, {formatCurrency(totals.laborTotal)}</span>
               </div>
-              {labors.length === 0 && <p className="mb-3 rounded-lg border border-dashed border-border px-4 py-5 text-center text-[0.9375rem] text-text-secondary">No labor on this {noun}.{locked ? '' : ' Add the work to be done.'}</p>}
+              {labors.length === 0 && <p className="mb-3 rounded-lg border border-dashed border-border px-4 py-5 text-center text-[0.9375rem] text-text-secondary">No labor on this {noun}.{frozen ? '' : ' Add the work to be done.'}</p>}
               <ul className="space-y-3">
                 {labors.map((line, i) => (
-                  <LaborCard key={i} index={i} labor={line} staff={staff} readOnly={locked} autoFocus={justAdded?.kind === 'labor' && justAdded.index === i} onChange={patch => updateLabor(i, patch)} onRemove={() => removeLabor(i)} />
+                  <LaborCard key={i} index={i} labor={line} staff={staff} readOnly={frozen} autoFocus={justAdded?.kind === 'labor' && justAdded.index === i} onChange={patch => updateLabor(i, patch)} onRemove={() => removeLabor(i)} />
                 ))}
               </ul>
-              {!locked && (
+              {!frozen && (
                 <button type="button" className="btn btn-secondary mt-3 w-full sm:w-auto" onClick={addLabor}>
                   <Icon name="plus" className="h-5 w-5" />
                   Add labor
@@ -311,19 +349,45 @@ export default function DocEditor(p: EditorProps) {
                 <h2 id="sec-totals" className={`${sectionTitle} mb-3`}>Totals</h2>
                 <div className="grid grid-cols-2 gap-x-3 gap-y-3">
                   <Field id="f-supplies" label="Shop supplies">
-                    <NumInput id="f-supplies" money value={form.shop_supplies || 0} readOnly={locked} onChange={v => setForm(f => ({ ...f, shop_supplies: v as unknown as number }))} />
+                    <NumInput id="f-supplies" money value={form.shop_supplies || 0} readOnly={frozen} onChange={v => setForm(f => ({ ...f, shop_supplies: v as unknown as number }))} />
                   </Field>
                   <Field id="f-taxrate" label="Tax rate (%)">
-                    <NumInput id="f-taxrate" value={(form.tax_rate as number) ?? 0} readOnly={locked} onChange={v => setForm(f => ({ ...f, tax_rate: v as unknown as number }))} />
+                    <NumInput id="f-taxrate" value={(form.tax_rate as number) ?? 0} readOnly={frozen} onChange={v => setForm(f => ({ ...f, tax_rate: v as unknown as number }))} />
                   </Field>
                   <label className="col-span-2 flex min-h-[44px] cursor-pointer items-center gap-2.5 text-[0.9375rem]">
-                    <input type="checkbox" className="h-5 w-5 accent-[rgb(var(--c-blue))]" checked={form.apply_tax !== false} disabled={locked} onChange={e => setForm(f => ({ ...f, apply_tax: e.target.checked }))} />
+                    <input type="checkbox" className="h-5 w-5 accent-[rgb(var(--c-blue))]" checked={form.apply_tax !== false} disabled={frozen} onChange={e => setForm(f => ({ ...f, apply_tax: e.target.checked }))} />
                     Charge sales tax on parts and supplies
                   </label>
                   <Field id="f-deposit" label="Deposit shown on the printout" hint="Printed on the document. To take money, use Record payment." className="col-span-2">
-                    <NumInput id="f-deposit" money value={form.deposit || 0} readOnly={locked} onChange={v => setForm(f => ({ ...f, deposit: v as unknown as number }))} />
+                    <NumInput id="f-deposit" money value={form.deposit || 0} readOnly={frozen} onChange={v => setForm(f => ({ ...f, deposit: v as unknown as number }))} />
                   </Field>
                 </div>
+
+                {/* Changes prices, so it is offered only while the lines can still change (never when paid, part paid or void). */}
+                {!frozen && (p.onDiscount || p.onAddFee) && (
+                  <div className="mt-4 border-t border-border pt-3">
+                    <h3 className="text-[0.9375rem] font-bold">Discount and fees</h3>
+                    <p className="mt-0.5 text-[0.8125rem] text-text-secondary">
+                      {savedOff > 0
+                        ? `Discounts take ${formatCurrency(savedOff)} off. The original prices stay on the lines.`
+                        : 'Take a percent off the whole document, or add a disposal or outside-work charge. Nothing changes until you save.'}
+                    </p>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      {p.onDiscount && (
+                        <button type="button" className="btn btn-secondary justify-center" onClick={p.onDiscount}>
+                          <Icon name="tag" className="h-5 w-5" />
+                          Discount
+                        </button>
+                      )}
+                      {p.onAddFee && (
+                        <button type="button" className="btn btn-secondary justify-center" onClick={p.onAddFee}>
+                          <Icon name="plus" className="h-5 w-5" />
+                          Add a fee
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 <dl className="mt-4 space-y-1.5 border-t border-border pt-3 text-[0.9375rem]">
                   <Row label="Parts" value={totals.partsTotal} />
@@ -337,7 +401,7 @@ export default function DocEditor(p: EditorProps) {
                     <dd className="display num text-[1.375rem] font-bold">{formatCurrency(totals.total)}</dd>
                   </div>
                   {!isEstimate && totals.amountPaid > 0 && <Row label="Paid so far" value={totals.amountPaid} />}
-                  {!isEstimate && (
+                  {!isEstimate && !closed && (
                     <div className={`!mt-2 flex items-center justify-between gap-4 rounded-md px-3 py-2.5 ${status === 'Paid' || owed <= 0 ? 'bg-green/[0.14]' : 'bg-red/[0.1]'}`}>
                       <dt className="font-bold">{status === 'Paid' || owed <= 0 ? 'Paid in full' : 'Balance due'}</dt>
                       <dd className={`display num text-[1.5rem] font-bold ${status === 'Paid' || owed <= 0 ? 'text-green' : 'text-red'}`}>{formatCurrency(owed)}</dd>
@@ -363,7 +427,7 @@ export default function DocEditor(p: EditorProps) {
                   ) : (
                     <p className="text-text-secondary">No signature requested yet.</p>
                   )}
-                  {!isNew && !form.signature_signed_at && (
+                  {!isNew && !closed && !form.signature_signed_at && (
                     <button type="button" className="btn btn-secondary mt-3 w-full sm:w-auto" onClick={p.onSign}>
                       <Icon name="pen" className="h-5 w-5" />
                       {form.signature_requested_at ? 'Send signature request again' : 'Request signature'}
@@ -379,16 +443,16 @@ export default function DocEditor(p: EditorProps) {
                     <>
                       <p className="flex items-center gap-2 font-bold"><span className={`lamp lamp-${lamp}`} aria-hidden="true" />{docStatusLabel(docType, status)}</p>
                       <p className="mt-0.5 text-[0.9375rem] text-text-secondary num">
-                        {status === 'Paid' ? `${formatCurrency(totals.amountPaid || totals.total)} received${form.payment_method ? ` by ${form.payment_method}` : ''}.` : totals.amountPaid > 0 ? `${formatCurrency(totals.amountPaid)} received. ${formatCurrency(owed)} still due.` : `${formatCurrency(owed)} due.`}
+                        {closed ? 'Voided, so nothing is owed and no payment can be recorded.' : status === 'Paid' ? `${formatCurrency(totals.amountPaid || totals.total)} received${form.payment_method ? ` by ${form.payment_method}` : ''}.` : totals.amountPaid > 0 ? `${formatCurrency(totals.amountPaid)} received. ${formatCurrency(owed)} still due.` : `${formatCurrency(owed)} due.`}
                       </p>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {owed > 0 && status !== 'Paid' && (
+                        {owed > 0 && status !== 'Paid' && !closed && (
                           <button type="button" className="btn btn-primary w-full sm:w-auto" onClick={p.onPay}>
                             <Icon name="dollar" className="h-5 w-5" />
                             Record payment
                           </button>
                         )}
-                        {type === 'Invoice' && !locked && (
+                        {type === 'Invoice' && !frozen && (
                           <button type="button" className="btn btn-secondary w-full sm:w-auto" onClick={p.onPlan}>
                             <Icon name="calendar" className="h-5 w-5" />
                             {plan?.enabled ? 'Change payment plan' : 'Set up payment plan'}
@@ -509,7 +573,7 @@ export default function DocEditor(p: EditorProps) {
               <Icon name="print" className="h-5 w-5" />
               Preview and print
             </button>
-            {!isNew && (
+            {!isNew && !closed && (
               <button type="button" className="btn btn-secondary hidden lg:inline-flex" onClick={p.onSend}>
                 <Icon name="send" className="h-5 w-5" />
                 Send

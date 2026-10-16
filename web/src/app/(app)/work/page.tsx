@@ -13,6 +13,7 @@ const TOOLS = [
   { href: '/shopboard', label: 'Shop board', icon: 'board', hint: 'See every car by stage' },
   { href: '/dvi', label: 'Inspections', icon: 'inspect', hint: 'Photo inspection reports' },
   { href: '/canned-jobs', label: 'Canned jobs', icon: 'bolt', hint: 'Saved jobs you quote often' },
+  { href: '/estimates?declined=1', label: 'Declined work', icon: 'flag', hint: 'Jobs customers said no to' },
   { href: '/insurance', label: 'Insurance claims', icon: 'shield', hint: 'Claims and adjuster notes' },
   { href: '/appointments', label: 'Schedule', icon: 'calendar', hint: 'Who is coming in' },
 ]

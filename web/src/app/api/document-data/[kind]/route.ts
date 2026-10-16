@@ -55,7 +55,9 @@ async function documentOf(db: Db, shopId: string, documentId: string) {
 
 async function settings(req: NextRequest, auth: AuthenticatedShop, db: Db) {
   if (req.method === 'GET') {
-    const { prefs, available } = await loadPrefs(db, auth.shopId)
+    const { prefs, available, failed: readFailed } = await loadPrefs(db, auth.shopId)
+    // A broken read is not "no settings saved": say so, so nothing is ever saved on top of defaults.
+    if (readFailed) return failed('The settings could not be loaded.')
     return jsonOk({ prefs, available, canEdit: WRITE_MANAGERS.has(auth.role) })
   }
   if (req.method === 'PUT') {

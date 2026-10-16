@@ -20,13 +20,15 @@ import OutreachSection from '@/components/settings/OutreachSection'
 import ReviewsSection from '@/components/settings/ReviewsSection'
 import AiRulesSection from '@/components/ai/AiRulesSection'
 import InstallSection from '@/components/settings/InstallSection'
+import MarkupSection from '@/components/settings/MarkupSection'
 
-type SectionId = 'shop' | 'ai' | 'assistant' | 'receptionist' | 'comms' | 'outreach' | 'reviews' | 'install'
+type SectionId = 'shop' | 'pricing' | 'ai' | 'assistant' | 'receptionist' | 'comms' | 'outreach' | 'reviews' | 'install'
 type LoadState = 'loading' | 'ready' | 'error'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error'
 
 const SECTIONS: { id: SectionId; label: string; sub: string; icon: string; hasFields: boolean }[] = [
   { id: 'shop', label: 'Shop info', sub: 'Name, phone, rates, tax', icon: 'map', hasFields: true },
+  { id: 'pricing', label: 'Parts pricing', sub: 'Markup rules for part prices', icon: 'tag', hasFields: false },
   { id: 'ai', label: 'AI assistant', sub: 'AI key, model, ChatGPT', icon: 'alpha', hasFields: true },
   { id: 'assistant', label: 'Assistant rules', sub: 'What it may do and never do', icon: 'shield', hasFields: false },
   { id: 'receptionist', label: 'AI receptionist', sub: 'Answers calls and texts for you', icon: 'phone', hasFields: false },
@@ -342,6 +344,7 @@ export default function SettingsPage() {
                 >
                   <h2 id={`sec-${s.id}`} className="display mb-4 text-[1.5rem] font-bold leading-tight">{s.label}</h2>
                   {s.id === 'shop' && <ShopSection />}
+                  {s.id === 'pricing' && <MarkupSection />}
                   {s.id === 'ai' && <AiSection />}
                   {s.id === 'assistant' && <AiRulesSection />}
                   {s.id === 'receptionist' && <ReceptionistSection />}

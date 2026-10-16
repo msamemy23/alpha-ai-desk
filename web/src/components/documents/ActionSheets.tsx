@@ -24,7 +24,7 @@ export function VoidForm({ noun, docNumber, customerName, hasLinks, busy, error,
         {hasLinks ? ' Any link the customer has stops working.' : ''} You can restore it later. A document with payments on it cannot be voided.
       </p>
       <div className="mt-4">
-        <Field id="void-reason" label="Why is it being voided?" hint="Kept in the history. 3 to 300 characters.">
+        <Field id="void-reason" label="Why is it being voided?" hint="Saved with the document, in the private shop notes. 3 to 300 characters.">
           <textarea id="void-reason" className="form-textarea" rows={3} value={reason} maxLength={300} autoFocus onChange={e => setReason(e.target.value)} />
         </Field>
         <div className="mt-2 flex flex-wrap gap-2">
@@ -65,7 +65,7 @@ export function DeleteForm({ noun, docNumber, customerName, status, busy, error,
     <div>
       {allowed ? (
         <p className="text-[0.9375rem]">
-          {cap(noun)} {docNumber}{customerName ? ` for ${customerName}` : ''} will be removed for good. This cannot be undone. A short note that it was deleted stays in the activity log.
+          {cap(noun)} {docNumber}{customerName ? ` for ${customerName}` : ''} will be removed for good. This cannot be undone.
         </p>
       ) : (
         <p className="text-[0.9375rem]">
