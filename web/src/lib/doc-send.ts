@@ -1,9 +1,13 @@
 // Sending an estimate or invoice: the rules the send route and its preview share. Pure, so tests can run it.
 
-export type SendChannel = 'email' | 'sms' | 'copy'
+/**
+ * 'phone' is a text the owner sends from their own phone: Alpha makes the private link and the words, the owner presses Send in Messages.
+ * It needs no texting account, but it still refuses a customer who asked not to get texts.
+ */
+export type SendChannel = 'email' | 'sms' | 'copy' | 'phone'
 
 export function isSendChannel(v: unknown): v is SendChannel {
-  return v === 'email' || v === 'sms' || v === 'copy'
+  return v === 'email' || v === 'sms' || v === 'copy' || v === 'phone'
 }
 
 export interface BlockInput {
@@ -32,10 +36,10 @@ export function sendBlockReason(i: BlockInput): string {
     if (!EMAIL_SHAPE.test(i.email.trim())) return 'The email address on file does not look right.'
     if (!i.emailReady) return 'Email is not set up for this shop yet.'
   }
-  if (i.channel === 'sms') {
+  if (i.channel === 'sms' || i.channel === 'phone') {
     if (!i.phone) return 'There is no phone number on file for this customer.'
     if (i.optedOut) return 'This customer asked not to get texts.'
-    if (!i.smsReady) return 'Texting is not set up for this shop yet.'
+    if (i.channel === 'sms' && !i.smsReady) return 'Texting is not set up for this shop yet.'
   }
   return ''
 }

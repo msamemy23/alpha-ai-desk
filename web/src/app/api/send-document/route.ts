@@ -20,11 +20,14 @@ import { checkRateLimit } from '@/lib/rate-limit'
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
 
 /**
- * Send an estimate, invoice or receipt: by text, by email, or as a private link to copy.
+ * Send an estimate, invoice or receipt: by text, by email, as a private link to copy, or as a text the owner sends from their own phone.
  *
  * With `preview: true` it only shows what would go out and where, and writes nothing. Without it, it makes (or reuses)
  * the customer's private link, sends the message with that link in it, marks the document sent and writes a history line.
  * The older callers (Ask Alpha) send only { documentId, channel, email | phone } and read only `error`, which still works.
+ *
+ * Channel 'phone' sends nothing: it makes (or reuses) the private link and hands back the words, and the owner presses Send in their own
+ * Messages app. Only when the owner then says they sent it (`confirmSent: true`) is the document marked sent and the history line written.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -38,7 +41,8 @@ export async function POST(req: NextRequest) {
     const { documentId, channel, email: reqEmail, phone: reqPhone } = body as Record<string, unknown>
     const preview = (body as { preview?: unknown }).preview === true
     if (typeof documentId !== 'string' || !documentId) return NextResponse.json({ error: 'documentId required' }, { status: 400 })
-    if (!isSendChannel(channel)) return NextResponse.json({ error: 'channel must be email, sms or copy' }, { status: 400 })
+    if (!isSendChannel(channel)) return NextResponse.json({ error: 'channel must be email, sms, copy or phone' }, { status: 400 })
+    const confirmSent = (body as { confirmSent?: unknown }).confirmSent === true
     const db = getServiceClient()
 
     // The document and settings are scoped to the caller's shop, so one shop can never send another shop's document.
@@ -77,7 +81,7 @@ export async function POST(req: NextRequest) {
     const formatted = custPhone ? formatPhone(custPhone) : ''
     // If the "asked not to get texts" list cannot be read, nothing is texted: it is never assumed to be fine.
     let consentUnknown = false
-    if (channel === 'sms' && formatted && !smsOptedOut) {
+    if ((channel === 'sms' || channel === 'phone') && formatted && !smsOptedOut) {
       try { smsOptedOut = await isSmsOptedOut(db, auth.shopId, formatted) } catch { consentUnknown = true }
     }
     const blocked = consentUnknown
@@ -97,7 +101,7 @@ export async function POST(req: NextRequest) {
         const built = buildSendEmail({ doc: live, shop, link: placeholder, logoUrl: null, pixelUrl: null, linkGoodThrough: goodThrough })
         return NextResponse.json({ preview: { channel, to: custEmail, subject: built.subject, text: built.text, html: built.html, blocked, total: live.totals.total } })
       }
-      if (channel === 'sms') {
+      if (channel === 'sms' || channel === 'phone') {
         return NextResponse.json({ preview: { channel, to: custPhone ? phonePretty(custPhone) : '', subject: '', text: buildSendText({ doc: live, shop, link: placeholder }), html: '', blocked, total: live.totals.total } })
       }
       return NextResponse.json({ preview: { channel, to: '', subject: '', text: '', html: '', blocked, total: live.totals.total } })
@@ -108,11 +112,25 @@ export async function POST(req: NextRequest) {
     // ── The private link ──────────────────────────────────────────────────────
     const user = await getSessionUser().catch(() => null)
     const who = staffLabel(user)
-    const sentTo = channel === 'email' ? custEmail : channel === 'sms' ? formatted : ''
-    const made = await ensureLink(db, { shopId: auth.shopId, userId: auth.userId, doc, channel, sentTo, contentHash: live.contentHash })
+    // A text from the owner's own phone is only a link until they say they sent it; the link is recorded as texted at that point.
+    const linkChannel = channel === 'phone' ? (confirmSent ? 'sms' : 'copy') : channel
+    const sentTo = channel === 'email' ? custEmail : (channel === 'sms' || (channel === 'phone' && confirmSent)) ? formatted : ''
+    const made = await ensureLink(db, { shopId: auth.shopId, userId: auth.userId, doc, channel: linkChannel, sentTo, contentHash: live.contentHash })
     const link = signUrl(origin, made.token)
     const nowIso = new Date().toISOString()
     const docLabel = `${live.docType} ${live.docNumber}`
+
+    if (channel === 'phone') {
+      const words = buildSendText({ doc: live, shop, link })
+      if (!confirmSent) {
+        await logEvent(db, { shopId: auth.shopId, documentId, docNumber: live.docNumber, kind: 'link_created', actorName: who, summary: `${made.reused ? 'Copied' : 'Made'} the private link to ${docLabel} to text from your own phone` })
+        return NextResponse.json({ ok: true, link, text: words, phone: formatted, linkKind: made.kind, status: str(doc.status), sentAt: '', expiresAt: made.expiresAt })
+      }
+      const marked = await db.from('documents').update({ sent_at: nowIso }).eq('id', documentId).eq('shop_id', auth.shopId)
+      await logEvent(db, { shopId: auth.shopId, documentId, docNumber: live.docNumber, kind: 'sent', actorName: who, summary: `Texted ${docLabel} to ${phonePretty(custPhone)} from your own phone`, detail: { channel: 'phone', to: formatted, linkKind: made.kind, reusedLink: made.reused } })
+      if (marked.error) return NextResponse.json({ ok: true, document_marked_sent: false, link, text: words, phone: formatted, linkKind: made.kind, status: str(doc.status), sentAt: nowIso, expiresAt: made.expiresAt, warning: 'The document could not be marked as sent. Tap I sent it again.' })
+      return NextResponse.json({ ok: true, link, text: words, phone: formatted, linkKind: made.kind, status: str(doc.status), sentAt: nowIso, expiresAt: made.expiresAt })
+    }
 
     if (channel === 'copy') {
       await logEvent(db, { shopId: auth.shopId, documentId, docNumber: live.docNumber, kind: 'link_created', actorName: who, summary: `${made.reused ? 'Copied' : 'Made'} the private link to ${docLabel}` })

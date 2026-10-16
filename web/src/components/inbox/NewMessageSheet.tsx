@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import Icon from '@/components/Icon'
 import Sheet from '@/components/Sheet'
 import { phonePretty } from '@/lib/today'
+import PhoneTextActions from '@/components/PhoneTextActions'
 import { digitsOnly } from './utils'
 import type { ContactRef } from './utils'
 
@@ -104,6 +105,8 @@ export default function NewMessageSheet({ onClose, contacts, initialTo = '', ini
           <label className="form-label" htmlFor="nm-body">Message</label>
           <textarea ref={bodyBox} id="nm-body" className="form-textarea" rows={5} value={body} onChange={e => { setBody(e.target.value); setError('') }} placeholder="Write your message" />
         </div>
+
+        {channel === 'sms' && <PhoneTextActions phone={to} body={body} />}
 
         {error && <p role="alert" className="form-error">{error}</p>}
 

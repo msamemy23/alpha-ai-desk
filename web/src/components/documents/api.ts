@@ -127,12 +127,19 @@ export const saveDocumentFields = (id: string, data: Record<string, unknown>) =>
 /* ───────── sending ───────── */
 
 export interface SendPreview { channel: string; to: string; subject: string; text: string; html: string; blocked: string; total: number }
-export const previewSend = (documentId: string, channel: 'email' | 'sms' | 'copy', contact: { email?: string; phone?: string }) =>
+/** 'phone' is a text the owner sends from their own phone: Alpha makes the link and the words, and sends nothing. */
+export type SendChannelName = 'email' | 'sms' | 'copy' | 'phone'
+export const previewSend = (documentId: string, channel: SendChannelName, contact: { email?: string; phone?: string }) =>
   api<{ preview: SendPreview }>('/api/send-document', { method: 'POST', body: { documentId, channel, preview: true, ...contact } })
 /** `attemptKey` names this one attempt: a retry of it never sends twice, while a deliberate second send (a new key) does. */
-export const sendNow = (documentId: string, channel: 'email' | 'sms' | 'copy', contact: { email?: string; phone?: string }, attemptKey?: string) =>
-  api<{ link: string; linkKind: string; status: string; sentAt: string; expiresAt: string; warning?: string }>('/api/send-document', {
+export const sendNow = (documentId: string, channel: SendChannelName, contact: { email?: string; phone?: string }, attemptKey?: string) =>
+  api<{ link: string; linkKind: string; status: string; sentAt: string; expiresAt: string; warning?: string; text?: string; phone?: string }>('/api/send-document', {
     method: 'POST', body: { documentId, channel, ...contact }, ...(attemptKey ? { headers: { 'Idempotency-Key': attemptKey } } : {}),
+  })
+/** The owner pressed Send in their own Messages app and says so: now the document is marked sent and the history line is written. */
+export const confirmPhoneSent = (documentId: string, contact: { email?: string; phone?: string }) =>
+  api<{ link: string; status: string; sentAt: string; expiresAt: string; warning?: string; text?: string }>('/api/send-document', {
+    method: 'POST', body: { documentId, channel: 'phone', confirmSent: true, ...contact },
   })
 
 /** What the saved signature record says: who, when, how, and whether the stored record still matches its seal. */

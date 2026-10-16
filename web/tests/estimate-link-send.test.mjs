@@ -13,7 +13,7 @@ const read = (p) => readFileSync(new URL(`../src/${p}`, import.meta.url), 'utf8'
 const base = { channel: 'email', status: 'Draft', email: 'a@b.co', phone: '713-555-0101', emailReady: true, smsReady: true, optedOut: false }
 
 test('send: a good document can go out by every way, and the reasons it cannot are in plain words', () => {
-  for (const channel of ['email', 'sms', 'copy']) assert.equal(send.sendBlockReason({ ...base, channel }), '')
+  for (const channel of ['email', 'sms', 'copy', 'phone']) assert.equal(send.sendBlockReason({ ...base, channel }), '')
   assert.match(send.sendBlockReason({ ...base, status: 'Void' }), /void/)
   assert.match(send.sendBlockReason({ ...base, email: '' }), /no email address/i)
   assert.match(send.sendBlockReason({ ...base, email: 'nope' }), /does not look right/)
@@ -72,8 +72,14 @@ test('send route: a preview writes nothing, and a blocked send is refused for th
   assert.match(route, /if \(blocked\) return NextResponse\.json\(\{ error: blocked \}, \{ status: sendBlockStatus\(blocked\) \}\)/)
   // The link is made only after the block check, and the document is marked sent only after the message was accepted.
   assert.ok(route.indexOf('if (blocked) return') < route.indexOf('ensureLink('))
-  assert.ok(route.indexOf('sendDurableSms({') < route.indexOf("update({ sent_at: nowIso })"))
-  assert.ok(route.indexOf('sendDurableEmail({') < route.indexOf("update({ sent_at: nowIso })"))
+  assert.ok(route.indexOf('sendDurableSms({') < route.lastIndexOf("update({ sent_at: nowIso })"))
+  assert.ok(route.indexOf('sendDurableEmail({') < route.lastIndexOf("update({ sent_at: nowIso })"))
+  // A text from the owner's own phone sends nothing: the document is marked sent only after the owner says they pressed Send.
+  const phoneBlock = route.slice(route.indexOf("if (channel === 'phone') {"), route.indexOf("if (channel === 'copy') {"))
+  assert.ok(phoneBlock.length > 300)
+  assert.doesNotMatch(phoneBlock, /sendDurable/)
+  assert.ok(phoneBlock.indexOf('if (!confirmSent) {') < phoneBlock.indexOf("update({ sent_at: nowIso })"))
+  assert.match(phoneBlock.slice(phoneBlock.indexOf('if (!confirmSent) {'), phoneBlock.indexOf("update({ sent_at: nowIso })")), /return NextResponse\.json/)
   // A copied link tells nobody and does not mark the document sent.
   const copy = route.slice(route.indexOf("if (channel === 'copy') {"), route.indexOf('A deliberate second send'))
   assert.doesNotMatch(copy, /sent_at|sendDurable/)

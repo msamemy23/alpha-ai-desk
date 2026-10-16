@@ -4,6 +4,7 @@ import Icon from '@/components/Icon'
 import JobPostCard from './JobPostCard'
 import { JobFlowCardWithSettings } from './JobFlowCard'
 import StatusLinkCard from './StatusLinkCard'
+import PhoneTextActions from '@/components/PhoneTextActions'
 import { formatCurrency } from '@/lib/supabase'
 import { phonePretty } from '@/lib/today'
 import { statusTextBody } from '@/lib/jobflow'
@@ -82,6 +83,7 @@ export default function JobDetail({
           <label htmlFor="jd-body" className="form-label">Text message</label>
           <textarea id="jd-body" className="form-textarea" rows={5} value={body} onChange={e => setBody(e.target.value)} />
         </div>
+        <PhoneTextActions phone={phone} body={body} />
         {error && <p role="alert" className="form-error">{error}</p>}
         {textSent && <p role="status" className="flex items-center gap-2 text-green"><Icon name="check" className="h-5 w-5" />{textSent}</p>}
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">

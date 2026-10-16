@@ -5,13 +5,16 @@ import { phonePretty } from '@/lib/today'
 import { linkLine } from '@/lib/doc-history'
 import type { LinkSummary } from '@/lib/doc-history'
 import Icon from '@/components/Icon'
-import { previewSend, sendNow } from './api'
+import PhoneTextActions from '@/components/PhoneTextActions'
+import { confirmPhoneSent, previewSend, sendNow } from './api'
 import type { SendPreview } from './api'
 import { ErrorMsg, OkMsg, WarnMsg } from './Dialogs'
 
-type Channel = 'sms' | 'email' | 'copy'
+type Channel = 'sms' | 'email' | 'copy' | 'phone'
 
 export interface SentResult { channel: Channel; status: string; sentAt: string; link: string; expiresAt: string }
+/** A text from the owner's own phone, made ready but not yet said to be sent. */
+interface PhoneReady { link: string; text: string; phone: string; status: string; expiresAt: string }
 
 const actions = 'mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end'
 
@@ -44,6 +47,8 @@ export default function SendSheet({ documentId, noun, docNumber, customerName, t
   const [copied, setCopied] = useState(false)
   const [warning, setWarning] = useState('')
   const [showText, setShowText] = useState(false)
+  const [phoneReady, setPhoneReady] = useState<PhoneReady | null>(null)
+  const [phoneSent, setPhoneSent] = useState('')
   const seq = useRef(0)
   const attempt = useRef('')
   const linkRef = useRef<HTMLInputElement>(null)
@@ -64,6 +69,14 @@ export default function SendSheet({ documentId, noun, docNumber, customerName, t
   const send = async () => {
     if (busy || !preview || preview.blocked) return
     setBusy(true); setError('')
+    if (channel === 'phone') {
+      // Nothing is sent from here. This makes the private link and the words; the owner presses Send in Messages.
+      const r = await sendNow(documentId, 'phone', { ...(email ? { email } : {}), ...(phone ? { phone } : {}) })
+      setBusy(false)
+      if (!r.ok) { setError(r.error); return }
+      setPhoneReady({ link: r.data.link, text: String(r.data.text || ''), phone: String(r.data.phone || phone), status: r.data.status, expiresAt: r.data.expiresAt })
+      return
+    }
     // One key per sheet and way of sending: tapping again after a dropped connection can never send a second copy.
     if (!attempt.current) attempt.current = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`
     const r = await sendNow(documentId, channel, { ...(email ? { email } : {}), ...(phone ? { phone } : {}) }, `${attempt.current}:${channel}`)
@@ -75,6 +88,18 @@ export default function SendSheet({ documentId, noun, docNumber, customerName, t
     onSent(result)
   }
 
+  /** The owner says they pressed Send in Messages. Only now is the document marked sent. */
+  const confirmSent = async () => {
+    if (busy || !phoneReady) return
+    setBusy(true); setError('')
+    const r = await confirmPhoneSent(documentId, { ...(email ? { email } : {}), ...(phone ? { phone } : {}) })
+    setBusy(false)
+    if (!r.ok) { setError(r.error); return }
+    setWarning(r.data.warning || '')
+    setPhoneSent(r.data.sentAt || new Date().toISOString())
+    onSent({ channel: 'phone', status: r.data.status, sentAt: r.data.sentAt, link: r.data.link, expiresAt: r.data.expiresAt })
+  }
+
   const copy = async () => {
     const url = done?.link || ''
     try { await navigator.clipboard.writeText(url); setCopied(true) } catch {
@@ -84,6 +109,30 @@ export default function SendSheet({ documentId, noun, docNumber, customerName, t
   }
 
   const goodThrough = (iso: string) => new Date(iso).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+
+  if (phoneReady) {
+    return (
+      <div>
+        {phoneSent
+          ? <OkMsg>Marked as sent to {phonePretty(phoneReady.phone || phone)}. The customer can open the link until {goodThrough(phoneReady.expiresAt)}.</OkMsg>
+          : <OkMsg>The text is ready. Open it in Messages and press Send there.</OkMsg>}
+        <div className="mt-4"><PhoneTextActions phone={phoneReady.phone || phone} body={phoneReady.text} title="Text it from your phone" /></div>
+        {warning && <div className="mt-3"><WarnMsg>{warning}</WarnMsg></div>}
+        {error && <div className="mt-3"><ErrorMsg>{error}</ErrorMsg></div>}
+        {phoneSent ? (
+          <p className="mt-3 text-[0.9375rem] text-text-secondary">You will see when {customerName || 'the customer'} opens it and what they answer, right on the {noun}.</p>
+        ) : (
+          <p className="mt-3 text-[0.9375rem] text-text-secondary">Alpha cannot see your Messages app. After you press Send there, tap I sent it so this {noun} shows as sent and follow-ups know. If you close this without tapping it, the {noun} stays unsent in Alpha.</p>
+        )}
+        <div className={actions}>
+          {!phoneSent && <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>Close, I have not sent it</button>}
+          {phoneSent
+            ? <button type="button" className="btn btn-primary" onClick={onClose}>Done</button>
+            : <button type="button" className="btn btn-primary" onClick={() => void confirmSent()} disabled={busy}><Icon name="check" className="h-5 w-5" />{busy ? 'Saving…' : 'I sent it'}</button>}
+        </div>
+      </div>
+    )
+  }
 
   if (done) {
     return (
@@ -116,12 +165,13 @@ export default function SendSheet({ documentId, noun, docNumber, customerName, t
 
   const channels: { id: Channel; label: string; to: string; icon: string }[] = [
     { id: 'sms', label: 'Text message', to: phone ? phonePretty(phone) : 'No phone on file', icon: 'phone' },
+    { id: 'phone', label: 'From my phone', to: phone ? `${phonePretty(phone)}, from your number` : 'No phone on file', icon: 'send' },
     { id: 'email', label: 'Email', to: email || 'No email on file', icon: 'mail' },
     { id: 'copy', label: 'Copy link', to: 'Paste it anywhere', icon: 'link' },
   ]
   const sendLabel = busy
     ? 'Sending…'
-    : channel === 'sms' ? 'Send text now' : channel === 'email' ? 'Send email now' : 'Make the link'
+    : channel === 'sms' ? 'Send text now' : channel === 'email' ? 'Send email now' : channel === 'phone' ? 'Get the text ready' : 'Make the link'
 
   return (
     <div>
@@ -133,7 +183,7 @@ export default function SendSheet({ documentId, noun, docNumber, customerName, t
 
       <fieldset className="mt-4">
         <legend className="form-label">How should it go?</legend>
-        <div className="grid gap-2 sm:grid-cols-3">
+        <div className="grid gap-2 sm:grid-cols-2">
           {channels.map(c => {
             const on = channel === c.id
             return (
@@ -190,6 +240,7 @@ export default function SendSheet({ documentId, noun, docNumber, customerName, t
               <button type="button" className="btn btn-ghost btn-sm mt-2" onClick={() => setShowText(s => !s)}>{showText ? 'Show how it looks' : 'Show the plain text version'}</button>
             )}
             {channel !== 'copy' && <p className="mt-2 text-[0.8125rem] text-text-secondary">The link in the message is a private one, made when you send. This preview shows a placeholder.</p>}
+            {channel === 'phone' && <p className="mt-2 text-[0.8125rem] text-text-secondary">Alpha sends nothing for this one. It makes the link and the words, then opens them in your Messages app. They go out from your own phone number, and replies come to your phone, not to the Inbox.</p>}
           </div>
         ) : null}
       </section>
