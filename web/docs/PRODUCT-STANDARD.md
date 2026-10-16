@@ -2,6 +2,8 @@
 
 Written 2026-10-14 and rewritten 2026-10-15: sections 21 to 30 were added after the owner pointed out that AI calling, the phone and much more were missing, and every row that depended on the database files now reflects what was applied that day. Vendor pages were read on 2026-10-14; the texting, Google Photos, Apple Messages and Instagram facts were read on 2026-10-15. Features and prices change, so treat every competitor point as possibly out of date and re-check before you quote it. The "Alpha today" column was checked by reading the code in `web/src` and `SESSION_LOG.md`, not by clicking through the live app.
 
+**As of 2026-10-15.** Every row was re-checked against the code on this date: does the code exist, can an owner reach it from a screen, the navigation, a schedule or a setting, does it depend on a database file that is not applied (and does it say so instead of failing), and is there a test. "Built in code, checked by tests" means exactly that and nothing more: nothing was clicked through on the live app. Rows that were built but that no screen, schedule or setting reaches are marked Not reachable and are collected, with the one missing step each, in "Built but not reachable" at the end.
+
 ## Why this document exists
 
 Aaron's rule: "every feature has to have the fullest. i mean the fullest. professional leads, how other professional ai companies too... i want every feature to be professional and down right great."
@@ -13,7 +15,7 @@ Alpha AI Desk is an AI office manager and shop-management web app for independen
 ## How to use this document
 
 1. Before you build or change a feature, open its section and read the rows. Each row is one capability.
-2. A feature is done when every row is Exists, or the row says who or what blocks it and that is written down in "Blocked on the owner".
+2. A feature is done when every row is Exists, or the row says who or what blocks it and that is written down in "Blocked on the owner". A row marked Not reachable is built but the owner cannot use it yet; it is not done until a screen, schedule or setting reaches it (see "Built but not reachable" at the end).
 3. Put the section's rows in the pull request description and say which ones you moved to Exists.
 4. Update the row in the same change. If a row is wrong, fix the row.
 5. Every screen must also pass "Quality bar for every screen". A feature with all rows Exists but a screen that fails the bar is not done.
@@ -23,15 +25,16 @@ Alpha AI Desk is an AI office manager and shop-management web app for independen
 
 - **Capability**: one thing a shop or customer can do.
 - **What the best do**: a short fact in my own words with a source tag such as [S4]. The full list is under "Sources". "Not researched" and "unverified" mean exactly that. I did not guess.
-- **Alpha today**: Exists (works in code now), Partial (some of it), or Missing (not found in code), plus one phrase.
-- **Status**: Exists, To build, or Blocked. Blocked means it cannot be finished or switched on until the owner or an outside party acts. The action is listed in "Blocked on the owner".
+- **Alpha today**: Exists (works in code now), Partial (some of it), or Missing (not found in code), plus one phrase. "Built in code, checked by tests" means the code is there and tests read it or run its logic; it does not mean it was tried live.
+- **Status**: Exists, To build, Blocked, or Not reachable. Blocked means it cannot be finished or switched on until the owner or an outside party acts. The action is listed in "Blocked on the owner". Not reachable means the code is written but no screen, schedule or setting lets an owner use it; the row says the one missing step.
 - Migrations: on 2026-10-15, 20 of the 25 files in `supabase/migrations/` (034 to 059, there is no 042) were applied to production (034 to 041, 043 to 045, 047 to 050, 052 to 056). Not applied, because the apply was cancelled each time: 046 (customer links, signed approvals, document history), 051 (job flow), 057 (parts and purchase-order functions), 058 and 059 (browser tables), and 060_repair_posts.sql (repair posts: post_settings, job_post_info, post_queue; written 2026-10-15, not applied; not the same file as web/supabase/migrations/060_atomic_automation_child_writes.sql). A row that depends on one of those says so. Customer, invoice, estimate, payment, message and signature data were checked before and after and did not change.
 
 ## Biggest gaps against the leaders
 
 1. **Taking money.** Tekmetric sends a pay link by text and keeps cards on file; both Tekmetric and Shopmonkey run card terminals and track payouts and fees; Shopmonkey sends payable invoices by text or email [S3][S4][S22]. Alpha only records a payment someone received. There is no processor, no link, no card on file, and no QuickBooks sync.
-2. **Shop data and time.** The leaders put labor guides, parts catalogs and per-job time inside the estimate and the tech board [S1][S2][S25][S9]. Alpha has none of these, so it cannot show effective labor rate, gross profit or hours left per technician.
-3. **Customer-facing AI that is safe and hands off.** The best call agents tell callers they are AI, transfer to a person and book the appointment [S41][S43][S45]. Alpha's inbound agent never says it is AI unless asked, cannot transfer, cannot book, and its text auto-reply uses fixed shop hours. This is the first thing to fix because it talks to customers unsupervised.
+2. **Shop data and time.** The leaders put labor guides, parts catalogs and per-job time inside the estimate and the tech board [S1][S2][S25][S9]. Alpha now records time on a job (Team) and shows technician efficiency, effective labor rate and gross profit in Reports, but it still has no labor guide and no parts catalog, and the board columns still do not show hours assigned and hours left.
+3. **Customer-facing AI that is safe and hands off.** The best call agents tell callers they are AI, transfer to a person and book the appointment [S41][S43][S45]. Alpha's agent now does all three in code, uses the shop's own hours and rules, and every AI call the owner starts goes through a review card and the do-not-call and calling-hours check. What is left is proof and reach: it is covered by tests with simulated Telnyx events but has not been tried on a live call, texts to customers wait on carrier registration, the owner cannot listen in without being heard, and the join-a-call route has no button.
+4. **Built but not reachable.** Twenty-five rows are written and tested but no screen, schedule or setting lets Aaron use them (canned jobs, pricing matrices, change history, customer import and export, purchase orders, report emails and more; the list is at the end). One of them matters now: the unsubscribe link in marketing emails is blocked by the sign-in wall, so a customer cannot unsubscribe (section 24).
 
 ## Where Alpha is already ahead or different
 
@@ -52,24 +55,28 @@ Screens: Work, Estimates, Invoices, Canned jobs, public signing page.
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
 | Write a document with parts, labor, supplies, sublet, tax | Build fast from canned jobs, matrices and labor guides [S1] | Exists. Line cards, shop labor rate and tax from Settings, per-line tax | Exists |
-| Canned jobs | Linked to inspection findings and tailored per vehicle [S1][S6] | Partial. Name, hours, rate, parts; no per-vehicle price, no inspection link | To build |
-| Pricing matrices | Parts and labor matrices price lines automatically [S1][S2] | Missing. Every price is typed | To build |
+| Canned jobs | Linked to inspection findings and tailored per vehicle [S1][S6] | Partial. The Canned jobs screen (name, hours, rate, parts) and a one-tap "Add a canned job" inside a document work. Inspections price a finding from the shop's canned jobs. Per-vehicle variants, keywords and extra fees are built in code (migration 047 is applied, tests pass) but the sheet that edits and uses them is not on any screen | Not reachable |
+| Pricing matrices | Parts and labor matrices price lines automatically [S1][S2] | Built, not reachable. The parts markup matrix (tiers, markup or margin, rounding) is written and tested, and the document-settings route saves it (migration 047 is applied). No screen edits the matrix and nothing applies it when a part is added, so every price on screen is still typed | Not reachable |
 | One-click job from the vehicle | Smart Jobs adds labor, parts, fluids and a locked price [S2] | Missing | To build |
 | Labor times from a guide | Up to three labor guides inside the estimate [S1] | Missing. Repair info has no labor times | To build |
-| Parts search and ordering in the estimate | Search suppliers without leaving the job [S2][S24] | Partial. Parts lookup reads store pages and builds an estimate; no order | To build |
-| Good, better, best options | Found in other field-service tools [S34]; not on the shop tools I read (unverified) | Missing. One price per line | To build |
-| Email a document | Email with lines and total [S1] | Exists. Every line and total; a preview says what will be sent | Exists |
-| Text a document | Text a link; customer approves or pays on the phone [S1][S3] | Partial. Text has total and shop phone only, no link | To build |
-| Signature and approval | Click or signature with a saved record [S1] | Exists. Link works 30 days, approve button in email, signer and time kept | Exists |
-| Approve or decline line by line | Customer picks which work to do [S5][S27] | Missing on estimates; exists on inspections | To build |
-| Know when the customer looked | Sent and viewed icons on the card [S8] | Missing for estimates; inspections show "Customer looked" | To build |
+| Parts search and ordering in the estimate | Search suppliers without leaving the job [S2][S24] | Partial. Parts lookup reads store pages and builds an estimate; no order from the estimate. Supplier purchase orders are written but have no screen (see section 15) | To build |
+| Good, better, best options | Found in other field-service tools [S34]; not on the shop tools I read (unverified) | Built, not reachable. Option groups (two to five choices; a choice's lines are added only when the customer picks it) have a sheet, a route and tests (migration 047 is applied). The sheet is not on the document screen, and the customer signing page has no way to pick one, so a customer cannot choose. Recording the pick needs the code in doc-respond, which no route calls and which needs migration 046 | Not reachable |
+| Email a document | Email with lines and total [S1] | Exists. Every line and total. Before sending, one sentence names who gets it, at which address, and the total. Needs the shop's email key in Settings, otherwise it says email is not set up | Exists |
+| Text a document | Text a link; customer approves or pays on the phone [S1][S3] | Partial. The text has the total and the shop phone only, no link. A send sheet with a preview and a customer link is written, with the link code (migration 046, not applied), but no screen shows the sheet and the send route ignores a preview request and makes no link, so wiring it needs 046 and a change to that route. Texts still wait on carrier registration | To build |
+| Signature and approval | Click or signature with a saved record [S1] | Exists. Request signature emails a link that works 30 days; the customer draws or types a signature and the signer, time and signature are kept (this runs on the signatures table, which is live) | Exists |
+| Approve or decline line by line | Customer picks which work to do [S5][S27] | Missing on estimates; exists on inspections. The code that would record a line-by-line answer is written and tested (doc-respond, needs migration 046) but no route calls it, and the signing page asks only for one signature | To build |
+| Know when the customer looked | Sent and viewed icons on the card [S8] | Missing for estimates; inspections show "Customer looked". Link view counts and sent or viewed marks are written (need migration 046, not applied) but the send route makes no link and the sheet that shows them is not on a screen | To build |
 | Convert, duplicate, delete, print | Estimate becomes repair order and invoice [S1] | Exists. Convert in place, duplicate, confirm delete, print or save as PDF | Exists |
 | Totals locked once money is taken | Audit trail of changes [S1] | Exists. Lines, tax, totals lock on Paid and Partial, also in the database | Exists |
-| Change history on a document | Audit trail [S1]; activity log [S28] | Partial. AI actions are logged; no history screen on a document | To build |
-| Discounts | Effective labor rate counts discounts [S16] | Missing. No discount line found | To build |
+| Change history on a document | Audit trail [S1]; activity log [S28] | Built, not reachable. A history sheet (what happened, earlier versions, view and put back) and its route are written and tested; earlier versions use migration 048 (applied) and events use 046 (not applied). The sheet is not on any screen. Today only created, converted and payment events are recorded by the live routes | Not reachable |
+| Discounts | Effective labor rate counts discounts [S16] | Exists for a line. Open More details on a part or labor line and enter a percent off; the original price is kept and the printout says what was saved (tests). The whole-document discount is a separate row below | Exists |
 | Warranty on parts and document | Not researched | Exists. Per-part box and document presets (see Settings for wording risk) | Exists |
-| Declined work kept for later | Declined work flagged marketable and reminded [S5][S11] | Partial. 48-hour estimate follow-up; declined items not kept for reminders | To build |
-| Shop logo on paperwork | Logo on every customer page [S39] | Exists. Print header only, not email or signing page; the logo table is live since 2026-10-15 | To build |
+| Declined work kept for later | Declined work flagged marketable and reminded [S5][S11] | Partial. An estimate left unanswered gets a follow-up, and declined inspection items get a reminder (Automations). A kept list of declined work, with make-an-estimate, put-off and dismiss, is written (migration 047 is applied) but its sheet is not on any screen and nothing fills the list when a customer declines | Not reachable |
+| Shop logo on paperwork | Logo on every customer page [S39] | Partial. The logo is on the print header and the inspection page (the logo table is live since 2026-10-15). Not on the signing page or the document email; an email with the logo is written (doc-email) but not used | To build |
+| Void and restore a document | Not researched | Built, not reachable. Void needs a reason, keeps the number and record, turns customer links off, and can be restored; blocked when payments exist. Sheet and route are written and tested; the document menu offers only Delete. Events and links need migration 046 (not applied) | Not reachable |
+| Percent off the whole document, and fee lines from presets | Not researched | Built, not reachable. Percent off labor, parts or everything, with the original price kept and a take-it-off that restores it exactly; shop fee presets. Sheets are written and tested but not on the document screen | Not reachable |
+| Start a document from a saved template | Not researched | Built, not reachable. Save the work on a document as a template and start new ones from it (no customer data stored). Sheet, route and tests exist (migration 047 is applied); no screen shows them | Not reachable |
+| See the customer's answer, extend the good-through date, turn customer links off | Not researched | Built, not reachable. An approval panel shows sent, looked at, good-through date and the signed record with a seal check. Written and tested; not on a screen. Needs migration 046 (not applied) | Not reachable |
 
 ## 2. Payments and collecting money
 
@@ -85,8 +92,8 @@ Screens: Invoices (payment sheet and plan), Reports > Money.
 | Payment plan | Not found (unverified) | Exists. Down payment, installments and dates; records, does not auto-charge | Exists |
 | Financing at checkout | Buy now, pay later options [S22][S23] | Missing | To build |
 | Bulk pay for fleets | Pay several invoices in one go [S22] | Missing | To build |
-| Payout and fee reconciliation | Payouts and fees tracked; payout report [S4][S40] | Missing. A payments file exists in Reports | To build |
-| Who owes you, and chasing it | A/R view on the job board [S8] | Partial. Owed by age in Reports; no overdue reminders | To build |
+| Payout and fee reconciliation | Payouts and fees tracked; payout report [S4][S40] | Partial. No processor, so no payouts or fees to reconcile. Reports, Accounting has Daily totals (sales, tax and money received by how it was paid, to hold against bank deposits) and Reports, Money has a Payments file; accounting checks list invoices marked Paid with no payment | To build |
+| Who owes you, and chasing it | A/R view on the job board [S8] | Partial. Owed by age in Reports, Money, and a "Reminder wording" button per customer writes a friendly, second or final reminder for the owner to copy and send. Alpha Desk does not send it and nothing chases an overdue invoice by itself. (A route that lists who to remind, /api/reports/ar, has no caller) | To build |
 | Receipts | Receipt on payment | Exists. Receipt document type | Exists |
 | Refunds | Not researched | Missing. No refund screen found | To build |
 
@@ -96,19 +103,20 @@ Screens: Inspections, Jobs detail, public inspection link.
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| Phone-first checklist | Swipe green; yellow and red open findings [S27] | Exists. Three checklists (31-point, brakes and tires, oil-change check) | Exists |
-| Per-shop checklist templates | Custom multi-point templates [S5] | Missing. Fixed three plus one custom line per inspection | To build |
+| Phone-first checklist | Swipe green; yellow and red open findings [S27] | Exists. Three built-in checklists (31-point, brakes and tires, oil-change check) plus the shop's own (next row) | Exists |
+| Per-shop checklist templates | Custom multi-point templates [S5] | Exists. Templates in Inspections: make one, change one, start from a built-in one, remove one (hidden, can be put back). Up to 12 sections of 40 lines. Migration 049 is applied. Tests | Exists |
 | Rating with words | Four ratings incl. not applicable [S6] | Exists. Good, Watch, Needs work with a word beside each lamp; mark the rest good | Exists |
-| Photos | Photos with markup [S5][S6] | Partial. Up to 4 per item and 24 per inspection, stored inside the row, no markup | To build |
-| Video and voice notes | Video and voice notes [S5][S21] | Missing | To build |
-| Tire and brake measurements | Tread depth per tire carried to next visit [S33]; Tekmetric not described [S6] | Missing. Typed into the note | To build |
-| Suggested price per finding | Canned jobs add priced work from findings [S5] | Partial. Price typed by hand; no canned-job lookup | To build |
+| How soon each finding should be fixed | Not researched | Exists. Now, soon or later on each finding, in words the customer sees on their page and the printout | Exists |
+| Photos | Photos with markup [S5][S6] | Exists. Up to 8 per item and 24 per inspection, drawn on with freehand, arrow or circle marks (Undo removes the last mark). Photos go to the private dvi-media storage (migration 049 is applied); if that storage is missing they stay inside the inspection as before | Exists |
+| Video and voice notes | Video and voice notes [S5][S21] | Exists. Record a 30-second video or 60-second voice note on a finding, review it, keep or retake; two per item, kept in storage not in the row. The customer's page plays them. Where the browser cannot record, the phone's own camera or recorder is offered. Tests on the rules; not yet recorded on a live phone | Exists |
+| Tire and brake measurements | Tread depth per tire carried to next visit [S33]; Tekmetric not described [S6] | Exists. Tread (three places, lowest counts), pad, rotor and tire pressure, each with a lamp and a word ("3/32 in: Replace soon"), and wear rate against the last visit. Tests | Exists |
+| Suggested price per finding | Canned jobs add priced work from findings [S5] | Exists. The best canned-job matches sit under the price box as one-tap buttons, plus a search of the whole list. The price is the canned job's saved price, never a guess. Tests | Exists |
 | Send to the customer | Text or email, customer reviews on phone [S5][S21] | Exists. Text link, no sign-in. Migration 036 is applied (2026-10-15); the link can only be texted once carrier registration is done | Blocked |
 | Customer approves each repair | Approve or decline per item [S27] | Exists. Approve or Skip per finding, can change answers | Blocked |
 | Findings become an estimate | Add recommended work to the estimate [S21] | Exists. "Write estimate from approved" | Exists |
-| Inspection history per vehicle | History tab with ratings and technician [S7] | Partial. Shown on the job; no vehicle history screen | To build |
+| Inspection history per vehicle | History tab with ratings and technician [S7] | Exists. Inside each inspection: what got worse or is new since the last one, work declined and still open, and tire and brake wear. Not on the Vehicles screen. Tests | Exists |
 | Report sent with the estimate | Health report goes out with estimates [S6] | Missing | To build |
-| Declined findings followed up | Declined saved for follow-up [S5] | Partial. Answers stored; no reminder | To build |
+| Declined findings followed up | Declined saved for follow-up [S5] | Exists. Follow-up sheet writes a calm text about their own car naming the work (never "unsafe", opt-out line, not between 9 pm and 8 am); the shop reads, edits and sends it; up to three follow-ups. The Declined-service automation also reminds. Texts wait on carrier registration | Blocked |
 | Safe public link | Not researched | Exists. Random token, only needed fields, rate limited, can be turned off | Exists |
 | Print the report | Print with or without photos [S6] | Exists | Exists |
 | Database ready | Not applicable | Partial. The `dvi` table has no migration in the repo (made by hand in production) | Blocked |
@@ -119,16 +127,17 @@ Screens: Schedule.
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| Week grid, day board per tech, list | One calendar for online, check-ins, walk-ins [S10] | Exists. Tap an empty slot to book | Exists |
+| Week grid, day board per tech, list | One calendar for online, check-ins, walk-ins [S10] | Exists. Week grid, day board per tech, list and a month view with a fullness lamp per day. Tap an empty slot to book | Exists |
 | Double booking | Booked time blocks the slot [S10] | Exists. Warns, never blocks (on purpose) | Exists |
 | Status flow | Confirmed, arrived, done | Exists. Confirm, arrived, done, no show, cancel | Exists |
 | Appointment becomes an estimate | Appointments flow into daily work [S10] | Exists. Opens a new estimate with customer and vehicle filled in | Exists |
-| Confirmation and reminder texts | Sent automatically on booking and before [S19] | Partial. Manual text templates; a day-before automation exists | Blocked |
-| Online booking | Booking widget, link and Google Business Profile booking [S10] | Missing | To build |
-| Capacity by tech and service | Availability per service type [S10]; capacity management [S26] | Missing. Only a duration and a tech on each booking | To build |
-| Calendar sync | Not researched | Partial. Ask Alpha can use Google Calendar; Schedule screen does not sync | To build |
-| Suggest declined work when booking | Widget suggests declined services [S10] | Missing | To build |
+| Confirmation and reminder texts | Sent automatically on booking and before [S19] | Exists in code. A Remind sheet texts everyone booked for a chosen day (shows who is included and who is left out and why, one text each, remembered so nobody is texted twice); wording for answers to online requests, late cars and missed visits is written; the appointment-reminder automation runs on the daily job, so it can be up to a day late (see Blocked on the owner, item 15). Tests. Texts wait on carrier registration | Blocked |
+| Online booking | Booking widget, link and Google Business Profile booking [S10] | Exists in code. The shop turns it on in Schedule, Settings, Online booking: a public page at /book/ and the shop's link name, requests that wait for the shop (or go on the calendar at once), notice time and limits. A request panel shows what is tight about the time. Signed form token and rate limits stop scripts. Database tables applied 2026-10-15 (migration 050); tests; not yet checked on the live app | Exists |
+| Capacity by tech and service | Availability per service type [S10]; capacity management [S26] | Exists. Schedule, Settings: Hours, Capacity and Services (length, drop-off or waiting). A bar on each day says how full it is. The app warns when a booking is tight and never blocks; the public page offers only times that fit. Migration 050 is applied. Tests | Exists |
+| Calendar sync | Not researched | Partial. Schedule, Settings, Calendar link: a one-way feed the shop adds to Google, Apple or Outlook calendar (customer phone numbers left out). Ask Alpha can also use Google Calendar. No two-way sync | Exists |
+| Suggest declined work when booking | Widget suggests declined services [S10] | Exists in the shop's own booking form: work the customer declined on a recent inspection, or an inspection they never answered, shows as one-tap suggestions. Not on the public booking page | Exists |
 | Walk-ins | Walk-in check-in [S10] | Exists. "Walk-in: name" without breaking texts | Exists |
+| Cars that did not show | Not researched | Exists. A strip shows booked cars not here after the grace time; one tap to text them, mark no-show or open the booking. A no-show is never marked by itself | Exists |
 
 ## 5. Job board and shop board
 
@@ -139,15 +148,16 @@ Screens: Jobs, Shop board, Work.
 | Job board by stage | Estimates, work in progress, completed [S8] | Exists. Board and list with promise date, priority, late flag | Exists |
 | Waiting statuses | Waiting on parts or sublet [S8] | Exists. Waiting on parts, Waiting on customer | Exists |
 | Column per technician | Own column plus no-tech column [S9] | Exists. Drag (desktop) or tap and pick (phone), undo, saves at once | Exists |
+| Clock a technician in, out or on break from the board | Not researched | Exists. Each technician column has Clock in, Break and Clock out buttons and a Fix time link to Team | Exists |
 | "Needs a look" summary | Not researched | Exists. No tech, late, clocked out with cars in progress | Exists |
-| Hours per technician column | Assigned, completed, remaining hours [S9] | Missing. Needs job-level time | To build |
+| Hours per technician column | Assigned, completed, remaining hours [S9] | Missing. Each column shows the person's clock status and hours worked, not hours assigned and left. Time on a job is now recorded in Team (section 6), and estimated hours per car are stored by the job-flow table (migration 051, not applied) with no screen | To build |
 | TV or full-screen mode | Not described on the tech board page I read (unverified) | Missing | To build |
 | Jump to a technician on a phone | Not researched | Missing. Long scroll on phones | To build |
 | Sent and viewed markers | Paper plane and eye icons [S8] | Missing | To build |
-| Labels on repair orders | Filter by RO label in the app [S18] | Missing. Status and priority only | To build |
-| Parts status on the card | Parts need ordering or awaiting delivery [S27] | Partial. Status per part in the editor, not on the board | To build |
+| Labels on repair orders | Filter by RO label in the app [S18] | Missing on screen. Labels are stored with the job-flow extras (route and tests exist; migration 051 not applied), but no screen sets or shows them. Status and priority are all the board offers | Not reachable |
+| Parts status on the card | Parts need ordering or awaiting delivery [S27] | Partial. Status per part in the document editor, not on the board. A car-level parts status (to order, on order, some in, in) with a due date is written for the board and the customer status link (migration 051, not applied) but no screen sets it or shows it | Not reachable |
 | Technician-only view | "My Work" with due times and parts status [S27] | Missing. No technician-only screen found | To build |
-| Car-ready text to the customer | Automatic status messages [S19] | Partial. Can be built as a custom automation; not built in | To build |
+| Car-ready text to the customer | Automatic status messages [S19] | Exists. A one-tap Ready for pickup text on the job (also Work started, Needs your OK, Waiting on parts), and a built-in Car is ready automation you switch on in Automations. Texts wait on carrier registration | Blocked |
 
 ## 6. Time clock and technician productivity
 
@@ -157,18 +167,19 @@ Screens: Team (route `/staff`), Reports > Technicians.
 | --- | --- | --- | --- |
 | Clock in and out | Time clock with overtime [S28] | Exists. Today, Timesheets, People tabs | Exists |
 | Breaks | Not researched | Exists. Migration 035 is applied (2026-10-15), so the Break buttons show; not yet clicked through on the live app | Exists |
-| Weekly hours and overtime | Overtime recorded for payroll [S28] | Exists. Over 40 hours; week is fixed Monday to Sunday | Exists |
-| Configurable week start | Not researched | Missing | To build |
+| Weekly hours and overtime | Overtime recorded for payroll [S28] | Exists. Weekly, daily and double-time lines the shop sets (starting points by state), a one- or two-week pay period, and any day as the first day of the week. Migration 052 is applied. Tests | Exists |
+| Configurable week start | Not researched | Exists. Team, Rules: the day the pay week starts, one- or two-week periods. Tests | Exists |
 | Fix a missed punch | Not researched | Exists. Owner or manager, reason required and kept | Exists |
 | Forgotten clock-out guard | Not researched | Exists. Over 16 hours flagged, over 24 hours cannot be clocked out | Exists |
-| Undo a clock-out | Not researched | Missing | To build |
-| Time on a job | Clock into a specific service; compare estimated and clocked [S25] | Missing. Day-level only | To build |
-| Technician efficiency | Billed hours versus worked [S28] | Partial. Billed over clocked per day; not per job | To build |
-| Payroll file | Clock records feed pay [S28] | Exists. CSV, safe against spreadsheet formula tricks | Exists |
+| Undo a clock-out | Not researched | Exists. A person's card offers "Wrong button?" for 15 minutes after a clock-out and puts them back on the clock; the change is logged. Tests | Exists |
+| Time on a job | Clock into a specific service; compare estimated and clocked [S25] | Exists. A clocked-in person picks the repair order they are working on; starting one closes the one before so no minute counts twice. Migration 052 is applied. Tests | Exists |
+| Technician efficiency | Billed hours versus worked [S28] | Exists. Per pay period: hours sold on the repair orders billed against hours actually worked on them, the labor rate that works out to, and (owners and admins) gross profit where every number is known. Tests | Exists |
+| Payroll file | Clock records feed pay [S28] | Exists. Three CSV files for a pay period (Hours by person, Every punch, Hours by day), safe against spreadsheet formula tricks; anyone not yet approved is named first. Hours only; pay is not worked out | Exists |
+| Approve a pay period | Not researched | Exists. Review one person's period and approve it; an approved period is locked until the approval is removed | Exists |
 | Payroll integration | Not researched | Missing | To build |
-| Location check at clock-in | Shops can require location sharing [S25] | Missing (optional) | To build |
-| Activity log by employee | Actions on orders and parts per employee [S28] | Missing | To build |
-| Flat-rate or commission pay | Not described on the Shop-Ware page [S28] (unverified) | Missing | To build |
+| Location check at clock-in | Shops can require location sharing [S25] | Built, but a browser cannot use it. Team, Rules sets the shop's spot and a radius, and clock-in asks the device where it is and keeps only inside, outside or unknown. The app's security headers (src/middleware.ts) send geolocation=() which tells the browser to refuse location for every page, so the check and "Use my location" would always report location blocked. Tests cover the distance rules, not the header | Not reachable |
+| Activity log by employee | Actions on orders and parts per employee [S28] | Partial. Every change to a person's punches is logged with what it was, what it became, why and when, and a removed punch can be put back. Not a log of orders and parts handled | To build |
+| Flat-rate or commission pay | Not described on the Shop-Ware page [S28] (unverified) | Missing. A pay rate per person is kept (owners and admins only) for a rough cost on the efficiency screen; it never goes into a payroll file | To build |
 
 ## 7. Customers and vehicles
 
@@ -179,13 +190,15 @@ Screens: Customers, Vehicles.
 | One customer record | Texts stay with the order history [S12] | Exists. Contact, vehicles, documents, texts and calls, jobs, notes | Exists |
 | Search | Stripe filters and finds fast [S39] | Exists. Name, phone, vehicle; search box also finds paperwork | Exists |
 | Customer mood | Not researched | Exists. Happy, neutral, unhappy mark and filter | Exists |
+| Warn about a likely duplicate when adding a customer | Not researched | Exists. Same phone, email or name is shown before saving, with a way to open the existing customer | Exists |
+| Everything that happened with a customer in one feed | Not researched | Built, not reachable. Estimates, invoices, repair orders, appointments, texts, calls, inspections and notes in time order with filters, plus what a customer is worth (spend, owed, visits, last visit, average ticket). Written and tested; the customer card does not use them | Not reachable |
 | VIN decode | Plate-to-VIN scan on mobile [S31][S32] | Partial. VIN decode on the form; no plate or VIN scan | To build |
 | Vehicles list | Vehicle history on the profile [S21] | Exists. Owner, plate, mileage | Exists |
-| Full service history per vehicle | Past inspections and orders per vehicle [S7] | Partial. Documents on the customer; no vehicle timeline | To build |
-| Duplicate finder and merge | Not researched | Missing. About 20 duplicate or test customers sit in Alpha's data | Blocked |
-| Import and export | Not researched | Missing. No CSV import or export | To build |
-| Tags and segments | Targeted campaigns by history [S13] | Missing | To build |
-| Text opt-out | Not researched | Exists. STOP handled and remembered | Exists |
+| Full service history per vehicle | Past inspections and orders per vehicle [S7] | Partial. Each car's card lists its repair orders (RO number, mileage, concern). A fuller history is written and tested (repair orders plus invoices written without one, mileage readings with a warning when one is lower than an earlier one, saved cars, notes and photos; migration 054 is applied) but no screen uses it | Not reachable |
+| Duplicate finder and merge | Not researched | Partial. Adding or editing a customer warns when the name, phone or email is already in the book. A pair finder and a merge that previews, asks for confirmation, logs every record it moves and can be undone are written and tested (migration 053 is applied), but no route or screen calls them. About 20 duplicate or test customers sit in Alpha's data; nothing is deleted without Aaron's yes | Blocked |
+| Import and export | Not researched | Built, not reachable. A CSV import that guesses columns, previews, flags rows it cannot import and re-checks on the server, and a CSV export of the customer list (formula-safe), are written and tested (migration 053 is applied). No route or button calls either | Not reachable |
+| Tags and segments | Targeted campaigns by history [S13] | Built, not reachable. Customer groups (new, repeat, lapsed, top spenders, owes money, no phone, opted out) are written with tests, and the Promotions audience filter already accepts tags. No screen shows the groups and nobody can put a tag on a customer yet | Not reachable |
+| Text opt-out | Not researched | Exists. STOP handled and remembered. Each customer's card also holds do-not-call, do-not-email and best time to reach them; texting turns back on only when the customer texts START | Exists |
 | Fleet accounts | Fleet payments and bulk pay [S14][S22] | Missing | To build |
 | Vehicle history report | CARFAX lookup by plate [S24] | Missing (optional) | To build |
 | Customer portal | Not found on pages I read (unverified) | Missing. Only one-off signing and inspection links | To build |
@@ -200,7 +213,7 @@ Screens: Inbox (Texts tab).
 | Texts kept with the customer | Stay in each customer's history [S12] | Exists | Exists |
 | Photos and video in texts | Send pictures, video, progress [S12][S29] | Exists. Attach and send pictures (checked in the browser with the send route mocked); pictures customers send are saved in the app, not left on the carrier's link. Migration 038 is applied (2026-10-15); without it texts work and pictures show a notice | Exists |
 | Message templates | Not shown on pages I read (unverified) | Exists. Saved replies in the thread fill the customer's name, the shop name and phone from settings; one tap adds starter replies. Migration 037 is applied (2026-10-15) | Exists |
-| One thread with approvals and estimates | Messages, estimates, timelines and approvals in one thread [S29] | Exists. Sent, opened, approved, declined and paid events for the customer's estimates and invoices show inside the thread (checked in the browser). Needs the document history table from migration 046, which is not applied (cancelled 2026-10-15); until then the thread shows texts only | Exists |
+| One thread with approvals and estimates | Messages, estimates, timelines and approvals in one thread [S29] | Partial. The thread screen asks for a customer's document events and would draw them between the texts, but the document history table is migration 046, not applied, so today the thread shows texts only. Even after 046, the live routes record only created, converted and payment events; sent, opened, approved and declined are never written, because the send and signing routes do not log them. An earlier version of this row said those events showed in the thread; that was not true | To build |
 | Assign a thread | Add staff to a thread [S29] | Exists. "Give to someone" names who has the thread (checked in the browser). Migration 037 is applied (2026-10-15) | Exists |
 | Per-thread access | Set access per thread [S29] | Missing. Assignment shows who has it but does not hide the thread from anyone | To build |
 | Alerts for new messages | Team alerts [S29] | Exists in the app: optional browser alert and tab count in the Inbox, "X texted you" on Today, and an optional email when a customer texts and the assistant did not answer. No phone push | Exists |
@@ -251,13 +264,13 @@ Screens: Ask Alpha, review cards, Agents and tools.
 | Show what will happen first | Pause for human approval on risky steps [S35][S36] | Exists. Review card with details, warnings, Approve and Cancel | Exists |
 | Safe retry | Not researched | Exists. Same operation is checked, never done twice | Exists |
 | Labels on risky actions | Not researched | Exists. "Sends a message" and "Cannot be undone" tags | Exists |
-| One approval path | Not researched | Partial. Review cards and older confirm cards both exist | To build |
-| Audit trail the owner can read | Activity log [S28] | Partial. Written to the database; no screen for it | To build |
-| Undo | Not researched | Missing. Deletes are flagged, not reversible | To build |
-| Stop button while it works | Not researched | Partial. A Stop control was being added in the working tree on 2026-10-14; verify when it lands | To build |
+| One approval path | Not researched | Partial. Four kinds of card (workflow review, single action, text, call) now sit in one shared approval frame, but they are still four separate paths in the page | To build |
+| Audit trail the owner can read | Activity log [S28] | Exists. The Activity screen (opened from Settings, Assistant rules, "See what it did"; not in the menu) lists what the assistant looked up, changed, sent and had problems with, by 1, 7, 30 or 90 days, with search and an undone filter. Migration 045 is applied. Tests | Exists |
+| Undo | Not researched | Exists for changes that can be put back: an Undo bar sits under the confirmation on Ask Alpha and on the Activity screen. Anything that cannot be put back keeps its "Cannot be undone" tag. Tests | Exists |
+| Stop button while it works | Not researched | Exists. A Stop control cancels a running request and says "Stopped by you. Nothing was sent or changed"; the stop is recorded on the server (migration 044 is applied). Tests | Exists |
 | Honest about uncertainty | Asks a teammate when unsure [S36] | Partial. Sources on researched parts; one prompt line says answer from own expertise when a manual is thin | To build |
 | Repair answers from manuals first | Not researched | Exists. Router sends repair questions to manuals, web only if asked | Exists |
-| Shop-set rules for the AI | Guidance sets tone, handoff, limits [S37][S36] | Missing. No screen for rules | To build |
+| Shop-set rules for the AI | Guidance sets tone, handoff, limits [S37][S36] | Exists. Settings, Assistant rules: tone, what it may do (look up, draft, change records, contact customers; send and charge always ask or stay off), single actions to switch off, never-do and never-say lists, facts it may state, and this month's count. Migration 043 is applied. Tests | Exists |
 | AI included | Not researched | Partial. Each shop pastes its own AI key or connects a ChatGPT plan | To build |
 | Talk to Alpha | Not researched | Exists. Dictate and talk | Exists |
 | Saved chat history | Not researched | Exists | Exists |
@@ -274,9 +287,9 @@ Screens: Get more customers (Growth), Settings.
 | Win-back | Lost customer follow-up, default 12 months [S11] | Exists. 60-day list that can be sent as a scheduled promotion; win-back automation; the one-tap blast in Settings now opens Get more customers instead and the old call goes through the same checks | Exists |
 | Service-due reminders | Reminder when a canned job is due, cancels on early return [S11] | Exists. Oil change and tire rotation by date or miles, plus state inspection, brake inspection, coolant, transmission, air filter and alignment you switch on one by one. A queued reminder is dropped if the customer came in first. Intervals are common shop defaults; only oil and tires can be changed per shop | Exists |
 | Declined-service reminder | Default 6 months after declined work [S11] | Exists. Declined work follow-up names only the items on their own estimate or inspection, after 30 days by default (14 to 120), stops after 180 days; dropped if the customer came in first | Exists |
-| Campaign dashboard | Sent and next-30-days view [S13] | Exists. Sent, delivered, replied, booked and paid afterwards, per promotion and per automation, over 7, 30 or 90 days (Get more customers, Results); next 30 days under Automations, Coming up. Delivered shows once the carrier reports it | Exists |
+| Campaign dashboard | Sent and next-30-days view [S13] | Exists. Sent, delivered, replied, booked and paid afterwards, per promotion and per automation, over 7, 30 or 90 days (Get more customers, Results); next 30 days under Automations, Coming up. Delivered shows once the carrier reports it, but the text webhook ignores delivery receipts, so nothing records it yet (see Built but not reachable) | Exists |
 | Promotions to a list | Text and email promotions [S13] | Exists in code. Promotions tab: write, choose who, read every message, test text to yourself, send now or at a set time in the shop clock, stop while it goes out. STOP, quiet hours and limits are checked on the server right before each message. Real texts wait on carrier registration. Migrations 040 and 041 are applied (2026-10-15) | Blocked |
-| Audience filters | Based on service history [S13] | Exists. Last visit (not in for, in within), vehicle make and model year, lifetime spend, tags (any or all), has email. Counted live before sending; STOP and no-number are always left out | Exists |
+| Audience filters | Based on service history [S13] | Exists. Last visit (not in for, in within), vehicle make and model year, lifetime spend, tags (the filter works, but no screen puts a tag on a customer yet), has email. Counted live before sending; STOP and no-number are always left out | Exists |
 | Referral codes | Not researched | Exists. Codes with a discount you choose; credit a new customer's invoice to a code (checks they are new and the invoice counts once); what each referral paid; thank-you given or still owed. Migration 041 is applied (2026-10-15), so credits are saved | Exists |
 | Find new customers | Not researched | Exists. AI lead search; check email-marketing law before auto outreach (unverified) | Exists |
 | Social post drafts | Not researched | Exists. Write a post or have Alpha draft it from what you type (flags invented prices, offers and credentials), character limit per place, preview, save as a draft, copy to post yourself. Publishing is a separate row below | Exists |
@@ -297,52 +310,58 @@ Screens: Automations.
 | Preview before it runs | Message, timing and channel set before saving [S11] | Exists. Preview shows the exact message for each person, who gets it and when, who is held until morning, who is left out and why. Switching on and Run now both open it first. Settings show the real messages as you type | Exists |
 | Pause cancels queued messages | Pausing cancels pending [S13] | Exists. Pausing, the master switch and editing the message cancel what is waiting, and the screen says how many. A paused automation also never sends anything it had already lined up | Exists |
 | Limits per customer | One review request per customer [S11] | Exists. One marketing text a week and three a month per customer, a daily limit on service texts, and a per-automation gap (review requests 90 days). Rules sheet changes them. Checked again right before each send | Exists |
-| Runs at the stated time | Not researched | Partial. Times are worked out in the shop's time zone and the logic is tested, and the screen says how often it really checks. It needs a check every 5 minutes: vercel.json has one daily job, so hourly and 15-minute automations run late until a frequent scheduler is set up | Blocked |
+| Runs at the stated time | Not researched | Partial. Times are worked out in the shop's time zone and the logic is tested, and the screen says how often it really checks. It needs a check every 5 minutes: vercel.json has one daily job, and the every-5-minutes route (/api/cron/tick) is built (its timing rules are tested, the route itself is not) but nothing calls it, so hourly and 15-minute automations run late until a frequent scheduler is set up | Blocked |
 | Safe against double runs | Not researched | Exists. Leases and fencing in migrations 040, 048, 054, 060 | Exists |
 | Quiet hours | Not researched | Exists. No texts 9 PM to 8 AM by each customer's own clock (from their area code), longer if you choose, Sundays optional. Messages wait for morning instead of being dropped | Exists |
-| Run history | Not researched | Exists. History tab lists every message with who, what was said, when and what happened (sent, delivered, waiting, left out and why, did not send), plus every run; failures also email the owner | Exists |
+| Run history | Not researched | Exists. History tab lists every message with who, what was said, when and what happened (sent, waiting, left out and why, did not send), plus every run; failures also email the owner. A carrier's "delivered" or "could not deliver" is not recorded yet, because the text webhook ignores delivery receipts | Exists |
+| Delivered or failed at the carrier, per text | Delivery status for each message sent [S13] | Not reachable. The reader for Telnyx delivery notices and the code that writes them onto the history are written and tested (`lib/automation-delivery.ts`), but the text webhook (`/api/sms`) handles inbound texts only and ignores delivery receipts, so history never shows delivered or undelivered | Not reachable |
 | Master off switch | Not researched | Exists. One switch pauses every automation and promotion and cancels what is waiting; each automation also has its own switch | Exists |
 | Rules for all automations | Not researched | Exists. Quiet hours, Sundays, marketing and service limits, failure-alert email, in one Rules sheet | Exists |
-| Results per automation | Sent, replied, booked [S13] | Exists. Sent, delivered, replied, booked and paid afterwards over 7, 30 or 90 days; each reply, booking or payment is credited once to the last message that customer got | Exists |
+| Results per automation | Sent, replied, booked [S13] | Exists. Sent, replied, booked and paid afterwards over 7, 30 or 90 days; each reply, booking or payment is credited once to the last message that customer got. Delivered is not counted yet, because the text webhook ignores delivery receipts | Exists |
 | Coming up | Next 30 days view [S13] | Exists. Messages waiting by day, next scheduled runs, appointments to remind, vehicles coming due | Exists |
 | Failure alerts and retries | Not researched | Exists. A temporary failure retries up to three times; a message the carrier is unsure about is never sent twice; the owner is emailed when messages fail | Exists |
 | Reminder dropped when the customer came back | Cancels on early return [S11] | Exists. Service, declined-work and win-back messages still waiting are cancelled if the customer paid an invoice after they were lined up | Exists |
 
 ## 13. Reports
 
-Screens: Reports (Overview, Money, Jobs, Technicians, Calls).
+Screens: Reports (Overview, Sales, Profit, Money, Jobs, Technicians, Calls, Accounting, Emailed). Needs migration 055 (applied) for expenses, accounting settings, saved reports and month close; Overview, Sales, Money, Jobs, Technicians and Calls read invoices and payments only.
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| Money at a glance | ARO, car count, parts margin, labor rate [S15][S16] | Exists. Collected, Invoiced, Average invoice, Still owed, Parts profit | Exists |
-| Period with comparison in words | Benchmark against other shops [S15] | Exists. Six periods, said in words ("Up 12% from the 7 days before") | Exists |
-| Compare any two dates | Not researched | Missing | To build |
-| Car count, new versus returning | Core Shop Index metric [S15][S16] | Missing | To build |
-| Effective labor rate | What you collect per hour after discounts [S16] | Missing. Needs discounts and job-level time | To build |
-| Parts margin | (retail minus cost) over retail [S16] | Partial. Counts only lines with a cost written down | To build |
-| Gross profit per job and shop | Per-job gross profit [S1] | Missing. Labor cost is not recorded | To build |
-| Technician efficiency | Billed hours and efficiency [S28] | Partial. Day-level; labor with no tech is called out | To build |
+| Money at a glance | ARO, car count, parts margin, labor rate [S15][S16] | Exists. Overview: Collected, Invoiced, Average invoice, Still owed, Cars serviced, Labor rate you earn, Gross profit, Estimates approved online, Repeat visits, Incoming calls; each number opens the invoices behind it. Tests | Exists |
+| Period with comparison in words | Benchmark against other shops [S15] | Exists. Fifteen period choices (today to all time, or pick dates), said in words ("Up 12% from the 7 days before"). Tests | Exists |
+| Compare any two dates | Not researched | Exists. Compare with the period before, the same dates last year, dates you pick, or nothing. Tests | Exists |
+| Car count, new versus returning | Core Shop Index metric [S15][S16] | Exists. Cars serviced, new customers and returning, with walk-ins that name no one counted and said. Tests | Exists |
+| Effective labor rate | What you collect per hour after discounts [S16] | Exists. "Labor rate you earn": labor collected per hourly labor hour, after line discounts (the discount is built into the stored price). Tests | Exists |
+| Parts margin | (retail minus cost) over retail [S16] | Partial. Counts only lines with a cost written down, and says how many lines that is. Gross profit shows the share of jobs with a missing part cost | To build |
+| Sales by kind of work, advisor and technician | Not researched | Exists. Reports, Sales: tap a row for the invoices it was added up from. Work that matches no rule lands in "Other work" and the biggest are listed | Exists |
+| Gross profit per job and shop | Per-job gross profit [S1] | Exists. Reports, Profit lists each job with its margin, and says when a part cost or technician time is missing. Labor cost comes from the cost per hour in Accounting settings. Tests | Exists |
+| Technician efficiency | Billed hours and efficiency [S28] | Exists. Reports, Technicians (labor billed per technician, hours billed against hours on the clock) and Team, Efficiency (hours sold against hours worked on each repair order). Tests | Exists |
 | Owed by age | A/R view [S8] | Exists. 0-30, 31-60, 61-90, over 90, each open invoice listed | Exists |
 | Payments file and sales tax | Financial reports to download [S39][S40] | Exists. Formula-safe CSV; sales tax by quarter | Exists |
-| Approval rate of recommended work | Approval rate and sell-through [S28] | Missing. Inspection answers could feed it | To build |
-| Tax-ready profit and loss | Not researched | Missing. Needs expenses | To build |
-| Report by email on a schedule | Stripe reports can be downloaded and filtered [S39] | Missing | To build |
+| Approval rate of recommended work | Approval rate and sell-through [S28] | Exists. "Estimates approved online" on Overview: approved of those sent for online approval, with the ones still waiting. Inspection answers are not counted in it yet | Exists |
+| Repeat visits | Not researched | Exists. Overview shows the share of cars that came back within a set number of days of an earlier invoice and lists them (some are new problems, not comebacks). Tests | Exists |
+| Tax-ready profit and loss | Not researched | Exists. Reports, Profit: profit and loss for the period on cash or accrual, cost of goods from invoices or from purchases, by month, with a CSV. Needs expenses entered under Accounting, Bills and expenses. Tests. Whether it suits a tax return is for the accountant | Exists |
+| Report by email on a schedule | Stripe reports can be downloaded and filtered [S39] | Built, not fully reachable. Reports, Emailed saves a report (period, comparison, who gets it, weekly or monthly), shows the exact email, sends a test to yourself and sends now (needs the shop's email key). Turning a weekly or monthly schedule on only saves it: the job that sends scheduled reports (/api/reports/scheduled) is called by nothing, not even the daily job, so no scheduled report goes out. The screen says "Next: Monday" as if one would | Not reachable |
 | Benchmarks against other shops | Quarterly index of 10,000-plus shops [S15] | Missing. Needs many shops | To build |
 | Honest about gaps | Not researched | Exists. Paid-with-no-payment invoices pointed out | Exists |
 | Chart you can read without sight | Not researched | Exists. Hover, drag, arrow keys, hidden table | Exists |
-| Alpha's AI calls beside human calls | Not researched | Missing | To build |
+| Download the tables or print the report | Financial reports to download [S39][S40] | Exists. Every report can be downloaded as CSV or printed (the print window saves a PDF); the file is made from the same tables as the screen | Exists |
+| Alpha's AI calls beside human calls | Not researched | Exists. Reports, Calls: who answered (people, Alpha), busiest days and hours, calls hung up fast. Tests | Exists |
 
 ## 14. Accounting and payroll
 
-Screens: Reports > Money, Team > Timesheets.
+Screens: Reports > Accounting (Files, Accounts, Bills, Month end, Payroll, QuickBooks, Settings), Reports > Profit, Team > Timesheets. Needs migration 055 (applied).
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| QuickBooks sync | Posted orders, payments, fees, A/R, POs sync one way with review [S14]; invoices and customers [S24] | Missing | To build |
-| Choose individual or summary entries | Pick before posting [S14] | Missing | To build |
-| Reconciliation checks | Compare totals to end-of-day report [S14] | Missing | To build |
-| Expenses and vendor bills | Purchase orders and sublets sync [S14] | Missing. Needed for profit and loss | To build |
-| Export for the accountant | Not researched | Partial. Payments file and quarterly sales tax | To build |
+| QuickBooks sync | Posted orders, payments, fees, A/R, POs sync one way with review [S14]; invoices and customers [S24] | Partial. Import files work today: QuickBooks Online journal entries (CSV), QuickBooks Desktop (IIF), a plain ledger and a list of accounts used, all built from invoices and payments and checked before download. A live connection needs an Intuit developer app that only the owner can create; the sign-in button stays off and the page says what is needed | Blocked |
+| Choose individual or summary entries | Pick before posting [S14] | Exists. Accounting, Settings: one entry per invoice, or one per day. Tests | Exists |
+| Reconciliation checks | Compare totals to end-of-day report [S14] | Exists. Checks before download: every entry balances, entries match what was billed, invoice lines add up to totals, Paid invoices have a payment, payments belong to an invoice and none comes before its invoice, invoices name a customer, numbers are unique, no drafts left. Daily totals to hold against the bank. Tests | Exists |
+| Expenses and vendor bills | Purchase orders and sublets sync [S14] | Exists. Accounting, Bills: add, edit, pay and void expenses (nothing is deleted; a void can be put back), a warning for a likely duplicate, bills owed by age. Feeds profit and loss. Purchase orders and sublets do not sync because there is no purchase-order screen. Tests | Exists |
+| Month-end checklist | Not researched | Exists. Accounting, Month end: automatic checks plus manual items, a saved review per month, and a note when numbers changed since it was closed. Closing does not lock invoices. Tests | Exists |
+| Name your accounts the way your accountant does | Not researched | Exists. Accounting, Accounts: tell Alpha Desk what your accountant calls each account so the files import without renaming. Tests | Exists |
+| Export for the accountant | Not researched | Exists. The files above, the Payments file and sales tax by month or quarter, split by the agencies the shop sets | Exists |
 | Payroll export | Clock records feed pay [S28] | Exists. CSV | Exists |
 | Payroll integration | Not researched | Missing | To build |
 
@@ -356,11 +375,11 @@ Screens: Parts lookup, Inventory.
 | Order from a catalog | PartsTech, Nexpart, RepairLink; WORLDPAC in Shop-Ware [S24][S26] | Missing | To build |
 | Budget, mid, premium options | Not researched | Exists. Up to three options per part with kits | Exists |
 | On hand and reorder level | Inventory with change log [S28] | Exists. Low and out of stock lamps, on-order tab | Exists |
-| Who changed a quantity | Inventory change log [S28] | Missing | To build |
-| Purchase orders and receiving | POs sync when received [S14] | Partial. On-order count only; no PO flow | To build |
+| Who changed a quantity | Inventory change log [S28] | Built, not reachable. Every count change can be written to a history line (who, when, from, to) and shown per part. The route and rules are written and tested; the Inventory screen saves counts directly and does not use them. The one-transaction count functions are migration 057, not applied | Not reachable |
+| Purchase orders and receiving | POs sync when received [S14] | Built, not reachable. Vendors, purchase orders (draft, send by email, receive in part, cancel), returns and cores, vendor price comparison, price rules, barcodes and shelf value are written and tested in /api/inventory and its store. No screen calls it, and the order and receiving functions are migration 057 (not applied); migration 056's tables are applied. Today the screen shows an On-order count only | Not reachable |
 | Part status on a line | Awaiting delivery label [S27] | Exists. Ordered, Backordered, Received, Installed, Returned | Exists |
-| Returns and cores | Parts return orders [S14] | Partial. Core charge on documents; no return flow | To build |
-| Who may order parts | Ordering permissions [S28] | Missing | To build |
+| Returns and cores | Parts return orders [S14] | Partial. Core charge on documents. The return flow (supplier returns, cores sent back, credit expected) is written with the purchase-order code above and has no screen | Not reachable |
+| Who may order parts | Ordering permissions [S28] | Partial. The inventory route lets only owners, admins, managers and service writers buy or price, and everyone but viewers count and receive; no screen uses it yet and there is no setting | To build |
 
 ## 16. Repair information
 
@@ -374,7 +393,7 @@ Screens: Repair info.
 | Technical bulletins and recalls | TSBs in lookups [S1] | Unverified. Recall words are routed; TSB coverage not checked | To build |
 | From answer to estimate | Lookups inside the estimate [S1] | Exists. "Create Estimate" with no invented part prices | Exists |
 | Fast and reliable | Not researched | Partial. Cached 7 days; manual site can be slow | To build |
-| House design | Not applicable | Partial. Being rebuilt in the working tree on 2026-10-14; re-check against the quality bar when it lands | To build |
+| House design | Not applicable | Partial. The screen was rebuilt (Answer, Estimate, Sources and a deeper Workspace view; tests on the layout rules). It was not re-checked at 390 and 1280 pixels, light and dark, in this audit | To build |
 
 ## 17. Insurance claims
 
@@ -412,21 +431,23 @@ Screens: Settings, Connected apps, Agents and tools, Setup guide, login.
 | --- | --- | --- | --- |
 | Shop details, rates, tax, payment methods | Not researched | Exists. Defaults: $120 labor, 8.25 tax if blank | Exists |
 | Per-shop logo | Logo and colours in settings [S39] | Exists. Migration 034 is applied (2026-10-15) | Exists |
-| Business hours | Not researched | Missing. AI uses hard-coded or vague hours | To build |
+| Business hours | Not researched | Exists, in two places. Settings, AI receptionist: weekly hours, closed days, holidays and time zone for calls and texts (until set, the assistant never states hours). Schedule, Settings, Hours: opening hours for booking and capacity. They are separate settings, so a shop has to keep both right | Exists |
 | Warranty wording per shop | Not researched | Partial. Presets are Alpha's legal text with the name swapped in | To build |
-| Permission roles | Roles per person [S39] | Partial. Roles (owner to viewer) enforced in the API; no screen to invite or change | To build |
+| Permission roles | Roles per person [S39] | Partial. What a signed-in person may do comes from their shop membership role (owner to viewer) and is enforced in the API; there is no screen to invite someone or change that role. Team has a role on each person for the time clock and pay rules, but adding someone there creates a time-clock person, not a sign-in | To build |
 | Never show another shop's identity | Not applicable | Partial. Settings-driven; Alpha-specific warranty text and call-type names remain in code | To build |
 | Connected apps | Direct links to QuickBooks and parts [S24] | Partial. Facebook, Instagram, Google Business, Google Calendar only | To build |
 | Multi-location | View jobs and techs across shops [S20][S28] | Missing | To build |
 | Setup guide | Not researched | Exists. Three steps | Exists |
 | Help, privacy, terms | Not researched | Exists | Exists |
-| Test and build safety | Not applicable | Exists. 226 tests pass per the log; type check and lint clean | Exists |
+| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 1,764 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 
 ## 20. Built-in browser
 
 Screens: Browser (`/browser`) and the browse tool inside Ask Alpha. Added 2026-10-15 from the owner's request: "i want a built in web browser, a professional one better then chrome."
 
 Honest framing: nobody beats Chrome as a general-purpose browser, and this section does not try to. The professional version the AI companies ship is a browser inside the product that the AI can drive while the person watches and can take over [B1][B3][B5]. This section is that, built for shops (parts sites, insurance portals, recall and VIN sites, manufacturer repair sites).
+
+Where this stands (checked 2026-10-15 by reading the code and the 14 `browser-*` test files in `web/tests`, not by using the live app): the Browser screen, Reader view, Live view, Ask Alpha lookups, the activity log, the default block list and the safe fetching are built in code and checked by tests, and the Browser is in the navigation. The parts that save things need migration 058 (settings, allow and block lists, quick sites) or 059 (approvals, downloads, paired computers), which are not applied; until then those show "needs a database update" and anything that would send, buy, agree or download is refused, never guessed. Whether the headless browser starts on Vercel for Live view, Ask Alpha lookups and pictures is not confirmed: the Chromium file is set to ship with only `/api/web-automation` in `next.config.mjs`.
 
 What runs where, because Alpha runs on Vercel serverless (no long-lived connection, no browser that stays open, and most sites refuse to load inside an iframe):
 
@@ -439,31 +460,31 @@ What runs where, because Alpha runs on Vercel serverless (no long-lived connecti
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| A browser screen inside the product with tabs and an address and search bar | Dia and Atlas put tabs, an address bar and the assistant in one window [B7][B1] | Missing. Only a small panel of step pictures inside Ask Alpha | To build |
-| Reader view | Not named by the AI browsers I read (unverified); Stagehand's extract pulls clean data from a page [B7] | Partial. Scrape returns plain text to the AI; no screen | To build |
-| Live view you can tap | Browserbase live view: watch, or take control, of the running page [B5] | Missing | To build |
-| Screenshots and page snapshots | Screenshot after every action [B4] | Partial. Screenshot route sends the page address to two outside screenshot services | To build |
-| Ask Alpha does the lookup while you watch | Agent mode opens tabs, clicks and finishes multi-step tasks, and pauses on sensitive sites so you can watch [B1] | Partial. Ask Alpha can read a page and propose a click; no watch screen, no stop button on a browser task | To build |
-| Take over at any time | Live view lets a person click and type in the same session [B5] | Missing | To build |
-| Approval before a submit, purchase, message or download, showing the exact action | Pause before high-risk actions such as publishing or purchasing [B3]; confirm before sending, buying or filling details [B9]; human confirms real-world consequences [B4] | Partial. One approval for a whole batch; the action itself is not shown; a script cannot tell a search form from an order form | To build |
-| Never types passwords, card numbers or one-time codes | Keep logins and sensitive data away from the agent [B4]; logged-out mode [B1] | Partial. A word check on the clicked item only; the typed value is not checked | To build |
-| Sign-in steps hand control to the person | Pauses on sensitive sites [B1] | Partial. Some clicks stop; nothing tells the person what to do next | To build |
-| Page text is data, never instructions | Mark retrieved content untrusted, separate it from the person's request, scan for hidden text [B9][B10]; pages can hide instructions [B2] | Partial. One sentence in the prompt; hidden text and invisible characters are kept | To build |
-| Check each action against what was asked | Check proposed actions against the request [B10] | Missing | To build |
-| Activity log of every page and action | Session replays of each step [B6] | Partial. A database row per task, no screen, no page-by-page record | To build |
-| Saved quick sites for the shop | Pinned apps and profiles [B8] | Missing | To build |
-| Per-shop allow and block lists | Site-level permissions and admin allow and block lists [B3]; allowlist domains [B4] | Missing | To build |
-| Sensible default blocklist | Blocked categories such as financial services, adult and pirated content [B3] | Missing | To build |
-| Master off switch for the AI browser | Settings to turn the extension off [B3]; per-site page visibility toggle [B2] | Missing | To build |
-| Safe fetching on the server | Resolve, check every address, connect to the checked address, check every redirect, fix the scheme and port, limit the response [B11] | Partial. Public-address check and pinned connection exist; gaps listed under Bugs found; no port limit; no shop rules | To build |
-| Login required, rate limits and size limits on every fetch route | Not researched | Partial. Login on all three; rate limit on one; 8 MB and 20 s limits on one | To build |
-| Downloads never run | Cannot download files [B1] | Missing. Every non-image file is refused | To build |
-| Approved downloads of plain files (PDF, pictures, text) | Not described by the products I read (unverified) | Missing | To build |
+| A browser screen inside the product with tabs and an address and search bar | Dia and Atlas put tabs, an address bar and the assistant in one window [B7][B1] | Exists. Browser (`/browser`, in the navigation): up to 8 tabs, an address and search bar, a start page with quick sites, Reader and Live views, an Ask Alpha tab, and Activity and Settings sheets. Built in code, checked by tests; not clicked through on the live app. The small step-picture panel in Ask Alpha chat is still there as the older route | Exists |
+| Reader view | Not named by the AI browsers I read (unverified); Stagehand's extract pulls clean data from a page [B7] | Exists. The page is fetched on the server and turned into headings, paragraphs, lists, tables and a facts box that Alpha draws itself, never the site's own HTML; pictures can be turned off in Settings. A note appears when the page text looks aimed at an AI. Built in code, checked by tests | Exists |
+| Live view you can tap | Browserbase live view: watch, or take control, of the running page [B5] | Exists in code. Live view shows a picture of the page with its controls listed; one tap does one thing (fill, choose, click, scroll) and a new picture comes back. Capped at 1,500 live actions a day for the shop. Checked by tests with a stand-in browser; starting the real headless browser on Vercel is not confirmed | Exists |
+| Screenshots and page snapshots | Screenshot after every action [B4] | Exists. Live view makes its own picture with Alpha's locked headless browser, and `/api/screenshot` now uses that same browser; no outside screenshot service is called and the page address is not sent to a third party. Same Vercel caveat as Live view | Exists |
+| Ask Alpha does the lookup while you watch | Agent mode opens tabs, clicks and finishes multi-step tasks, and pauses on sensitive sites so you can watch [B1] | Exists. Browser, Ask Alpha tab: Alpha takes up to 12 small steps, each listed on screen, with a Stop button always showing. It needs the shop's AI key saved and the Alpha switch on in Browser Settings, and the daily cap is 400 lookups. Built in code, checked by tests. Ask Alpha chat still has its own older browse path through `/api/web-automation` | Exists |
+| Take over at any time | Live view lets a person click and type in the same session [B5] | Exists. Take over moves the page Alpha was on into Live view in a normal tab, so the person continues from the same page and fields. Built in code, checked by tests | Exists |
+| Approval before a submit, purchase, message or download, showing the exact action | Pause before high-risk actions such as publishing or purchasing [B3]; confirm before sending, buying or filling details [B9]; human confirms real-world consequences [B4] | Built in code, checked by tests, but blocked on migration 059. An approval card names the website, the address and every value that will be sent, is good for that one action and lasts 10 minutes; the model cannot approve. Until 059 is applied, anything that sends, buys, deletes, agrees or downloads is refused with a "needs a database update" note | Blocked |
+| Never types passwords, card numbers or one-time codes | Keep logins and sensitive data away from the agent [B4]; logged-out mode [B1] | Exists. Password, card, security code and one-time code boxes are never filled by Alpha or by a tap; typed values that look like a card number (with a check-digit test), a social security number or a secret are refused; the person does that step on the website. Built in code, checked by tests | Exists |
+| Sign-in steps hand control to the person | Pauses on sensitive sites [B1] | Exists. A sign-in or human check stops with the plain words "Do this step on the website yourself" and is marked red as a step for the person. Built in code, checked by tests | Exists |
+| Page text is data, never instructions | Mark retrieved content untrusted, separate it from the person's request, scan for hidden text [B9][B10]; pages can hide instructions [B2] | Exists. Invisible and hidden characters are stripped, instruction-like text (visible or hidden) is flagged to the person and to the model, page text goes to the model in a labelled block that the page cannot close, and a flagged page gets fewer allowed actions. Nothing from a page can approve anything. Built in code, checked by tests | Exists |
+| Check each action against what was asked | Check proposed actions against the request [B10] | Partial. Plain code (not the model) checks that typed text comes from the request or the page, that opening a site the request did not name needs approval, and that the final answer is supported by the page text. There is no check that every click serves the request | To build |
+| Activity log of every page and action | Session replays of each step [B6] | Exists. Browser, Activity lists the last 80 pages and actions for the shop (who: you, a teammate or Alpha; which site; what happened) with filters, from the existing audit log, so it does not need 058 or 059. Waiting approvals are listed there too (needs 059). Built in code, checked by tests | Exists |
+| Saved quick sites for the shop | Pinned apps and profiles [B8] | Blocked on migration 058 for the shop's own sites. Seven built-in quick sites show now (recall check, VIN decoder, RockAuto, AutoZone, NAPA, O'Reilly, Advance); saving, ordering and removing the shop's own needs the new table | Blocked |
+| Per-shop allow and block lists | Site-level permissions and admin allow and block lists [B3]; allowlist domains [B4] | Blocked on migration 058. Built in code, checked by tests: Settings can switch the shop to "only sites I allowed" and add allow or block rules (a rule covers its sub-sites), checked on every page, redirect, picture and download. Until 058 is applied they cannot be saved | Blocked |
+| Sensible default blocklist | Blocked categories such as financial services, adult and pirated content [B3] | Exists. Built into the app, no database needed: banks and cards, payments, investing and crypto, accounting sign-ins, identity providers and webmail, adult, gambling and pirated-content sites are refused for everyone. Checked by tests | Exists |
+| Master off switch for the AI browser | Settings to turn the extension off [B3]; per-site page visibility toggle [B2] | Blocked on migration 058. Browser Settings has an "Alpha can use the Browser" switch that the lookup route checks before every step, but it cannot be saved until the settings table exists, so today Alpha is always on | Blocked |
+| Safe fetching on the server | Resolve, check every address, connect to the checked address, check every redirect, fix the scheme and port, limit the response [B11] | Exists. One shared fetcher: public http or https only, ports 80, 443, 8080 and 8443 only, the name is looked up once and the connection goes to the checked address, every redirect is re-checked against the shop's rules, no cookies or credentials are sent, and size and time limits apply (3 MB per page). Checked by tests. The older `/api/web-proxy` now re-writes the page as plain text under a locked policy | Exists |
+| Login required, rate limits and size limits on every fetch route | Not researched | Partial. Every browser route, including the older `/api/web-proxy`, `/api/screenshot` and `/api/web-automation`, requires sign-in, the right role and the shop's rules, and has a size and time limit. The per-minute limits are counted in memory on each server instance, so on Vercel they are a soft limit; the daily caps (1,500 live actions, 400 lookups) are counted from the audit log and hold | To build |
+| Downloads never run | Cannot download files [B1] | Exists. The file is passed straight through to the device and never opened, unpacked or run by Alpha; programs and scripts (including double endings such as `.pdf.exe`) are refused outright and logged, and Alpha cannot download on its own. Built in code, checked by tests | Exists |
+| Approved downloads of plain files (PDF, pictures, text) | Not described by the products I read (unverified) | Blocked on migration 059. Built in code, checked by tests: after the person approves that exact address, `/api/browser/download` saves the file (up to 25 MB, safe file types named, sent as a download with a locked policy) and logs it. Without the approvals table every download is refused | Blocked |
 | Practice mode on pretend sites | Not researched | Missing | To build |
-| Sources shown for what the AI found | Not researched | Missing | To build |
-| Search from the address bar | AI browsers search from the address bar [B8] | Partial. Needs an optional search key; nothing without it | To build |
-| Connect your computer (desktop host) | Not described by the products I read for a web app (unverified) | Missing. Contract and server side only; no desktop app yet | Blocked |
-| Use what was found (copy into an estimate or Ask Alpha) | Not researched | Missing | To build |
+| Sources shown for what the AI found | Not researched | Exists. An Ask Alpha lookup shows the page and title its answer came from, the quoted evidence, and whether the answer was found on that page; an unconfirmed answer is labelled as unverified. Built in code, checked by tests | Exists |
+| Search from the address bar | AI browsers search from the address bar [B8] | Exists. Typing words in the address bar searches (DuckDuckGo's plain results page, only the words typed are sent) and lists results; no search key is needed. The older Ask Alpha chat route uses an optional `SERPER_API_KEY`. Built in code, checked by tests; the live search page was not tried | Exists |
+| Connect your computer (desktop host) | Not described by the products I read for a web app (unverified) | Blocked. Server side is built in code and checked by tests (one-time pairing code, hashed token, a one-command queue; needs migration 059), but there is no screen to pair a computer and no desktop app. It is a contract only, and it is limited to open, snapshot and scroll | Blocked |
+| Use what was found (copy into an estimate or Ask Alpha) | Not researched | Exists. Copy the page or the answer as plain text, or send it to Ask Alpha, which opens with the text in the message box and not sent. There is no one-tap add to an estimate or a job; the text is carried over by hand or through Ask Alpha | Exists |
 
 ## 21. AI calling and the phone (extends section 9)
 
@@ -471,22 +492,22 @@ Screens: Inbox (Calls tab and Dial sheet), the browser phone, Get more customers
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| Call from the browser with your own voice | Not researched | Exists. Browser phone (WebRTC): US numbers fixed to the right format, mute and hang up, status lamps with words, call token tied to the shop | Exists |
-| Three kinds of call the shop starts: service call, custom AI task, personal call | Not researched | Exists in the call route. A personal call connects silently: no AI greeting, no script, no recording | Exists |
-| A button or Ask Alpha starts an AI call to a customer | AI agents place calls with a goal [S41][S43] | Partial. The call route works, but I found no button or Ask Alpha action in the current screens that starts a service or task call for a customer. AI calls to leads start from Get more customers | To build |
-| Review card before an AI call (who, number, goal, hours, what it will say) | Pause for approval on risky steps [S35] | Partial. The lead call sheet shows warnings; no card for customer calls | To build |
+| Call from the browser with your own voice | Not researched | Exists in code. The browser phone (WebRTC) is mounted on every signed-in screen: US numbers are put in the right format, mute and hang up, status lamps with words, call token tied to the shop. No automated test found for it; not tried on a live call | Exists |
+| Three kinds of call the shop starts: service call, custom AI task, personal call | Not researched | Exists in code, checked by tests. `/api/make-call` takes a service call, a custom AI task or a personal call; a personal call connects silently (no AI greeting, no script, no recording). Calls that carry a task go through the do-not-call, STOP and calling-hours check on the server; a personal call is not held back | Exists |
+| A button or Ask Alpha starts an AI call to a customer | AI agents place calls with a goal [S41][S43] | Exists in code, checked by tests. Customers, open a customer, "Call with Alpha" (reasons: car is ready, appointment reminder, check in after a repair, estimate follow-up, service due, something else); Ask Alpha can also propose a call and shows the same review before anything dials. The server rebuilds the instruction from the card's choices, one approval is one call, and the approval is written to the audit trail. AI calls to leads still start from Get more customers. Not tried on a live call | Exists |
+| Review card before an AI call (who, number, goal, hours, what it will say) | Pause for approval on risky steps [S35] | Exists in code, checked by tests. The card shows who, the number in plain form, the calling hours, what Alpha will say first (the AI and recording notice), its goals and its limits; Approve is off while a rule blocks the call. The customer sheet then shows the live call, a transcript and a Stop button. Ask Alpha shows its own call card with the same server check | Exists |
 | Says it is an AI and that the call may be recorded, first | Disclosure is a required guardrail [S45] | Exists on task and service calls; recording starts only after the notice | Exists |
 | Never invents prices; ends politely on "no" | Answers only from shop context | Exists in the call prompt | Exists |
-| Calling hours | Not researched | Partial. AI task calls refuse before 8 am and after 9 pm in the shop's time zone. The window is fixed in code, not set by the shop | To build |
-| Do-not-call and STOP check before an AI call | Required in practice (consent and opt-out rules) | Partial. Calls to leads check opt-outs, hours and the shop's rules. The customer call route does not read the customer do-not-call flag (migration 053 is applied) | To build |
-| Owner joins a live AI call | Live or warm transfer [S43][S41] | Exists. "Join" dials the owner's phone and bridges it into the call | Exists |
+| Calling hours | Not researched | Exists in code, checked by tests. The window is the shop's own quiet hours (set in Automations, Rules; default 8 am to 9 pm, with a no-Sundays choice) and is read on the customer's own time zone from their area code as well as the shop's. A refusal says the earliest time Alpha will call | Exists |
+| Do-not-call and STOP check before an AI call | Required in practice (consent and opt-out rules) | Exists in code, checked by tests. Every call that carries a task is checked on the server, whichever screen started it: the customer's do-not-call choice (Customers, contact permissions; migration 053 is applied), a number that replied STOP, and calling hours. If the check cannot be made, nothing is dialled. After a call where the customer asked not to be called, the sheet offers to set do-not-call | Exists |
+| Owner joins a live AI call | Live or warm transfer [S43][S41] | Not reachable. `/api/voice-join/[callId]` is built (it dials the owner's phone and moves the live call into a conference) but no screen calls it and no test covers it. It moves the AI's own call leg, so it could cut the AI off; it needs a trial on a live call before it gets a button | Not reachable |
 | Listen in without speaking, or whisper to the assistant | Not researched | Missing. Joining means the owner can be heard | To build |
 | Natural voice, barge-in, echo filter, two-track transcript | Not researched | Exists. Telnyx natural voices with a fallback voice | Exists |
 | Uses the shop's own AI provider and key | Not applicable | Exists. Reads the shop's AI settings, nothing deployment-wide. This stays untouched | Exists |
-| Recording playback | Recordings and transcripts [S43] | Exists. Recordings stream through a shop-checked proxy | Exists |
-| Transcript and AI summary of every call | Summaries, transcripts [S43] | Exists. Transcribe and summary routes | Exists |
-| Call log kept in step with Telnyx | Not researched | Exists. Sync of calls and recordings, and import of past calls | Exists |
-| Delete a call record | Not researched | Exists | Exists |
+| Recording playback | Recordings and transcripts [S43] | Exists in code. Recordings stream through a shop-checked proxy (`/api/recording-proxy`) in the Inbox and the AI review list. No automated test found | Exists |
+| Transcript and AI summary of every call | Summaries, transcripts [S43] | Exists in code. The daily job transcribes up to 10 calls per shop per run and scores leads; the customer call sheet shows the transcript and summary through `/api/call-summary`. So a transcript can arrive up to a day after the call. `/api/recording-summary` has no screen that calls it. No automated test found for the transcribe job | Exists |
+| Call log kept in step with Telnyx | Not researched | Exists in code. Opening Messages pulls the latest Telnyx recordings into the call log in the background and refreshes every 10 seconds. The import of past calls (`/api/growth/import-past-calls`) and the recordings list (`/api/telnyx-recordings`) have no button. No automated test found | Exists |
+| Delete a call record | Not researched | Not reachable. `/api/delete-call` is built and checks the shop, but nothing in the Inbox or any other screen calls it; there is no delete button for a call | Not reachable |
 | Forwarding, ring groups, after-hours routing, phone menus | Business phone systems [S43] | Missing. One number; hand-off numbers exist for transfers | To build |
 | Voicemail box and recorded greeting | Not researched | Partial. The assistant takes messages; the old voicemail page now opens the Inbox calls tab; no greeting or box | To build |
 | Call a parts supplier for a price and save the answer to the part (the Erin idea) | Not researched | Partial. A custom task call can ask; there is no supplier list and the answer is not saved to the part | To build |
@@ -500,34 +521,34 @@ Screens: Get more customers (Leads, Follow-ups, Results, Activity).
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| AI search near the shop: unhappy reviewers of competitors, fleets, people posting about car trouble | Not researched | Exists. Three searches. A phone or email counts only if it is written in what Alpha actually read; sources shown | Exists |
-| Contact details from Google Maps, Hunter and web search | Not researched | Exists in code. Needs the shop's or Alpha's own Google Maps, Hunter and Serper accounts | Blocked |
-| Outreach by text, email or AI call, written by Alpha and approved by the owner | Draft then approve [S35] | Exists. Nothing is sent unseen; opt-out, hours and shop rules are checked; email carries the shop's address and an unsubscribe link | Exists |
-| Capture a lead from the web or a call | Not researched | Exists. Lead capture route, scoped to one shop | Exists |
-| Lead history and status | Not researched | Exists. Outreach history, status, last contact, activity log | Exists |
-| Estimate follow-up and customer follow-ups | Follow-up automations [S11] | Exists. See sections 11 and 12 | Exists |
+| AI search near the shop: unhappy reviewers of competitors, fleets, people posting about car trouble | Not researched | Blocked until a search key is set on the host. Built in code, reachable (Get more customers, Leads): three searches (competitors' unhappy reviewers, fleets and businesses with vehicles, people posting about car trouble). A phone, email or owner name counts only if it is written in what Alpha actually read; sources shown. Every search runs on `SERPER_API_KEY`; without it the searches find nothing. I did not check whether it is set. Only the contact-compliance logic has a test, not the searches | Blocked |
+| Contact details from Google Maps, Hunter and web search | Not researched | Blocked. Built in code and reachable from a lead (`/api/growth/apollo-enrich`): Google Maps, then Hunter, then web search, filling only what each returns. Needs the host's `GOOGLE_MAPS_API_KEY`, `HUNTER_IO_API_KEY` and `SERPER_API_KEY`; not checked whether they are set. No automated test found | Blocked |
+| Outreach by text, email or AI call, written by Alpha and approved by the owner | Draft then approve [S35] | Exists in code, checked by tests. Nothing is sent unseen; opt-out, calling hours and shop rules are checked; email carries the shop's address and an unsubscribe link. Texts to customers wait on carrier registration (see Blocked on the owner) | Exists |
+| Capture a lead from the web or a call | Not researched | Not reachable. `/api/growth/capture` works for a signed-in user, but no screen, web form or call flow calls it. It also writes to `growth_leads` (read by Automations), while the Leads tab reads a different table, `leads`, so a lead captured this way would not show on the Leads tab | Not reachable |
+| Lead history and status | Not researched | Exists in code. Leads tab: status, last contact, outreach history and an activity log from the `leads` table. No automated test found for the tab | Exists |
+| Estimate follow-up and customer follow-ups | Follow-up automations [S11] | Exists in code through Automations (unanswered estimates, declined work, service due); see sections 11 and 12. Texts wait on carrier registration. The older routes `/api/growth/follow-ups`, `/estimate-followups` and `/service-reminders` have no screen or schedule calling them | Exists |
 | Legal check for contacting people who posted publicly | Not researched | Partial. The AI-call sheet warns; whether a given outreach is allowed is the owner's call with counsel | Blocked |
 | Leads to customers to dollars | Campaign results [S13] | Missing. No link from a lead to the invoice it later produced | To build |
 
 ## 23. Posts, ads and social publishing
 
-Screens: Get more customers (Posts and Ads), Automations (Social posts), Connected apps. This is the owner's example of "every feature the fullest": automatic, uses the shop's real pictures, knows the engine and the repair, groups the right photos, posts for the shop, has an on and off switch, and can be run by asking Ask Alpha.
+Screens: Get more customers (Posts and Ads), Automations (Social posts), Connected apps. Where this stands (checked 2026-10-15 by reading the code and the six `posts-*` test files, not by using the live app): the Posts screen is reachable (Get more customers, Posts) and a Customer OK card sits on each job. The whole repair-posts pipeline needs `supabase/migrations/060_repair_posts.sql`, which is not applied. Until it is, the Posts screen says "needs a database update", the Write a post sheet still works, photos can be looked at but not saved, and nothing is ever posted automatically. The daily job (`/api/cron`) already calls the post queue, so it starts working the day 060 is applied. This is the owner's example of "every feature the fullest": automatic, uses the shop's real pictures, knows the engine and the repair, groups the right photos, posts for the shop, has an on and off switch, and can be run by asking Ask Alpha.
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| Draft a post and check it (no invented prices, offers or credentials), preview, copy | Not researched | Exists. Character limit per place; save as draft | Exists |
-| Plan an ad as a draft with headline and text | Not researched | Exists as a draft; does not start an ad | Exists |
-| Real photos come in without retyping | Not researched | Partial (2026-10-15). Pick shop photos lists jobs and their inspection photos with no retyping; Post photos from this device re-draws each photo in the browser first. The screen says plainly what is not connected: Google Photos (Google no longer lets apps read a whole library), Apple iCloud (no public photo API for a web app), pictures texted to the shop, and a shared upload link (needs a public upload page and its own table; not built) | To build |
-| AI groups the photos by job and picks the best | Not researched | Exists in code (2026-10-15). Photos are grouped by job. Alpha proposes 3 to 6 from rules (the part, the rating, size, sharpness) and says why; Ask Alpha to choose again sends only photo labels to the shop's own AI, never the picture or technician notes. The owner changes the picks. Needs the repair-posts database file (supabase/migrations/060_repair_posts.sql) | Exists |
-| Caption comes from the job record (vehicle, engine, repair), not from guessing the picture | Not researched | Exists in code (2026-10-15). Year, make and model from the job; engine from the VIN decode (nothing said about the engine when it cannot be read); repair from the job and estimate lines. No prices, offers, warranties or credentials; the same wording checker as drafts; AI may only polish wording from those facts | Exists |
-| Privacy first: blur plates and VINs, strip location data, customer permission box on the job (default off) | Not researched | Partial (2026-10-15). Location and camera data are removed twice (re-drawn in the browser, cleaned again on the server). Cover plate or VIN lets the owner drag solid boxes over a photo; Alpha cannot find plates or VINs by itself and says so, and every photo must be checked by the owner before use. Customer OK to post is on each job, off by default; nothing is queued or posted without it. Automatic plate or VIN detection is not built | Exists |
+| Draft a post and check it (no invented prices, offers or credentials), preview, copy | Not researched | Exists in code. Post sheet (Get more customers, Posts): character limit per place; save as draft; the wording check refuses invented prices, offers and credentials. Works without 060 | Exists |
+| Plan an ad as a draft with headline and text | Not researched | Exists as a draft in code (Ads sheet saves a campaign draft); it does not start an ad. Works without 060 | Exists |
+| Real photos come in without retyping | Not researched | Partial (2026-10-15). Pick shop photos lists jobs and their inspection photos with no retyping (listing works now, saving the photos the owner checked needs 060); Post photos from this device re-draws each photo in the browser first. The screen says plainly what is not connected: Google Photos (Google no longer lets apps read a whole library), Apple iCloud (no public photo API for a web app), pictures texted to the shop, and a shared upload link (needs a public upload page and its own table; not built) | To build |
+| AI groups the photos by job and picks the best | Not researched | Blocked on 060 for saving. Built in code, checked by tests: photos are grouped by job; Alpha proposes 3 to 6 from rules (the part, the rating, size, sharpness) and says why; Ask Alpha to choose again sends only photo labels to the shop's own AI, never the picture or technician notes. Looking at the groups and proposals works now; saving what the owner checked or changed needs the repair-posts database file (supabase/migrations/060_repair_posts.sql) | Blocked |
+| Caption comes from the job record (vehicle, engine, repair), not from guessing the picture | Not researched | Blocked on 060 for queuing a post. Built in code, checked by tests: year, make and model from the job; engine from the VIN decode (nothing said about the engine when it cannot be read); repair from the job and estimate lines. No prices, offers, warranties or credentials; the same wording checker as drafts; AI may only polish wording from those facts. Needs the repair-posts database file (supabase/migrations/060_repair_posts.sql) to save the post | Blocked |
+| Privacy first: blur plates and VINs, strip location data, customer permission box on the job (default off) | Not researched | Blocked on 060 for the customer's yes. Built in code, checked by tests: location and camera data are removed twice (re-drawn in the browser, cleaned again on the server). Cover plate or VIN lets the owner drag solid boxes over a photo; Alpha cannot find plates or VINs by itself and says so, and every photo must be checked by the owner before use. The Customer OK to post card is on each job, off by default, but saving it (and the photos already checked) needs 060; nothing is queued or posted without it. Automatic plate or VIN detection is not built | Blocked |
 | Publish to a Facebook Page, an Instagram professional account, Google Business Profile | Post from one place | Built, but needs each account connected and approved (Instagram: professional account, public image address, JPEG, 50 API posts a day). The connector routes now take several photos (Facebook Page, Instagram carousel) or one photo (Google). Anything not connected shows Not connected with a link to Connected apps and is never reported as posted | Blocked |
-| Off, Suggest or Auto, with a weekly cap | Not researched | Exists in code (2026-10-15). Off by default; Suggest queues posts for a tap; Auto posts only Alpha-prepared posts for finished jobs with the customer's yes, checked photos, clean wording, a connected app, room under the weekly cap, and after a 12-hour review window. Alpha looks once a day (the daily schedule), so Auto can be up to a day late. Needs the repair-posts database file (supabase/migrations/060_repair_posts.sql) | Exists |
-| Ask Alpha runs it ("turn posts off", "show what you'd post this week", "post this one tomorrow") | Not researched | Partial (2026-10-15). The routes and a typed contract are done: see ASK_ALPHA_TOOLS in web/src/lib/posts-api-types.ts (status, jobs, prepare, approve, skip, set mode). Ask Alpha can turn posts Off or to Suggest but not Auto, and posting needs the owner's yes in the chat. The Ask Alpha page still has to list these tools | To build |
+| Off, Suggest or Auto, with a weekly cap | Not researched | Blocked on 060. Built in code, checked by tests: Off by default; Suggest queues posts for a tap; Auto posts only Alpha-prepared posts for finished jobs with the customer's yes, checked photos, clean wording, a connected app, room under the weekly cap, and after a 12-hour review window. Alpha looks once a day (the daily schedule calls the post queue), so Auto can be up to a day late. Needs the repair-posts database file (supabase/migrations/060_repair_posts.sql) | Blocked |
+| Ask Alpha runs it ("turn posts off", "show what you'd post this week", "post this one tomorrow") | Not researched | Not reachable. The routes and a typed list of tools are built (ASK_ALPHA_TOOLS in web/src/lib/posts-api-types.ts: status, jobs, prepare, approve, skip, set mode, with Auto and anything public needing the owner's yes) but nothing in the Ask Alpha page lists or calls them, so Ask Alpha cannot run posts. Also needs 060 | Not reachable |
 | Approve by text ("reply Y to post") | Not researched | Missing | To build |
-| Log of every post with undo where the platform allows | Not researched | Exists in code (2026-10-15). A log on the Posts screen shows every post, the result per place, who or what sent it (you, Auto, Ask Alpha), and undo: skip before it goes out, or a plain "cannot be undone from Alpha" with how to delete it in the app. An unclear result blocks a blind retry until the owner says what they saw. Needs the repair-posts database file (supabase/migrations/060_repair_posts.sql) | Exists |
+| Log of every post with undo where the platform allows | Not researched | Blocked on 060. Built in code, checked by tests: a log on the Posts screen shows every post, the result per place, who or what sent it (you, Auto, Ask Alpha), and undo: skip before it goes out, or a plain "cannot be undone from Alpha" with how to delete it in the app. An unclear result blocks a blind retry until the owner says what they saw. Needs the repair-posts database file (supabase/migrations/060_repair_posts.sql) | Blocked |
 | Ads: always approval-first, with a budget cap in the owner's own ad account | Not researched | Missing. Starting an ad needs the owner's ad account and payment method; Alpha never stores a card | Blocked |
-| Results the platforms really report, plus "how did you hear about us?" at intake | Not researched | Partial (2026-10-15). Posts this month from Alpha's own log; likes and comments only when Facebook or Instagram report them, otherwise the screen says none are recorded (Google reports none). An optional How did you hear about us? sits on the job and adds up on the Posts screen | To build |
+| Results the platforms really report, plus "how did you hear about us?" at intake | Not researched | Partial (2026-10-15). Posts this month from Alpha's own log; likes and comments only when Facebook or Instagram report them, otherwise the screen says none are recorded (Google reports none). An optional How did you hear about us? sits on the job and adds up on the Posts screen. All of this needs 060 (not applied) before anything is recorded | To build |
 
 ## 24. Pages customers open
 
@@ -535,13 +556,13 @@ Screens: status link, signing page, inspection page, booking page, unsubscribe p
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| "Where is my car" status link | Automatic status messages [S19] | Exists in code. Reads the job's public note and status; the table that stores the link token is in the blocked file 051 | Blocked |
-| Approve and sign an estimate or invoice | Click or signature with a saved record [S1] | Exists. Signing page with saved signer and time; the new signed-record tables are in blocked file 046 | Exists |
-| Inspection page with approve or skip per finding | [S27] | Exists. Random token, only needed fields, rate limited | Exists |
-| Book online | Booking widget [S10] | Exists in code. Public page by shop link, calendar feed, request and slots routes; database tables applied 2026-10-15; not yet checked on the live app | Exists |
-| Unsubscribe in one tap | Required for marketing email | Exists. Signed link, per shop | Exists |
+| "Where is my car" status link | Automatic status messages [S19] | Partial, and not usable yet. Built in code: the public data route `/api/status?token=` (shop name and phone, the car by year, make and model, a plain status, promised time, an optional note, a link to a sent inspection; never ids, plate, VIN or prices), the staff route `/api/jobflow` that makes or cancels the token, and the wording rules. Missing: the customer page that shows it (there is no `/status` page in the app), any button that makes or texts the link, and the table, which is in the unapplied file 051 | To build |
+| Approve and sign an estimate or invoice | Click or signature with a saved record [S1] | Exists in code. Request signature in Documents makes a link (valid 30 days); the signing page `/sign/[token]` shows the document and saves the signer's name, a drawn signature and the time to the live `signatures` table, and it is let through the sign-in wall. The signed-record and document-history tables in the unapplied file 046 are not needed for signing. No automated test found for the signing page; not tried on a live link | Exists |
+| Inspection page with approve or skip per finding | [S27] | Exists in code, checked by tests. `/inspection/[token]` is let through the sign-in wall; random token, only the fields the customer needs, rate limited, photos and clips by short-lived links | Exists |
+| Book online | Booking widget [S10] | Exists in code, checked by tests. Public page `/book/[slug]` and the `/api/book` routes (shop info, open slots, request, calendar feed) are let through the sign-in wall; database tables applied 2026-10-15; not yet checked on the live app | Exists |
+| Unsubscribe in one tap | Required for marketing email | Broken as it stands. The signed link and the confirmation page are built (`/api/outreach/unsubscribe?t=...`, GET shows a page, POST unsubscribes, and it supports a mail app's one-click unsubscribe), but that path is not on the list of addresses that skip sign-in in `web/src/middleware.ts`. A customer who is not signed in gets "Unauthorized" instead of the page, so they cannot unsubscribe. Fix: add the path to the public list, then try a real link | To build |
 | Privacy, terms, help | Not researched | Exists. The legal wording needs review by counsel before other shops use it | Blocked |
-| The shop's logo, name and colours on every page | Logo on every customer page [S39] | Partial. Logo on print only | To build |
+| The shop's logo, name and colours on every page | Logo on every customer page [S39] | Partial. The logo shows on printed documents and on the inspection page. It is not on the signing page or the booking page, and no customer page uses the shop's colours | To build |
 | Pay from the page | Pay link, no login [S3] | Missing | To build |
 | Customer portal (history, documents, vehicles) | Not found (unverified) | Missing | To build |
 | Spanish for customer pages, texts and the AI receptionist | Not researched | Missing. I found no Spanish in the customer pages or the receptionist rules. Houston shops need it | To build |
@@ -552,36 +573,36 @@ Screens: Agents and tools, Connected apps, Ask Alpha.
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| Nine agents (Router, Shop Ops, Parts, Repair, Desktop, Browser, Communications, Reports, Safety) | Specialist agents [S35] | Exists. Listed with what each can do and its risk level | Exists |
-| Tools (parts lookup, repair search, open browser, download image, open file, MCP discover and call, send SMS, shop action) with read, write, contacts others, delete and sensitive labels | Not researched | Exists | Exists |
-| Eleven ready skills (verified parts search, estimate from verified parts, source-backed repair research, customer lookup, browser tab inspection, desktop file workflow, call summary, missed call recovery, review request, service reminder, send flow) | Not researched | Exists | Exists |
-| Durable multi-step jobs with a cancel | Not researched | Exists. Workflow routes with leases and cancel | Exists |
-| Connect a ChatGPT plan instead of pasting a key | Not researched | Exists. Private connection, owner only. This stays untouched | Exists |
-| Google Calendar | Not researched | Exists | Exists |
+| Nine agents (Router, Shop Ops, Parts, Repair, Desktop, Browser, Communications, Reports, Safety) | Specialist agents [S35] | Exists. Agents and tools (in the navigation) lists the nine with what each can do and its risk level, read from `lib/ai/capabilities.ts`. A test checks the definitions are there; it does not click through the screen | Exists |
+| Tools (parts lookup, repair search, open browser, download image, open file, MCP discover and call, send SMS, shop action) with read, write, contacts others, delete and sensitive labels | Not researched | Exists. Nine tool names (parts lookup, repair search, open browser, download image, open file, MCP discover, MCP call, send SMS, shop action), each with its read, write, contacts others, delete or sensitive label, a time limit, retries and an audit flag. A test checks the definitions are there | Exists |
+| Eleven ready skills (verified parts search, estimate from verified parts, source-backed repair research, customer lookup, browser tab inspection, desktop file workflow, call summary, missed call recovery, review request, service reminder, send flow) | Not researched | Exists. All eleven are defined with their tools, success tests and what happens on failure. A test checks the definitions are there | Exists |
+| Durable multi-step jobs with a cancel | Not researched | Exists in code, checked by tests. Workflow routes with leases and a cancel (`/api/ai-workflow`, `/api/ai-workflow/cancel`) are called from Ask Alpha | Exists |
+| Connect a ChatGPT plan instead of pasting a key | Not researched | Exists in code. Private connection, owner only, in Settings. This stays untouched. No automated test found; not tried with a real plan | Exists |
+| Google Calendar | Not researched | Exists in code (Connected apps, `/api/connectors/google-calendar`). No automated test found; not tried with a real Google account | Exists |
 | Facebook, Instagram, Google Business | Direct links [S24] | Partial. Sign-in flows exist; approvals are the owner's | Blocked |
 | QuickBooks, a card processor, PartsTech, CARFAX | Direct links [S24] | Missing | To build |
-| Turn each agent or tool on or off per shop and per role | Admin controls [S3] | Missing | To build |
-| Master off switch for all of Ask Alpha | Not researched | Partial. Separate switches exist for the receptionist and the browser; Ask Alpha has the shop rules screen | To build |
+| Turn each agent or tool on or off per shop and per role | Admin controls [S3] | Partial. Per shop, Settings, Assistant rules can switch a whole kind of action (look up, draft, save, send) to Ask me first or Off and can switch off single actions by name; customer-facing and money actions always ask. There is no per-agent switch and nothing per role | To build |
+| Master off switch for all of Ask Alpha | Not researched | Partial. No single switch. The receptionist and the browser have their own (the browser one needs migration 058 to save), and Settings, Assistant rules can set each kind of action to Off, which together stop Ask Alpha acting but not answering | To build |
 
 ## 26. Notifications, notes, reminders and background work
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| In-app alerts and tab counts | Team alerts [S29] | Exists | Exists |
+| In-app alerts and tab counts | Team alerts [S29] | Exists in code. An unread-text count on the phone tab bar; while the Inbox is open, a notice, the count in the browser tab title and (if allowed) a desktop notification for each new text; Today shows short alerts for unread texts, short missed calls and inspections a customer answered in the last day. Nothing reaches a phone when the app is closed | Exists |
 | Phone push alerts | Mobile push [S29] | Missing. Needs the installable app (section 30) | To build |
-| Email alerts for failures, texts the assistant did not answer, calls needing a person | Not researched | Exists | Exists |
-| Daily notes on Today | Not researched | Exists | Exists |
-| Scheduled messages (appointment reminders and others) | Automatic reminders [S19] | Exists. Dispatch route and queue | Exists |
-| Background jobs (reminder sync, report emails, automation ticks, heartbeats) | Not researched | Partial. The scheduler is the missing piece: one daily job today | Blocked |
+| Email alerts for failures, texts the assistant did not answer, calls needing a person | Not researched | Exists in code, checked by tests (voice pipeline tests). The assistant emails the shop's team when a call or text needs a person, a summary after each call, and optionally each new text, to the address in the receptionist rules or the shop email. Needs the shop's email sending set up (Gmail or Resend); not tried with a real mailbox. "Failures" in the row means those hand-offs; there is no email when a background job fails | Exists |
+| Daily notes on Today | Not researched | Exists in code. A notes box on Today saves through `/api/daily-notes`. No automated test found | Exists |
+| Scheduled messages (appointment reminders and others) | Automatic reminders [S19] | Exists in code, with a daily limit. Ask Alpha can queue a text or email for later (`scheduled_messages`, table applied earlier); the dispatcher checks opt-outs and quiet hours, but it runs only inside the daily job, so a message can go out up to a day after its time. No screen lists or edits the queue. Texts to customers also wait on carrier registration. No automated test found | Exists |
+| Background jobs (reminder sync, report emails, automation ticks, heartbeats) | Not researched | Partial. One daily job (`/api/cron`, 00:00 UTC in `vercel.json`) runs: audit-log repair, expired Ask Alpha action cleanup, call sync, custom and built-in automations, scheduled messages, call transcripts (10 a shop) and lead scoring, and the repair-post queue. It needs `CRON_SECRET` set on the host or it answers "not configured"; I did not check that it is. Nothing runs more often: the every-5-minutes route `/api/cron/tick` and the report-email route `/api/reports/scheduled` have no caller, so reminder sync and report emails never go out on a schedule | Blocked |
 | Daily briefing by text or email | Not researched | Not found in code (the old briefing page now opens Today) | To build |
 
 ## 27. Shop tablet and desktop host
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| Shop tablet clock (PIN clock in and out, full screen) | Time clock [S28] | Exists in code. PIN storage is in migration 052 (applied 2026-10-15) | Exists |
-| Sign in from the desktop app | Not researched | Partial. Start and complete pages exist; no desktop app shipped | Blocked |
-| Connect your computer (browser host for sites that need a sign-in) | Not described for web apps (unverified) | Partial. Server side and the tables (blocked file 059); no desktop app | Blocked |
+| Shop tablet clock (PIN clock in and out, full screen) | Time clock [S28] | Exists in code, checked by tests. Team, People has an "Open the tablet screen" button that opens `/kiosk` (full screen, PIN clock in and out, Break). PIN storage is in migration 052 (applied 2026-10-15). The tablet needs a staff sign-in on it; not tried on a real tablet | Exists |
+| Sign in from the desktop app | Not researched | Partial. Start and complete pages exist (`/auth/desktop-start`, `/auth/desktop-complete`; no automated test found); the desktop app is not in the repository, so nothing uses them | Blocked |
+| Connect your computer (browser host for sites that need a sign-in) | Not described for web apps (unverified) | Partial. Server side built and tested (needs the tables in the unapplied file 059); no screen to pair a computer and no desktop app. See section 20 | Blocked |
 
 ## 28. Texting and calling channels
 
@@ -595,18 +616,18 @@ Why this section: the owner asked about many ways to text (Google Messages for w
 | iMessage | No web client and no public API. Apple Messages for Business is official but customer-first (Maps, website, QR), needs an Apple-approved provider and a live agent in open hours, Apple devices only. A Mac running BlueBubbles works unofficially | Inbound lead capture only |
 | Android phone as an SMS gateway | Uses the shop's real number and plan; fine for low-volume one-to-one; carriers can flag automated bulk | Optional, low volume |
 | RCS business messaging | Verified sender with logo; iPhone business support not verified | Later |
-| One consent layer above every channel (STOP, START, HELP, quiet hours, written consent for marketing) | Alpha already enforces this for Telnyx. It must sit above every channel so switching never skips it | To build |
+| One consent layer above every channel (STOP, START, HELP, quiet hours, written consent for marketing) | Alpha already enforces this for Telnyx (STOP, START and HELP are answered in code and covered by the voice texting tests; calling hours and do-not-call are checked before AI calls). It must sit above every channel so switching never skips it | To build |
 
 ## 29. Selling Alpha to other shops
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| Self-serve sign up and first-run setup | Not researched | Partial. Shop bootstrap and ensure routes, the Setup guide; no public signup page or trial | To build |
+| Self-serve sign up and first-run setup | Not researched | Partial. The login page has a Sign up form (shop name, email, password, and Google sign-in) that creates the shop through `/api/shop/ensure` and opens the Setup guide; if the host asks for email confirmation, the person confirms first. No free trial, no plans and no limits. Whether open sign-ups are allowed on the live host was not checked | To build |
 | Subscription billing, plans, trial, usage limits | AI sold per outcome or per seat [S35] | Missing. No billing | To build |
 | AI cost per shop (pasted key vs included) | Not researched | Partial. Each shop pastes its key or connects a ChatGPT plan; an included AI plan is a business decision | Blocked |
-| Shop isolation | Not applicable | Exists. Every table service-role only, scoped by shop in the server routes. Remaining Alpha-specific wording is listed in section 19 | Exists |
+| Shop isolation | Not applicable | Exists for the parts checked. The browser, repair-post and newer tables are service-role only and every server query is filtered by shop; the older tables were not re-audited one by one in this pass. Remaining Alpha-specific wording is listed in section 19 | Exists |
 | Owner console: all shops, usage, problems | Not researched | Missing | To build |
-| Export all my data and delete my account | Not researched | Partial. Customers export exists in code; no whole-shop export or delete | To build |
+| Export all my data and delete my account | Not researched | Partial. The customer export is built in code but has no button (see section 7); no whole-shop export and no account delete | To build |
 | Help center and contact | Not researched | Partial. One help page | To build |
 | Terms and privacy reviewed for other shops | Not researched | Blocked on counsel | Blocked |
 
@@ -614,12 +635,12 @@ Why this section: the owner asked about many ways to text (Google Messages for w
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| Add to the home screen as an app | Installable web app | Missing. No web app manifest, no icons beyond one picture, no splash. The owner asked for this | To build |
-| Works when the connection is bad (loading shell, clear "you are offline") | Not researched | Missing | To build |
-| Phone push | Mobile push [S29] | Missing | To build |
-| Security headers | Not researched | Partial. The request middleware sets frame, no-sniff, referrer, strict transport and a permissions policy that allows the microphone for the browser phone. There is no Content-Security-Policy | To build |
-| Error reporting and uptime alerts | Not researched | Missing. Only platform logs | To build |
-| Tests, type check, lint | Not applicable | Exists. 1,395 tests pass; type check and lint clean | Exists |
+| Add to the home screen as an app | Installable web app | Exists in code, checked by tests. Web app manifest (opens full screen on Today, graphite colour, shortcuts to Today, Inbox, Work and Ask Alpha), 192, 512 and maskable icons, an Apple touch icon, and an Install on your phone section in Settings. The phone draws the splash from the icon and colour. Not tried on a real phone | Exists |
+| Works when the connection is bad (loading shell, clear "you are offline") | Not researched | Exists in code, checked by tests, within a deliberate limit. A small service worker shows a plain "You are offline" screen with a way back when a page cannot load. It never stores or serves shop data, so nothing works offline except that screen. Not tried on a real phone | Exists |
+| Phone push | Mobile push [S29] | Missing. The service worker has no push handling, and the only alerts are on screen while the app is open (see section 26) | To build |
+| Security headers | Not researched | Partial. The request middleware sets frame, no-sniff, referrer, strict transport and a permissions policy that allows the camera and microphone for the app and refuses location for every page (which also blocks the clock-in location check; see section 6). A few routes (the older web view, downloads, pictures) set their own strict content policy. There is no site-wide Content-Security-Policy | To build |
+| Error reporting and uptime alerts | Not researched | Missing. No error or uptime service is installed; only the platform's logs and the audit-log repair in the daily job | To build |
+| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 1,764 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 | Backups and restore drill | Not researched | Not verified. Relies on the database host's backups | To build |
 | Keys rotated | Not applicable | Unverified (see Blocked on the owner) | Blocked |
 
@@ -651,15 +672,15 @@ Taken from `web/DESIGN.md`. A screen is not done until every box can be ticked.
 
 | Rule | Why | Alpha today |
 | --- | --- | --- |
-| Show exactly what will be sent before it is sent | The owner approves recipient, channel, words and total [S35] | Partial. Yes for documents and Ask Alpha. Text auto-replies: draft mode shows the exact words with Send, Change and Do not send; auto mode and calls can be tried first in test mode and the greeting preview |
-| Human approval for anything customer-facing | Fin pauses for a teammate on sensitive steps [S35] | Partial. Ask Alpha yes. Text replies: the shop picks off, draft or auto. Bookings: the team approves unless the shop lets it book open times. Calls answer on their own inside the shop's rules, with a review list afterward |
-| Undo, or say it cannot be undone | People mis-tap | Partial. "Cannot be undone" tag; no undo |
-| Audit trail the owner can read | Who, what, when, approved [S28] | Partial. Receptionist: yes, Inbox, AI assistant lists every call and text with transcript, outcome and the rules used. Other AI actions: logged, see Ask Alpha |
-| Stop button | A running action can be cancelled | Partial. Receptionist: separate master switches for calls and text replies, a pause on each conversation, quiet hours and per-number limits. Ask Alpha: being added; verify |
+| Show exactly what will be sent before it is sent | The owner approves recipient, channel, words and total [S35] | Partial. Yes for documents, for Ask Alpha (including its call card) and for an AI call started from a customer (the review card shows who, the hours, what Alpha says first, its goals and limits). Text auto-replies: draft mode shows the exact words with Send, Change and Do not send; auto mode and calls can be tried first in test mode and the greeting preview |
+| Human approval for anything customer-facing | Fin pauses for a teammate on sensitive steps [S35] | Partial. Ask Alpha yes. An AI call to a customer needs the owner's approval on a review card. A browser action that sends, buys, agrees or downloads needs an approval card (needs migration 059, otherwise it is refused). Text replies: the shop picks off, draft or auto. Bookings: the team approves unless the shop lets it book open times. Calls answer on their own inside the shop's rules, with a review list afterward |
+| Undo, or say it cannot be undone | People mis-tap | Partial. Ask Alpha has an Undo bar for changes that can be put back, and a "Cannot be undone" tag on the rest. Texts and calls the receptionist has already sent cannot be taken back |
+| Audit trail the owner can read | Who, what, when, approved [S28] | Exists. Receptionist: Inbox, AI assistant lists every call and text with transcript, outcome and the rules used. Ask Alpha: the Activity screen (Settings, Assistant rules, See what it did). Browser: the Activity sheet on the Browser screen |
+| Stop button | A running action can be cancelled | Exists. Receptionist: separate master switches for calls and text replies, a pause on each conversation, quiet hours and per-number limits. Ask Alpha has a Stop control that cancels a running request. The Browser lookup has a Stop button, and a live AI call has a Stop on the customer call sheet |
 | Honest uncertainty | Say what is not verified; show sources; never invent prices or parts | Partial. Receptionist: never states a price, time or diagnosis and says the team will confirm; says when it is not sure and passes to a person. Parts show sources; some other prompts still say answer anyway |
 | Tell people it is AI | Callers are told [S41]; disclosure is enforced [S45] | Exists on calls (inbound and outbound) and in the first text; cannot be switched off |
 | Hand off to a person with context | Fin passes history to a human [S35][S36] | Exists for the receptionist: transfer with a text briefing, and a needs-a-person flag with an email, the transcript and what it wrote down |
-| Rules the shop sets | Guidance for tone, handoff, limits [S37] | Exists for the receptionist (Settings, AI receptionist). Ask Alpha has its own rules screen |
+| Rules the shop sets | Guidance for tone, handoff, limits [S37] | Exists for the receptionist (Settings, AI receptionist). Ask Alpha has its own rules screen (Settings, Assistant rules). The Browser has its own on and off switch, which needs migration 058 to be saved |
 | Safe to repeat | Same request never acts twice | Exists |
 | Mark what the AI did | Easy to measure and review | Exists for the receptionist: texts and calls carry an AI marker, a filter chip, and Handled well or Needs work marks |
 
@@ -686,45 +707,48 @@ Rough size is my estimate (S is days, M is a couple of weeks, L is longer). "Own
 
 | # | What | Why in this place | Size | Owner |
 | --- | --- | --- | --- | --- |
-| 0 | Done for 034 to 041, 043 to 045, 047 to 050 and 052 to 056 (2026-10-15). Still to apply: 046, 051, 057, 058, 059 | Customer links and signed records, job flow, purchase-order functions, browser tables | S | Yes |
+| 0 | Done for 034 to 041, 043 to 045, 047 to 050 and 052 to 056 (2026-10-15). Still to apply: 046, 051, 057, 058, 059 and 060_repair_posts.sql (six files) | Customer links and signed records (046), job flow and the status link (051), purchase-order functions (057), browser tables (058, 059), repair posts (060) | S | Yes |
 | 1 | Done (2026-10-15). Make the AI receptionist and text auto-reply safe: say it is AI, shop hours setting, never quote prices, "needs a person" flag, off switch, quiet hours | It talks to customers unseen today | M | Yes (wording) |
 | 2 | Texting that carriers allow (10DLC or toll-free verification) | Estimate texts, inspection links, reminders and review requests all depend on it | S | Yes |
 | 3 | Payment links, card on file and deposits through a processor | Closes the money loop the leaders all have [S3][S22] | L | Yes |
 | 4 | Estimate by text with a link: view, approve line by line, sign, pay | Today the text has no link | M | |
-| 5 | Job-level technician time tracking | Unlocks tech board hours, efficiency per job, effective labor rate, gross profit | M | |
+| 5 | Done (2026-10-15 audit). Job-level technician time tracking: time on a job is recorded in Team and feeds efficiency, effective labor rate and gross profit. Hours assigned and left on the board columns are still to build | Unlocks tech board hours, efficiency per job, effective labor rate, gross profit | M | |
 | 6 | QuickBooks sync | Accountant need; every leader has it [S14][S24] | L | Yes |
-| 7 | Payroll export, payroll integrations, configurable week start | Payroll CSV exists; shops pay on different weeks | M | |
-| 8 | DVI photo storage bucket instead of photos inside the row | Up to 24 photos near 220,000 characters each can mean about 5 MB per row | M | |
-| 9 | DVI per-shop checklist templates | Every shop inspects differently [S5] | M | |
-| 10 | DVI canned-job price lookup | Suggested prices from priced work, fewer typed numbers [S5] | S | |
-| 11 | DVI per-vehicle inspection history | Shows what changed since last visit [S7] | S | |
-| 12 | Tire and brake measurements with warning thresholds | Sells brake and tire work with proof; Autoflow keeps tread per tire [S33] | M | |
+| 7 | Payroll file and configurable week start are done (2026-10-15 audit). Still to build: payroll integrations | Payroll CSV exists; shops pay on different weeks | M | |
+| 8 | Done (migration 049, applied). DVI photo storage bucket instead of photos inside the row | Up to 24 photos near 220,000 characters each can mean about 5 MB per row | M | |
+| 9 | Done (migration 049, applied). DVI per-shop checklist templates | Every shop inspects differently [S5] | M | |
+| 10 | Done (2026-10-15 audit). DVI canned-job price lookup | Suggested prices from priced work, fewer typed numbers [S5] | S | |
+| 11 | Done inside each inspection (2026-10-15 audit); not yet on the Vehicles screen. DVI per-vehicle inspection history | Shows what changed since last visit [S7] | S | |
+| 12 | Done (2026-10-15 audit). Tire and brake measurements with warning thresholds | Sells brake and tire work with proof; Autoflow keeps tread per tire [S33] | M | |
 | 13 | Shop board: TV or full-screen mode | For the shop wall | S | |
 | 14 | Shop board: jump-to-technician chips on phones | Long scroll on a phone | S | |
-| 15 | Undo clock-out | Mis-taps happen | S | |
+| 15 | Done (2026-10-15 audit). Undo clock-out, for 15 minutes after a clock-out | Mis-taps happen | S | |
 | 16 | Done (2026-10-15). Inbox: AI filter chip, and mark AI inbound calls as read | Owner sees what Alpha answered without clutter | S | |
 | 17 | Labor guide integration | Leaders put labor times in the estimate [S1] | L | Yes |
 | 18 | Parts catalog ordering (PartsTech first) | Order from the estimate [S2][S24] | L | Yes |
 | 19 | Pricing matrices and one-click jobs from the vehicle | Speeds writing; needs 17 and 18 for full value [S2] | L | |
-| 20 | Reports round two: car count, effective labor rate, approval rate, custom date comparison, scheduled report emails | The Shop Index four numbers [S15][S16] | M | |
-| 21 | Tax-ready profit and loss (needs expenses) | Accountant handoff | L | |
-| 22 | Online booking page and capacity | Leaders book 24 hours a day [S10] | L | |
+| 20 | Reports round two is done (2026-10-15 audit) except scheduled report emails, which are built but nothing sends them (see Built but not reachable): car count, effective labor rate, approval rate, custom date comparison | The Shop Index four numbers [S15][S16] | M | |
+| 21 | Done (2026-10-15 audit). Tax-ready profit and loss (needs expenses) | Accountant handoff | L | |
+| 22 | Done in code (2026-10-15 audit), not yet checked on the live app. Online booking page and capacity | Leaders book 24 hours a day [S10] | L | |
 | 23 | Customer portal | One place for estimates, invoices, inspections, pay and history; builds on 3 and 4 | L | |
 | 24 | Command menu and keyboard shortcuts | Speed for office staff [S38] | M | |
-| 25 | AI controls for the shop (rules, tone, handoff) and an included AI key | Fin-style guidance [S37]; the shop should not paste a key | M | Yes |
-| 26 | One approval path in Ask Alpha, verify the Stop button, and an audit screen | Finish the AI-product bar | M | |
+| 25 | Rules, tone and handoff are done (Settings, Assistant rules and the receptionist rules). Still to build: an included AI key | Fin-style guidance [S37]; the shop should not paste a key | M | Yes |
+| 26 | Stop, Undo and the Activity screen are done (2026-10-15 audit). Still to build: one approval path in Ask Alpha (four kinds of card still run separately) | Finish the AI-product bar | M | |
 | 27 | Done except per-thread access and phone push (2026-10-15). Message templates, photos in texts, thread assignment | Shop-Ware and Tekmetric patterns [S12][S29] | M | |
 | 28 | Per-shop warranty wording and permission roles screen | Needed before the second shop | M | Yes (legal) |
-| 29 | Customer duplicate merge, CSV import and export | Clean data; Alpha has about 20 to remove | M | Yes |
+| 29 | Built in code but not reachable (2026-10-15 audit): customer duplicate merge, CSV import and export have no screen. See Built but not reachable | Clean data; Alpha has about 20 to remove | M | Yes |
 | 30 | Multi-location view and benchmarks | Many shops later [S15][S20] | L | |
-| 31 | Install on a phone: web app manifest, icons, standalone display, offline screen | The owner asked for a home-screen app; nothing is set up | S | |
-| 32 | AI calling from the app and Ask Alpha: review card, do-not-call check, shop calling hours, listen-in, results saved to the customer | Section 21 | M | |
+| 31 | Done in code, checked by tests, not tried on a real phone (2026-10-15 audit). Install on a phone: web app manifest, icons, standalone display, offline screen | The owner asked for a home-screen app; nothing is set up | S | |
+| 32 | Done in code except listen-in (2026-10-15 audit). AI calling from the app and Ask Alpha: review card, do-not-call check, shop calling hours, results saved to the customer. The owner-joins-a-call route exists but has no button | Section 21 | M | |
 | 33 | One consent layer above every texting and calling channel, then a second provider and an optional own-phone mode | Section 28 | M | Yes |
-| 34 | Posts: photo sources, grouping, caption from the job record, privacy checks, Off, Suggest or Auto, Ask Alpha control. Built 2026-10-15 except Google Photos, iCloud, the shared upload link, automatic plate detection, approve by text and the Ask Alpha wiring; needs 060_repair_posts.sql applied and an account connected | Section 23 | L | Yes |
+| 34 | Posts: photo sources, grouping, caption from the job record, privacy checks, Off, Suggest or Auto, Ask Alpha control. Built 2026-10-15 except Google Photos, iCloud, the shared upload link, automatic plate detection and approve by text. The Ask Alpha tool list exists but Ask Alpha does not list it. Blocked until 060_repair_posts.sql is applied and an account is connected | Section 23 | L | Yes |
 | 35 | Spanish for customer pages, texts and the receptionist | Section 24 | M | Yes (wording) |
-| 36 | Apply the five blocked database files, then finish what depends on them | Section 24, 15, 5, 20 | S | Yes |
+| 36 | Apply the six blocked database files (046, 051, 057, 058, 059, 060), then finish what depends on them | Sections 1, 5, 15, 20, 23, 24 | S | Yes |
 | 37 | Self-serve sign up, trial and billing; owner console | Section 29 | L | Yes |
 | 38 | Error reporting, uptime alerts, Content-Security-Policy, backup drill | Section 30 | M | |
+| 39 | Fix the customer unsubscribe link: add `/api/outreach/unsubscribe` to the public paths in `web/src/middleware.ts`, then try a real link | Every marketing email links to it; as it stands a customer who is not signed in gets "Unauthorized" and cannot unsubscribe (section 24) | S | |
+| 40 | The customer status page for "where is my car", plus a button that makes and texts the link | The data route exists, the page and the button do not; needs 051 (section 24) | M | Yes |
+| 41 | Give each built-but-not-reachable item its one missing step, most valuable first | See "Built but not reachable" at the end of this document | M | |
 
 ---
 
@@ -732,7 +756,7 @@ Rough size is my estimate (S is days, M is a couple of weeks, L is longer). "Own
 
 Nothing here can be finished by code alone.
 
-1. **Five database files are not applied.** On 2026-10-15 twenty of the twenty-five were applied. The apply was cancelled each time for `046_document_links_and_history.sql` (customer links, signed approvals, document history), `051_job_flow.sql` (promise time, parts status, customer status link), `057_parts_functions.sql` (the purchase-order and stock functions), `058_browser_workspace.sql` and `059_browser_approvals_and_hosts.sql` (browser settings, approvals, paired computers). They only add new tables, functions and triggers; they do not change customers, invoices, estimates, payments, messages or signatures. Needs a go-ahead that is not cancelled.
+1. **Six database files are not applied.** On 2026-10-15 twenty of the twenty-five numbered 034 to 059 were applied. The apply was cancelled each time for `046_document_links_and_history.sql` (customer links, signed approvals, document history), `051_job_flow.sql` (promise time, parts status, customer status link), `057_parts_functions.sql` (the purchase-order and stock functions), `058_browser_workspace.sql` and `059_browser_approvals_and_hosts.sql` (browser settings, approvals, paired computers). A sixth, `060_repair_posts.sql` (repair posts: the settings, the customer's yes per job and the post queue), was written the same day and has not been applied either. They only add new tables, functions and triggers; they do not change customers, invoices, estimates, payments, messages or signatures. Until they are applied the screens that need them say "needs a database update" and the actions that need them are refused, never guessed. Needs a go-ahead that is not cancelled.
 2. **Pushing to GitHub and a Vercel preview.** Needs the Claude GitHub App installed on the account that owns the repo. The rebuild branch is local only until then.
 3. **Texting registration.** Needs 10DLC registration or toll-free verification. Telnyx says unregistered traffic gets limited, filtered or blocked [S46][S47]. Until done, every text feature is at risk. The in-app checklist (Settings, Communications) lists each step and writes the answers to paste; only the owner can submit it in the Telnyx account.
 4. **Duplicate and test customers.** About 20 should be removed; needs Aaron's approval before anything is deleted.
@@ -740,7 +764,7 @@ Nothing here can be finished by code alone.
 Also coming up, and not yet decided:
 
 5. **Payment processor and merchant account** for items 3 and 4 above.
-6. **QuickBooks Online account access** and the chart of accounts to map.
+6. **QuickBooks Online account access**, an Intuit developer app that only the owner can create, and the chart of accounts to map. The file imports work without any of it.
 7. **Paid data accounts:** labor guide (ALLDATA or Mitchell) and a parts catalog account (PartsTech).
 8. **Production schema export** for the `dvi` table, which was made by hand and has no migration in the repo.
 9. **Rotate keys.** The June 2026 log says keys once in source were compromised and should be rotated. I could not verify they were.
@@ -749,20 +773,28 @@ Also coming up, and not yet decided:
 12. **Done (2026-10-15).** Voice and text migrations 037, 038 and 039 are applied: receptionist rules, thread assignment and saved replies, the assistant's activity log, bookings and picture storage, and the carrier checklist.
 13. **One live test call and one test text** after the rules are saved, to hear the greeting and the transfer on the real Telnyx number. The assistant is covered by tests with simulated Telnyx events and by the practice screen, but not yet by a live call.
 14. **Done (2026-10-15).** Automation and growth migrations 040 and 041 are applied: the message ledger, run history and results for Automations, and promotions, review replies and referral credits.
-15. **A scheduler that checks every 5 minutes.** `vercel.json` has one daily job, so automations that should run every 15 minutes or every hour (appointment reminders, car is ready) run late. Options: Vercel Pro with a 5-minute cron on `/api/cron/tick`, or a free outside pinger or GitHub Actions calling it with the cron secret. The Automations screen says how often it really checks.
+15. **A scheduler that checks every 5 minutes.** `vercel.json` has one daily job, so automations that should run every 15 minutes or every hour (appointment reminders, car is ready) run late. Options: Vercel Pro with a 5-minute cron on `/api/cron/tick`, or a free outside pinger or GitHub Actions calling it with the cron secret. Nothing calls `/api/cron/tick` today. The daily job itself (`/api/cron`) answers "not configured" unless `CRON_SECRET` is set on the host; I did not check that it is. The Automations screen says how often it really checks.
 16. **Accounts for posting and ads.** Publishing a post to Google, Facebook, Instagram or TikTok, and starting a paid ad, need each account connected and a payment method on the ad account. Drafting, preview, copy and the Repair posts queue (Off, Suggest, Auto) are built; connecting the accounts, and applying 060_repair_posts.sql, wait on Aaron.
 17. **Which texting route to use.** Telnyx with standard 10DLC (the shop has an EIN) or toll-free verification, then the Telnyx signing key so inbound texts are accepted, and a balance (it was $3.73). Only the owner can submit the registration in the Telnyx account.
 18. **A frequent scheduler.** The free option is a database-side job that calls `/api/cron/tick` every 5 minutes with the cron secret. It is a database setting, so it needs a go-ahead.
 19. **Customer clean-up.** About 20 duplicate or test customers. Alpha will show each pair side by side and merge with undo, but only after the owner says yes to that specific action.
-20. **Sign-ins only the owner can do:** Facebook Page, Instagram, Google Business Profile, ad accounts, QuickBooks, a card processor, the Google Maps, Hunter and Serper accounts for lead details.
+20. **Sign-ins only the owner can do:** Facebook Page, Instagram, Google Business Profile, ad accounts, QuickBooks, a card processor, the Google Maps, Hunter and Serper accounts for lead details (set on the host as `GOOGLE_MAPS_API_KEY`, `HUNTER_IO_API_KEY` and `SERPER_API_KEY`; the three AI lead searches find nothing without the Serper key).
 21. **Legal review:** Spanish and English wording for AI disclosure, call recording and text consent; terms and privacy for shops other than Alpha; whether outreach to people who posted publicly is allowed.
+22. **A desktop app, or a decision not to build one.** "Connect your computer" (section 20) and "Sign in from the desktop app" (section 27) need a desktop program on the owner's computer. The server side is built; the program is not in the repository.
+23. **A first trial on a live call and a live link.** Several things are built and checked by tests but were never tried for real: the AI calls started from a customer, the signing page, the booking page, the Browser's headless pictures on Vercel, and installing the app on a phone. One try each would turn "built in code" into "works".
+24. **Whether sign-ups are open on the live host.** The login page has a Sign up form; whether the host lets anyone create a shop was not checked.
 
 ---
 
 # Not verified
 
 - Anything marked "unverified" or "Not researched" in the tables.
-- Settings, Growth, Inventory, Repair info, Customers and Ask Alpha were being rebuilt in the working tree (uncommitted) while this was written. Rows for those screens describe what I read at that moment and may already be out of date. Re-read the code before you rely on them.
+- Nothing in this document was checked by clicking through the live app. "Built in code, checked by tests" means the code exists, the screen is reachable from the navigation or another screen, and the tests (1,764 passed on 2026-10-15) read the code and run its logic. It does not mean it was tried on a real phone, a real call or a real customer link.
+- The headless browser behind the Browser's Live view, Ask Alpha lookups and pictures (and the older parts lookup and screenshot routes): whether it starts on Vercel was not confirmed. `next.config.mjs` ships the Chromium file with only `/api/web-automation`.
+- Whether `CRON_SECRET`, `SERPER_API_KEY`, `GOOGLE_MAPS_API_KEY`, `HUNTER_IO_API_KEY` and the email sending keys are set on the live host.
+- Live Telnyx calls and texts, and the sign-in role split: what a signed-in person may do comes from the shop membership role, which the Team staff list does not change.
+- Shop isolation was not re-audited table by table in this pass.
+- Settings, Growth, Inventory, Repair info, Customers and Ask Alpha were being rebuilt in the working tree (uncommitted) while this was written. The rows for them were re-read against the code on 2026-10-15 and may already be out of date again. Re-read the code before you rely on them.
 - Good, better, best, deposits and templates in Tekmetric, Shopmonkey and Shop-Ware: the pages I read did not mention them, which is not proof they do not exist.
 - Tekmetric's WORLDPAC, Nexpart, Mitchell, Identifix and QuickBooks listings: not shown on the part of its integration list I could see (only 8 of 80 entries were visible) [S17]. Accounting Link is a third-party QuickBooks link [S14].
 - Mitchell 1 Manager SE comes from a third-party listing only [S32].
@@ -842,3 +874,46 @@ All read 2026-10-14. Facts above are summarised in my own words.
 | S49 | https://getkanal.com/blog/apple-messages-for-business | Apple Messages for Business: customer starts the conversation, approved provider, live agent required, Apple devices only (third-party guide, not Apple's own page) |
 | S50 | https://developers.facebook.com/docs/instagram-platform/instagram-graph-api/content-publishing | Instagram publishing: professional account, app review for outside users, 50 API posts a day, JPEG images, public media address |
 | S51 | https://developers.telnyx.com/docs/messaging/10dlc/sole-proprietor/index | Telnyx sole-proprietor 10DLC: $4.50 brand, $15 vetting, $2 a month, one campaign and one number; standard registration details not on that page |
+
+---
+
+# Built but not reachable
+
+As of 2026-10-15. These are written, and mostly tested, but Aaron cannot use them today: no screen shows them, no schedule runs them, or a setting or a rule blocks them. Each line gives the one step that is missing. Ordered by value to a shop owner, most valuable first (my judgment). "Needs" names a database file that is not applied (see "Blocked on the owner", item 1). Nothing here was tried on the live app.
+
+1. **Unsubscribe link in marketing emails** (section 24). Step: add `/api/outreach/unsubscribe` to the list of addresses that skip sign-in in `web/src/middleware.ts`, then try a real link. Today a customer gets "Unauthorized".
+2. **Report by email on a schedule** (section 13). Step: have the daily job call `/api/reports/scheduled`. The screen already says "Next: Monday".
+3. **Declined work kept for later** (section 1). Step: put the declined-work sheet on a screen and fill the list when a customer declines.
+4. **Purchase orders, receiving, returns and cores** (section 15). Step: a screen that calls `/api/inventory`. Needs 057.
+5. **The customer's answer, good-through date and signed record** (section 1). Step: show the approval panel on the document screen. Needs 046.
+6. **Send a document with a preview and a customer link** (section 1). Step: show the send sheet and make `/api/send-document` honor the preview and make the link. Needs 046.
+7. **Pricing matrices** (section 1). Step: a screen to edit the markup tiers, and apply them when a part is added.
+8. **Everything about a customer in one feed, and a car's full history** (section 7). Step: use the feed and the history on the customer and vehicle cards.
+9. **Customer CSV import and export** (section 7). Step: an Import and an Export button that call the code.
+10. **Parts status and labels on the shop board** (section 5). Step: a control on the board card that sets them (and the customer status link, section 24). Needs 051.
+11. **Carrier delivery receipts for texts** (section 12). Step: let the text webhook (`/api/sms`) pass delivery notices to the recorder in `lib/automation-delivery.ts`.
+12. **Location check at clock-in** (section 6). Step: change `geolocation=()` to `geolocation=(self)` in the security headers in `web/src/middleware.ts`.
+13. **Canned jobs: vehicle variants, keywords, extra fees** (section 1). Step: show the canned-job sheet on the Canned jobs screen.
+14. **Good, better, best options** (section 1). Step: show the sheet on the document screen; the signing page must let the customer pick, which needs the answer code in `lib/doc-respond.ts` and 046.
+15. **Percent off the whole document, and fee presets** (section 1). Step: show the sheets on the document screen (percent off one line already works).
+16. **Void and restore a document** (section 1). Step: add Void to the document menu, which offers only Delete.
+17. **Change history on a document** (section 1). Step: show the history sheet on the document screen. Needs 046 for events.
+18. **Start a document from a saved template** (section 1). Step: show the template sheet.
+19. **Customer groups and tags** (section 7). Step: show the groups on the Customers screen and let a person put a tag on a customer.
+20. **Duplicate finder and merge for customers** (section 7; status is Blocked because about 20 records need Aaron's yes). Step: a screen that shows each pair and calls the merge.
+21. **Who changed a quantity** (section 15). Step: make the Inventory screen save counts through the history code. Needs 057.
+22. **Ask Alpha runs posts** (section 23). Step: list `ASK_ALPHA_TOOLS` (`web/src/lib/posts-api-types.ts`) in the Ask Alpha page. Needs 060.
+23. **Capture a lead from the web or a call** (section 22). Step: a form or a call hook that calls `/api/growth/capture`, and make it write to the `leads` table the Leads tab reads.
+24. **Delete a call record** (section 21). Step: a Delete button in the Inbox that calls `/api/delete-call`.
+25. **Owner joins a live AI call** (section 21). Step: a trial on a live call to see whether moving the AI's call leg cuts it off, then a button that calls `/api/voice-join/[callId]`.
+
+Also written but with no caller, and not worth a row of their own:
+
+- `/api/growth/import-past-calls` (turn past Telnyx calls into leads), `/api/telnyx-recordings` (list recordings) and `/api/recording-summary` (summarize one recording): no button.
+- `/api/receptionist/attention` (counts of things waiting for a person, for a badge): Today does its own counts.
+- `/api/reports/ar` (customers with an old balance): no screen or automation reads it.
+- `/api/browser/host` and its claim, poll and result routes: wait for the desktop app (section 27).
+- `/api/cron/tick` (the every-5-minutes check): nothing calls it (see "Blocked on the owner", items 15 and 18).
+- Old growth routes replaced by Automations: `/api/growth/follow-ups`, `/estimate-followups`, `/service-reminders`, `/scan-competitors`, `/scan-social`, `/create-ad`.
+- Old or retired: `/api/ai-voice-call` (alias of make-call), `/api/ai-process-inbound`, `/api/ai-process-turn`, `/api/create-estimate`, `/api/save-document`, `/api/migrate`, `/api/shop/bootstrap`; `/api/seed-settings` and `/api/seed-connectors` are admin-only set-up helpers.
+- Leftover files nothing imports: `lib/call-state.ts`, `app/sign/[token]/SignPad.tsx` and `parts.tsx` (the signing page has its own copy).
