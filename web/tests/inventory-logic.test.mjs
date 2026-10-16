@@ -1,8 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  ADJUST_REASONS, applyReceipt, checkPo, checkReceipt, compareOffers, describeHistory, findByCode, groupByVendor, normalizeCode, normalizeRules, poCsv, poHtml, poMessage, poNumberFor,
-  poTotals, previewReprice, priceAge, priceFor, reorderCsv, reorderSuggestions, returnsSummary, roundPrice, statusAfterReceiving, usageFromSales, validBarcode, valuation, valuationCsv,
+  ADJUST_REASONS, applyReceipt, billOutcomeWords, billReference, checkPo, checkReceipt, compareOffers, describeHistory, findByCode, groupByVendor, normalizeCode, normalizeRules, poCsv, poHtml, poMessage, poNumberFor,
+  poTotals, previewReprice, priceAge, priceFor, reorderCsv, reorderSuggestions, returnsSummary, roundPrice, statusAfterReceiving, usageFromSales, validBarcode, valuation, valuationCsv, receiptAmount,
 } from '../src/lib/inventory-logic.ts'
 
 const part = (o = {}) => ({ id: 'p', part_number: '', name: 'Part', category: '', brand: '', cost: null, retail_price: null, qty_on_hand: 0, qty_reorder: 0, qty_on_order: 0, location: '', supplier: '', supplier_part_number: '', ...o })
@@ -245,4 +245,31 @@ test('the files for the shop', () => {
   const r = reorderCsv(reorderSuggestions({ parts: [P2], extras: new Map(), vendors: VENDORS, prices: PRICES, usage: noUsage })).trim().split('\r\n')
   assert.equal(r[1], 'OF-100,Oil filter,Budget Parts Co,0,0,6,12,4.25,51.00,Out of stock')
   assert.equal(poCsv(sentPo()).trim().split('\r\n')[1], 'PO-0001,FP-MO301,Brake pads,4,38.00,0.00,152.00,0')
+})
+
+/* ---------- the bill that goes with a delivery ---------- */
+
+test('what a delivery came to: only what arrived, at the order cost, plus any core charge on each', () => {
+  const po = { lines: [
+    { id: 'a', part_id: 'p1', description: 'Filter', sku: '', qty: 10, unit_cost: 4.5, core_charge: 0, qty_received: 0 },
+    { id: 'b', part_id: 'p2', description: 'Alternator', sku: '', qty: 2, unit_cost: 88, core_charge: 25, qty_received: 0 },
+  ] }
+  assert.equal(receiptAmount(po, [{ lineId: 'a', qty: 10 }, { lineId: 'b', qty: 2 }]), 271)
+  assert.equal(receiptAmount(po, [{ lineId: 'a', qty: 4 }]), 18, 'a short delivery is billed for what came')
+  assert.equal(receiptAmount(po, [{ lineId: 'b', qty: 1 }]), 113, 'the core is added for each one that came')
+  assert.equal(receiptAmount(po, [{ lineId: 'a', qty: 0 }, { lineId: 'zzz', qty: 5 }, { lineId: 'a', qty: -3 }]), 0, 'nothing, an unknown line or a negative never add up')
+  assert.equal(receiptAmount(po, []), 0)
+})
+
+test('the bill reference is the order number, with the delivery number from the second one on', () => {
+  assert.equal(billReference('PO-0007', 1), 'PO-0007')
+  assert.equal(billReference('PO-0007', 2), 'PO-0007 delivery 2')
+  assert.equal(billReference('PO-0007', 0), 'PO-0007')
+})
+
+test('the bill outcome is one plain sentence and never claims a bill that was not added', () => {
+  assert.equal(billOutcomeWords(null), '')
+  assert.match(billOutcomeWords({ state: 'added', amount: 271, paid: false, vendor: 'Keystone', reference: 'PO-0001' }), /bill from Keystone \(PO-0001\) for \$271\.00 was added to Accounting as unpaid/)
+  assert.match(billOutcomeWords({ state: 'added', amount: 18.5, paid: true, vendor: 'Keystone', reference: 'PO-0001' }), /\$18\.50 was added to Accounting as paid/)
+  assert.equal(billOutcomeWords({ state: 'failed', message: 'The delivery was checked in, but the bill was not added.' }), 'The delivery was checked in, but the bill was not added.')
 })

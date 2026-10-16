@@ -13,11 +13,12 @@ import type { Db, DbError, Row } from './db-types.ts'
 import { isMissingSchemaError } from './report-docs.ts'
 import { isEmail } from './saved-reports.ts'
 import { isDayKey } from './report-ranges.ts'
+import { addExpense } from './books-store.ts'
 import {
-  checkPo, checkReceipt, normalizeCode, normalizeRules, poHtml, poMessage, RETURN_KINDS, RETURN_STATUS, validBarcode,
+  billReference, checkPo, checkReceipt, normalizeCode, normalizeRules, poHtml, poMessage, RETURN_KINDS, RETURN_STATUS, validBarcode,
 } from './inventory-logic.ts'
 import type {
-  CostMethod, PartExtra, PartHistory, PartReturn, PoLine, PoStatus, PriceRules, PurchaseOrder, ReturnKind, ReturnStatus, ShopFacts, SoldLine, StockPart, Vendor, VendorPrice,
+  BillOutcome, CostMethod, PartExtra, PartHistory, PartReturn, PoLine, PoStatus, PriceRules, PurchaseOrder, ReturnKind, ReturnStatus, ShopFacts, SoldLine, StockPart, Vendor, VendorPrice,
 } from './inventory-logic.ts'
 
 export interface Actor { userId: string; name: string }
@@ -534,10 +535,45 @@ export async function cancelPo(db: Db, shopId: string, actor: Actor, id: string)
   return { ok: true, already: (r.data as Row | null)?.already === true }
 }
 
-export interface ReceiveInput { receipt_key?: unknown; items?: unknown; allow_over?: unknown; cost_method?: unknown }
+export interface ReceiveInput { receipt_key?: unknown; items?: unknown; allow_over?: unknown; cost_method?: unknown; bill?: unknown }
+
+/** What the caller knows about the signed-in person and the day, so a bill is only added by someone who may and on the shop's date. */
+export interface ReceiveOptions { mayBill: boolean; todayKey: string }
+
+/**
+ * The bill that goes with a delivery: one bill in Accounting for the parts that came in, under "Parts bought", with the order number
+ * on it so the bill can be matched to the paper one. It is added only when the person asked, only for someone who may enter bills, and
+ * only when the delivery itself was counted for the first time (a repeat of the same delivery adds nothing). A bill that cannot be added
+ * never undoes the delivery; the screen is told why and the bill can be entered by hand.
+ */
+async function billForDelivery(db: Db, shopId: string, actor: Actor, po: PurchaseOrder, ask: Row, opts: ReceiveOptions): Promise<BillOutcome> {
+  if (!opts.mayBill) return { state: 'skipped', message: 'The delivery was checked in. Only an owner, admin or manager can add the bill to Accounting, so ask one of them to enter it.' }
+  try {
+    let vendor = tidy(po.vendor_name, 120)
+    if (!vendor && po.vendor_id) {
+      const v = await db.from('vendors').select('name').eq('id', po.vendor_id).eq('shop_id', shopId).maybeSingle()
+      vendor = tidy(v.data?.name, 120)
+    }
+    if (!vendor) return { state: 'failed', message: 'The delivery was checked in, but the order has no vendor name, so the bill was not added. Enter it in Accounting.' }
+    const receipts = await db.from('po_receipts').select('id').eq('po_id', po.id).limit(500)
+    const reference = billReference(po.po_number, Math.max(1, (receipts.data || []).length))
+    const paid = ask.paid === true
+    const made = await addExpense(db, shopId, actor, {
+      date: opts.todayKey, vendor, category: 'parts', amount: ask.amount, reference, memo: `Parts received on ${po.po_number}`,
+      paid: paid, paid_on: paid ? opts.todayKey : '',
+    }, opts.todayKey)
+    if (made.ok) return { state: 'added', amount: made.expense.amount, paid: !!made.expense.paid_on, vendor, reference }
+    if (made.duplicate) return { state: 'duplicate', message: `The delivery was checked in. A bill from ${vendor} for the same amount on the same day is already in Accounting, so a second one was not added.` }
+    if (made.fields?.amount) return { state: 'failed', message: `The delivery was checked in, but the bill was not added. ${made.fields.amount} Enter it in Accounting.` }
+    return { state: 'failed', message: `The delivery was checked in, but the bill was not added. ${made.message}` }
+  } catch (e) {
+    console.error('[inventory] delivery bill:', e instanceof Error ? e.message : e)
+    return { state: 'failed', message: 'The delivery was checked in, but the bill was not added. Enter it in Accounting.' }
+  }
+}
 
 /** Checks a delivery in. Counts go up, "on order" goes down, and cost updates the way the person chose. Repeating the same key counts once. */
-export async function receivePo(db: Db, shopId: string, actor: Actor, id: string, input: ReceiveInput): Promise<{ ok: true; status: PoStatus; duplicate: boolean; missing: string[] } | Failure> {
+export async function receivePo(db: Db, shopId: string, actor: Actor, id: string, input: ReceiveInput, opts: ReceiveOptions = { mayBill: false, todayKey: '' }): Promise<{ ok: true; status: PoStatus; duplicate: boolean; missing: string[]; bill: BillOutcome | null } | Failure> {
   const key = tidy(input.receipt_key, 80)
   if (key.length < 8) return fail(400, 'The delivery could not be checked for repeats. Refresh and try again.')
   const method = (['keep', 'latest', 'average'] as CostMethod[]).find(m => m === input.cost_method)
@@ -545,8 +581,19 @@ export async function receivePo(db: Db, shopId: string, actor: Actor, id: string
   const items = (Array.isArray(input.items) ? input.items : []).map(i => { const o = (i && typeof i === 'object' ? i : {}) as Row; return { lineId: tidy(o.line_id, 64), qty: Number(o.qty) || 0 } })
   const loaded = await loadPo(db, shopId, id)
   if (!loaded.ok) return loaded
+  // A delivery that was already counted (a retry after a dropped connection) is answered as "already counted" by the database function.
+  // Checking it again against the order as it is now would call it "more than was ordered", which is wrong: it was fine when it was counted.
+  const seen = await db.from('po_receipts').select('receipt_key').eq('po_id', id).eq('receipt_key', key).limit(1)
+  const repeat = !seen.error && (seen.data || []).length > 0
   const check = checkReceipt(loaded.po, items, input.allow_over === true)
-  if (!check.ok) return fail(400, check.problems[0], { fields: { items: check.problems.join(' ') } })
+  if (!repeat && !check.ok) return fail(400, check.problems[0], { fields: { items: check.problems.join(' ') } })
+  const ask = input.bill && typeof input.bill === 'object' && !Array.isArray(input.bill) && (input.bill as Row).add === true ? (input.bill as Row) : null
+  // A bill that cannot be right is refused before anything is counted, so nobody has to undo a delivery to fix a typo in the amount.
+  if (ask) {
+    const amount = money(ask.amount)
+    if (amount === null || Number.isNaN(amount) || amount <= 0) return fail(400, 'Enter the amount on the vendor\'s bill as a number, like 245.50, or turn off adding the bill.', { fields: { bill: 'Enter the amount on the vendor\'s bill as a number, like 245.50.' } })
+    if (amount > 10_000_000) return fail(400, 'That bill amount is more than ten million dollars. Check it.', { fields: { bill: 'That bill amount is more than ten million dollars.' } })
+  }
   const r = await db.rpc('receive_po_lines', {
     p_shop_id: shopId, p_po_id: id, p_receipt_key: key, p_items: items.filter(i => i.qty > 0).map(i => ({ line_id: i.lineId, qty: i.qty })), p_allow_over: input.allow_over === true,
     p_cost_method: method, p_actor_id: actor.userId, p_actor_name: actor.name,
@@ -559,5 +606,8 @@ export async function receivePo(db: Db, shopId: string, actor: Actor, id: string
     return failed(r.error, 'Checking in the delivery')
   }
   const d = (r.data || {}) as Row
-  return { ok: true, status: STATUSES.includes(d.status as PoStatus) ? (d.status as PoStatus) : 'partial', duplicate: d.duplicate === true, missing: Array.isArray(d.missing) ? d.missing.map(String) : [] }
+  const duplicate = d.duplicate === true
+  // The same delivery sent twice (a retry) counted once, so it also gets one bill: nothing is added the second time.
+  const bill = ask && !duplicate ? await billForDelivery(db, shopId, actor, loaded.po, ask, opts) : null
+  return { ok: true, status: STATUSES.includes(d.status as PoStatus) ? (d.status as PoStatus) : 'partial', duplicate, missing: Array.isArray(d.missing) ? d.missing.map(String) : [], bill }
 }

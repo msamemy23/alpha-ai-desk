@@ -13,6 +13,7 @@ import HistorySheet from '@/components/inventory/HistorySheet'
 import OrderSheets from '@/components/inventory/OrderSheets'
 import type { OrderCommand } from '@/components/inventory/OrderSheets'
 import OrdersPanel from '@/components/inventory/OrdersPanel'
+import PricingPanel from '@/components/inventory/PricingPanel'
 import PartFormFields from '@/components/inventory/PartFormFields'
 import ReorderPanel, { buildSuggestions } from '@/components/inventory/ReorderPanel'
 import ReturnsPanel from '@/components/inventory/ReturnsPanel'
@@ -20,14 +21,15 @@ import SectionTabs from '@/components/inventory/SectionTabs'
 import VendorsPanel from '@/components/inventory/VendorsPanel'
 import { useStock } from '@/components/inventory/useStock'
 import { PartList, PartTable } from '@/components/inventory/PartRows'
-import { CATEGORIES, emptyForm, toForm, toRow, validate } from '@/components/inventory/types'
+import { CATEGORIES, emptyForm, extrasChanged, toExtras, toForm, toRow, validate } from '@/components/inventory/types'
 import type { Part, PartErrors, PartForm } from '@/components/inventory/types'
 import { postJson } from '@/lib/client-api'
-import type { StockPart } from '@/lib/inventory-logic'
+import { findByCode, normalizeCode } from '@/lib/inventory-logic'
+import type { PartExtra, StockPart } from '@/lib/inventory-logic'
 
 type Tab = 'all' | 'low' | 'on-order'
 type Panel = null | 'form' | 'delete' | 'discard' | 'history'
-type View = 'parts' | 'reorder' | 'orders' | 'vendors' | 'returns'
+type View = 'parts' | 'reorder' | 'orders' | 'vendors' | 'returns' | 'pricing'
 const COUNT_FIELDS = ['qty_on_hand', 'qty_on_order', 'qty_reorder'] as const
 
 const NO_SHOP = 'We could not find your shop. Try refreshing, or sign out and back in.'
@@ -56,6 +58,11 @@ export default function InventoryPage() {
 
   // Vendors, orders, returns and the reorder list come from /api/inventory. The parts themselves are loaded below.
   const stock = useStock()
+  const ready = stock.state.status === 'ready' ? stock.state.data : null
+  // Barcode, order-up-to, case size, core charge and preferred vendor live beside the part, so a database without them still saves parts.
+  const extraById = useMemo(() => new Map<string, PartExtra>((ready?.extras.value || []).map(x => [x.part_id, x])), [ready])
+  const extrasShownFor = useRef<string | null>(null)
+  const extrasStatus: 'loading' | 'ready' | 'unavailable' = ready ? (ready.extras.state === 'ok' ? 'ready' : 'unavailable') : stock.state.status === 'error' ? 'unavailable' : 'loading'
   const [view, setView] = useState<View>('parts')
   const [orderCmd, setOrderCmd] = useState<OrderCommand | null>(null)
   const [vendorFocus, setVendorFocus] = useState<string | null>(null)
@@ -106,7 +113,22 @@ export default function InventoryPage() {
     closeForm()
   }
   const openNew = () => { const f = emptyForm(); setForm(f); setBaseline(f); setErrors({}); setFormError(''); setCountReason('count'); setEditing('new'); setPanel('form') }
-  const openEdit = (p: Part) => { const f = toForm(p); setForm(f); setBaseline(f); setErrors({}); setFormError(''); setCountReason('count'); setEditing(p.id); setPanel('form') }
+  const openEdit = (p: Part) => {
+    const f = toForm(p, extraById.get(p.id))
+    extrasShownFor.current = ready ? p.id : null
+    setForm(f); setBaseline(f); setErrors({}); setFormError(''); setCountReason('count'); setEditing(p.id); setPanel('form')
+  }
+
+  // A part opened before the barcode and ordering details arrived gets them as soon as they do, as long as nothing was typed in those boxes.
+  useEffect(() => {
+    if (!ready || !editing || editing === 'new' || extrasShownFor.current === editing) return
+    const part = parts.find(p => p.id === editing)
+    if (!part) return
+    extrasShownFor.current = editing
+    const fresh = toForm(part, extraById.get(editing))
+    const pick = (f: PartForm): PartForm => ({ ...f, barcode: fresh.barcode, max_qty: fresh.max_qty, order_multiple: fresh.order_multiple, core_charge: fresh.core_charge, preferred_vendor_id: fresh.preferred_vendor_id })
+    setForm(pick); setBaseline(pick)
+  }, [ready, editing, parts, extraById])
 
   /** A box's message goes away as soon as what is typed in it is fine. */
   const shownErrors = useMemo<PartErrors>(() => {
@@ -120,7 +142,7 @@ export default function InventoryPage() {
     if (saving) return
     const found = validate(form)
     setErrors(found)
-    const first = (['name', 'cost', 'retail_price', 'qty_on_hand', 'qty_reorder', 'qty_on_order'] as const).find(k => found[k])
+    const first = (['name', 'cost', 'retail_price', 'qty_on_hand', 'qty_reorder', 'qty_on_order', 'barcode', 'max_qty', 'order_multiple', 'core_charge'] as const).find(k => found[k])
     if (first) {
       setFormError('')
       requestAnimationFrame(() => document.getElementById(first === 'name' ? 'inv-name' : `inv-${first}`)?.focus())
@@ -132,9 +154,17 @@ export default function InventoryPage() {
       if (!shopId) throw new Error(NO_SHOP)
       const row = toRow(form)
       const now = new Date().toISOString()
+      let savedId: string | null = editing && editing !== 'new' ? editing : null
       if (editing === 'new') {
-        const r = await supabase.from('inventory').insert({ ...row, shop_id: shopId, created_at: now, updated_at: now })
+        const r = await supabase.from('inventory').insert({ ...row, shop_id: shopId, created_at: now, updated_at: now }).select('id').maybeSingle()
         if (r.error) throw new Error(r.error.message)
+        savedId = r.data?.id ? String(r.data.id) : null
+        // From here on this is a saved part: a second tap on Save changes it instead of adding it again.
+        if (savedId) {
+          const saved: PartForm = { ...form, barcode: '', max_qty: '', order_multiple: '', core_charge: '', preferred_vendor_id: '' }
+          extrasShownFor.current = savedId
+          setEditing(savedId); setBaseline(saved)
+        }
       } else if (editing) {
         // The counts go through the server so the change is written to the part's history with who made it and why. Everything else
         // is saved as before.
@@ -152,8 +182,26 @@ export default function InventoryPage() {
           }
         }
       }
+      // Barcode and ordering details are saved on the server; only when one of those boxes was changed, so an old database is never asked.
+      const wasNew = editing === 'new'
+      const base = wasNew ? emptyForm() : baseline
+      if (extrasStatus === 'ready' && extrasChanged(form, base)) {
+        if (!savedId) {
+          void load()
+          closeForm()
+          setFlash({ kind: 'error', text: `${row.name} was added, but its barcode and ordering details were not saved. Open the part and add them again.` })
+          return
+        }
+        const a = await postJson('/api/inventory', { action: 'extras-save', extras: toExtras(form, savedId) })
+        if (!a.ok) {
+          void load(); void stock.reload()
+          if (a.fields.barcode) requestAnimationFrame(() => document.getElementById('inv-barcode')?.focus())
+          throw new Error(`Everything except the barcode and ordering details was saved. ${a.message}`)
+        }
+        void stock.reload()
+      }
       closeForm()
-      setFlash({ kind: 'success', text: `${row.name} was ${editing === 'new' ? 'added to inventory' : 'saved'}.` })
+      setFlash({ kind: 'success', text: `${row.name} was ${wasNew ? 'added to inventory' : 'saved'}.` })
       await load()
     } catch (e) {
       setFormError(`This part was not saved. ${reasonOf(e, 'Check your connection.')} What you typed is still here. Tap Save part to try again.`)
@@ -242,11 +290,11 @@ export default function InventoryPage() {
       if (tab === 'on-order' && !((p.qty_on_order || 0) > 0)) return false
       if (catFilter !== 'All' && !sameCategory(p.category, catFilter)) return false
       if (!words.length) return true
-      const hay = [p.name, p.part_number, p.supplier_part_number, p.brand, p.category, p.supplier, p.location, p.description].map(v => String(v || '').toLowerCase()).join(' ')
+      const hay = [p.name, p.part_number, p.supplier_part_number, p.brand, p.category, p.supplier, p.location, p.description, extraById.get(p.id)?.barcode].map(v => String(v || '').toLowerCase()).join(' ')
       return words.every(w => hay.includes(w))
     })
     return sortInventory(keep, sort)
-  }, [parts, tab, catFilter, sort, words])
+  }, [parts, tab, catFilter, sort, words, extraById])
 
   const totalValue = parts.reduce((sum, p) => sum + (p.qty_on_hand || 0) * (p.cost || 0), 0)
   const outCount = parts.filter(p => stockState(p.qty_on_hand, p.qty_reorder) === 'out').length
@@ -258,7 +306,6 @@ export default function InventoryPage() {
     return pn.length >= 3 ? parts.find(p => p.id !== editing && normPart(p.part_number) === pn) || null : null
   }, [parts, form.part_number, editing])
 
-  const ready = stock.state.status === 'ready' ? stock.state.data : null
   const suggestions = useMemo(() => buildSuggestions(ready, parts as StockPart[]), [ready, parts])
   const sectionCounts = useMemo(() => (ready ? {
     orders: ready.orders.value.filter(o => o.status === 'sent' || o.status === 'partial').length,
@@ -266,6 +313,17 @@ export default function InventoryPage() {
     returns: ready.returns.value.filter(r => r.status === 'open' || r.status === 'shipped').length,
   } : null), [ready])
   const openVendor = (id: string) => { setOrderCmd(null); setVendorFocus(id); setView('vendors') }
+
+  // A scanner types the numbers and presses Enter. When that matches exactly one part by barcode or part number, open it.
+  const openScanned = () => {
+    const hits = findByCode(parts as StockPart[], extraById, search).filter(h => h.why !== 'starts with')
+    if (hits.length === 1) { const p = parts.find(x => x.id === hits[0].part.id); if (p) openEdit(p) }
+  }
+  const formVendors = useMemo(() => (ready?.vendors.value || []).filter(v => v.active || v.id === form.preferred_vendor_id), [ready, form.preferred_vendor_id])
+  const barcodeOwner = useMemo(() => {
+    const code = normalizeCode(form.barcode)
+    return code ? parts.find(p => p.id !== editing && normalizeCode(extraById.get(p.id)?.barcode) === code) || null : null
+  }, [parts, form.barcode, editing, extraById])
 
   const firstLoad = loading && parts.length === 0 && !loadError
   const filtering = tab !== 'all' || catFilter !== 'All' || words.length > 0
@@ -299,6 +357,7 @@ export default function InventoryPage() {
           { value: 'orders', label: 'Orders', count: sectionCounts?.orders },
           { value: 'vendors', label: 'Vendors', count: sectionCounts?.vendors },
           { value: 'returns', label: 'Returns', count: sectionCounts?.returns },
+          { value: 'pricing', label: 'Pricing' },
         ]}
       />
 
@@ -311,6 +370,7 @@ export default function InventoryPage() {
           view === 'reorder' ? <ReorderPanel stock={ready} suggestions={suggestions} onCommand={setOrderCmd} reload={() => void stock.reload()} />
           : view === 'orders' ? <OrdersPanel stock={ready} onCommand={setOrderCmd} reload={() => void stock.reload()} />
           : view === 'vendors' ? <VendorsPanel stock={ready} parts={parts as StockPart[]} act={stock.act} flash={setFlash} reload={() => void stock.reload()} focusId={vendorFocus} onFocused={() => setVendorFocus(null)} />
+          : view === 'pricing' ? <PricingPanel stock={ready} parts={parts as StockPart[]} categories={categories} act={stock.act} flash={setFlash} reload={() => void stock.reload()} onChanged={() => void load()} />
           : <ReturnsPanel stock={ready} parts={parts as StockPart[]} act={stock.act} flash={setFlash} reload={() => void stock.reload()} />
         )
       )}
@@ -349,7 +409,7 @@ export default function InventoryPage() {
 
       {(parts.length > 0 || filtering) && (
         <div className="mb-3 grid grid-cols-2 gap-2 sm:flex sm:flex-row">
-          <SearchField className="col-span-2 sm:min-w-0 sm:flex-1 sm:max-w-md" label="Search name, part number, brand, supplier or shelf" placeholder="Search parts" value={search} onChange={setSearch} />
+          <SearchField className="col-span-2 sm:min-w-0 sm:flex-1 sm:max-w-md" label="Search name, part number, barcode, brand, supplier or shelf" placeholder="Search or scan a barcode" value={search} onChange={setSearch} onEnter={openScanned} />
           <div>
             <label htmlFor="inv-cat" className="sr-only">Category</label>
             <select id="inv-cat" className="form-select sm:w-52" value={catFilter} onChange={e => setCatFilter(e.target.value)}>
@@ -408,6 +468,9 @@ export default function InventoryPage() {
           countReason={countReason}
           onCountReason={setCountReason}
           onHistory={editing && editing !== 'new' ? () => setPanel('history') : undefined}
+          extrasStatus={extrasStatus}
+          vendors={formVendors}
+          barcodeOwner={barcodeOwner}
         />
       </Sheet>
 

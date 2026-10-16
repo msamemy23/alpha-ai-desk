@@ -7,9 +7,9 @@ import Icon from '@/components/Icon'
 import Notice from '@/components/Notice'
 import Sheet from '@/components/Sheet'
 import { newKey } from '@/lib/client-api'
-import { checkReceipt, COST_METHODS, PO_STATUS_LABEL } from '@/lib/inventory-logic'
-import type { CostMethod, PoStatus, PurchaseOrder, StockPart } from '@/lib/inventory-logic'
-import { parseCount, roundCents } from '@/lib/list-logic'
+import { billOutcomeWords, checkReceipt, COST_METHODS, PO_STATUS_LABEL, receiptAmount } from '@/lib/inventory-logic'
+import type { BillOutcome, CostMethod, PoStatus, PurchaseOrder, StockPart } from '@/lib/inventory-logic'
+import { parseCount, parseMoney, roundCents } from '@/lib/list-logic'
 import type { StockAct } from './useStock'
 import { usd } from '@/lib/inventory-view'
 
@@ -18,10 +18,12 @@ import { usd } from '@/lib/inventory-view'
  * changes only the way the person picks. The delivery has a key made when this opens, so a second tap or a retry after a dropped
  * connection counts it once.
  */
-export default function ReceiveOrder({ po, parts, act, onClose, onDone }: {
+export default function ReceiveOrder({ po, parts, act, canBill, onClose, onDone }: {
   po: PurchaseOrder
   parts: StockPart[]
   act: StockAct
+  /** The signed-in person may enter bills in Accounting (owner, admin, manager). Nobody else is shown the bill choice. */
+  canBill: boolean
   onClose: () => void
   onDone: (text: string, warn: string) => void
 }) {
@@ -32,6 +34,10 @@ export default function ReceiveOrder({ po, parts, act, onClose, onDone }: {
   const [key] = useState(() => newKey('rcv'))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  // The bill from the vendor. The amount starts as what arrived (cost plus any core charge) and stays whatever the person types.
+  const [addBill, setAddBill] = useState(canBill)
+  const [billPaid, setBillPaid] = useState(false)
+  const [billText, setBillText] = useState<string | null>(null)
 
   const items = open.map(l => ({ lineId: l.id, qty: parseCount(qty[l.id] ?? '') ?? 0 }))
   const bad = open.filter(l => (qty[l.id] ?? '').trim() !== '' && parseCount(qty[l.id]) === null)
@@ -42,20 +48,30 @@ export default function ReceiveOrder({ po, parts, act, onClose, onDone }: {
     return p && n > 0 && l.unit_cost > 0 && roundCents(l.unit_cost) !== roundCents(p.cost ?? 0)
   })
   const units = check.units
+  const suggested = useMemo(() => receiptAmount(po, items), [po, items])
+  const billShown = billText ?? (suggested > 0 ? suggested.toFixed(2) : '')
+  const billAmount = parseMoney(billShown)
+  const billBad = addBill && (billAmount === null || billAmount <= 0)
 
   const submit = async () => {
     if (saving) return
     if (bad.length) { setError(`${bad[0].description}: enter how many arrived as a whole number.`); return }
     if (!check.ok) { setError(check.problems[0] || 'Check the delivery.'); return }
+    if (billBad) { setError('Enter the amount on the vendor\'s bill as a number, like 245.50, or turn off adding the bill.'); return }
     setSaving(true); setError('')
-    const r = await act<{ status: PoStatus; duplicate: boolean; missing: string[] }>({
+    const r = await act<{ status: PoStatus; duplicate: boolean; missing: string[]; bill: BillOutcome | null }>({
       action: 'po-receive', id: po.id,
-      receipt: { receipt_key: key, items: items.filter(i => i.qty > 0).map(i => ({ line_id: i.lineId, qty: i.qty })), allow_over: allowOver, cost_method: method },
+      receipt: {
+        receipt_key: key, items: items.filter(i => i.qty > 0).map(i => ({ line_id: i.lineId, qty: i.qty })), allow_over: allowOver, cost_method: method,
+        ...(canBill && addBill ? { bill: { add: true, amount: billAmount, paid: billPaid } } : {}),
+      },
     })
     setSaving(false)
     if (r.ok) {
-      const warn = r.data.missing?.length ? `${r.data.missing.length === 1 ? 'One part was' : `${r.data.missing.length} parts were`} no longer in your inventory, so only the order was updated for ${r.data.missing.length === 1 ? 'it' : 'them'}.` : ''
-      onDone(r.data.duplicate ? `That delivery was already checked in on ${po.po_number}. Nothing was counted twice.` : `Checked in ${units} ${units === 1 ? 'part' : 'parts'} on ${po.po_number}. The order is now ${PO_STATUS_LABEL[r.data.status].toLowerCase()}.`, warn)
+      const gone = r.data.missing?.length ? `${r.data.missing.length === 1 ? 'One part was' : `${r.data.missing.length} parts were`} no longer in your inventory, so only the order was updated for ${r.data.missing.length === 1 ? 'it' : 'them'}.` : ''
+      const bill = billOutcomeWords(r.data.bill)
+      const warn = [gone, bill].filter(Boolean).join(' ')
+      onDone(r.data.duplicate ? `That delivery was already checked in on ${po.po_number}. Nothing was counted twice.${canBill && addBill ? ' If you wanted its bill added, look in Accounting under Bills.' : ''}` : `Checked in ${units} ${units === 1 ? 'part' : 'parts'} on ${po.po_number}. The order is now ${PO_STATUS_LABEL[r.data.status].toLowerCase()}.`, warn)
       return
     }
     setError(r.needsUpdate ? 'Receiving needs a one-time update to your Alpha Desk database first.' : r.message)
@@ -116,6 +132,24 @@ export default function ReceiveOrder({ po, parts, act, onClose, onDone }: {
           )}
         </fieldset>
 
+        {canBill && (
+          <fieldset className="rounded-md border border-border p-3">
+            <legend className="px-1 text-[0.9375rem] font-bold">The vendor&apos;s bill</legend>
+            <label className="flex min-h-[44px] cursor-pointer items-start gap-3 rounded-md px-2 py-2 hover:bg-bg-hover">
+              <input type="checkbox" className="mt-1 h-5 w-5 shrink-0" checked={addBill} onChange={e => setAddBill(e.target.checked)} />
+              <span><span className="block font-bold">Add this delivery to my bills in Accounting</span><span className="block text-[0.875rem] text-text-secondary">One bill under Parts bought, with {po.po_number} on it{po.vendor_name ? `, from ${po.vendor_name}` : ''}. Skip this if you enter the vendor&apos;s bill yourself.</span></span>
+            </label>
+            {addBill && (
+              <div className="mt-2 space-y-2 pl-2">
+                <Field id="rc-bill" label="Amount on the vendor's bill" hint={suggested > 0 ? `The parts that arrived come to ${usd(suggested)}, cores included. Change it to match the paper bill (freight, tax).` : 'Type the total from the paper bill.'} error={billBad ? 'Enter the amount as a number, like 245.50.' : undefined}>
+                  <input id="rc-bill" className="form-input num" inputMode="decimal" autoComplete="off" value={billShown} onChange={e => setBillText(e.target.value)} placeholder="0.00" {...(billBad ? { 'aria-invalid': true as const, 'aria-describedby': 'rc-bill-err' } : {})} />
+                </Field>
+                <label className="flex min-h-[44px] cursor-pointer items-center gap-3 px-1"><input type="checkbox" className="h-5 w-5" checked={billPaid} onChange={e => setBillPaid(e.target.checked)} /><span>Already paid today<span className="block text-[0.875rem] text-text-secondary">Leave this off for a bill you still owe. It then shows under Bills to pay.</span></span></label>
+              </div>
+            )}
+          </fieldset>
+        )}
+
         {check.over.length > 0 && (
           <Notice kind="warn">
             <p className="font-bold">More than was ordered</p>
@@ -126,7 +160,7 @@ export default function ReceiveOrder({ po, parts, act, onClose, onDone }: {
         {error && <FormError>{error}</FormError>}
 
         <FormActions>
-          <button type="submit" className="btn btn-primary" disabled={saving || units === 0}><Icon name="box" className="h-5 w-5" />{saving ? 'Checking in…' : units > 0 ? `Check in ${units} ${units === 1 ? 'part' : 'parts'}` : 'Check in'}</button>
+          <button type="submit" className="btn btn-primary" disabled={saving || units === 0 || billBad}><Icon name="box" className="h-5 w-5" />{saving ? 'Checking in…' : units > 0 ? `Check in ${units} ${units === 1 ? 'part' : 'parts'}` : 'Check in'}</button>
           <button type="button" className="btn btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
         </FormActions>
       </form>

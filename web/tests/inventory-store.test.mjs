@@ -488,3 +488,120 @@ test('sales for the reorder suggestions skip drafts and voids and read old lines
   const lines = await loadSoldLines(db, SHOP, '2026-08-01')
   assert.deepEqual(lines, [{ date: '2026-10-02', name: 'Oil filter', qty: 2 }, { date: '2026-10-02', name: 'Wipers', qty: 1 }])
 })
+
+/* ---------- the bill that goes with a delivery ---------- */
+
+const sentOrder = async (db) => {
+  const po = await savePoDraft(db, SHOP, ME, null, poInput())
+  await markPoSent(db, SHOP, ME, po.id, 'phone')
+  return { po, lines: db.tables.purchase_order_lines.filter(l => l.po_id === po.id) }
+}
+const BILLER = { mayBill: true, todayKey: '2026-10-16' }
+
+test('receiving with a bill: the delivery is counted and one bill lands in Accounting under Parts bought, with the order number on it', async () => {
+  const db = withVendor(); db.tables.expenses = []
+  const { po, lines } = await sentOrder(db)
+  const r = await receivePo(db, SHOP, ME, po.id, { receipt_key: 'receipt-bill01', cost_method: 'keep', items: [{ line_id: lines[0].id, qty: 10 }], bill: { add: true, amount: 49.5, paid: false } }, BILLER)
+  assert.equal(r.ok, true)
+  assert.equal(r.bill.state, 'added')
+  assert.equal(db.tables.expenses.length, 1)
+  const e = db.tables.expenses[0]
+  assert.deepEqual([e.vendor, e.category, e.amount, e.reference, e.date, e.paid_on, e.shop_id], ['Fake Parts Supply', 'parts', 49.5, 'PO-0001', '2026-10-16', null, SHOP])
+  assert.match(e.memo, /Parts received on PO-0001/)
+  assert.equal(db.tables.inventory.find(x => x.id === 'p1').qty_on_hand, 16, 'the shelf count still went up')
+})
+
+test('a bill marked already paid carries today as the paid day', async () => {
+  const db = withVendor(); db.tables.expenses = []
+  const { po, lines } = await sentOrder(db)
+  const r = await receivePo(db, SHOP, ME, po.id, { receipt_key: 'receipt-bill02', cost_method: 'keep', items: [{ line_id: lines[0].id, qty: 2 }], bill: { add: true, amount: '9.00', paid: true } }, BILLER)
+  assert.equal(r.bill.paid, true)
+  assert.equal(db.tables.expenses[0].paid_on, '2026-10-16')
+})
+
+test('no bill is added unless asked, and none is added by someone who may not enter bills', async () => {
+  const db = withVendor(); db.tables.expenses = []
+  const { po, lines } = await sentOrder(db)
+  const none = await receivePo(db, SHOP, ME, po.id, { receipt_key: 'receipt-bill03', cost_method: 'keep', items: [{ line_id: lines[0].id, qty: 1 }] }, BILLER)
+  assert.equal(none.bill, null)
+  const tech = await receivePo(db, SHOP, ME, po.id, { receipt_key: 'receipt-bill04', cost_method: 'keep', items: [{ line_id: lines[0].id, qty: 1 }], bill: { add: true, amount: 4.5, paid: false } }, { mayBill: false, todayKey: '2026-10-16' })
+  assert.equal(tech.ok, true, 'the delivery is still counted')
+  assert.equal(tech.bill.state, 'skipped')
+  assert.match(tech.bill.message, /Only an owner, admin or manager/)
+  const old = await receivePo(db, SHOP, ME, po.id, { receipt_key: 'receipt-bill05', cost_method: 'keep', items: [{ line_id: lines[0].id, qty: 1 }], bill: { add: true, amount: 4.5, paid: false } })
+  assert.equal(old.bill.state, 'skipped', 'a caller that passes no options never adds a bill')
+  assert.equal(db.tables.expenses.length, 0)
+  assert.equal(db.tables.inventory.find(x => x.id === 'p1').qty_on_hand, 9, 'three deliveries of one')
+})
+
+test('a bill amount that cannot be right is refused before anything is counted', async () => {
+  const db = withVendor(); db.tables.expenses = []
+  const { po, lines } = await sentOrder(db)
+  for (const amount of ['', 'abc', 0, -5, 20_000_000]) {
+    const r = await receivePo(db, SHOP, ME, po.id, { receipt_key: 'receipt-bad001', cost_method: 'keep', items: [{ line_id: lines[0].id, qty: 3 }], bill: { add: true, amount, paid: false } }, BILLER)
+    assert.equal(r.ok, false, `amount ${JSON.stringify(amount)}`)
+    assert.equal(r.status, 400)
+    assert.ok(r.fields.bill)
+  }
+  assert.equal(db.tables.inventory.find(x => x.id === 'p1').qty_on_hand, 6, 'nothing was counted')
+  assert.equal(db.tables.po_receipts?.length || 0, 0)
+  assert.equal(db.tables.expenses.length, 0)
+})
+
+test('sending the same delivery twice adds the bill once', async () => {
+  const db = withVendor(); db.tables.expenses = []
+  const { po, lines } = await sentOrder(db)
+  const input = { receipt_key: 'receipt-twice1', cost_method: 'keep', items: [{ line_id: lines[0].id, qty: 5 }], bill: { add: true, amount: 22.5, paid: false } }
+  const a = await receivePo(db, SHOP, ME, po.id, input, BILLER)
+  const b = await receivePo(db, SHOP, ME, po.id, input, BILLER)
+  assert.equal(a.bill.state, 'added')
+  assert.equal(b.duplicate, true)
+  assert.equal(b.bill, null)
+  assert.equal(db.tables.expenses.length, 1)
+})
+
+test('a second delivery on the same order gets its own bill, numbered, and the same amount on the same day is flagged instead of doubled', async () => {
+  const db = withVendor(); db.tables.expenses = []
+  const { po, lines } = await sentOrder(db)
+  await receivePo(db, SHOP, ME, po.id, { receipt_key: 'receipt-part01', cost_method: 'keep', items: [{ line_id: lines[0].id, qty: 4 }], bill: { add: true, amount: 18, paid: false } }, BILLER)
+  const second = await receivePo(db, SHOP, ME, po.id, { receipt_key: 'receipt-part02', cost_method: 'keep', items: [{ line_id: lines[0].id, qty: 3 }], bill: { add: true, amount: 13.5, paid: false } }, BILLER)
+  assert.equal(second.bill.state, 'added')
+  assert.equal(second.bill.reference, 'PO-0001 delivery 2')
+  assert.deepEqual(db.tables.expenses.map(e => e.reference).sort(), ['PO-0001', 'PO-0001 delivery 2'])
+  // Someone already typed this very bill by hand today: it is reported, not entered twice.
+  const same = await receivePo(db, SHOP, ME, po.id, { receipt_key: 'receipt-part03', cost_method: 'keep', items: [{ line_id: lines[0].id, qty: 1 }], bill: { add: true, amount: 13.5, paid: false } }, BILLER)
+  assert.equal(same.ok, true)
+  assert.equal(same.bill.state, 'duplicate')
+  assert.match(same.bill.message, /already in Accounting/)
+  assert.equal(db.tables.expenses.length, 2)
+})
+
+test('an order whose vendor is gone is still checked in, and the missing bill is explained', async () => {
+  const db = withVendor(); db.tables.expenses = []
+  const { po, lines } = await sentOrder(db)
+  db.tables.purchase_orders.find(o => o.id === po.id).vendor_name = ''
+  db.tables.vendors = []
+  const r = await receivePo(db, SHOP, ME, po.id, { receipt_key: 'receipt-novend', cost_method: 'keep', items: [{ line_id: lines[0].id, qty: 2 }], bill: { add: true, amount: 9, paid: false } }, BILLER)
+  assert.equal(r.ok, true)
+  assert.equal(r.bill.state, 'failed')
+  assert.match(r.bill.message, /checked in, but the order has no vendor name/)
+  assert.equal(db.tables.inventory.find(x => x.id === 'p1').qty_on_hand, 8)
+  assert.equal(db.tables.expenses.length, 0)
+})
+
+test('retrying a delivery that was already counted says so, even when it was the whole order', async () => {
+  const db = withVendor(); db.tables.expenses = []
+  const { po, lines } = await sentOrder(db)
+  const input = { receipt_key: 'receipt-retry1', cost_method: 'keep', items: [{ line_id: lines[0].id, qty: 10 }, { line_id: lines[1].id, qty: 4 }], bill: { add: true, amount: 157, paid: false } }
+  const a = await receivePo(db, SHOP, ME, po.id, input, BILLER)
+  assert.equal(a.ok, true)
+  assert.equal(a.status, 'received')
+  const b = await receivePo(db, SHOP, ME, po.id, input, BILLER)
+  assert.equal(b.ok, true, 'the answer is "already counted", not "this order is already received"')
+  assert.equal(b.duplicate, true)
+  assert.equal(db.tables.inventory.find(x => x.id === 'p1').qty_on_hand, 16, 'counted once')
+  assert.equal(db.tables.expenses.length, 1, 'billed once')
+  // A different key on a finished order is still refused.
+  const c = await receivePo(db, SHOP, ME, po.id, { ...input, receipt_key: 'receipt-retry2' }, BILLER)
+  assert.equal(c.ok, false)
+})

@@ -296,6 +296,35 @@ export function checkReceipt(po: Pick<PurchaseOrder, 'status' | 'lines'>, items:
   return { ok: problems.length === 0, problems, over, lines, units: lines.reduce((s, l) => s + l.qty, 0) }
 }
 
+/**
+ * What a delivery came to, from the parts that arrived: what each one costs plus any core charge the vendor adds. This is the number
+ * offered when the person records the vendor's bill; they can change it to match the paper bill (freight, tax).
+ */
+export function receiptAmount(po: Pick<PurchaseOrder, 'lines'>, items: ReceiveItem[]): number {
+  let total = 0
+  for (const it of items) {
+    const line = po.lines.find(l => l.id === it.lineId)
+    const qty = Math.max(0, Math.trunc(num(it.qty)))
+    if (line && qty > 0) total += qty * (num(line.unit_cost) + num(line.core_charge))
+  }
+  return roundCents(total)
+}
+
+/** The reference on the bill: the order number, and "delivery 2" when that order has come in more than once. */
+export const billReference = (poNumber: string, deliveryNo: number): string => (deliveryNo > 1 ? `${poNumber} delivery ${Math.trunc(deliveryNo)}` : poNumber)
+
+/** What happened to the bill that goes with a delivery. A bill that was not added never stops the delivery from being checked in. */
+export type BillOutcome =
+  | { state: 'added'; amount: number; paid: boolean; vendor: string; reference: string }
+  | { state: 'duplicate' | 'failed' | 'skipped'; message: string }
+
+/** One sentence for the screen. */
+export function billOutcomeWords(b: BillOutcome | null | undefined): string {
+  if (!b) return ''
+  if (b.state === 'added') return `The bill from ${b.vendor} (${b.reference}) for $${b.amount.toFixed(2)} was added to Accounting${b.paid ? ' as paid' : ' as unpaid'}.`
+  return b.message
+}
+
 export type CostMethod = 'keep' | 'latest' | 'average'
 export const COST_METHODS: { key: CostMethod; label: string; help: string }[] = [
   { key: 'latest', label: 'Use the newest cost', help: 'The part\'s cost becomes what you just paid.' },

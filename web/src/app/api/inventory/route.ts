@@ -67,7 +67,7 @@ export async function POST(req: NextRequest) {
     }
     case 'po-mark-sent': return respond(await markPoSent(db, shopId, actor, id, String(body.via || '')))
     case 'po-cancel': return respond(await cancelPo(db, shopId, actor, id))
-    case 'po-receive': return respond(await receivePo(db, shopId, actor, id, obj(body.receipt)))
+    case 'po-receive': return respond(await receivePo(db, shopId, actor, id, obj(body.receipt), { mayBill: canBuy(c.ctx.role), todayKey: await today() }))
     default: return jsonFail(400, 'That action is not one this screen can do.')
   }
 }

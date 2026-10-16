@@ -202,3 +202,130 @@ test('a screen that sits inside a form is never a form itself (the browser would
     assert.ok(forms <= 1, `${f} has ${forms} forms`)
   }
 })
+
+/* ---------- price rules being written ---------- */
+
+const draftOf = (tiers, over = {}) => ({ tiers: tiers.map((t, i) => ({ key: `k${i}`, category: '', method: 'markup', max: '', ...t })), round_to: 'none', minimum_price: '', ...over })
+
+test('the example ranges are valid, and turn into rules the shop can save', () => {
+  const d = draftOf(v.EXAMPLE_TIERS)
+  const c = v.checkDraft(d)
+  assert.deepEqual(c.problems, [])
+  assert.deepEqual(c.overlaps, [])
+  assert.equal(c.rules.tiers.length, 4)
+  assert.deepEqual(c.rules.tiers[0], { min_cost: 0, max_cost: 10, method: 'markup', pct: 100, category: '' })
+  assert.equal(c.rules.tiers[3].max_cost, null, 'a blank "up to" means no limit')
+})
+
+test('each range that does not make sense is named by its number, in words', () => {
+  const c = v.checkDraft(draftOf([
+    { min: '0', max: '10', pct: '50' },
+    { min: 'abc', max: '', pct: '50' },
+    { min: '10', max: '5', pct: '50' },
+    { min: '10', max: '', pct: '' },
+    { min: '10', max: '', pct: '96', method: 'margin' },
+    { min: '10', max: '', pct: '5000' },
+  ]))
+  assert.deepEqual(c.problems.map(p => p.text.split(':')[0]), ['Range 2', 'Range 3', 'Range 4', 'Range 5', 'Range 6'])
+  assert.match(c.problems[0].text, /Cost from needs a number/)
+  assert.match(c.problems[1].text, /Up to must be more than where the range starts/)
+  assert.match(c.problems[2].text, /markup as a number/)
+  assert.match(c.problems[3].text, /margin has to be under 95%/)
+  assert.equal(c.rules.tiers.length, 1, 'only the good range is carried into the rules')
+  assert.equal(v.checkDraft(draftOf([], { minimum_price: 'x' })).minimumProblem.length > 0, true)
+  assert.equal(v.checkDraft(draftOf([], { minimum_price: '' })).minimumProblem, '')
+})
+
+test('ranges that cover the same costs in the same category are warned about, but different categories are not', () => {
+  const overlap = v.checkDraft(draftOf([{ min: '0', max: '50', pct: '50' }, { min: '40', max: '', pct: '30' }]))
+  assert.equal(overlap.overlaps.length, 1)
+  assert.match(overlap.overlaps[0], /Range 1 and range 2 cover some of the same costs/)
+  assert.equal(v.checkDraft(draftOf([{ min: '0', max: '50', pct: '50' }, { min: '50', max: '', pct: '30' }])).overlaps.length, 0, 'touching is not overlapping')
+  assert.equal(v.checkDraft(draftOf([{ min: '0', max: '50', pct: '50' }, { min: '0', max: '50', pct: '30', category: 'Brakes' }])).overlaps.length, 0)
+  assert.equal(v.checkDraft(draftOf([{ min: '0', max: '50', pct: '50', category: 'brakes' }, { min: '10', max: '60', pct: '30', category: 'Brakes' }])).overlaps.length, 1, 'category match ignores capitals')
+})
+
+test('saved rules go back into text boxes and the same rules compare as the same', () => {
+  const rules = { tiers: [{ min_cost: 0, max_cost: 10, method: 'margin', pct: 40, category: 'Filters' }, { min_cost: 10, max_cost: null, method: 'markup', pct: 25.5, category: '' }], round_to: '0.99', minimum_price: 5 }
+  const d = v.draftFrom(rules)
+  assert.deepEqual(d.tiers.map(t => [t.min, t.max, t.method, t.pct, t.category]), [['0', '10', 'margin', '40', 'Filters'], ['10', '', 'markup', '25.5', '']])
+  assert.equal(d.round_to, '0.99')
+  assert.equal(d.minimum_price, '5')
+  assert.equal(v.sameRules(v.checkDraft(d).rules, rules), true)
+  d.tiers[0].pct = '41'
+  assert.equal(v.sameRules(v.checkDraft(d).rules, rules), false)
+  assert.equal(v.draftFrom({ tiers: [], round_to: 'none', minimum_price: 0 }).minimum_price, '')
+})
+
+test('the summary says what moves and why the rest stays put', () => {
+  const rules = v.checkDraft(draftOf([{ min: '0', max: '10', pct: '100' }])).rules
+  const parts = [
+    part({ id: 'a', cost: 4, retail_price: 5 }),
+    part({ id: 'b', cost: 4, retail_price: 8 }),
+    part({ id: 'c', cost: 5, retail_price: 12 }),
+    part({ id: 'd', cost: 0, retail_price: 3 }),
+    part({ id: 'e', cost: 50, retail_price: 80 }),
+  ]
+  const changes = [{ from: 5, to: 8 }, { from: 12, to: 10 }]
+  const s = v.repriceSummary(parts, rules, changes)
+  assert.deepEqual(s, { up: 1, down: 1, noCost: 1, noRange: 1, unchanged: 1 })
+  assert.equal(v.repriceSummary(parts, rules, [{ from: null, to: 8 }, { from: 0, to: 8 }]).up, 2, 'a part with no price yet counts as going up')
+})
+
+test('the rounding choices match what the rules engine accepts', () => {
+  assert.deepEqual(v.ROUND_CHOICES.map(r => r.key), ['none', '0.99', '0.05', '1'])
+  assert.equal(v.rangeWords({ min_cost: 10, max_cost: 50, method: 'markup', pct: 70, category: '' }), 'Cost $10.00 up to $50.00: 70% markup')
+  assert.equal(v.rangeWords({ min_cost: 150, max_cost: null, method: 'margin', pct: 35, category: 'Brakes' }), 'Cost $150.00 and up: 35% margin on Brakes')
+})
+
+/* ---------- the screens that use them ---------- */
+
+test('pricing: prices change only from a ticked list, after the rules are saved and the person confirms', () => {
+  const panel = src('components/inventory/PricingPanel.tsx')
+  // The one place prices are applied is the confirm step, and nothing applies in an effect or on load.
+  assert.equal((panel.match(/prices-apply/g) || []).length, 1)
+  assert.doesNotMatch(panel.slice(panel.indexOf('useEffect'), panel.indexOf('const problems')), /act\(/)
+  assert.match(panel, /const canApply = canEdit && !dirty && chosen\.length > 0 && !tooMany/)
+  assert.match(panel, /<ConfirmSheet[\s\S]*onConfirm=\{\(\) => void apply\(\)\}/)
+  // The list carries the price the screen showed, so a part someone else changed meanwhile is skipped by the server.
+  assert.match(panel, /from: c\.from, to: c\.to/)
+  // Someone who may not change prices sees it read-only.
+  assert.match(panel, /LookOnly what="Price rules"/)
+  assert.match(panel, /disabled=\{!canEdit\}/)
+  assert.match(src('app/(app)/inventory/page.tsx'), /<PricingPanel[\s\S]*onChanged=\{\(\) => void load\(\)\}/)
+  assert.match(src('app/(app)/inventory/page.tsx'), /\{ value: 'pricing', label: 'Pricing' \}/)
+})
+
+test('barcodes: the box does not submit the part when a scanner presses Enter, the extras are saved only when changed, and a new part is not added twice', () => {
+  const form = src('components/inventory/PartFormFields.tsx')
+  assert.match(form, /onKeyDown=\{e => \{ if \(e\.key === 'Enter'\) e\.preventDefault\(\) \}\}/)
+  assert.match(form, /id="inv-barcode"/)
+  assert.match(form, /Order up to/)
+  assert.match(form, /Case size/)
+  assert.match(form, /Core charge/)
+  assert.match(form, /Preferred vendor/)
+  const page = src('app/(app)/inventory/page.tsx')
+  assert.match(page, /if \(extrasStatus === 'ready' && extrasChanged\(form, base\)\) \{/)
+  assert.equal((page.match(/extras-save/g) || []).length, 1)
+  // Once the part row is in, a second tap on Save changes it instead of adding another.
+  assert.match(page, /setEditing\(savedId\); setBaseline\(saved\)/)
+  assert.match(page, /\.insert\(\{ \.\.\.row, shop_id: shopId, created_at: now, updated_at: now \}\)\.select\('id'\)\.maybeSingle\(\)/)
+  // A scan in the search box finds the part, and Enter opens it when exactly one matches by code.
+  assert.match(page, /extraById\.get\(p\.id\)\?\.barcode/)
+  assert.match(page, /onEnter=\{openScanned\}/)
+  assert.match(page, /h\.why !== 'starts with'/)
+  const types = src('components/inventory/types.ts')
+  assert.match(types, /That barcode does not add up/)
+  assert.match(types, /export const extrasChanged/)
+})
+
+test('receiving: the bill choice is shown only to people who may enter bills, and the amount starts as what arrived', () => {
+  const recv = src('components/inventory/ReceiveOrder.tsx')
+  assert.match(recv, /\{canBill && \(\s*<fieldset/)
+  assert.match(recv, /receiptAmount\(po, items\)/)
+  assert.match(recv, /\.\.\.\(canBill && addBill \? \{ bill: \{ add: true, amount: billAmount, paid: billPaid \} \} : \{\}\)/)
+  assert.match(recv, /Add this delivery to my bills in Accounting/)
+  assert.match(src('components/inventory/OrderSheets.tsx'), /canBill=\{stock\.canBuy\}/)
+  const route = src('app/api/inventory/route.ts')
+  assert.match(route, /case 'po-receive': return respond\(await receivePo\([^\n]*mayBill: canBuy\(c\.ctx\.role\)/)
+})

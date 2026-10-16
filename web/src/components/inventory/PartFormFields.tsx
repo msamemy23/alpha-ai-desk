@@ -8,6 +8,7 @@ import { Field, Section } from '@/components/forms/Field'
 import FormActions from '@/components/forms/FormActions'
 import FormError from '@/components/forms/FormError'
 import { ADJUST_REASONS } from '@/lib/inventory-logic'
+import type { Vendor } from '@/lib/inventory-logic'
 import { money } from './types'
 import type { Part, PartErrors, PartForm } from './types'
 
@@ -18,7 +19,7 @@ const lastOrdered = (v: string) => {
 
 /** Add or change one part. Every box is text, so typing "0.50" or clearing a box behaves the way it looks. */
 export default function PartFormFields({
-  form, setForm, errors, original, categories, duplicate, saving, error, onSave, onCancel, onDelete, countReason, onCountReason, onHistory,
+  form, setForm, errors, original, categories, duplicate, saving, error, onSave, onCancel, onDelete, countReason, onCountReason, onHistory, extrasStatus, vendors, barcodeOwner,
 }: {
   form: PartForm
   setForm: Dispatch<SetStateAction<PartForm>>
@@ -38,6 +39,12 @@ export default function PartFormFields({
   onCountReason: (reason: string) => void
   /** Opens who changed this part's numbers. Only for a part that is already saved. */
   onHistory?: () => void
+  /** Whether the barcode and ordering details can be shown: still loading, ready, or not available on this database yet. */
+  extrasStatus: 'loading' | 'ready' | 'unavailable'
+  /** Vendors to pick a preferred one from. */
+  vendors: Vendor[]
+  /** Another part that already carries the barcode typed, if there is one. */
+  barcodeOwner: Part | null
 }) {
   const set = (k: keyof PartForm) => (e: { target: { value: string } }) => setForm(f => ({ ...f, [k]: e.target.value }))
   const inv = (k: keyof PartErrors) => (errors[k] ? { 'aria-invalid': true as const, 'aria-describedby': `inv-${k}-err` } : {})
@@ -144,6 +151,38 @@ export default function PartFormFields({
             <textarea id="inv-notes" className="form-textarea" rows={2} value={form.notes} onChange={set('notes')} placeholder="Fitment, substitutions, who to call" />
           </Field>
         </div>
+      </Section>
+
+      <Section title="Barcode and ordering">
+        {extrasStatus === 'loading' && <p className="text-[0.9375rem] text-text-secondary" role="status">Loading barcode and ordering details…</p>}
+        {extrasStatus === 'unavailable' && (
+          <Notice kind="info">Barcodes and ordering details are not available right now, so they are left out here. Everything else on this part still saves.</Notice>
+        )}
+        {extrasStatus === 'ready' && (<>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field id="inv-barcode" label="Barcode" error={errors.barcode} hint={barcodeOwner ? `Heads up: ${barcodeOwner.name} already has this barcode.` : 'Scan the label with a USB or Bluetooth scanner, or type the numbers under the bars. Scanning it into Search later finds this part.'} className="sm:col-span-2">
+              <input
+                id="inv-barcode" className="form-input num" inputMode="numeric" autoComplete="off" autoCapitalize="characters" {...inv('barcode')} value={form.barcode} onChange={set('barcode')}
+                onKeyDown={e => { if (e.key === 'Enter') e.preventDefault() }} placeholder="Scan or type"
+              />
+            </Field>
+            <Field id="inv-max_qty" label="Order up to" error={errors.max_qty} hint="When this runs low, Alpha suggests enough to get back up to this many. Blank uses twice the reorder number.">
+              <input id="inv-max_qty" className="form-input num" inputMode="numeric" autoComplete="off" {...inv('max_qty')} value={form.max_qty} onChange={set('max_qty')} placeholder="12" />
+            </Field>
+            <Field id="inv-order_multiple" label="Case size" error={errors.order_multiple} hint="If the vendor sells by the case, orders go up in this many at a time.">
+              <input id="inv-order_multiple" className="form-input num" inputMode="numeric" autoComplete="off" {...inv('order_multiple')} value={form.order_multiple} onChange={set('order_multiple')} placeholder="6" />
+            </Field>
+            <Field id="inv-core_charge" label="Core charge" error={errors.core_charge} hint="A deposit the vendor adds on each one and credits back when you return the old part.">
+              <input id="inv-core_charge" className="form-input num" inputMode="decimal" autoComplete="off" {...inv('core_charge')} value={form.core_charge} onChange={set('core_charge')} placeholder="0.00" />
+            </Field>
+            <Field id="inv-vendor" label="Preferred vendor" hint="New orders for this part start with this vendor.">
+              <select id="inv-vendor" className="form-select" value={form.preferred_vendor_id} onChange={set('preferred_vendor_id')}>
+                <option value="">No preference</option>
+                {vendors.map(v => <option key={v.id} value={v.id}>{v.name}{v.active ? '' : ' (not used anymore)'}</option>)}
+              </select>
+            </Field>
+          </div>
+        </>)}
       </Section>
 
       {error && <FormError>{error}</FormError>}

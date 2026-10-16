@@ -108,7 +108,7 @@ export default function OrderSheets({ command, stock, parts, act, flash, onClose
         />
       )}
       {step.kind === 'receive' && (
-        <ReceiveOrder po={po} parts={parts} act={act} onClose={() => back(po.id)} onDone={(text, warn) => { flash({ kind: 'success', text: warn ? `${text} ${warn}` : text }); back(po.id) }} />
+        <ReceiveOrder po={po} parts={parts} act={act} canBill={stock.canBuy} onClose={() => back(po.id)} onDone={(text, warn) => { flash({ kind: 'success', text: warn ? `${text} ${warn}` : text }); back(po.id) }} />
       )}
       <ConfirmSheet
         open={step.kind === 'marksent'} title={`Mark ${po.po_number} as sent?`} confirmLabel="Mark as sent" busyLabel="Saving…" cancelLabel="Not yet" danger={false} busy={busy} error={error}
