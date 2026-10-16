@@ -412,3 +412,32 @@ them inline labeled "From the web"; AI narrates them honestly. (3) Card fails lo
 engine wall replaced by compact switch chips. 8/8 live-manual matrix + 34/34 tests.
 NOTE: running migration 006 in Supabase makes the cache persistent across servers —
 without it the cache is per-warm-instance only (still works, just colder).
+
+---
+
+## Session: October 15, 2026 (Claude, working as the shop's CEO for Aaron)
+
+Everything below is on `main` and live on alpha-ai-desk.vercel.app. Checks at the end of the session: 1,961 tests pass,
+the type check is clean, lint has 0 errors and 25 warnings (the baseline). The full audit, row by row, is in
+`web/docs/PRODUCT-STANDARD.md`; the database files are tracked in `web/supabase/migrations/README.md`.
+
+### Shipped
+- Ask Alpha can run repair posts (review card first; nothing posts without approval). Needs migration 060.
+- Usual charges (fee presets) in Settings and the canned-job editor for vehicle versions, keywords and extra fees.
+- Everything about one customer in one feed (texts, calls, notes, documents, payments), with the per-kind "could not load" notes.
+- Carrier delivery receipts for texts, and the clock-in location check.
+- Payroll on Reports now follows the shop's own pay-week and overtime rules, the same as Team.
+- Parts price prompt no longer tells the model every store is in Houston.
+- Shop wall: a full-screen, look-only TV view of every open car by technician; customer names off unless the shop turns them on; jump-to-technician chips on phones.
+- Customer "where is my car" page at `/status/<link>` and a Status link section on each job (make, copy, write the text for review, turn off). Needs migration 051 before a link can be made.
+- Command menu: Ctrl or Cmd+K (also `/` and `?`) jumps to any page, starts a job, estimate, invoice, inspection, text or appointment, switches light and dark mode, and still searches customers and paperwork. G then a letter jumps to a main page.
+- Pop-up sheets keep focus in a field that already took it (typing works at once) and return focus to the button that opened them.
+
+### Database
+Twenty files (034 to 056) were applied on 2026-10-15. Six are still waiting for Aaron's yes: 046, 051, 057, 058, 059, 060.
+
+### Rules held all session
+No change to Aaron's AI engine, keys or settings. No customer, invoice, estimate or payment was changed (counts checked: 169 customers, 185 documents, 146 payments, 322 messages, 38 signatures). Nothing was texted, emailed or posted on his behalf. No duplicate or test customers were merged or deleted.
+
+### Still needs Aaron
+Applying the six database files; merging or deleting the roughly twenty duplicate and test customers (his specific yes); Telnyx carrier registration and public key; social, ad, QuickBooks and card-processor accounts; labor guide and parts catalog accounts; the scheduler for the daily job; legal review of wording; key rotation.
