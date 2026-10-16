@@ -380,6 +380,16 @@ test('a waiting post can be skipped; a scheduled one is cancelled; one that went
   const no = await e.skipItem(ports, SHOP, c.item.id)
   assert.equal(no.ok, false)
   assert.match(no.error, /cannot be undone/)
+  // A post that was skipped or cancelled never went out, and must not be described as public.
+  const again = await e.skipItem(ports, SHOP, a.item.id)
+  assert.equal(again.ok, false)
+  assert.equal(again.code, 'wrong_state')
+  assert.match(again.error, /nothing to skip/)
+  assert.match(again.error, /Nothing was posted/)
+  assert.doesNotMatch(again.error, /public|cannot be undone/)
+  const twice = await e.skipItem(ports, SHOP, b.item.id)
+  assert.match(twice.error, /nothing to skip/)
+  assert.doesNotMatch(twice.error, /public|cannot be undone/)
 })
 
 test('taking the yes back cancels every post for the job that has not gone out', async () => {

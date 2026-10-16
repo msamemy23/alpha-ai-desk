@@ -15,7 +15,7 @@ import { captionLimit, joinFacts, vetCaption } from './posts-facts.ts'
 import type { PostFacts } from './posts-facts.ts'
 import {
   ACTIVE_STATES, MAX_CAPTION, MAX_ITEM_PHOTOS, MAX_WAITING, OPEN_STATES, PLATFORM_LABEL, autoDecision, blockers, cleanPlatforms, holdUntil, reachable,
-  resultWords, uncheckedCount, usedThisWeek,
+  resultWords, uncheckedCount, undoInfo, usedThisWeek,
 } from './posts-rules.ts'
 import type {
   Blocker, Connection, DecidedBy, ItemSource, ItemState, MadeBy, PlatformResult, PostMetrics, PostPhoto, PostPlatform, PostSettings, QueueRow,
@@ -348,7 +348,11 @@ export async function confirmOutcome(ports: PostPorts, shopId: string, id: strin
 export async function skipItem(ports: PostPorts, shopId: string, id: string): Promise<Outcome<{ item: QueueRow }>> {
   const item = await ports.store.get(shopId, id)
   if (!item) return fail('not_found', 'That post is not in the queue.')
-  if (!OPEN_STATES.includes(item.state)) return fail('wrong_state', item.state === 'posting' ? 'It is going out now. Wait for the result.' : 'This cannot be undone from Alpha. If it is already public, delete it in the app where it posted.', { item })
+  if (!OPEN_STATES.includes(item.state)) {
+    // Say what is true of this post: still going out, already public (cannot be taken back from here), or simply not waiting any more.
+    const words = undoInfo(item).words
+    return fail('wrong_state', item.state === 'posting' || item.state === 'posted' || item.state === 'partly_posted' ? words : `This post is not waiting, so there is nothing to skip. ${words}`, { item })
+  }
   const to: ItemState = item.state === 'scheduled' ? 'cancelled' : 'skipped'
   const saved = await ports.store.update(shopId, id, { state: to, error: null }, OPEN_STATES)
   if (!saved) return fail('busy', 'This post changed. Open it again.')
