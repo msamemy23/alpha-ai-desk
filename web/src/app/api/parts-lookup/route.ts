@@ -1064,7 +1064,7 @@ Return ONLY valid JSON:
           "store": "AutoZone",
           "evidenceQuote": "Duralast Gold Brake Rotor 31275DL $54.99",
           "inStock": true,
-          "storeLocation": "Houston TX",
+          "storeLocation": "city and state only if the search results show one, otherwise an empty string",
           "quantity": 1
         }
       ],
