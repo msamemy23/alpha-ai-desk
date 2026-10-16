@@ -362,7 +362,7 @@ Screens: Reports > Accounting (Files, Accounts, Bills, Month end, Payroll, Quick
 | Month-end checklist | Not researched | Exists. Accounting, Month end: automatic checks plus manual items, a saved review per month, and a note when numbers changed since it was closed. Closing does not lock invoices. Tests | Exists |
 | Name your accounts the way your accountant does | Not researched | Exists. Accounting, Accounts: tell Alpha Desk what your accountant calls each account so the files import without renaming. Tests | Exists |
 | Export for the accountant | Not researched | Exists. The files above, the Payments file and sales tax by month or quarter, split by the agencies the shop sets | Exists |
-| Payroll export | Clock records feed pay [S28] | Exists. CSV | Exists |
+| Payroll export | Clock records feed pay [S28] | Exists. Reports, Accounting, Payroll shows hours by person and by week and downloads two CSV files. Regular, overtime and double time follow the shop's own rules from Team, Rules (first day of the pay week, weekly and daily overtime, double time), using the same function as the Team screen, so the two screens give the same hours; if the rules cannot be loaded it says so and uses the plain Monday to Sunday, 40-hour week. A double time column is added to the files only when someone earned double time. Before 2026-10-15 this screen always used Monday to Sunday and 40 hours, whatever the shop had set. Hours only; pay is not worked out | Exists |
 | Payroll integration | Not researched | Missing | To build |
 
 ## 15. Parts and inventory
@@ -439,7 +439,7 @@ Screens: Settings, Connected apps, Agents and tools, Setup guide, login.
 | Multi-location | View jobs and techs across shops [S20][S28] | Missing | To build |
 | Setup guide | Not researched | Exists. Three steps | Exists |
 | Help, privacy, terms | Not researched | Exists | Exists |
-| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 1,924 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 1,929 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 
 ## 20. Built-in browser
 
@@ -640,7 +640,7 @@ Why this section: the owner asked about many ways to text (Google Messages for w
 | Phone push | Mobile push [S29] | Missing. The service worker has no push handling, and the only alerts are on screen while the app is open (see section 26) | To build |
 | Security headers | Not researched | Partial. The request middleware sets frame, no-sniff, referrer, strict transport and a permissions policy that allows the camera and microphone for the app and refuses location for every page (which also blocks the clock-in location check; see section 6). A few routes (the older web view, downloads, pictures) set their own strict content policy. There is no site-wide Content-Security-Policy | To build |
 | Error reporting and uptime alerts | Not researched | Missing. No error or uptime service is installed; only the platform's logs and the audit-log repair in the daily job | To build |
-| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 1,924 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 1,929 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 | Backups and restore drill | Not researched | Not verified. Relies on the database host's backups | To build |
 | Keys rotated | Not applicable | Unverified (see Blocked on the owner) | Blocked |
 
@@ -883,7 +883,7 @@ As of 2026-10-15, read again against the code after commits 6bc49f7, 0c2d827, 3c
 
 ## Now reachable since the audit
 
-These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (1,924 passing, the type check clean and lint with 0 errors).
+These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (1,929 passing, the type check clean and lint with 0 errors).
 
 - **Unsubscribe link in marketing emails** (section 24), 6bc49f7. `/api/outreach/unsubscribe` is on the list of addresses that skip sign-in in `web/src/middleware.ts`. Not tried with a real email link.
 - **Report by email on a schedule** (section 13), 6bc49f7. The daily job (`/api/cron`) calls `/api/reports/scheduled` for every shop. Needs `CRON_SECRET` on the host and the shop's email key; I did not check either.

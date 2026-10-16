@@ -7,6 +7,8 @@ import { payrollSummary, payrollSummaryCsv, payrollWeeklyCsv } from '@/lib/payro
 import { fileName } from '@/lib/report-files'
 import { rangeLabel } from '@/lib/reports'
 import { dayLabel, roleLabel } from '@/lib/timeclock'
+import { WEEKDAY_NAMES, describeRules } from '@/lib/timerules'
+import { useRules } from '@/components/team/useTeam'
 import type { Person } from '@/lib/timeclock'
 import { saveText } from './files'
 import { Block, Kpi } from './parts'
@@ -18,20 +20,23 @@ const hrs = (n: number) => `${(Math.round(n * 100) / 100).toLocaleString('en-US'
 /** Hours worked per person from the time clock, for a payroll provider or an accountant to price. Reads the clock; changes nothing. */
 export default function PayrollPanel({ ctx, people, peopleError, retryPeople }: { ctx: Ctx; people: Person[]; peopleError: string; retryPeople: () => void }) {
   const clock = useClockEntries(ctx.range, true)
+  // The shop's own pay-week and overtime rules (Team, Rules), so this screen and the Team screen give the same overtime.
+  const payRules = useRules()
   const [open, setOpen] = useState<number | null>(null)
-  const summary = useMemo(() => payrollSummary(people, clock.entries, ctx.range, clock.now || Date.now()), [people, clock.entries, ctx.range, clock.now])
+  const summary = useMemo(() => payrollSummary(people, clock.entries, ctx.range, clock.now || Date.now(), payRules.rules), [people, clock.entries, ctx.range, clock.now, payRules.rules])
 
   if (peopleError) return <Notice kind="error"><p className="font-bold">The team list did not load</p><p className="mt-0.5 text-text-secondary">{peopleError}</p><button type="button" className="btn btn-secondary mt-2" onClick={retryPeople}>Try again</button></Notice>
   if (clock.error) return <Notice kind="error"><p className="font-bold">The time clock did not load</p><p className="mt-0.5 text-text-secondary">{clock.error}</p><button type="button" className="btn btn-secondary mt-2" onClick={clock.retry}>Try again</button></Notice>
-  if (clock.loading) return <div className="space-y-3" role="status" aria-label="Loading hours"><div className="skeleton h-24" /><div className="skeleton h-40" /></div>
+  if (clock.loading || payRules.loading) return <div className="space-y-3" role="status" aria-label="Loading hours"><div className="skeleton h-24" /><div className="skeleton h-40" /></div>
 
   return (
     <div className="space-y-4">
-      <Notice kind="info">These are hours, not pay. Alpha Desk does not keep pay rates, so give this file to your payroll provider or accountant to price. Overtime is the part of a Monday to Sunday week over 40 hours.</Notice>
+      <Notice kind="info">These are hours, not pay. Alpha Desk does not keep pay rates, so give this file to your payroll provider or accountant to price. Pay weeks run {WEEKDAY_NAMES[summary.rules.weekStart]} to {WEEKDAY_NAMES[(summary.rules.weekStart + 6) % 7]}. {describeRules(summary.rules)} Change this under <Link href="/staff" className="font-bold text-blue underline">Team, Rules</Link>.</Notice>
+      {payRules.error && <Notice kind="warn"><p className="font-bold">Your pay rules did not load</p><p className="mt-0.5 text-text-secondary">These hours use the plain rule, Monday to Sunday with overtime over 40 hours a week, which may differ from your Team rules. {payRules.error}</p><button type="button" className="btn btn-secondary mt-2" onClick={payRules.reload}>Try again</button></Notice>}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Kpi label="Total hours" value={hrs(summary.totalHours)} note={rangeLabel(ctx.range)} />
         <Kpi label="Regular" value={hrs(summary.regularHours)} />
-        <Kpi label="Overtime" value={hrs(summary.overtimeHours)} />
+        <Kpi label="Overtime" value={hrs(summary.overtimeHours)} note={summary.doubleHours > 0 ? `Plus ${hrs(summary.doubleHours)} double time` : undefined} />
         <Kpi label="Need a look" value={String(summary.flagged)} note={summary.flagged ? 'Open or forgotten shifts' : 'Every shift is closed'} />
       </div>
       <Block title="Hours by person" right={
@@ -53,7 +58,7 @@ export default function PayrollPanel({ ctx, people, peopleError, retryPeople }: 
                   <button type="button" className="mt-1 inline-flex min-h-[44px] items-center text-[0.9375rem] font-bold text-blue sm:min-h-[32px]" aria-expanded={open === r.id} onClick={() => setOpen(open === r.id ? null : r.id)}>{open === r.id ? 'Hide weeks' : 'Show by week'}</button>
                   {open === r.id && (
                     <ul className="mb-1 divide-y divide-border rounded-md border border-border px-3">
-                      {r.weeks.map(w => <li key={w.weekStart} className="flex items-baseline justify-between gap-3 py-2 text-[0.9375rem]"><span>Week of {dayLabel(w.weekStart)}{w.partial ? ' (partial)' : ''}</span><span className="num font-bold">{hrs((w.regularMin + w.overtimeMin) / 60)}{w.overtimeMin > 0 ? `, ${hrs(w.overtimeMin / 60)} overtime` : ''}</span></li>)}
+                      {r.weeks.map(w => <li key={w.weekStart} className="flex items-baseline justify-between gap-3 py-2 text-[0.9375rem]"><span>Week of {dayLabel(w.weekStart)}{w.partial ? ' (partial)' : ''}</span><span className="num font-bold">{hrs(w.totalMin / 60)}{w.overtimeMin > 0 ? `, ${hrs(w.overtimeMin / 60)} overtime` : ''}{w.doubleMin > 0 ? `, ${hrs(w.doubleMin / 60)} double time` : ''}</span></li>)}
                     </ul>
                   )}
                 </span>
