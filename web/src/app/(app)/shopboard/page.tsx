@@ -10,14 +10,18 @@ import { byUrgency } from '@/components/jobs/types'
 import AssignSheet from '@/components/shopboard/AssignSheet'
 import type { TechChoice } from '@/components/shopboard/AssignSheet'
 import BoardCard from '@/components/shopboard/BoardCard'
+import JumpChips from '@/components/shopboard/JumpChips'
+import ShopWall, { enterFullScreen } from '@/components/shopboard/ShopWall'
 import TechColumn from '@/components/shopboard/TechColumn'
+import WallSettings from '@/components/shopboard/WallSettings'
+import { useScheduleSettings } from '@/components/schedule/useScheduleSettings'
 import { BOARD_COLUMNS } from '@/components/shopboard/types'
 import { readWithoutMissingColumns } from '@/lib/db-missing'
 import type { BoardJob } from '@/components/shopboard/types'
 import { StatusLine } from '@/components/team/parts'
 import { errText, useClock, useStaff } from '@/components/team/useTeam'
 import { getShopId, supabase } from '@/lib/supabase'
-import { groupByTech, isUnassigned, normName, techValue } from '@/lib/shopboard'
+import { columnId, groupByTech, isUnassigned, jumpChips, normName, techValue, wallColumns, wallSeconds } from '@/lib/shopboard'
 import { dayKey, dayRange, entriesFor, fmtDuration, fmtTimeOfDay, isTechnician, minutesOnDay, roleLabel, statusOf } from '@/lib/timeclock'
 import type { ClockState, Person } from '@/lib/timeclock'
 
@@ -28,6 +32,9 @@ type Note = { kind: 'success' | 'warn'; text: string; undo?: () => void } | null
 const isWorkStage = (status: string) => ['new', 'approved', 'working', 'waiting'].includes(stageOf(status).key)
 
 const UNASSIGNED_KEY = '__unassigned__'
+
+/** The refresh rate when the wall is not showing. */
+const BOARD_REFRESH_MS = 60_000
 
 /** The label used in messages: "Sam Ortiz's 2018 Honda Civic". */
 function carLabel(j: BoardJob): string {
@@ -63,6 +70,12 @@ export default function ShopBoardPage() {
   const [dragId, setDragId] = useState<string | null>(null)
   const [overKey, setOverKey] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<number | null>(null)
+  const [wall, setWall] = useState(false)
+  const [wallSheet, setWallSheet] = useState(false)
+  const [updatedAt, setUpdatedAt] = useState(0)
+  const sched = useScheduleSettings()
+  const board = sched.settings.board
+  const wallSecs = wallSeconds(board.tvSeconds)
 
   const seq = useRef(0)
   /** Saves in flight. A refresh that lands while one is running would put the old name back for a moment, so it waits. */
@@ -85,6 +98,7 @@ export default function ShopBoardPage() {
       if (mine !== seq.current || writes.current > 0) return
       setJobs((data || []) as unknown as BoardJob[])
       setLoadError('')
+      setUpdatedAt(Date.now())
     } catch (e) {
       if (mine !== seq.current) return
       setLoadError(errText(e, 'Check your connection and try again.'))
@@ -95,18 +109,22 @@ export default function ShopBoardPage() {
 
   useEffect(() => {
     void load()
-    const poll = setInterval(() => { if (document.visibilityState === 'visible') void load() }, 60_000)
     const back = () => { if (document.visibilityState === 'visible') void load() }
     document.addEventListener('visibilitychange', back)
     window.addEventListener('focus', back)
     const channel = supabase.channel('shopboard_jobs').on('postgres_changes', { event: '*', schema: 'public', table: 'jobs' }, () => { void load() }).subscribe()
     return () => {
-      clearInterval(poll)
       document.removeEventListener('visibilitychange', back)
       window.removeEventListener('focus', back)
       supabase.removeChannel(channel)
     }
   }, [load])
+
+  // The shop wall refreshes at the pace the shop chose; the board itself once a minute.
+  useEffect(() => {
+    const poll = setInterval(() => { if (document.visibilityState === 'visible') void load() }, (wall ? wallSecs * 1000 : BOARD_REFRESH_MS))
+    return () => clearInterval(poll)
+  }, [load, wall, wallSecs])
 
   // Dragging needs a mouse and room for the columns side by side. Everywhere else, tap a car and pick a name.
   useEffect(() => {
@@ -145,6 +163,24 @@ export default function ShopBoardPage() {
 
   const grouped = useMemo(() => groupByTech(shown, techNames), [shown, techNames])
   const lateCount = useMemo(() => (todayKey ? open.filter(j => dueInfo(j, todayKey)?.tone === 'late').length : 0), [open, todayKey])
+
+  /** One chip per column on a phone, in the order the columns are drawn. */
+  const chips = useMemo(() => {
+    const groups = [
+      { key: UNASSIGNED_KEY, label: 'Unassigned', count: grouped.unassigned.length },
+      ...techPeople.map(p => ({ key: `tech:${p.id}`, label: p.name, count: (grouped.byTech.get(p.name) || []).length })),
+      ...grouped.others.map(o => ({ key: `other:${normName(o.name)}`, label: o.name, count: o.jobs.length })),
+    ]
+    const made = jumpChips(groups)
+    return { list: made, id: new Map(groups.map((g, i) => [g.key, made[i].id])) }
+  }, [grouped, techPeople])
+  const colId = (key: string) => chips.id.get(key) ?? columnId(key)
+
+  /** Every open car, whatever the filter says, for the wall. */
+  const wallData = useMemo(
+    () => (wall ? wallColumns([...open].sort(byUrgency(todayKey)), techNames) : { columns: [], idle: [] as string[] }),
+    [wall, open, techNames, todayKey],
+  )
 
   /** Names that are clocked out right now, for the reminder after a car is given to one of them. */
   const outNames = useMemo(() => {
@@ -304,9 +340,17 @@ export default function ShopBoardPage() {
           <h1 className="page-title">Shop board</h1>
           <p className="page-subtitle num" aria-live="polite">{subtitle}</p>
         </div>
-        <Link href="/jobs?new=1" className="btn btn-primary w-full no-underline sm:w-auto">
-          <Icon name="plus" className="h-5 w-5" />Write up a car
-        </Link>
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:flex-nowrap">
+          <button type="button" className="btn btn-secondary min-w-0 flex-1 sm:flex-none" disabled={!ready} onClick={() => { setWall(true); void enterFullScreen() }}>
+            <Icon name="expand" className="h-5 w-5" />Shop wall
+          </button>
+          <button type="button" className="btn btn-secondary px-3" aria-label="Shop wall settings" onClick={() => setWallSheet(true)}>
+            <Icon name="settings" className="h-5 w-5" />
+          </button>
+          <Link href="/jobs?new=1" className="btn btn-primary w-full no-underline sm:w-auto">
+            <Icon name="plus" className="h-5 w-5" />Write up a car
+          </Link>
+        </div>
       </header>
 
       {note && (
@@ -403,8 +447,11 @@ export default function ShopBoardPage() {
             </p>
           )}
 
+          <JumpChips chips={chips.list} />
+
           <div className="grid gap-3 md:grid-cols-2 lg:flex lg:items-start lg:overflow-x-auto lg:pb-3" role="region" aria-label="Technician columns" tabIndex={0}>
             <TechColumn
+              id={colId(UNASSIGNED_KEY)}
               name="Unassigned"
               sub="Nobody has these yet"
               avatar={false}
@@ -427,6 +474,7 @@ export default function ShopBoardPage() {
               return (
                 <TechColumn
                   key={p.id}
+                  id={colId(`tech:${p.id}`)}
                   name={p.name}
                   sub={roleLabel(p.role)}
                   count={list.length}
@@ -474,6 +522,7 @@ export default function ShopBoardPage() {
               return (
                 <TechColumn
                   key={`other:${normName(o.name)}`}
+                  id={colId(`other:${normName(o.name)}`)}
                   name={o.name}
                   sub={teamMissing ? 'Team list did not load' : gone ? 'No longer on the team' : 'Not on your team list'}
                   count={o.jobs.length}
@@ -490,6 +539,45 @@ export default function ShopBoardPage() {
           )}
         </>
       )}
+
+      {wall && (
+        <ShopWall
+          columns={wallData.columns}
+          idle={wallData.idle}
+          todayKey={todayKey}
+          showNames={board.tvNames}
+          seconds={wallSecs}
+          updatedAt={updatedAt}
+          error={loadError && jobs.length > 0 ? 'The board could not refresh.' : ''}
+          total={open.length}
+          ready={counts.ready}
+          late={lateCount}
+          onExit={() => setWall(false)}
+        />
+      )}
+
+      <Sheet open={wallSheet} onClose={() => setWallSheet(false)} title="Shop wall">
+        {wallSheet && !sched.loaded && <p className="py-6 text-center text-text-secondary" aria-busy="true">Loading the wall settings…</p>}
+        {wallSheet && sched.loaded && sched.error && (
+          <div>
+            <Notice kind="error" className="mb-3">{sched.error} The wall still opens, with no customer names on it.</Notice>
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" className="btn btn-secondary" onClick={() => setWallSheet(false)}>Close</button>
+              <button type="button" className="btn btn-primary" onClick={() => void sched.reload()}>Try again</button>
+            </div>
+          </div>
+        )}
+        {wallSheet && sched.loaded && !sched.error && (
+          <WallSettings
+            board={board}
+            canChange={sched.settings.canChange}
+            migrated={sched.settings.migrated}
+            save={async next => sched.save({ board: next })}
+            onSaved={() => { setWallSheet(false); setProblem(''); setNote({ kind: 'success', text: 'Shop wall settings saved.' }) }}
+            onClose={() => setWallSheet(false)}
+          />
+        )}
+      </Sheet>
 
       <Sheet open={!!openJob} onClose={() => { if (!sheetBusy) setOpenId(null) }} title="Give this car to a technician">
         {openJob && (

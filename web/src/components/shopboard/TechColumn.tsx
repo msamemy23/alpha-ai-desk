@@ -8,8 +8,10 @@ import { Avatar } from '@/components/team/parts'
  * It is also where a dragged car lands.
  */
 export default function TechColumn({
-  name, sub, avatar = true, status, flag, actions, count, over, empty, onDragOver, onDragLeave, onDrop, children,
+  id, name, sub, avatar = true, status, flag, actions, count, over, empty, onDragOver, onDragLeave, onDrop, children,
 }: {
+  /** What a jump chip scrolls to. */
+  id?: string
   name: string
   /** A role, or "Not on your team list". */
   sub?: string
@@ -29,8 +31,9 @@ export default function TechColumn({
 }) {
   return (
     <section
+      id={id}
       aria-label={`${name}, ${count} ${count === 1 ? 'car' : 'cars'}`}
-      className={`rounded-lg border p-2.5 transition-colors lg:w-[16.5rem] lg:shrink-0 ${over ? 'border-blue bg-blue/[0.06]' : 'border-border bg-bg-chrome/50'}`}
+      className={`scroll-mt-20 rounded-lg border p-2.5 transition-colors lg:w-[16.5rem] lg:shrink-0 ${over ? 'border-blue bg-blue/[0.06]' : 'border-border bg-bg-chrome/50'}`}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}

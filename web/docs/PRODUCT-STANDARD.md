@@ -151,8 +151,8 @@ Screens: Jobs, Shop board, Work.
 | Clock a technician in, out or on break from the board | Not researched | Exists. Each technician column has Clock in, Break and Clock out buttons and a Fix time link to Team | Exists |
 | "Needs a look" summary | Not researched | Exists. No tech, late, clocked out with cars in progress | Exists |
 | Hours per technician column | Assigned, completed, remaining hours [S9] | Missing. Each column shows the person's clock status and hours worked, not hours assigned and left. Time on a job is now recorded in Team (section 6), and estimated hours per car are stored by the job-flow table (migration 051, not applied) with no screen | To build |
-| TV or full-screen mode | Not described on the tech board page I read (unverified) | Missing | To build |
-| Jump to a technician on a phone | Not researched | Missing. Long scroll on phones | To build |
+| TV or full-screen mode | Not described on the tech board page I read (unverified) | Exists in code. Shop board, Shop wall button: a full-screen, look-only view with a column per technician who has cars, large type, a clock, and the screen kept awake. Customer names are off unless the shop turns them on (then first name only), and the plate is never shown. It refreshes at the pace the shop picks (the setting beside the button, saved with the schedule settings). Tests; not clicked through on the live app | Exists |
+| Jump to a technician on a phone | Not researched | Exists in code. A row of chips above the columns on a phone and tablet (Unassigned and each technician, with their car count); a tap scrolls to that column. Tests; not clicked through on the live app | Exists |
 | Sent and viewed markers | Paper plane and eye icons [S8] | Missing | To build |
 | Labels on repair orders | Filter by RO label in the app [S18] | Missing on screen. Labels are stored with the job-flow extras (route and tests exist; migration 051 not applied), but no screen sets or shows them. Status and priority are all the board offers | Not reachable |
 | Parts status on the card | Parts need ordering or awaiting delivery [S27] | Partial. Status per part in the document editor, not on the board. A car-level parts status (to order, on order, some in, in) with a due date is written for the board and the customer status link (migration 051, not applied) but no screen sets it or shows it | Not reachable |
@@ -439,7 +439,7 @@ Screens: Settings, Connected apps, Agents and tools, Setup guide, login.
 | Multi-location | View jobs and techs across shops [S20][S28] | Missing | To build |
 | Setup guide | Not researched | Exists. Three steps | Exists |
 | Help, privacy, terms | Not researched | Exists | Exists |
-| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 1,929 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 1,937 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 
 ## 20. Built-in browser
 
@@ -640,7 +640,7 @@ Why this section: the owner asked about many ways to text (Google Messages for w
 | Phone push | Mobile push [S29] | Missing. The service worker has no push handling, and the only alerts are on screen while the app is open (see section 26) | To build |
 | Security headers | Not researched | Partial. The request middleware sets frame, no-sniff, referrer, strict transport and a permissions policy that allows the camera and microphone for the app and refuses location for every page (which also blocks the clock-in location check; see section 6). A few routes (the older web view, downloads, pictures) set their own strict content policy. There is no site-wide Content-Security-Policy | To build |
 | Error reporting and uptime alerts | Not researched | Missing. No error or uptime service is installed; only the platform's logs and the audit-log repair in the daily job | To build |
-| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 1,929 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 1,937 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 | Backups and restore drill | Not researched | Not verified. Relies on the database host's backups | To build |
 | Keys rotated | Not applicable | Unverified (see Blocked on the owner) | Blocked |
 
@@ -720,8 +720,8 @@ Rough size is my estimate (S is days, M is a couple of weeks, L is longer). "Own
 | 10 | Done (2026-10-15 audit). DVI canned-job price lookup | Suggested prices from priced work, fewer typed numbers [S5] | S | |
 | 11 | Done inside each inspection (2026-10-15 audit); not yet on the Vehicles screen. DVI per-vehicle inspection history | Shows what changed since last visit [S7] | S | |
 | 12 | Done (2026-10-15 audit). Tire and brake measurements with warning thresholds | Sells brake and tire work with proof; Autoflow keeps tread per tire [S33] | M | |
-| 13 | Shop board: TV or full-screen mode | For the shop wall | S | |
-| 14 | Shop board: jump-to-technician chips on phones | Long scroll on a phone | S | |
+| 13 | Done (2026-10-15). Shop board: TV or full-screen mode (Shop wall button) | For the shop wall | S | |
+| 14 | Done (2026-10-15). Shop board: jump-to-technician chips on phones | Long scroll on a phone | S | |
 | 15 | Done (2026-10-15 audit). Undo clock-out, for 15 minutes after a clock-out | Mis-taps happen | S | |
 | 16 | Done (2026-10-15). Inbox: AI filter chip, and mark AI inbound calls as read | Owner sees what Alpha answered without clutter | S | |
 | 17 | Labor guide integration | Leaders put labor times in the estimate [S1] | L | Yes |
@@ -883,7 +883,7 @@ As of 2026-10-15, read again against the code after commits 6bc49f7, 0c2d827, 3c
 
 ## Now reachable since the audit
 
-These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (1,929 passing, the type check clean and lint with 0 errors).
+These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (1,937 passing, the type check clean and lint with 0 errors).
 
 - **Unsubscribe link in marketing emails** (section 24), 6bc49f7. `/api/outreach/unsubscribe` is on the list of addresses that skip sign-in in `web/src/middleware.ts`. Not tried with a real email link.
 - **Report by email on a schedule** (section 13), 6bc49f7. The daily job (`/api/cron`) calls `/api/reports/scheduled` for every shop. Needs `CRON_SECRET` on the host and the shop's email key; I did not check either.
@@ -892,6 +892,7 @@ These were on the earlier list of twenty-five. Each is now reached from a screen
 - **Everything about a customer in one feed** (section 7). Customers, open a customer, Everything with this customer. Not clicked through on the live app.
 - **Carrier delivery receipts for texts** (section 12) and **the clock-in location check** (section 6). The text webhook records delivery notices (needs Telnyx event settings and `TELNYX_PUBLIC_KEY`); the security header now lets the app itself ask for location. Neither was tried on the live app.
 - **Usual charges (fee presets) in Settings, and the canned-job editor for vehicle versions, keywords and extra fees** (section 1). Settings, Usual charges; Canned jobs, open a saved job, Edit versions, keywords and fees. Not clicked through on the live app.
+- **Shop wall (TV) and jump-to-technician chips** (section 5). Shop board, Shop wall and the settings button beside it (names on or off, how often it refreshes); the chips show above the columns on a phone. The wall only looks and cannot save anything. Not clicked through on the live app.
 - **Ask Alpha runs repair posts** (section 23), 0a62529. The `posts` tool in `web/src/app/(app)/ai/page.tsx` and `web/src/lib/ai/posts-tools.ts`. Needs 060 before anything works.
 
 ## Still not reachable
