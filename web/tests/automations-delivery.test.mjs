@@ -63,3 +63,17 @@ test('the history table not existing yet is quiet, any other database error is n
   assert.equal(await recordDelivery(fakeDb({ error: { code: '42P01', message: 'missing' } }), { providerMessageId: 'm', status: 'delivered', error: '' }), 0)
   await assert.rejects(recordDelivery(fakeDb({ error: { code: '500', message: 'boom' } }), { providerMessageId: 'm', status: 'delivered', error: '' }), /boom/)
 })
+
+test('the text webhook records carrier delivery notices after the signature check, and leaves inbound texts alone', async () => {
+  const { readFileSync } = await import('node:fs')
+  const route = readFileSync(new URL('../src/app/api/sms/route.ts', import.meta.url), 'utf8')
+  const signature = route.indexOf('verifyTelnyxSignature(rawBody')
+  const delivery = route.indexOf('parseTelnyxDelivery(body)')
+  const inbound = route.indexOf("event.event_type !== 'message.received'")
+  assert.ok(signature > 0 && delivery > signature, 'delivery notices are read only after the signature check')
+  assert.ok(inbound > delivery, 'the inbound-text path comes after, unchanged')
+  assert.match(route, /await recordDelivery\(getServiceClient\(\), delivery\)/)
+  // A failure while recording must not turn into an error answer to the carrier.
+  assert.match(route, /catch \(e\) \{\s*console\.error\('SMS delivery record error:'[\s\S]*?\}\s*return NextResponse\.json\(\{ ok: true \}\)/)
+  assert.match(route, /handleInboundSms\(\{ from, body: text, messageId, toNumber, media, autoResponded \}\)/)
+})

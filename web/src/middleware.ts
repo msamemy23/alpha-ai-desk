@@ -63,7 +63,7 @@ function withSecurityHeaders(res: NextResponse) {
   res.headers.set('X-Content-Type-Options', 'nosniff')
   res.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
   res.headers.set('Strict-Transport-Security', 'max-age=63072000; includeSubDomains')
-  res.headers.set('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=()')
+  res.headers.set('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=(self)')
   return res
 }
 

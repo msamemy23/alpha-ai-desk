@@ -2,6 +2,8 @@ export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyTelnyxSignature } from '@/lib/telnyx-verify'
 import { handleInboundSms } from '@/lib/sms-inbound'
+import { parseTelnyxDelivery, recordDelivery } from '@/lib/automation-delivery'
+import { getServiceClient } from '@/lib/supabase'
 import { parseCarrierMedia } from '@/lib/voice/media'
 import { waitUntil } from '@vercel/functions'
 
@@ -20,7 +22,19 @@ export async function POST(req: NextRequest) {
     const body = JSON.parse(rawBody)
     const event = body?.data as Record<string, unknown> | undefined
 
-    // Only handle inbound SMS — ignore delivery receipts, status updates, etc.
+    // The carrier's answer for a text we sent (delivered, or why not) goes onto the message in the automation history.
+    // This only runs for notices that passed the signature check above, and a failure here never changes the reply to Telnyx.
+    const delivery = parseTelnyxDelivery(body)
+    if (delivery) {
+      try {
+        await recordDelivery(getServiceClient(), delivery)
+      } catch (e) {
+        console.error('SMS delivery record error:', e instanceof Error ? e.message : e)
+      }
+      return NextResponse.json({ ok: true })
+    }
+
+    // Only handle inbound SMS — other status updates are ignored.
     if (!event || event.event_type !== 'message.received') {
       return NextResponse.json({ ok: true })
     }

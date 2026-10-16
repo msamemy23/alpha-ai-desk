@@ -34,7 +34,7 @@ Alpha AI Desk is an AI office manager and shop-management web app for independen
 1. **Taking money.** Tekmetric sends a pay link by text and keeps cards on file; both Tekmetric and Shopmonkey run card terminals and track payouts and fees; Shopmonkey sends payable invoices by text or email [S3][S4][S22]. Alpha only records a payment someone received. There is no processor, no link, no card on file, and no QuickBooks sync.
 2. **Shop data and time.** The leaders put labor guides, parts catalogs and per-job time inside the estimate and the tech board [S1][S2][S25][S9]. Alpha now records time on a job (Team) and shows technician efficiency, effective labor rate and gross profit in Reports, but it still has no labor guide and no parts catalog, and the board columns still do not show hours assigned and hours left.
 3. **Customer-facing AI that is safe and hands off.** The best call agents tell callers they are AI, transfer to a person and book the appointment [S41][S43][S45]. Alpha's agent now does all three in code, uses the shop's own hours and rules, and every AI call the owner starts goes through a review card and the do-not-call and calling-hours check. What is left is proof and reach: it is covered by tests with simulated Telnyx events but has not been tried on a live call, texts to customers wait on carrier registration, the owner cannot listen in without being heard, and the join-a-call route has no button.
-4. **Built but not reachable.** Fourteen items are still written and tested but no screen, schedule or setting lets Aaron use them (the declined-work list that nothing fills, purchase orders, good, better, best options, the customer's answer panel, the one-feed customer view and more; the list is at the end). Since the audit nine of the earlier twenty-five were wired up. The one that mattered most is done in code: the unsubscribe link in marketing emails is now let through the sign-in wall (6bc49f7), so a customer can unsubscribe; it has not been tried with a real email link (section 24). Report emails, customer import and export, tags and groups, void, change history, templates, parts pricing rules and Ask Alpha for repair posts are also on screens now (see "Now reachable since the audit" at the end).
+4. **Built but not reachable.** Twelve items are still written and tested but no screen, schedule or setting lets Aaron use them (the declined-work list that nothing fills, purchase orders, good, better, best options, the customer's answer panel, the one-feed customer view and more; the list is at the end). Since the audit nine of the earlier twenty-five were wired up. The one that mattered most is done in code: the unsubscribe link in marketing emails is now let through the sign-in wall (6bc49f7), so a customer can unsubscribe; it has not been tried with a real email link (section 24). Report emails, customer import and export, tags and groups, void, change history, templates, parts pricing rules and Ask Alpha for repair posts are also on screens now (see "Now reachable since the audit" at the end).
 
 ## Where Alpha is already ahead or different
 
@@ -177,7 +177,7 @@ Screens: Team (route `/staff`), Reports > Technicians.
 | Payroll file | Clock records feed pay [S28] | Exists. Three CSV files for a pay period (Hours by person, Every punch, Hours by day), safe against spreadsheet formula tricks; anyone not yet approved is named first. Hours only; pay is not worked out | Exists |
 | Approve a pay period | Not researched | Exists. Review one person's period and approve it; an approved period is locked until the approval is removed | Exists |
 | Payroll integration | Not researched | Missing | To build |
-| Location check at clock-in | Shops can require location sharing [S25] | Built, but a browser cannot use it. Team, Rules sets the shop's spot and a radius, and clock-in asks the device where it is and keeps only inside, outside or unknown. The app's security headers (src/middleware.ts) send geolocation=() which tells the browser to refuse location for every page, so the check and "Use my location" would always report location blocked. Tests cover the distance rules, not the header | Not reachable |
+| Location check at clock-in | Shops can require location sharing [S25] | Exists in code, checked by tests. Team, Rules sets the shop's spot and a radius, and clock-in asks the device where it is, once, only when the shop turned the check on, and keeps only inside, outside or unknown. The app's security headers (src/middleware.ts) used to send geolocation=() which made every browser refuse location; they now send geolocation=(self), so only the app itself may ask and the person still has to allow it in the browser. Not tried on a phone | Exists |
 | Activity log by employee | Actions on orders and parts per employee [S28] | Partial. Every change to a person's punches is logged with what it was, what it became, why and when, and a removed punch can be put back. Not a log of orders and parts handled | To build |
 | Flat-rate or commission pay | Not described on the Shop-Ware page [S28] (unverified) | Missing. A pay rate per person is kept (owners and admins only) for a rough cost on the efficiency screen; it never goes into a payroll file | To build |
 
@@ -314,7 +314,7 @@ Screens: Automations.
 | Safe against double runs | Not researched | Exists. Leases and fencing in migrations 040, 048, 054, 060 | Exists |
 | Quiet hours | Not researched | Exists. No texts 9 PM to 8 AM by each customer's own clock (from their area code), longer if you choose, Sundays optional. Messages wait for morning instead of being dropped | Exists |
 | Run history | Not researched | Exists. History tab lists every message with who, what was said, when and what happened (sent, waiting, left out and why, did not send), plus every run; failures also email the owner. A carrier's "delivered" or "could not deliver" is not recorded yet, because the text webhook ignores delivery receipts | Exists |
-| Delivered or failed at the carrier, per text | Delivery status for each message sent [S13] | Not reachable. The reader for Telnyx delivery notices and the code that writes them onto the history are written and tested (`lib/automation-delivery.ts`), but the text webhook (`/api/sms`) handles inbound texts only and ignores delivery receipts, so history never shows delivered or undelivered | Not reachable |
+| Delivered or failed at the carrier, per text | Delivery status for each message sent [S13] | Blocked. The text webhook (`/api/sms`) now passes Telnyx delivery notices to the recorder (`lib/automation-delivery.ts`) after the signature check, so history can show delivered, not delivered and the carrier's reason; inbound text handling is unchanged. It only works once Telnyx is set to send message events to this address and `TELNYX_PUBLIC_KEY` is set on the host (the webhook refuses every request without it), and only for texts sent through Telnyx. Not tried with a real text | Blocked |
 | Master off switch | Not researched | Exists. One switch pauses every automation and promotion and cancels what is waiting; each automation also has its own switch | Exists |
 | Rules for all automations | Not researched | Exists. Quiet hours, Sundays, marketing and service limits, failure-alert email, in one Rules sheet | Exists |
 | Results per automation | Sent, replied, booked [S13] | Exists. Sent, replied, booked and paid afterwards over 7, 30 or 90 days; each reply, booking or payment is credited once to the last message that customer got. Delivered is not counted yet, because the text webhook ignores delivery receipts | Exists |
@@ -439,7 +439,7 @@ Screens: Settings, Connected apps, Agents and tools, Setup guide, login.
 | Multi-location | View jobs and techs across shops [S20][S28] | Missing | To build |
 | Setup guide | Not researched | Exists. Three steps | Exists |
 | Help, privacy, terms | Not researched | Exists | Exists |
-| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 1,884 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 1,887 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 
 ## 20. Built-in browser
 
@@ -640,7 +640,7 @@ Why this section: the owner asked about many ways to text (Google Messages for w
 | Phone push | Mobile push [S29] | Missing. The service worker has no push handling, and the only alerts are on screen while the app is open (see section 26) | To build |
 | Security headers | Not researched | Partial. The request middleware sets frame, no-sniff, referrer, strict transport and a permissions policy that allows the camera and microphone for the app and refuses location for every page (which also blocks the clock-in location check; see section 6). A few routes (the older web view, downloads, pictures) set their own strict content policy. There is no site-wide Content-Security-Policy | To build |
 | Error reporting and uptime alerts | Not researched | Missing. No error or uptime service is installed; only the platform's logs and the audit-log repair in the daily job | To build |
-| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 1,884 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 1,887 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 | Backups and restore drill | Not researched | Not verified. Relies on the database host's backups | To build |
 | Keys rotated | Not applicable | Unverified (see Blocked on the owner) | Blocked |
 
@@ -748,7 +748,7 @@ Rough size is my estimate (S is days, M is a couple of weeks, L is longer). "Own
 | 38 | Error reporting, uptime alerts, Content-Security-Policy, backup drill | Section 30 | M | |
 | 39 | Done in code (6bc49f7). Fix the customer unsubscribe link: `/api/outreach/unsubscribe` is now on the public paths in `web/src/middleware.ts`. Still to do: try a real link | Every marketing email links to it; before the fix a customer who was not signed in got "Unauthorized" and could not unsubscribe (section 24) | S | |
 | 40 | The customer status page for "where is my car", plus a button that makes and texts the link | The data route exists, the page and the button do not; needs 051 (section 24) | M | Yes |
-| 41 | Give each built-but-not-reachable item its one missing step, most valuable first | See "Built but not reachable" at the end of this document (fourteen items are left) | M | |
+| 41 | Give each built-but-not-reachable item its one missing step, most valuable first | See "Built but not reachable" at the end of this document (twelve items are left) | M | |
 
 ---
 
@@ -883,12 +883,13 @@ As of 2026-10-15, read again against the code after commits 6bc49f7, 0c2d827, 3c
 
 ## Now reachable since the audit
 
-These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (1,884 passing, the type check clean and lint with 0 errors).
+These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (1,887 passing, the type check clean and lint with 0 errors).
 
 - **Unsubscribe link in marketing emails** (section 24), 6bc49f7. `/api/outreach/unsubscribe` is on the list of addresses that skip sign-in in `web/src/middleware.ts`. Not tried with a real email link.
 - **Report by email on a schedule** (section 13), 6bc49f7. The daily job (`/api/cron`) calls `/api/reports/scheduled` for every shop. Needs `CRON_SECRET` on the host and the shop's email key; I did not check either.
 - **Customer CSV export and import, tags and groups, a car's service history on the customer card, and a read-only possible-duplicates list** (section 7), 0c2d827. Customers, Customer tools (Export, Import, Possible duplicates); the Group choice on the list; the Tags and Vehicle history sections on the customer card. Migration 053 is applied. Merge is not part of this and stays unbuilt.
 - **Void and restore, change history, percent off the whole document, add a fee, start from and save as a template, the declined-work list, canned-job versions in the Add a canned job sheet, and parts pricing rules** (section 1), 3ca8b74. Document screen and Settings, Parts pricing. Change history events need 046. The declined-work list has no way to be filled yet (item 1 below).
+- **Carrier delivery receipts for texts** (section 12) and **the clock-in location check** (section 6). The text webhook records delivery notices (needs Telnyx event settings and `TELNYX_PUBLIC_KEY`); the security header now lets the app itself ask for location. Neither was tried on the live app.
 - **Usual charges (fee presets) in Settings, and the canned-job editor for vehicle versions, keywords and extra fees** (section 1). Settings, Usual charges; Canned jobs, open a saved job, Edit versions, keywords and fees. Not clicked through on the live app.
 - **Ask Alpha runs repair posts** (section 23), 0a62529. The `posts` tool in `web/src/app/(app)/ai/page.tsx` and `web/src/lib/ai/posts-tools.ts`. Needs 060 before anything works.
 
@@ -900,14 +901,12 @@ These were on the earlier list of twenty-five. Each is now reached from a screen
 4. **Send a document with a preview and a customer link** (section 1). Step: show the send sheet (`components/documents/SendSheet.tsx`, imported by no screen) and make `/api/send-document` honor the preview and make the link. Needs 046.
 5. **Everything about a customer in one feed** (section 7). Step: show the feed (`lib/customers/timeline.ts`, called by nothing) on the customer card.
 6. **Parts status and labels on the shop board** (section 5). Step: a control on the board card that sets them (and the customer status link, section 24). Needs 051.
-7. **Carrier delivery receipts for texts** (section 12). Step: let the text webhook (`/api/sms`) pass delivery notices to the recorder in `lib/automation-delivery.ts`.
-8. **Location check at clock-in** (section 6). Step: change `geolocation=()` to `geolocation=(self)` in the security headers in `web/src/middleware.ts`.
-9. **Good, better, best options** (section 1). Step: show the sheet (`components/documents/OptionsSheet.tsx`, imported by no screen) on the document screen; the signing page must let the customer pick, which needs the answer code in `lib/doc-respond.ts` and 046.
-10. **Duplicate merge for customers** (section 7; status is Blocked because about 20 records need Aaron's yes). Step: not built, on purpose. A screen that shows a pair and calls the merge in `lib/customers/merge.ts`, built only after Aaron says yes to that specific action. The read-only pair finder is already on the Customers screen.
-11. **Who changed a quantity** (section 15). Step: make the Inventory screen save counts through the history code. Needs 057.
-12. **Capture a lead from the web or a call** (section 22). Step: a form or a call hook that calls `/api/growth/capture`, and make it write to the `leads` table the Leads tab reads.
-13. **Delete a call record** (section 21). Step: a Delete button in the Inbox that calls `/api/delete-call`.
-14. **Owner joins a live AI call** (section 21). Step: a trial on a live call to see whether moving the AI's call leg cuts it off, then a button that calls `/api/voice-join/[callId]`.
+7. **Good, better, best options** (section 1). Step: show the sheet (`components/documents/OptionsSheet.tsx`, imported by no screen) on the document screen; the signing page must let the customer pick, which needs the answer code in `lib/doc-respond.ts` and 046.
+8. **Duplicate merge for customers** (section 7; status is Blocked because about 20 records need Aaron's yes). Step: not built, on purpose. A screen that shows a pair and calls the merge in `lib/customers/merge.ts`, built only after Aaron says yes to that specific action. The read-only pair finder is already on the Customers screen.
+9. **Who changed a quantity** (section 15). Step: make the Inventory screen save counts through the history code. Needs 057.
+10. **Capture a lead from the web or a call** (section 22). Step: a form or a call hook that calls `/api/growth/capture`, and make it write to the `leads` table the Leads tab reads.
+11. **Delete a call record** (section 21). Step: a Delete button in the Inbox that calls `/api/delete-call`.
+12. **Owner joins a live AI call** (section 21). Step: a trial on a live call to see whether moving the AI's call leg cuts it off, then a button that calls `/api/voice-join/[callId]`.
 
 Also written but with no caller, and not worth a row of their own:
 
