@@ -418,11 +418,12 @@ without it the cache is per-warm-instance only (still works, just colder).
 
 ## Session: October 15, 2026 (Claude, working as the shop's CEO for Aaron)
 
-Everything below is on `main` and live on alpha-ai-desk.vercel.app. Checks at the end of the session: 2,035 tests pass,
+Everything below is on `main` and live on alpha-ai-desk.vercel.app. Checks at the end of the session: 2,047 tests pass,
 the type check is clean, lint has 0 errors and 26 warnings (25 baseline plus an unused lint comment in `src/lib/browser/store.ts` that I did not touch). The full audit, row by row, is in
 `web/docs/PRODUCT-STANDARD.md`; the database files are tracked in `web/supabase/migrations/README.md`.
 
 ### Shipped
+- Shop board: tap a car for Parts and time (parts status with what is being waited on and a due date, labels, hours expected, promised time, a one-line note for the customer) and Customer page (the status link). Cards show them; each technician column shows hours assigned and left; a Waiting on parts filter, a label filter and Needs a look lines for parts to order or past due; My cars and the job sheet show or edit the same. A tenth of an hour used to round to zero and be refused by the database; fixed. Tried at 390px and desktop width, light and dark, against a local stand-in database only: not yet on the live app.
 - Estimate link, end to end: Send estimate opens one sheet (email, text or copy the private link) with a preview of exactly what the customer gets and plain-words reasons when a way is blocked. The customer opens a private page, approves or declines each job, picks good, better or best, signs (or taps yes when the shop does not require a signature) and keeps a signed copy; the shop sees the answer on the document (outcome, total, signature, seal check), can extend the good-through date or turn the links off, and the document history records it. Declined jobs fill the Declined work list. Tried in a real browser at 390px and desktop width against a local stand-in database only: not yet on the live app, and no real text or email has been sent. Tests: `tests/estimate-link-send.test.mjs`, `tests/documents-wiring.test.mjs`.
 - Ask Alpha can run repair posts (review card first; nothing posts without approval). Migration 060 is applied (2026-10-16); not yet tried live.
 - Usual charges (fee presets) in Settings and the canned-job editor for vehicle versions, keywords and extra fees.

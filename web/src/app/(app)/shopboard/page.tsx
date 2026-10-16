@@ -7,9 +7,10 @@ import Sheet from '@/components/Sheet'
 import { ErrorCard, FilterChips, SearchField } from '@/components/ListKit'
 import { carLine, dueInfo, firstName, isDone, stageOf } from '@/components/jobs/types'
 import { byUrgency } from '@/components/jobs/types'
-import AssignSheet from '@/components/shopboard/AssignSheet'
 import type { TechChoice } from '@/components/shopboard/AssignSheet'
 import BoardCard from '@/components/shopboard/BoardCard'
+import CarSheet from '@/components/shopboard/CarSheet'
+import { useJobFlows } from '@/components/shopboard/useJobFlows'
 import JumpChips from '@/components/shopboard/JumpChips'
 import ShopWall, { enterFullScreen } from '@/components/shopboard/ShopWall'
 import TechColumn from '@/components/shopboard/TechColumn'
@@ -21,11 +22,12 @@ import type { BoardJob } from '@/components/shopboard/types'
 import { StatusLine } from '@/components/team/parts'
 import { errText, useClock, useStaff } from '@/components/team/useTeam'
 import { getShopId, supabase } from '@/lib/supabase'
+import { hoursSummary, hoursWords, partsAttention } from '@/lib/jobflow'
 import { columnId, groupByTech, isUnassigned, jumpChips, normName, techValue, wallColumns, wallSeconds } from '@/lib/shopboard'
 import { dayKey, dayRange, entriesFor, fmtDuration, fmtTimeOfDay, isTechnician, minutesOnDay, roleLabel, statusOf } from '@/lib/timeclock'
 import type { ClockState, Person } from '@/lib/timeclock'
 
-type View = 'active' | 'ready' | 'all'
+type View = 'active' | 'ready' | 'parts' | 'all'
 type Note = { kind: 'success' | 'warn'; text: string; undo?: () => void } | null
 
 /** Cars someone still has to work on. A finished car is waiting for its owner, not for a technician. */
@@ -51,6 +53,7 @@ export default function ShopBoardPage() {
   const clock = useClock(range)
   const now = clock.now
   const todayKey = now > 0 ? dayKey(new Date(now)) : ''
+  const nowMinutes = now > 0 ? new Date(now).getHours() * 60 + new Date(now).getMinutes() : 0
   // The date comes from the browser, so nothing that depends on it is drawn until the page has mounted.
   useEffect(() => { setDay(d => d || dayKey(new Date())) }, [])
   // Left open past midnight: move to the new day so "today" hours and "late" stay right.
@@ -72,10 +75,16 @@ export default function ShopBoardPage() {
   const [busyId, setBusyId] = useState<number | null>(null)
   const [wall, setWall] = useState(false)
   const [wallSheet, setWallSheet] = useState(false)
+  const [flowDirty, setFlowDirty] = useState(false)
+  const [flowBusy, setFlowBusy] = useState(false)
+  const [label, setLabel] = useState('')
   const [updatedAt, setUpdatedAt] = useState(0)
   const sched = useScheduleSettings()
   const board = sched.settings.board
   const wallSecs = wallSeconds(board.tvSeconds)
+  const jf = useJobFlows(wall ? wallSecs * 1000 : BOARD_REFRESH_MS)
+  const flows = jf.flows
+  const flowsOn = jf.available === true
 
   const seq = useRef(0)
   /** Saves in flight. A refresh that lands while one is running would put the old name back for a moment, so it waits. */
@@ -147,21 +156,47 @@ export default function ShopBoardPage() {
   const clockOk = clock.ready
   const statusFor = useCallback((p: Person) => statusOf(clock.entries, p, now), [clock.entries, now])
 
+  const isPartsCar = useCallback((j: BoardJob) => {
+    if (stageOf(j.status).key === 'ready') return false
+    const p = flows.get(j.id)?.parts
+    return j.status === 'Waiting on Parts' || p === 'needed' || p === 'ordered' || p === 'partial'
+  }, [flows])
+
   const counts = useMemo(() => ({
     active: open.filter(j => isWorkStage(j.status)).length,
     ready: open.filter(j => stageOf(j.status).key === 'ready').length,
+    parts: open.filter(isPartsCar).length,
     all: open.length,
-  }), [open])
+  }), [open, isPartsCar])
+
+  /** Labels on open cars, most used first, for the label filter. */
+  const labelsInUse = useMemo(() => {
+    const n = new Map<string, { text: string; count: number }>()
+    for (const j of open) for (const l of flows.get(j.id)?.labels || []) {
+      const k = l.toLowerCase(); const cur = n.get(k)
+      n.set(k, { text: cur?.text ?? l, count: (cur?.count ?? 0) + 1 })
+    }
+    return [...n.values()].sort((a, b) => b.count - a.count || a.text.localeCompare(b.text))
+  }, [open, flows])
+  const activeLabel = labelsInUse.some(l => l.text.toLowerCase() === label.toLowerCase()) ? label : ''
 
   const shown = useMemo(() => {
     const q = search.trim().toLowerCase()
+    const want = activeLabel.toLowerCase()
     return open
-      .filter(j => (view === 'all' ? true : view === 'ready' ? stageOf(j.status).key === 'ready' : isWorkStage(j.status)))
-      .filter(j => !q || [j.customer_name, j.ro_number, carLine(j), j.vehicle_plate, j.concern, j.tech].some(v => String(v || '').toLowerCase().includes(q)))
+      .filter(j => (view === 'all' ? true : view === 'ready' ? stageOf(j.status).key === 'ready' : view === 'parts' ? isPartsCar(j) : isWorkStage(j.status)))
+      .filter(j => !want || (flows.get(j.id)?.labels || []).some(l => l.toLowerCase() === want))
+      .filter(j => !q || [j.customer_name, j.ro_number, carLine(j), j.vehicle_plate, j.concern, j.tech, ...(flows.get(j.id)?.labels || [])].some(v => String(v || '').toLowerCase().includes(q)))
       .sort(byUrgency(todayKey))
-  }, [open, view, search, todayKey])
+  }, [open, view, search, todayKey, flows, activeLabel, isPartsCar])
 
   const grouped = useMemo(() => groupByTech(shown, techNames), [shown, techNames])
+  /** "6.5 h assigned, 4 h left" for one person's open cars, whatever the filters say. Nothing until the extras are loaded. */
+  const hoursFor = useCallback((list: BoardJob[]) => {
+    if (!flowsOn) return ''
+    const rows = list.map(j => ({ hours: flows.get(j.id)?.est_hours ?? null, ready: stageOf(j.status).key === 'ready' }))
+    return hoursWords(hoursSummary(rows, null), list.length)
+  }, [flowsOn, flows])
   const lateCount = useMemo(() => (todayKey ? open.filter(j => dueInfo(j, todayKey)?.tone === 'late').length : 0), [open, todayKey])
 
   /** One chip per column on a phone, in the order the columns are drawn. */
@@ -198,6 +233,16 @@ export default function ShopBoardPage() {
     const noTech = open.filter(j => isWorkStage(j.status) && isUnassigned(j.tech)).length
     if (noTech > 0) out.push({ key: 'notech', text: `${noTech} ${noTech === 1 ? 'car has' : 'cars have'} no technician yet.` })
     if (lateCount > 0) out.push({ key: 'late', text: `${lateCount} ${lateCount === 1 ? 'car is' : 'cars are'} late.` })
+    if (flowsOn) {
+      let toOrder = 0, partsLate = 0
+      for (const j of open) {
+        const a = partsAttention(flows.get(j.id), stageOf(j.status).key === 'ready', todayKey)
+        if (a === 'order') toOrder += 1
+        else if (a === 'late') partsLate += 1
+      }
+      if (toOrder > 0) out.push({ key: 'toorder', text: `${toOrder} ${toOrder === 1 ? 'car needs its parts ordered' : 'cars need their parts ordered'}.` })
+      if (partsLate > 0) out.push({ key: 'partslate', text: `${partsLate} ${partsLate === 1 ? 'car has parts' : 'cars have parts'} past the due date and not in.` })
+    }
     if (clockOk) {
       for (const p of techPeople) {
         const s = statusFor(p)
@@ -207,7 +252,7 @@ export default function ShopBoardPage() {
       }
     }
     return out
-  }, [ready, open, lateCount, clockOk, techPeople, statusFor, inProgressFor])
+  }, [ready, open, lateCount, clockOk, techPeople, statusFor, inProgressFor, flowsOn, flows, todayKey])
 
   const techsIn = clockOk ? techPeople.filter(p => statusFor(p).state !== 'out').length : 0
   const subtitle = !ready || (staff.loading && staff.people.length === 0) ? 'Loading…'
@@ -317,7 +362,9 @@ export default function ShopBoardPage() {
     <BoardCard
       key={j.id}
       job={j}
+      flow={flows.get(j.id)}
       todayKey={todayKey}
+      nowMinutes={nowMinutes}
       draggable={desktop}
       dragging={dragId === j.id}
       onOpen={x => { setSheetError(''); setOpenId(x.id) }}
@@ -436,10 +483,25 @@ export default function ShopBoardPage() {
               options={[
                 { key: 'active', label: 'Active work', count: counts.active },
                 { key: 'ready', label: 'Ready for pickup', count: counts.ready },
+                { key: 'parts', label: 'Waiting on parts', count: counts.parts },
                 { key: 'all', label: 'All open', count: counts.all },
               ]}
             />
           </div>
+          {labelsInUse.length > 0 && (
+            <div className="mb-4">
+              <FilterChips
+                label="Which label to show"
+                scroll
+                value={activeLabel}
+                onChange={setLabel}
+                options={[
+                  { key: '', label: 'All labels' },
+                  ...labelsInUse.map(l => ({ key: l.text, label: l.text, count: l.count })),
+                ]}
+              />
+            </div>
+          )}
 
           {searching && shown.length === 0 && (
             <p className="mb-3 text-[0.9375rem] text-text-secondary">
@@ -455,6 +517,7 @@ export default function ShopBoardPage() {
               name="Unassigned"
               sub="Nobody has these yet"
               avatar={false}
+              hours={hoursFor(open.filter(j => isUnassigned(j.tech)))}
               count={grouped.unassigned.length}
               empty={searching ? 'No match.' : 'Every car has someone on it.'}
               {...(desktop ? dropOn(UNASSIGNED_KEY, '') : { over: false })}
@@ -477,6 +540,7 @@ export default function ShopBoardPage() {
                   id={colId(`tech:${p.id}`)}
                   name={p.name}
                   sub={roleLabel(p.role)}
+                  hours={hoursFor(open.filter(j => normName(j.tech) === normName(p.name)))}
                   count={list.length}
                   empty={searching ? 'No match.' : view === 'ready' ? 'Nothing ready for pickup.' : 'No cars right now.'}
                   flag={flag}
@@ -525,6 +589,7 @@ export default function ShopBoardPage() {
                   id={colId(`other:${normName(o.name)}`)}
                   name={o.name}
                   sub={teamMissing ? 'Team list did not load' : gone ? 'No longer on the team' : 'Not on your team list'}
+                  hours={hoursFor(open.filter(j => normName(j.tech) === normName(o.name)))}
                   count={o.jobs.length}
                   empty="No cars."
                   over={false}
@@ -579,15 +644,27 @@ export default function ShopBoardPage() {
         )}
       </Sheet>
 
-      <Sheet open={!!openJob} onClose={() => { if (!sheetBusy) setOpenId(null) }} title="Give this car to a technician">
+      <Sheet
+        open={!!openJob}
+        onClose={() => { if (!sheetBusy && !flowBusy) { setOpenId(null); setFlowDirty(false) } }}
+        title="This car"
+        dirty={flowDirty}
+      >
         {openJob && (
-          <AssignSheet
+          <CarSheet
+            key={openJob.id}
             job={openJob}
             techs={choices}
             todayKey={todayKey}
             busy={sheetBusy}
             error={sheetError}
             onAssign={name => void assign(openJob, name, 'sheet')}
+            flow={flows.get(openJob.id) ?? null}
+            flowsAvailable={jf.available}
+            labelChoices={board.labels}
+            onFlowSaved={f => { jf.put(f); setNote({ kind: 'success', text: `${carLabel(openJob)}: details saved.` }) }}
+            onFlowBusy={b => { setFlowBusy(b); jf.hold(b) }}
+            onFlowDirty={setFlowDirty}
           />
         )}
       </Sheet>

@@ -24,10 +24,8 @@ test('labels: at most five, no repeats whatever the capitals, no markup', () => 
 })
 
 test('hours are quarter hours between 0 and 99, or nothing', () => {
-  for (const [v, want] of [['1.5', 1.5], [2, 2], ['0', null], ['', null], [null, null], ['abc', null], [120, null], [0.1, 0], ['3.1', 3]]) {
-    const got = f.cleanHoursValue(v)
-    if (v === 0.1) assert.equal(got, 0) // rounds to 0: treated as no estimate by the caller
-    else assert.equal(got, want, String(v))
+  for (const [v, want] of [['1.5', 1.5], [2, 2], ['0', null], ['', null], [null, null], ['abc', null], [120, null], [0.1, null], [0.12, null], [0.13, 0.25], ['3.1', 3]]) {
+    assert.equal(f.cleanHoursValue(v), want, String(v)) // a tenth of an hour rounds to nothing, and the database refuses zero
   }
 })
 

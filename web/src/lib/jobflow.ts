@@ -67,7 +67,8 @@ export function cleanHoursValue(v: unknown): number | null {
   if (v === null || v === undefined || v === '') return null
   const n = typeof v === 'number' ? v : Number(String(v).replace(/[^\d.]/g, ''))
   if (!Number.isFinite(n) || n <= 0 || n > 99) return null
-  return Math.round(n * 4) / 4 // quarter hours
+  const quarters = Math.round(n * 4) / 4 // quarter hours
+  return quarters > 0 ? quarters : null // less than an eighth of an hour rounds to nothing, which the database would refuse
 }
 
 /** Read one stored row. Anything damaged becomes the plain default instead of an error. */
@@ -103,6 +104,95 @@ export function cleanPatch(raw: unknown): FlowPatch {
   if ('promise_time' in o) out.promise_time = typeof o.promise_time === 'string' && HM.test(o.promise_time) ? o.promise_time : null
   if ('public_note' in o) out.public_note = String(o.public_note ?? '').replace(/[<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, MAX_PUBLIC_NOTE)
   return out
+}
+
+/* ---------- editing the extras ---------- */
+
+/** What the form holds while somebody types: every field as the text in its box. */
+export interface FlowDraft {
+  parts: PartsStatus
+  parts_note: string
+  parts_eta: string
+  labels: string[]
+  est_hours: string
+  promise_time: string
+  public_note: string
+}
+
+export function draftFrom(f: JobFlow): FlowDraft {
+  return {
+    parts: f.parts,
+    parts_note: f.parts_note,
+    parts_eta: f.parts_eta ?? '',
+    labels: [...f.labels],
+    est_hours: f.est_hours === null ? '' : String(f.est_hours),
+    promise_time: f.promise_time ?? '',
+    public_note: f.public_note,
+  }
+}
+
+/** A word for a box the shop filled in wrong, or an empty string. Hours are optional, so an empty box is fine. */
+export function hoursProblem(text: string): string {
+  const s = text.trim()
+  if (!s) return ''
+  const n = Number(s.replace(/,/g, '.'))
+  if (!Number.isFinite(n) || n <= 0) return 'Hours must be a number above zero, like 1.5.'
+  if (n > 99) return 'Hours cannot be more than 99.'
+  if (cleanHoursValue(n) === null) return 'Hours must be at least a quarter of an hour.'
+  return ''
+}
+
+/**
+ * Only what changed between the saved copy and the draft, each field cleaned the same way the server cleans it.
+ * An empty object means there is nothing to save. A part that is here (or not needed) has no due date, so that is cleared.
+ */
+export function patchFrom(saved: JobFlow, d: FlowDraft): FlowPatch {
+  const eta = d.parts === 'none' || d.parts === 'in' ? null : d.parts_eta.trim() || null
+  const hours = d.est_hours.trim() === '' ? null : cleanHoursValue(d.est_hours.replace(/,/g, '.'))
+  const next = cleanPatch({
+    parts: d.parts,
+    parts_note: d.parts_note,
+    parts_eta: eta,
+    labels: d.labels,
+    est_hours: hours,
+    promise_time: d.promise_time.trim() || null,
+    public_note: d.public_note,
+  })
+  const out: Record<string, unknown> = {}
+  for (const key of Object.keys(next) as (keyof FlowPatch)[]) {
+    const a = next[key], b = saved[key]
+    const same = key === 'labels' ? JSON.stringify(a) === JSON.stringify(b) : a === b
+    if (!same) out[key] = a
+  }
+  return out as FlowPatch
+}
+
+/** Add the label if it is not on the car yet (any capitals), take it off if it is. At most five. */
+export function toggleLabel(labels: string[], label: string): string[] {
+  const key = label.trim().toLowerCase()
+  if (!key) return labels
+  if (labels.some(l => l.toLowerCase() === key)) return labels.filter(l => l.toLowerCase() !== key)
+  return cleanLabels([...labels, label])
+}
+
+/**
+ * What needs the shop's eye about parts on one car: nobody has ordered them ('order'), or the date they were due has gone by
+ * and they are not all in ('late'). A car that is ready or finished is never flagged.
+ */
+export function partsAttention(f: Pick<JobFlow, 'parts' | 'parts_eta'> | undefined, finished: boolean, todayKey: string): 'order' | 'late' | null {
+  if (!f || finished) return null
+  if (f.parts === 'needed') return 'order'
+  if ((f.parts === 'ordered' || f.parts === 'partial') && f.parts_eta && todayKey && f.parts_eta < todayKey) return 'late'
+  return null
+}
+
+/** The line under the column header: "6.5 h assigned, 4 h left, 1 car without hours". Empty when the column has no cars. */
+export function hoursWords(s: HoursSummary, cars: number): string {
+  if (cars === 0) return ''
+  if (s.assigned === 0 && s.unknown === cars) return 'No hours entered yet'
+  const parts = [`${hoursLabel(s.assigned)} assigned`, `${hoursLabel(s.left)} left`]
+  if (s.unknown > 0) parts.push(`${s.unknown} ${s.unknown === 1 ? 'car' : 'cars'} without hours`)
+  return parts.join(', ')
 }
 
 /* ---------- board settings ---------- */

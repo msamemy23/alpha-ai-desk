@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import Icon from '@/components/Icon'
 import JobPostCard from './JobPostCard'
+import { JobFlowCardWithSettings } from './JobFlowCard'
 import StatusLinkCard from './StatusLinkCard'
 import { formatCurrency } from '@/lib/supabase'
 import { phonePretty } from '@/lib/today'
@@ -173,6 +174,8 @@ export default function JobDetail({
         )}
         <a className="btn btn-secondary mt-3 w-full no-underline" href={`/dvi?new=1&job=${encodeURIComponent(j.id)}`}><Icon name="inspect" className="h-5 w-5" />{inspections.length === 0 ? 'Start inspection' : 'Start another inspection'}</a>
       </section>
+
+      <JobFlowCardWithSettings jobId={j.id} promiseDate={j.promise_date ? j.promise_date.slice(0, 10) : null} />
 
       <StatusLinkCard
         jobId={j.id}

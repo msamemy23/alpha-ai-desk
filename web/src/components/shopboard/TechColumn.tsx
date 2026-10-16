@@ -8,7 +8,7 @@ import { Avatar } from '@/components/team/parts'
  * It is also where a dragged car lands.
  */
 export default function TechColumn({
-  id, name, sub, avatar = true, status, flag, actions, count, over, empty, onDragOver, onDragLeave, onDrop, children,
+  id, name, sub, avatar = true, status, hours, flag, actions, count, over, empty, onDragOver, onDragLeave, onDrop, children,
 }: {
   /** What a jump chip scrolls to. */
   id?: string
@@ -18,6 +18,8 @@ export default function TechColumn({
   avatar?: boolean
   /** Clock status and hours, already worded. */
   status?: ReactNode
+  /** Hours assigned and left, already worded. */
+  hours?: string
   /** An amber line that says what needs a look in this column. */
   flag?: string
   actions?: ReactNode
@@ -50,6 +52,7 @@ export default function TechColumn({
           <span className="num shrink-0 rounded-full border border-border bg-bg-card px-2.5 py-0.5 text-[0.875rem] font-bold" aria-hidden="true">{count}</span>
         </div>
         {status && <div className="mt-2 text-[0.875rem] text-text-secondary">{status}</div>}
+        {hours && <p className="num mt-1 text-[0.875rem] text-text-secondary">{hours}</p>}
         {flag && (
           <p className="mt-1.5 flex items-start gap-1.5 text-[0.8125rem] font-bold text-amber">
             <Icon name="alert" className="mt-0.5 h-4 w-4 shrink-0" />{flag}

@@ -15,34 +15,45 @@ const STATE_WORD: Record<ClockState, { word: string; lamp: 'green' | 'amber' | '
 }
 
 /** Who has this car? Pick a name, or take it back. Works the same on a phone, where there is no dragging. */
-export default function AssignSheet({ job, techs, todayKey, busy, error, onAssign }: {
+/** Who the car is for and where it stands, at the top of the sheet. */
+export function CarSummary({ job, todayKey }: { job: BoardJob; todayKey: string }) {
+  const lamp = statusLamp(job.status)
+  return (
+    <div className="rounded-md border border-border bg-bg-base px-3 py-3">
+      <p className="flex items-start justify-between gap-3">
+        <span className="min-w-0 break-words font-bold">{job.customer_name || 'No name'}</span>
+        {job.ro_number && <span className="num shrink-0 text-[0.875rem] text-text-secondary">{roShort(job.ro_number)}</span>}
+      </p>
+      <p className="text-[0.9375rem] text-text-secondary">{carLine(job) || 'No vehicle noted'}</p>
+      {job.concern && <p className="mt-1.5 text-[0.9375rem]">{job.concern}</p>}
+      <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.875rem] text-text-secondary">
+        <span className="flex items-center gap-1.5"><span className={`lamp lamp-${lamp}`} aria-hidden="true" />{statusWord(job.status)}</span>
+        <DueLine job={job} todayKey={todayKey} />
+        <span>{openedLabel(job.created_at, todayKey)}</span>
+      </p>
+    </div>
+  )
+}
+
+export default function AssignSheet({ job, techs, todayKey, busy, error, onAssign, summary = true, fullJobLink = true }: {
   job: BoardJob
   techs: TechChoice[]
   todayKey: string
   busy: boolean
   error: string
   onAssign: (name: string) => void
+  /** Show the car's summary box on top. The car sheet draws it once above its tabs instead. */
+  summary?: boolean
+  /** The Open the full job button at the bottom. The car sheet shows it once under all its tabs. */
+  fullJobLink?: boolean
 }) {
-  const lamp = statusLamp(job.status)
   const current = isUnassigned(job.tech) ? '' : normName(job.tech)
   const known = techs.some(t => normName(t.name) === current)
   return (
     <div>
-      <div className="rounded-md border border-border bg-bg-base px-3 py-3">
-        <p className="flex items-start justify-between gap-3">
-          <span className="min-w-0 break-words font-bold">{job.customer_name || 'No name'}</span>
-          {job.ro_number && <span className="num shrink-0 text-[0.875rem] text-text-secondary">{roShort(job.ro_number)}</span>}
-        </p>
-        <p className="text-[0.9375rem] text-text-secondary">{carLine(job) || 'No vehicle noted'}</p>
-        {job.concern && <p className="mt-1.5 text-[0.9375rem]">{job.concern}</p>}
-        <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.875rem] text-text-secondary">
-          <span className="flex items-center gap-1.5"><span className={`lamp lamp-${lamp}`} aria-hidden="true" />{statusWord(job.status)}</span>
-          <DueLine job={job} todayKey={todayKey} />
-          <span>{openedLabel(job.created_at, todayKey)}</span>
-        </p>
-      </div>
+      {summary && <CarSummary job={job} todayKey={todayKey} />}
 
-      <h3 className="section-title mt-4">Who has this car?</h3>
+      <h3 className={`section-title ${summary ? 'mt-4' : ''}`}>Who has this car?</h3>
       <ul className="ledger mt-1" aria-label="Technicians">
         <li>
           <button type="button" className="ledger-row" disabled={busy} onClick={() => onAssign('')} aria-pressed={current === ''}>
@@ -76,9 +87,11 @@ export default function AssignSheet({ job, techs, todayKey, busy, error, onAssig
       </ul>
       {techs.length === 0 && <p className="mt-2 text-[0.9375rem] text-text-secondary">No technicians yet. <a href="/staff">Add them on the Team screen</a> and they will show up here.</p>}
       {error && <p role="alert" className="form-error">{error}</p>}
-      <a className="btn btn-secondary mt-4 w-full no-underline" href={`/jobs?job=${encodeURIComponent(job.id)}`}>
-        <Icon name="work" className="h-5 w-5" />Open the full job
-      </a>
+      {fullJobLink && (
+        <a className="btn btn-secondary mt-4 w-full no-underline" href={`/jobs?job=${encodeURIComponent(job.id)}`}>
+          <Icon name="work" className="h-5 w-5" />Open the full job
+        </a>
+      )}
     </div>
   )
 }

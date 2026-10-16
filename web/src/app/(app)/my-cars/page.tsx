@@ -7,6 +7,7 @@ import Notice from '@/components/Notice'
 import { EmptyBlock, ErrorCard } from '@/components/ListKit'
 import { byUrgency, dueInfo, stageOf } from '@/components/jobs/types'
 import BoardCard from '@/components/shopboard/BoardCard'
+import { useJobFlows } from '@/components/shopboard/useJobFlows'
 import { BOARD_COLUMNS } from '@/components/shopboard/types'
 import type { BoardJob } from '@/components/shopboard/types'
 import { Avatar, StatusLine } from '@/components/team/parts'
@@ -43,6 +44,9 @@ export default function MyCarsPage() {
   const clock = useClock(range)
   const now = clock.now
   const todayKey = now > 0 ? dayKey(new Date(now)) : ''
+  const nowMinutes = now > 0 ? new Date(now).getHours() * 60 + new Date(now).getMinutes() : 0
+  // Parts, labels, hours and the promised time that the shop set on the board: read-only here.
+  const { flows } = useJobFlows()
   // The date comes from the browser, so nothing that depends on it is drawn until the page has mounted.
   useEffect(() => { setDay(d => d || dayKey(new Date())) }, [])
   // Left open past midnight: move to the new day so "today" hours and "late" stay right.
@@ -290,7 +294,9 @@ export default function MyCarsPage() {
                         <li key={j.id}>
                           <BoardCard
                             job={j}
+                            flow={flows.get(j.id)}
                             todayKey={todayKey}
+                            nowMinutes={nowMinutes}
                             draggable={false}
                             dragging={false}
                             onOpen={x => router.push(`/jobs?job=${encodeURIComponent(x.id)}`)}
