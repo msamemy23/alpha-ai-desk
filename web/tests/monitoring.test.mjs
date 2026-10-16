@@ -276,3 +276,32 @@ test('migration 062: server only, nothing existing touched, and safe to run twic
   const writes = sql.replace(/--.*$/gm, '').match(/(?<!do )\b(update|delete from|insert into|alter table|drop)\s+(\w+\.)?\w+/gi) || []
   for (const w of writes) assert.match(w, /client_error_counts/i, w)
 })
+
+/* ---------- the uptime check that runs on GitHub ---------- */
+
+test('uptime workflow: every 5 minutes, no secrets, only issue permission, and one official action', () => {
+  const root = (p) => readFileSync(new URL(`../../${p}`, import.meta.url), 'utf8')
+  const w = root('.github/workflows/uptime.yml')
+  assert.match(w, /cron: '\*\/5 \* \* \* \*'/)
+  assert.match(w, /workflow_dispatch:/)
+  assert.match(w, /permissions:\s+contents: read\s+issues: write/)
+  assert.ok(!/secrets\./.test(w), 'no secret is needed or used')
+  assert.match(w, /HEALTH_URL: https:\/\/alpha-ai-desk\.vercel\.app\/api\/health/)
+  const uses = [...w.matchAll(/uses:\s*(\S+)/g)].map(m => m[1])
+  assert.deepEqual(uses, ['actions/checkout@v4'])
+  assert.match(w, /cancel-in-progress: false/)
+})
+
+test('uptime scripts: three tries before an alarm, one issue at a time, closed when the site answers, and nothing about customers', () => {
+  const root = (p) => readFileSync(new URL(`../../${p}`, import.meta.url), 'utf8')
+  const check = root('.github/scripts/uptime-check.sh')
+  assert.match(check, /tries="\$\{TRIES:-3\}"/)
+  assert.match(check, /wait_s="\$\{WAIT:-20\}"/)
+  assert.match(check, /--max-time 15/)
+  const alert = root('.github/scripts/uptime-alert.sh')
+  assert.match(alert, /gh issue list --repo "\$repo" --label uptime --state open/)
+  assert.match(alert, /gh issue close "\$open"/)
+  assert.match(alert, /if \[ -z "\$open" \]; then/)
+  assert.match(alert, /gh issue create/)
+  assert.ok(!/gh issue (edit|delete|transfer)|gh (repo|secret|workflow|api)/.test(alert), 'it can only list, create, comment and close issues')
+})

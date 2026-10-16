@@ -1,0 +1,43 @@
+# Is Alpha Desk answering? Every 5 minutes this asks https://alpha-ai-desk.vercel.app/api/health.
+#
+# - It asks up to 3 times, 20 seconds apart, so one slow moment does not raise an alarm.
+# - If all 3 fail it opens ONE issue in this repository ("Alpha Desk is not answering"). GitHub emails the owner about a new issue
+#   and shows it in the GitHub phone app. While the issue is open it does not open another or add comments.
+# - When the site answers again it adds a note and closes the issue by itself.
+# - It needs no account, key or secret. The health address says only "up" or "down"; it never returns customer data.
+# - To turn it off: Actions tab, Uptime check, the three dots, Disable workflow.
+name: Uptime check
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: uptime-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Get the check scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - name: Ask the health address
+        id: ask
+        env:
+          HEALTH_URL: https://alpha-ai-desk.vercel.app/api/health
+        run: bash .github/scripts/uptime-check.sh
+      - name: Open or close the alarm
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OK: ${{ steps.ask.outputs.ok }}
+          CODE: ${{ steps.ask.outputs.code }}
+        run: bash .github/scripts/uptime-alert.sh
