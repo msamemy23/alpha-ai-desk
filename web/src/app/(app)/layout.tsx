@@ -1,8 +1,8 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
-import { useCallback, useEffect, useState } from 'react'
+import { usePathname, useRouter } from 'next/navigation'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { supabase, getUnreadCount, getShopProfile, getShopId } from '@/lib/supabase'
 import { useShopLogo } from '@/lib/shop-logo'
@@ -11,7 +11,8 @@ import PhoneWidget from '@/components/PhoneWidget'
 import Icon from '@/components/Icon'
 import Sheet from '@/components/Sheet'
 import SearchPanel from '@/components/shell/SearchPanel'
-import { PRIMARY, MORE_GROUPS, activeHref, matches } from '@/components/shell/nav'
+import { ALL_ITEMS, PRIMARY, MORE_GROUPS, activeHref, matches } from '@/components/shell/nav'
+import { buildCommands, chordStep, isEditableTarget, isOpenKey } from '@/components/shell/commands'
 
 interface Notice { id: string; kind: 'text' | 'call'; title: string; body: string; when: string; href: string }
 interface ShopProfile { id?: string; shop_name: string; phone: string; address: string; city_state_zip: string }
@@ -27,6 +28,7 @@ const timeLabel = (iso: string) => {
 
 export default function AppLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname()
+  const router = useRouter()
   const railActive = activeHref(pathname)
   const [unread, setUnread] = useState(0)
   const [shop, setShop] = useState<ShopProfile | null>(null)
@@ -103,6 +105,31 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const isChat = pathname === '/ai'
   const closeMenu = useCallback(() => setMenuOpen(false), [])
   const closeSearch = useCallback(() => setSearchOpen(false), [])
+  const commands = useMemo(() => buildCommands(ALL_ITEMS, dark), [dark])
+  // Ctrl or Cmd+K opens the command menu (and closes it again), and so do "/" and "?" when you are not typing.
+  // "G then a letter" jumps to a main page.
+  // Neither fires while a dialog other than the menu itself is open, and the letters never fire while typing.
+  const [mac, setMac] = useState(false)
+  useEffect(() => { setMac(/mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent)) }, [])
+  useEffect(() => {
+    let armed: number | null = null
+    const otherDialog = () => Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"]')).some(d => d.getAttribute('aria-label') !== 'Search')
+    const onKey = (e: KeyboardEvent) => {
+      if (isOpenKey(e)) {
+        if (otherDialog()) return
+        e.preventDefault()
+        setSearchOpen(o => !o)
+        armed = null
+        return
+      }
+      const step = chordStep(armed, e, Date.now(), isEditableTarget(e.target as HTMLElement | null) || document.querySelector('[role="dialog"][aria-modal="true"]') !== null)
+      armed = step.armedAt
+      if (step.go) { e.preventDefault(); router.push(step.go) }
+      else if (step.open) { e.preventDefault(); setSearchOpen(true) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [router])
   const closeNotices = useCallback(() => setNoticeOpen(false), [])
 
   return (
@@ -180,7 +207,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
             className="hidden h-10 w-full max-w-md items-center gap-2 rounded-md border border-line bg-bg-input px-3 text-left text-[0.9375rem] text-text-muted hover:bg-bg-hover lg:flex"
           >
             <Icon name="search" className="h-5 w-5" />
-            <span className="flex-1">Search customers and paperwork</span>
+            <span className="flex-1">Search, or jump to a page</span>
+            <kbd className="num rounded border border-line px-1.5 py-0.5 text-[0.75rem] font-normal text-text-secondary">{mac ? 'Cmd K' : 'Ctrl K'}</kbd>
           </button>
           <div className="hidden flex-1 lg:block" />
 
@@ -248,7 +276,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       </Sheet>
 
       <Sheet open={searchOpen} onClose={closeSearch} title="Search" hideTitle>
-        <SearchPanel autoFocus onNavigate={closeSearch} />
+        <SearchPanel autoFocus onNavigate={closeSearch} commands={commands} onTheme={toggleTheme} />
       </Sheet>
 
       <Sheet open={noticeOpen} onClose={closeNotices} title="Alerts">
