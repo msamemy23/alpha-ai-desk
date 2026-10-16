@@ -418,7 +418,7 @@ without it the cache is per-warm-instance only (still works, just colder).
 
 ## Session: October 15, 2026 (Claude, working as the shop's CEO for Aaron)
 
-Everything below is on `main` and live on alpha-ai-desk.vercel.app. Checks at the end of the session: 2,018 tests pass,
+Everything below is on `main` and live on alpha-ai-desk.vercel.app. Checks at the end of the session: 2,026 tests pass,
 the type check is clean, lint has 0 errors and 25 warnings (the baseline). The full audit, row by row, is in
 `web/docs/PRODUCT-STANDARD.md`; the database files are tracked in `web/supabase/migrations/README.md`.
 
@@ -437,6 +437,7 @@ the type check is clean, lint has 0 errors and 25 warnings (the baseline). The f
 - Vehicles: each car's sheet now lists its inspections (date, technician, urgent / soon / good counts), each opening in the inspection screen.
 - Command menu: starts with the last four pages you opened (kept in this browser only).
 - My cars: a technician picks their name once on their phone (remembered in that browser) and sees only their cars, late and rush first, in groups (working on now, up next, waiting, done), with their own clock in, break and clock out on the same screen. Each car opens on the Jobs screen. It only reads cars and is a shortcut, not a lock; the Shop board still shows everyone's.
+- Inbox, Calls: a Phone time this month strip (minutes on the phone, calls in, out and missed, and last month), from the call records already loaded. It is call time and not a bill, says when assistant calls have no length, and says "At least" when older calls could be missing.
 
 ### Database
 Twenty files (034 to 056) were applied on 2026-10-15. Six are still waiting for Aaron's yes: 046, 051, 057, 058, 059, 060.

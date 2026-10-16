@@ -144,6 +144,74 @@ export function callKind(direction: string, status: string | null | undefined, d
   return 'incoming'
 }
 
+/* ---------- how much phone time the shop used ---------- */
+
+export interface CallTime {
+  calls: number
+  incoming: number
+  outgoing: number
+  missed: number
+  /** Seconds on the phone, added up from the length each call record carries. */
+  seconds: number
+  /** Calls the assistant took that carry no length, so they are not in `seconds`. */
+  unmeasuredAi: number
+}
+
+/** First moment of the month `now` is in, and of the month before and the month after (the browser's own calendar). */
+export function monthBounds(now: Date): { prev: Date; start: Date; next: Date } {
+  const y = now.getFullYear()
+  const m = now.getMonth()
+  return { prev: new Date(y, m - 1, 1), start: new Date(y, m, 1), next: new Date(y, m + 1, 1) }
+}
+
+/** Calls that started in [from, to): how many, which way, and how many seconds they lasted. A bad time or length counts as nothing. */
+export function callTimeIn(
+  calls: Pick<CallRecord, 'direction' | 'status' | 'duration_secs' | 'start_time' | 'viaAi'>[],
+  from: Date,
+  to: Date,
+): CallTime {
+  const out: CallTime = { calls: 0, incoming: 0, outgoing: 0, missed: 0, seconds: 0, unmeasuredAi: 0 }
+  const a = from.getTime()
+  const b = to.getTime()
+  for (const c of calls) {
+    const t = new Date(c.start_time).getTime()
+    if (!Number.isFinite(t) || t < a || t >= b) continue
+    const secs = Math.max(0, Math.floor(Number(c.duration_secs) || 0))
+    out.calls += 1
+    out.seconds += secs
+    const kind = callKind(c.direction, c.status, secs, c.viaAi === true)
+    out[kind] += 1
+    if (c.viaAi === true && secs === 0) out.unmeasuredAi += 1
+  }
+  return out
+}
+
+/** How many call records the Inbox asks for. If it gets this many, older calls may be missing. */
+export const CALL_LOAD_LIMIT = 1500
+
+/** True when the list may be missing calls from the month that starts at `start`: it is full and even its oldest call is inside that month. */
+export function mayMissCalls(calls: Pick<CallRecord, 'start_time'>[], start: Date): boolean {
+  if (calls.length < CALL_LOAD_LIMIT) return false
+  let oldest = Infinity
+  for (const c of calls) {
+    const t = new Date(c.start_time).getTime()
+    if (Number.isFinite(t) && t < oldest) oldest = t
+  }
+  return oldest >= start.getTime()
+}
+
+/** "42 min", "4 h 12 min". Under a minute is "under a minute" so a tiny total is not shown as zero. */
+export function formatTalkTime(seconds: number): string {
+  const s = Math.max(0, Math.floor(Number(seconds) || 0))
+  if (s === 0) return '0 min'
+  const min = Math.floor(s / 60)
+  if (min === 0) return 'under a minute'
+  if (min < 60) return `${min} min`
+  const h = Math.floor(min / 60)
+  const r = min % 60
+  return r === 0 ? `${h} h` : `${h} h ${r} min`
+}
+
 export const CALL_KIND_LABEL: Record<CallKind, string> = { missed: 'Missed', incoming: 'Incoming', outgoing: 'Outgoing' }
 export const CALL_KIND_LAMP: Record<CallKind, string> = { missed: 'lamp-red', incoming: 'lamp-green', outgoing: 'lamp-blue' }
 export const CALL_KIND_TEXT: Record<CallKind, string> = { missed: 'text-red', incoming: 'text-green', outgoing: 'text-blue' }

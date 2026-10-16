@@ -439,7 +439,7 @@ Screens: Settings, Connected apps, Agents and tools, Setup guide, login.
 | Multi-location | View jobs and techs across shops [S20][S28] | Missing | To build |
 | Setup guide | Not researched | Exists. Three steps | Exists |
 | Help, privacy, terms | Not researched | Exists | Exists |
-| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 2,018 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 2,026 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 
 ## 20. Built-in browser
 
@@ -511,7 +511,7 @@ Screens: Inbox (Calls tab and Dial sheet), the browser phone, Get more customers
 | Forwarding, ring groups, after-hours routing, phone menus | Business phone systems [S43] | Missing. One number; hand-off numbers exist for transfers | To build |
 | Voicemail box and recorded greeting | Not researched | Partial. The assistant takes messages; the old voicemail page now opens the Inbox calls tab; no greeting or box | To build |
 | Call a parts supplier for a price and save the answer to the part (the Erin idea) | Not researched | Partial. A custom task call can ask; there is no supplier list and the answer is not saved to the part | To build |
-| Minutes used and cost of calls | Not researched | Missing | To build |
+| Minutes used and cost of calls | Not researched | Partial. Inbox, Calls (2026-10-16) opens with Phone time this month: minutes on the phone, calls in, out and missed, and last month for comparison, added up from the length on each call record. It says plainly that it is recorded call time and not a bill. Calls the assistant took that carry no length are listed as not counted, and the strip says "At least" and why when the list is full and older calls could be missing (the Inbox loads the latest 1,500). No cost in dollars: the rate comes from the phone company, which I did not read, so the screen points to its bill. Checked by tests and in a browser preview with sample calls (phone and desktop). Not built: minutes for assistant calls that have no length, a cost per minute, and minutes by day | Partial |
 | Tracking numbers per campaign | Not researched | Missing | To build |
 | Which numbers and caller names show on the other phone | Not researched | Unverified | To build |
 
@@ -640,7 +640,7 @@ Why this section: the owner asked about many ways to text (Google Messages for w
 | Phone push | Mobile push [S29] | Missing. The service worker has no push handling, and the only alerts are on screen while the app is open (see section 26) | To build |
 | Security headers | Not researched | Partial. The request middleware sets frame, no-sniff, referrer, strict transport and a permissions policy that allows the camera and microphone for the app and refuses location for every page (which also blocks the clock-in location check; see section 6). A few routes (the older web view, downloads, pictures) set their own strict content policy. There is no site-wide Content-Security-Policy | To build |
 | Error reporting and uptime alerts | Not researched | Partial. Built 2026-10-15, checked by tests and by crashing local test pages in a browser (phone and desktop, light and dark). When a page breaks, the person now sees a plain screen (what happened, what is safe, Try again, a way back, a short reference) instead of a blank "Application error" page; signed-in pages keep the menu. There is a not-found page and a last-resort screen for when the page frame itself breaks. Each break, and each error a button or request raises without a screen, sends one cleaned line to the server log (page, kind of error, top of the stack; no names, phone numbers, emails, tokens or query strings; 4 KB, 10 a minute per visitor, 5 a page load, nothing written to the database). Not done: nobody is told when one happens (a person still has to look in the platform's logs, for lines marked client_error), there is no uptime check, and the signed-in version of the crash screen (the same screen inside the menu) was not crashed anywhere, because that needs a signed-in session and a real fault; the public version, the last-resort screen and the not-found page were. The not-found page was also opened on the live site. Browser extensions and offline blips are skipped on purpose | Partial |
-| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 2,018 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 2,026 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 | Backups and restore drill | Not researched | Not verified. Relies on the database host's backups | To build |
 | Keys rotated | Not applicable | Unverified (see Blocked on the owner) | Blocked |
 
@@ -883,7 +883,7 @@ As of 2026-10-15, read again against the code after commits 6bc49f7, 0c2d827, 3c
 
 ## Now reachable since the audit
 
-These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (2,018 passing, the type check clean and lint with 0 errors).
+These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (2,026 passing, the type check clean and lint with 0 errors).
 
 - **Unsubscribe link in marketing emails** (section 24), 6bc49f7. `/api/outreach/unsubscribe` is on the list of addresses that skip sign-in in `web/src/middleware.ts`. Not tried with a real email link.
 - **Report by email on a schedule** (section 13), 6bc49f7. The daily job (`/api/cron`) calls `/api/reports/scheduled` for every shop. Needs `CRON_SECRET` on the host and the shop's email key; I did not check either.

@@ -18,7 +18,7 @@ import CallDetail from '@/components/inbox/CallDetail'
 import NewMessageSheet from '@/components/inbox/NewMessageSheet'
 import DialSheet from '@/components/inbox/DialSheet'
 import { useKeyboardInset, useMediaQuery } from '@/components/inbox/hooks'
-import { callKind, contactKey, dialNumber, digitsOnly, otherNumber, recordingUrl } from '@/components/inbox/utils'
+import { CALL_LOAD_LIMIT, callKind, contactKey, dialNumber, digitsOnly, otherNumber, recordingUrl } from '@/components/inbox/utils'
 import type { CallRecord, ContactRef, Message, Thread } from '@/components/inbox/utils'
 
 async function getAuthJsonHeaders(): Promise<Record<string, string>> {
@@ -98,7 +98,7 @@ function InboxScreen() {
       const [hist, ai] = await Promise.all([
         supabase.from('call_history')
           .select('id, call_id, direction, from_number, to_number, duration_secs, status, start_time, end_time, matched_customer_name, transcript, lead_score, lead_reasoning, service_needed, caller_sentiment, key_quotes, call_count_from_number, raw_data')
-          .eq('shop_id', shopId).order('start_time', { ascending: false }).limit(1500),
+          .eq('shop_id', shopId).order('start_time', { ascending: false }).limit(CALL_LOAD_LIMIT),
         supabase.from('ai_calls')
           .select('id, task, status, started_at, transcript, summary, recording_url')
           .eq('shop_id', shopId).order('started_at', { ascending: false }).limit(200),

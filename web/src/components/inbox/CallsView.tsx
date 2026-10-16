@@ -2,7 +2,7 @@
 import { useMemo, useState } from 'react'
 import Icon from '@/components/Icon'
 import { phonePretty } from '@/lib/today'
-import { CALL_KIND_LABEL, CALL_KIND_LAMP, CALL_KIND_TEXT, callKind, formatDuration, otherNumber, recordingUrl, stamp } from './utils'
+import { CALL_KIND_LABEL, CALL_KIND_LAMP, CALL_KIND_TEXT, callKind, callTimeIn, formatDuration, formatTalkTime, mayMissCalls, monthBounds, otherNumber, recordingUrl, stamp } from './utils'
 import type { CallKind, CallRecord } from './utils'
 import { outcomeLabel } from './ai-types'
 import type { Interaction } from './ai-types'
@@ -49,6 +49,17 @@ export default function CallsView({ calls, nameFor, playingId, onOpen, onPlay, o
 
   const unseen = useMemo(() => rows.filter(r => r.c.viaAi && ai?.get(r.c.id) && !ai.get(r.c.id)?.seen_at).map(r => ai!.get(r.c.id)!.id), [rows, ai])
 
+  /** Phone time this month and last, from the call records already loaded. */
+  const talk = useMemo(() => {
+    const b = monthBounds(new Date())
+    return {
+      thisMonth: callTimeIn(calls, b.start, b.next),
+      lastMonth: callTimeIn(calls, b.prev, b.start),
+      partial: mayMissCalls(calls, b.start),
+      prevName: b.prev.toLocaleDateString('en-US', { month: 'long' }),
+    }
+  }, [calls])
+
   const shown = useMemo(() => {
     const q = search.trim().toLowerCase()
     const qd = q.replace(/\D/g, '')
@@ -70,6 +81,28 @@ export default function CallsView({ calls, nameFor, playingId, onOpen, onPlay, o
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="space-y-3 pb-3">
+        {calls.length > 0 && (
+          <section aria-label="Phone time this month" className="rounded-lg border border-border bg-bg-card px-4 py-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5">
+              <h2 className="text-[0.9375rem] font-bold text-text-secondary">Phone time this month</h2>
+              <span className="display num text-[1.5rem] font-bold leading-none">{talk.partial ? 'At least ' : ''}{formatTalkTime(talk.thisMonth.seconds)}</span>
+            </div>
+            <p className="mt-1 text-[0.9375rem] text-text-secondary">
+              {talk.thisMonth.calls === 0
+                ? 'No calls yet this month.'
+                : `${talk.thisMonth.calls} ${talk.thisMonth.calls === 1 ? 'call' : 'calls'}: ${talk.thisMonth.incoming} incoming, ${talk.thisMonth.outgoing} outgoing, ${talk.thisMonth.missed} missed.`}
+              {talk.lastMonth.calls > 0 ? ` ${talk.prevName}: ${formatTalkTime(talk.lastMonth.seconds)} in ${talk.lastMonth.calls} ${talk.lastMonth.calls === 1 ? 'call' : 'calls'}.` : ''}
+            </p>
+            {talk.thisMonth.unmeasuredAi > 0 && (
+              <p className="mt-1 text-[0.8125rem] text-text-secondary">
+                {talk.thisMonth.unmeasuredAi} {talk.thisMonth.unmeasuredAi === 1 ? 'call' : 'calls'} the assistant took {talk.thisMonth.unmeasuredAi === 1 ? 'has' : 'have'} no length on record, so {talk.thisMonth.unmeasuredAi === 1 ? 'it is' : 'they are'} not counted in the time.
+              </p>
+            )}
+            <p className="mt-1 text-[0.8125rem] text-text-secondary">
+              Call time recorded here, not a bill. Your phone company's bill has the cost.{talk.partial ? ' Only the most recent calls are loaded, so older calls this month may be missing.' : ''}
+            </p>
+          </section>
+        )}
         <label className="relative block">
           <span className="sr-only">Search calls by name, number or service</span>
           <Icon name="search" className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-text-muted" />
