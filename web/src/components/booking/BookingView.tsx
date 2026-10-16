@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
+import Link from 'next/link'
 import Icon from '@/components/Icon'
 import { HONEYPOT, MAX_NOTES, checkBookingForm, hoursLines } from '@/lib/booking'
 import { bookingIcs } from '@/lib/booking-calendar'
@@ -22,7 +23,7 @@ const FIRST_DAYS = 9
 const ORDER: Field[] = ['service', 'date', 'time', 'name', 'phone', 'vehicle', 'notes']
 const IDS: Record<Field, string> = { service: 'bk-service', date: 'bk-date', time: 'bk-time', name: 'bk-name', phone: 'bk-phone', vehicle: 'bk-vehicle', notes: 'bk-notes' }
 
-function Frame({ name, phone, children, bar }: { name: string; phone: string; children: ReactNode; bar?: ReactNode }) {
+export function Frame({ name, phone, children, bar }: { name: string; phone: string; children: ReactNode; bar?: ReactNode }) {
   return (
     <div className="min-h-dvh bg-bg-base text-text-primary">
       <header className="border-b border-border bg-bg-chrome">
@@ -51,7 +52,7 @@ function Step({ n, title, hint, children, id }: { n: number; title: string; hint
   )
 }
 
-const Problem = ({ id, text }: { id: string; text?: string }) => (text ? <p id={id} role="alert" className="form-error">{text}</p> : null)
+export const Problem = ({ id, text }: { id: string; text?: string }) => (text ? <p id={id} role="alert" className="form-error">{text}</p> : null)
 
 /** The public booking page. One long, calm form that works with a thumb: service, day, time, who you are. */
 export default function BookingView({ slug }: { slug: string }) {
@@ -193,7 +194,10 @@ function Booking({ slug, r }: { slug: string; r: string }) {
         <section className="card">
           <h1 className="display text-[1.375rem] font-bold">Book by phone</h1>
           <p className="mt-2 text-text-secondary">Online booking is not set up for any service yet.{shop.phone ? ' Please call the shop and we will find you a time.' : ''}</p>
-          {shop.phone && <a className="btn btn-primary mt-4" href={telHref(shop.phone)}><Icon name="phone" className="h-5 w-5" />Call {shop.phone}</a>}
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+            {shop.phone && <a className="btn btn-primary" href={telHref(shop.phone)}><Icon name="phone" className="h-5 w-5" />Call {shop.phone}</a>}
+            {shop.quotes && <Link className="btn btn-secondary" href={`/book/${slug}/quote`}>Ask for a price</Link>}
+          </div>
         </section>
       </Frame>
     )
@@ -214,6 +218,7 @@ function Booking({ slug, r }: { slug: string; r: string }) {
     <Frame name={shop.name} phone={shop.phone} bar={bar}>
       <h1 className="display text-[1.5rem] font-bold leading-tight">Book an appointment</h1>
       {shop.intro && <p className="mt-1 text-[0.9375rem] text-text-secondary">{shop.intro}</p>}
+      {shop.quotes && <p className="mt-2 text-[0.9375rem]">Not ready to pick a time? <Link href={`/book/${slug}/quote`} className="inline-flex min-h-[44px] items-center font-bold text-blue underline-offset-4 hover:underline">Ask for a price</Link></p>}
       <details className="mt-3 mb-5 text-[0.9375rem]">
         <summary className="inline-flex min-h-[44px] cursor-pointer items-center font-bold text-blue">Shop hours</summary>
         <dl className="mt-1 divide-y divide-border rounded-md border border-border bg-bg-card px-3">

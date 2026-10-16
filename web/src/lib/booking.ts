@@ -23,15 +23,17 @@ export interface OnlineSettings {
   notice: string
   /** A phone number with this many no-shows in the last year always waits for the shop, even on auto. 0 turns it off. */
   holdAfterNoShows: number
+  /** Visitors may also ask for a price without picking a time. Off until the shop turns it on. */
+  quotes: boolean
 }
 
 export const DEFAULT_ONLINE: OnlineSettings = {
   enabled: false, slug: '', approval: 'review', leadHours: 4, daysAhead: 30, stepMinutes: 30, intro: '',
-  notice: 'The shop will text you to confirm your time.', holdAfterNoShows: 2,
+  notice: 'The shop will text you to confirm your time.', holdAfterNoShows: 2, quotes: false,
 }
 
 export const SLUG = /^[a-z0-9](?:[a-z0-9-]{1,38})[a-z0-9]$/
-const clean = (v: unknown, max: number) => String(v ?? '').replace(/[<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, max)
+export const cleanText = (v: unknown, max: number) => String(v ?? '').replace(/[<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, max)
 const clamp = (v: unknown, lo: number, hi: number, fallback: number) => { const n = Number(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, Math.round(n))) : fallback }
 
 export function cleanOnline(raw: unknown): OnlineSettings {
@@ -44,9 +46,10 @@ export function cleanOnline(raw: unknown): OnlineSettings {
     leadHours: clamp(o.leadHours, 0, 72, DEFAULT_ONLINE.leadHours),
     daysAhead: clamp(o.daysAhead, 1, 90, DEFAULT_ONLINE.daysAhead),
     stepMinutes: ([15, 30, 60] as const).find(n => n === Number(o.stepMinutes)) ?? 30,
-    intro: clean(o.intro, 240),
-    notice: o.notice === undefined ? DEFAULT_ONLINE.notice : clean(o.notice, 240),
+    intro: cleanText(o.intro, 240),
+    notice: o.notice === undefined ? DEFAULT_ONLINE.notice : cleanText(o.notice, 240),
     holdAfterNoShows: clamp(o.holdAfterNoShows, 0, 5, DEFAULT_ONLINE.holdAfterNoShows),
+    quotes: o.quotes === true,
   }
 }
 
@@ -68,6 +71,8 @@ export interface PublicShop {
   hours: { day: string; label: string; open: boolean; start: string; end: string }[]
   services: { key: string; label: string; minutes: number; kind: JobKind }[]
   closedDates: string[]
+  /** The page also offers "ask for a price". */
+  quotes: boolean
 }
 
 /** The settings, cut down to what a stranger may read. Counts of technicians and bays, limits and names stay private. */
@@ -80,6 +85,7 @@ export function publicView(shop: { name: string; phone: string }, cap: CapacityS
     hours: DAY_KEYS.map(k => ({ day: k, label: DAY_LABEL[k], open: cap.hours[k].open, start: cap.hours[k].start, end: cap.hours[k].end })),
     services: cap.services.filter(s => s.online).map(s => ({ key: s.key, label: s.label, minutes: s.minutes, kind: s.kind })),
     closedDates: cap.closedDates.filter(d => d >= '1970-01-01').slice(0, 120),
+    quotes: online.quotes,
   }
 }
 
@@ -138,11 +144,11 @@ const fail = (field: string, error: string): Cleaned => ({ ok: false, field, err
 export function cleanBooking(raw: unknown, ctx: { services: ServiceType[]; todayYmd: string; daysAhead: number }): Cleaned {
   const o = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
   // Markup is checked on what was sent, before cleaning strips the angle brackets and hides it.
-  const name = clean(o.name, 60)
+  const name = cleanText(o.name, 60)
   if (name.length < 2 || !/\p{L}/u.test(name) || !/^\p{L}[\p{L} .'’-]*$/u.test(name) || looksLikeSpam(String(o.name ?? ''))) return fail('name', 'Please enter your name.')
   const phone = normalizePhone(o.phone)
   if (!phone) return fail('phone', 'Please enter a 10-digit phone number.')
-  const vehicle = clean(o.vehicle, 80)
+  const vehicle = cleanText(o.vehicle, 80)
   if (vehicle.length < 3 || looksLikeSpam(String(o.vehicle ?? ''))) return fail('vehicle', 'Please tell us the year, make and model.')
   const svc = ctx.services.find(s => s.key === o.service)
   if (!svc) return fail('service', 'Please pick what you need done.')
@@ -151,7 +157,7 @@ export function cleanBooking(raw: unknown, ctx: { services: ServiceType[]; today
   if (!isYmd(date) || date < ctx.todayYmd || daysApart(ctx.todayYmd, date) > ctx.daysAhead) return fail('date', 'Please pick a day from the list.')
   const time = String(o.time ?? '')
   if (!isHm(time)) return fail('time', 'Please pick a time from the list.')
-  const notes = clean(o.notes, MAX_NOTES)
+  const notes = cleanText(o.notes, MAX_NOTES)
   if (looksLikeSpam(String(o.notes ?? ''))) return fail('notes', 'Please leave web addresses out of the note.')
   return { ok: true, value: { name, phone, vehicle, service: svc.key, serviceLabel: svc.label, minutes: svc.minutes, kind, date, time, notes, phoneShown: phoneDisplay(phone) } }
 }
@@ -159,13 +165,13 @@ export function cleanBooking(raw: unknown, ctx: { services: ServiceType[]; today
 /** The same checks the server makes, so a mistake is caught before the trip. The server still checks everything again. */
 export function checkBookingForm(f: { service: string; date: string; time: string; name: string; phone: string; vehicle: string; notes: string }): Partial<Record<'service' | 'date' | 'time' | 'name' | 'phone' | 'vehicle' | 'notes', string>> {
   const out: Partial<Record<'service' | 'date' | 'time' | 'name' | 'phone' | 'vehicle' | 'notes', string>> = {}
-  const name = clean(f.name, 60)
+  const name = cleanText(f.name, 60)
   if (!f.service) out.service = 'Choose what you need done.'
   if (!f.date) out.date = 'Choose a day.'
   else if (!f.time) out.time = 'Choose a time.'
   if (name.length < 2 || !/\p{L}/u.test(name) || !/^\p{L}[\p{L} .'’-]*$/u.test(name) || looksLikeSpam(f.name)) out.name = 'Enter your name.'
   if (!normalizePhone(f.phone)) out.phone = 'Enter a 10-digit phone number.'
-  if (clean(f.vehicle, 80).length < 3 || looksLikeSpam(f.vehicle)) out.vehicle = 'Tell us the year, make and model.'
+  if (cleanText(f.vehicle, 80).length < 3 || looksLikeSpam(f.vehicle)) out.vehicle = 'Tell us the year, make and model.'
   if (looksLikeSpam(f.notes)) out.notes = 'Leave web addresses out of the note.'
   return out
 }

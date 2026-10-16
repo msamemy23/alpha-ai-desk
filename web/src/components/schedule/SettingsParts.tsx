@@ -171,10 +171,15 @@ export function OnlineTab({ cap, online, setOnline, origin, canTurnOn }: {
         <input type="checkbox" className="h-5 w-5" checked={online.enabled} disabled={!canTurnOn || (!online.enabled && !ready)} onChange={e => set('enabled', e.target.checked)} />
         Take bookings on the public page
       </label>
+      <label className="flex min-h-[48px] items-start gap-3 rounded-md border border-border px-3 py-2.5">
+        <input type="checkbox" className="mt-0.5 h-5 w-5" checked={online.quotes} disabled={!canTurnOn || !online.enabled} onChange={e => set('quotes', e.target.checked)} />
+        <span><span className="block font-bold">Let visitors ask for a price</span><span className="block text-[0.875rem] font-normal text-text-secondary">Adds an &ldquo;Ask for a price&rdquo; link to the page, for people who are not ready to pick a time. Their request shows up on Get more customers, Leads. Nothing is texted or emailed to them by itself.{!online.enabled ? ' Turn on booking first.' : ''}</span></span>
+      </label>
       {url && online.enabled && (
         <div className="rounded-md border border-border bg-bg-base px-3 py-2.5">
           <p className="text-[0.8125rem] text-text-secondary">Your booking page</p>
           <p className="break-all font-bold">{url}</p>
+          {online.quotes && <p className="mt-1 break-all text-[0.875rem]"><span className="text-text-secondary">Ask for a price: </span><span className="font-bold">{url}/quote</span></p>}
           <div className="mt-2 flex flex-wrap gap-2">
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => void copy()}><Icon name="copy" className="h-4 w-4" />{copied ? 'Copied' : 'Copy the link'}</button>
             <a className="btn btn-secondary btn-sm no-underline" href={url} target="_blank" rel="noopener noreferrer"><Icon name="openExternal" className="h-4 w-4" />Open it</a>

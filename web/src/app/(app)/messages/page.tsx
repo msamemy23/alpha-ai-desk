@@ -17,6 +17,8 @@ import CallsView from '@/components/inbox/CallsView'
 import CallDetail from '@/components/inbox/CallDetail'
 import NewMessageSheet from '@/components/inbox/NewMessageSheet'
 import DialSheet from '@/components/inbox/DialSheet'
+import LeadFromCallSheet from '@/components/inbox/LeadFromCallSheet'
+import ConfirmSheet from '@/components/forms/ConfirmSheet'
 import { useKeyboardInset, useMediaQuery } from '@/components/inbox/hooks'
 import { CALL_LOAD_LIMIT, callKind, contactKey, dialNumber, digitsOnly, otherNumber, recordingUrl } from '@/components/inbox/utils'
 import type { CallRecord, ContactRef, Message, Thread } from '@/components/inbox/utils'
@@ -77,6 +79,12 @@ function InboxScreen() {
   const [selectedCall, setSelectedCall] = useState<CallRecord | null>(null)
   const [compose, setCompose] = useState<{ to: string; channel: 'sms' | 'email' } | null>(null)
   const [dialOpen, setDialOpen] = useState(false)
+  const [leadFor, setLeadFor] = useState<CallRecord | null>(null)
+  const [leadMatch, setLeadMatch] = useState<{ name: string } | null | undefined>(undefined)
+  const [canDelete, setCanDelete] = useState(false)
+  const [deleteFor, setDeleteFor] = useState<CallRecord | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
   const [playingId, setPlayingId] = useState<string | null>(null)
   const [audioError, setAudioError] = useState('')
   const [notice, setNotice] = useState('')
@@ -372,6 +380,57 @@ function InboxScreen() {
   const closeDial = useCallback(() => setDialOpen(false), [])
   const closeCall = useCallback(() => setSelectedCall(null), [])
 
+  // Only the people who run the shop get a Delete button. The server checks again when it is pressed.
+  useEffect(() => {
+    let off = false
+    void (async () => {
+      try {
+        const res = await fetch('/api/delete-call', { headers: await getAuthJsonHeaders() })
+        const data = await res.json().catch(() => ({})) as { canDelete?: boolean }
+        if (!off) setCanDelete(res.ok && data.canDelete === true)
+      } catch { /* no button until we know */ }
+    })()
+    return () => { off = true }
+  }, [])
+
+  // Is the caller already on the Leads list? Decides between "Save as a lead" and "On your Leads list".
+  useEffect(() => {
+    setLeadMatch(undefined)
+    if (!selectedCall) return
+    const key = digitsOnly(otherNumber(selectedCall)).slice(-10)
+    if (key.length < 7) { setLeadMatch(null); return }
+    let off = false
+    void (async () => {
+      try {
+        const shopId = await getShopId()
+        if (!shopId) { if (!off) setLeadMatch(null); return }
+        const { data, error } = await supabase.from('leads').select('name,phone').eq('shop_id', shopId).ilike('phone', `%${key.slice(-4)}%`).limit(30)
+        if (off) return
+        // If the list cannot be read, the button still works: saving finds the same number again and never makes a second lead.
+        const hit = error ? undefined : ((data || []) as Row[]).find(r => digitsOnly(String(r.phone || '')).slice(-10) === key)
+        setLeadMatch(hit ? { name: String(hit.name || '').replace(/^(Past Caller|Unknown caller|Unknown)$/i, '') } : null)
+      } catch { if (!off) setLeadMatch(null) }
+    })()
+    return () => { off = true }
+  }, [selectedCall])
+
+  const deleteCall = async () => {
+    if (!deleteFor || deleting) return
+    const target = deleteFor
+    setDeleting(true); setDeleteError('')
+    try {
+      const res = await fetch('/api/delete-call', { method: 'DELETE', headers: await getAuthJsonHeaders(), body: JSON.stringify({ id: target.id }) })
+      const data = await res.json().catch(() => ({})) as { error?: string }
+      if (!res.ok) { setDeleteError(data.error || 'The call could not be deleted. Try again.'); return }
+      setCalls(prev => prev.filter(c => c.id !== target.id))
+      setDeleteFor(null); setSelectedCall(null)
+      setNotice('The call was deleted.')
+      void reloadOverlay()
+    } catch {
+      setDeleteError('The call could not be deleted. Check your connection and try again.')
+    } finally { setDeleting(false) }
+  }
+
   const callName = useCallback((c: CallRecord) => c.matched_customer_name || byPhone.get(contactKey(otherNumber(c)))?.name || '', [byPhone])
 
   const togglePlay = (call: CallRecord) => {
@@ -573,6 +632,9 @@ function InboxScreen() {
             customerId={selectedCallPerson?.id || null}
             onCallBack={() => dialNumber(otherNumber(selectedCall), callName(selectedCall))}
             onText={() => { const n = otherNumber(selectedCall); setSelectedCall(null); setCompose({ to: n, channel: 'sms' }) }}
+            lead={leadMatch}
+            onSaveLead={() => setLeadFor(selectedCall)}
+            onDelete={canDelete ? () => { setDeleteError(''); setDeleteFor(selectedCall) } : undefined}
             ai={overlay.byCall.get(selectedCall.id)}
             onAiChanged={overlay.reload}
           />
@@ -598,6 +660,25 @@ function InboxScreen() {
       )}
 
       {dialOpen && <DialSheet onClose={closeDial} onDial={n => dialNumber(n)} />}
+
+      {leadFor && (
+        <LeadFromCallSheet
+          call={leadFor} number={otherNumber(leadFor)} authHeaders={getAuthJsonHeaders}
+          onClose={() => setLeadFor(null)}
+          onDone={(message, savedName) => { setLeadMatch({ name: savedName }); setLeadFor(null); setNotice(message) }}
+        />
+      )}
+
+      <ConfirmSheet
+        open={!!deleteFor} title="Delete this call?" confirmLabel="Delete call" busyLabel="Deleting…" cancelLabel="Keep it"
+        busy={deleting} error={deleteError} onConfirm={() => void deleteCall()} onCancel={() => { if (!deleting) setDeleteFor(null) }}
+      >
+        <p>
+          {deleteFor ? <>The call with <strong>{callName(deleteFor) || phonePretty(otherNumber(deleteFor)) || 'this number'}</strong> will be taken off your call list, with its transcript and notes. </> : null}
+          This cannot be undone.
+        </p>
+        <p className="mt-2 text-text-secondary">The customer, your texts, and the assistant&rsquo;s note about what it booked or flagged stay as they are. A recording kept by your phone company is not deleted there.</p>
+      </ConfirmSheet>
     </div>
   )
 }

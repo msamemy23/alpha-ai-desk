@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
+import { captureLead } from '@/lib/lead-capture'
+import { loadShopInfo } from '@/lib/schedule-store'
+import { nowIn } from '@/lib/schedule-capacity'
 
 // Leads are shop data — every caller must resolve to one shop.
 
@@ -15,81 +18,16 @@ export async function POST(req: NextRequest) {
     const { action } = body || {}
 
     if (action === 'capture') {
-      const { name, phone, email, source, vehicle_info, notes, needs_followup = true } = body
-
-      if (!name && !phone) {
-        return NextResponse.json({ error: 'At least name or phone required' }, { status: 400 })
-      }
-
-      // Check if this lead already exists
-      let existingLead = null
-      if (phone) {
-        const { data } = await supabase
-          .from('growth_leads')
-          .select('*')
-          .eq('shop_id', auth.shopId)
-          .eq('phone', phone)
-          .maybeSingle()
-        existingLead = data
-      }
-
-      if (existingLead) {
-        // Update existing lead
-        const { error: updateError } = await supabase
-          .from('growth_leads')
-          .update({
-            name: name || existingLead.name,
-            email: email || existingLead.email,
-            vehicle_info: vehicle_info || existingLead.vehicle_info,
-            notes: existingLead.notes ? `${existingLead.notes}\n---\n${notes || ''}` : notes,
-            touch_count: (existingLead.touch_count || 0) + 1,
-            last_contact: new Date().toISOString(),
-            source: source || existingLead.source
-          })
-          .eq('id', existingLead.id)
-          .eq('shop_id', auth.shopId)
-        if (updateError) throw updateError
-
-        return NextResponse.json({
-          lead_id: existingLead.id,
-          status: 'updated',
-          message: `Existing lead ${existingLead.name} updated. Contact #${(existingLead.touch_count || 0) + 1}`
-        })
-      }
-
-      // Create new lead
-      const { data: newLead, error } = await supabase
-        .from('growth_leads')
-        .insert({
-          shop_id: auth.shopId,
-          name: name || 'Unknown',
-          phone: phone || null,
-          email: email || null,
-          source: source || 'walk-in',
-          vehicle_info: vehicle_info || null,
-          notes: notes || null,
-          status: 'new',
-          needs_followup,
-          touch_count: 1,
-          last_contact: new Date().toISOString(),
-          converted: false,
-          created_at: new Date().toISOString()
-        })
-        .select()
-        .single()
-
-      if (error) throw error
-
-      return NextResponse.json({
-        lead_id: newLead.id,
-        status: 'created',
-        message: `New lead captured: ${name || 'Unknown'} (${source || 'walk-in'})`
-      })
+      // Saves into the Leads tab's table and the follow-up automation's table, finds the same person again by phone, and never makes two.
+      const info = await loadShopInfo(auth.shopId).catch(() => null)
+      const today = info ? nowIn(info.timezone).ymd : undefined
+      const r = await captureLead(supabase, auth.shopId, body, new Date(), today)
+      if (!r.ok) return NextResponse.json({ error: r.error }, { status: r.status })
+      return NextResponse.json({ lead_id: r.growthId, leads_id: r.leadId, status: r.status, message: r.message })
     }
 
     if (action === 'follow_up_pending') {
-      // Lead follow-ups used to be texted from here every day with no limit. They now run as the "New lead
-      // follow-up" automation (a small fixed number of texts, spaced apart, with quiet hours, STOP handling,
+      // Lead follow-ups used to be texted from here every day with no limit. They now run as the "New lead follow-up" automation (a small fixed number of texts, spaced apart, with quiet hours, STOP handling,
       // a preview and a history). This call stays so older schedulers do not break, and it sends nothing.
       return NextResponse.json({ ok: true, success: true, sent: 0, message: 'Lead follow-ups run from Automations now. Nothing was sent from here.' })
     }

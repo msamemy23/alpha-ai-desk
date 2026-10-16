@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase-service'
 import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
+import { loadDeletedCallIds, withoutDeleted } from '@/lib/call-delete'
 
 export const maxDuration = 300
 
@@ -10,7 +11,9 @@ const TELNYX_BASE = 'https://api.telnyx.com/v2'
 async function syncFromActivities(db: any, shopId: string, shopNumber: string) {
     const { data: activities, error } = await db.from('activities').select('*').eq('shop_id', shopId).eq('type', 'call').order('created_at', { ascending: false })
     if (error || !activities?.length) return { synced: 0, error: error?.message }
-    const rows = activities.map((a: any) => ({
+    // Calls the owner deleted stay deleted: this copy-in skips them.
+    const gone = await loadDeletedCallIds(db, shopId)
+    const rows = withoutDeleted(activities.map((a: any) => ({
         call_id: `activity-${a.id}`,
         direction: a.direction || 'unknown',
         shop_id: shopId,
@@ -22,7 +25,7 @@ async function syncFromActivities(db: any, shopId: string, shopNumber: string) {
         customer_id: a.customer_id || null,
         matched_customer_name: a.customer_name || null,
         raw_data: { source: 'activities', activity_id: a.id, notes: a.notes, has_recording: a.has_recording, recording_url: a.recording_url },
-    }))
+    })), gone)
     let inserted = 0
     for (let i = 0; i < rows.length; i += 100) {
         const batch = rows.slice(i, i + 100)
@@ -76,7 +79,8 @@ async function syncFromRecordings(db: any, shopId: string, apiKey: string, shopN
         if (c.phone) phoneMap.set(c.phone.replace(/\D/g, '').slice(-10), { id: c.id, name: c.name })
     }
 
-    const rows = recordings.map((r: any) => {
+    const gone = await loadDeletedCallIds(db, shopId)
+    const rows = withoutDeleted(recordings.map((r: any) => {
         const isInbound = r.connection_id === inboundConnection
         const from = isInbound ? (r.from || '') : shopNumber
         const to = isInbound ? shopNumber : (r.to || '')
@@ -106,7 +110,7 @@ async function syncFromRecordings(db: any, shopId: string, apiKey: string, shopN
                 connection_id: r.connection_id,
             },
         }
-    })
+    }), gone)
 
     let inserted = 0
     for (let i = 0; i < rows.length; i += 100) {
@@ -121,7 +125,8 @@ async function syncFromRecordings(db: any, shopId: string, apiKey: string, shopN
 async function syncFromAiCalls(db: any, shopId: string, shopNumber: string) {
     const { data: aiCalls, error } = await db.from('ai_calls').select('*').eq('shop_id', shopId).order('started_at', { ascending: false })
     if (error || !aiCalls?.length) return { synced: 0, error: error?.message }
-    const rows = aiCalls.filter((a: any) => a.started_at).map((a: any) => {
+    const gone = await loadDeletedCallIds(db, shopId)
+    const rows = withoutDeleted(aiCalls.filter((a: any) => a.started_at).map((a: any) => {
         const ts = new Date(typeof a.started_at === 'number' ? a.started_at : parseInt(a.started_at))
         return {
             call_id: `ai-${a.id}`,
@@ -136,7 +141,7 @@ async function syncFromAiCalls(db: any, shopId: string, shopNumber: string) {
             matched_customer_name: null,
             raw_data: { source: 'ai_calls', ai_call_id: a.id, task: a.task, status: a.status, transcript: a.transcript, summary: a.summary },
         }
-    })
+    }), gone)
     let inserted = 0
     for (let i = 0; i < rows.length; i += 100) {
         const batch = rows.slice(i, i + 100)

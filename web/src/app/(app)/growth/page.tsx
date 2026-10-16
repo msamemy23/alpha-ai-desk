@@ -57,6 +57,12 @@ export default function GrowthPage() {
   const [promoSeed, setPromoSeed] = useState<PromotionSeed | null>(null)
   const clearSeed = useCallback(() => setPromoSeed(null), [])
 
+  // A link such as /growth?tab=leads opens that tab.
+  useEffect(() => {
+    const want = new URLSearchParams(window.location.search).get('tab')
+    if (want && TABS.some(t => t.key === want)) setTab(want as Tab)
+  }, [])
+
   const { load, loadCalls, callState } = d
   useEffect(() => { if (tab === 'leads' && callState === 'idle') void loadCalls() }, [tab, callState, loadCalls])
 

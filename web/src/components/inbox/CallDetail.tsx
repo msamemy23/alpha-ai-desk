@@ -18,12 +18,18 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
 }
 
 /** Everything about one call: who, how it went, recording, transcript and what the AI noted. */
-export default function CallDetail({ call, name, customerId, onCallBack, onText, ai, onAiChanged }: {
+export default function CallDetail({ call, name, customerId, onCallBack, onText, lead, onSaveLead, onDelete, ai, onAiChanged }: {
   call: CallRecord
   name: string
   customerId: string | null
   onCallBack: () => void
   onText: () => void
+  /** Whether this number is already on the Leads list: undefined while that is being checked, null when it is not. */
+  lead?: { name: string } | null
+  /** Offered for a number that is not a customer yet and not on the Leads list. */
+  onSaveLead?: () => void
+  /** Offered only to the people who may delete calls. */
+  onDelete?: () => void
   /** What the assistant recorded about this call, when it answered it. */
   ai?: Interaction
   onAiChanged?: () => void
@@ -55,6 +61,17 @@ export default function CallDetail({ call, name, customerId, onCallBack, onText,
         <button type="button" className="btn btn-secondary" onClick={onText} disabled={!number}>
           <Icon name="inbox" className="h-5 w-5" />Send a text
         </button>
+        {number && !customerId && !name && lead === null && onSaveLead && (
+          <button type="button" className="btn btn-secondary col-span-2" onClick={onSaveLead}>
+            <Icon name="user" className="h-5 w-5" />Save as a lead
+          </button>
+        )}
+        {number && !customerId && !name && lead && (
+          <p className="col-span-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-lg border border-border bg-bg-base px-4 py-2.5 text-[0.9375rem]">
+            <span className="flex items-center gap-2 font-bold"><Icon name="check" className="h-5 w-5 shrink-0 text-green" />On your Leads list{lead.name ? ` as ${lead.name}` : ''}</span>
+            <Link href="/growth?tab=leads" className="font-bold text-blue underline-offset-2 hover:underline">Open Leads</Link>
+          </p>
+        )}
       </div>
 
       <dl className="rounded-lg border border-border bg-bg-base px-4">
@@ -107,6 +124,14 @@ export default function CallDetail({ call, name, customerId, onCallBack, onText,
         <p className="rounded-lg border border-dashed border-border p-4 text-[0.9375rem] text-text-secondary">
           {kind === 'missed' ? 'Nobody picked up, so there is no recording.' : 'There is no recording or transcript for this call.'}
         </p>
+      )}
+
+      {onDelete && (
+        <section aria-labelledby="cd-del" className="space-y-2 border-t border-border pt-5">
+          <h3 id="cd-del" className="section-title">Remove this call</h3>
+          <p className="text-[0.9375rem] text-text-secondary">Takes it off your call list, with its notes and transcript. Use it for test calls, wrong numbers and spam.</p>
+          <button type="button" className="btn btn-danger" onClick={onDelete}><Icon name="trash" className="h-5 w-5" />Delete this call</button>
+        </section>
       )}
     </div>
   )
