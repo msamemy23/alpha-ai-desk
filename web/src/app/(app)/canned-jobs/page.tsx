@@ -9,12 +9,13 @@ import FlashNotice from '@/components/forms/FlashNotice'
 import type { Flash } from '@/components/forms/FlashNotice'
 import JobForm from '@/components/canned-jobs/JobForm'
 import InventoryPicker from '@/components/canned-jobs/InventoryPicker'
+import ExtrasSheet from '@/components/canned-jobs/ExtrasSheet'
 import type { StockPart } from '@/components/canned-jobs/InventoryPicker'
 import { DEFAULT_CATEGORIES, emptyForm, hasErrors, money, newKey, toForm, toRow, toRows, validate } from '@/components/canned-jobs/types'
 import type { CannedJob, JobErrors, JobForm as Form, PartRow } from '@/components/canned-jobs/types'
 import { isDirty, mergeCategories, reasonOf, sameCategory } from '@/lib/list-logic'
 
-type Panel = null | 'form' | 'pick' | 'delete' | 'discard'
+type Panel = null | 'form' | 'pick' | 'extras' | 'delete' | 'discard'
 type Status = 'all' | 'on' | 'hidden'
 
 const NO_SHOP = 'We could not find your shop. Try refreshing, or sign out and back in.'
@@ -332,10 +333,13 @@ export default function CannedJobsPage() {
               onDuplicate={editing && editing !== 'new' ? openCopy : undefined}
               onDelete={editing && editing !== 'new' ? () => { setDeleteError(''); setPanel('delete') } : undefined}
               onPick={openPicker}
+              onOpenExtras={editing && editing !== 'new' ? () => setPanel('extras') : undefined}
             />
           )}
         </div>
       </Sheet>
+
+      {panel === 'extras' && original && <ExtrasSheet key={original.id} job={original} onBack={() => setPanel('form')} />}
 
       <ConfirmSheet
         open={panel === 'delete'}

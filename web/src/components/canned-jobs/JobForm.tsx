@@ -13,7 +13,7 @@ import type { JobErrors, JobForm as Form, PartRow } from './types'
 /** Add or change one canned job. Every box is text, so "0.5" and a cleared box act the way they look. */
 export default function JobForm({
   form, setForm, rows, setRows, errors, categories, shopRate, saving, error, isNew,
-  onSave, onCancel, onDuplicate, onDelete, onPick,
+  onSave, onCancel, onDuplicate, onDelete, onPick, onOpenExtras,
 }: {
   form: Form
   setForm: Dispatch<SetStateAction<Form>>
@@ -31,6 +31,8 @@ export default function JobForm({
   onDuplicate?: () => void
   onDelete?: () => void
   onPick: () => void
+  /** Opens the editor for versions, keywords and fees. Left out for a job that is not saved yet, because those are kept against the saved job. */
+  onOpenExtras?: () => void
 }) {
   const set = (k: 'name' | 'description' | 'notes' | 'category' | 'labor_hours' | 'labor_rate') => (e: { target: { value: string } }) => setForm(f => ({ ...f, [k]: e.target.value }))
   const bad = (k: 'name' | 'labor_hours' | 'labor_rate') => (errors[k] ? { 'aria-invalid': true as const, 'aria-describedby': `cj-${k}-err` } : {})
@@ -139,6 +141,15 @@ export default function JobForm({
         </dl>
       </section>
       {t.total === 0 && form.name.trim() && <Notice kind="warn">This job adds up to $0.00. Add labor hours or a part price if that is not what you want.</Notice>}
+
+      <Section title="Versions, keywords and fees">
+        <p className="text-[0.9375rem] text-text-secondary">Different hours or parts for certain cars, words that help find this job, and extra fees that come with it.</p>
+        {onOpenExtras ? (
+          <button type="button" className="btn btn-secondary mt-3" onClick={onOpenExtras} disabled={saving}><Icon name="edit" className="h-5 w-5" />Edit versions, keywords and fees</button>
+        ) : (
+          <p className="mt-2 text-[0.875rem] text-text-secondary">Save this job first. Then you can add versions, keywords and fees to it.</p>
+        )}
+      </Section>
 
       <Field id="cj-notes" label="Notes and warranty">
         <textarea id="cj-notes" className="form-textarea" rows={2} value={form.notes} onChange={set('notes')} placeholder="Warranty terms, what is not covered" />
