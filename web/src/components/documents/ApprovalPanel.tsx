@@ -106,7 +106,7 @@ export default function ApprovalPanel({ docNumber, status, isNew, expiresDate, t
                   {link?.sentAt ? 'Send again' : 'Send to customer'}
                 </button>
               )}
-              {!closed && status === 'Sent' && (
+              {!closed && (status === 'Sent' || status === 'Draft') && (
                 <button type="button" className="btn btn-secondary w-full sm:w-auto" onClick={onMarkApproved}>
                   <Icon name="check" className="h-5 w-5" />
                   They said yes in person

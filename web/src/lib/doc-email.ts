@@ -150,6 +150,17 @@ export function buildSendEmail(input: SendEmailInput): BuiltEmail {
   return { subject: `${title} from ${shop.name}`, html: shell(shop, brand, input.logoUrl, inner, doc.footer, input.pixelUrl), text }
 }
 
+/** The text message that carries the link. Short, with the total and one clear thing to do. */
+export function buildSendText(input: { doc: PublicDocument; shop: PublicShop; link: string }): string {
+  const { doc, shop, link } = input
+  const first = doc.customerName.trim().split(/\s+/)[0] || ''
+  const hi = first ? `Hi ${first}, ` : 'Hi, '
+  const car = doc.vehicle ? ` for your ${doc.vehicle}` : ''
+  const ask = doc.kind === 'estimate' ? 'Review it and tell us which jobs to do' : doc.kind === 'invoice' ? 'See the details' : 'See your receipt'
+  const phone = shop.phone ? ` Questions? Call ${shop.phone}.` : ''
+  return `${shop.name ? `${shop.name}: ` : ''}${hi}your ${doc.kind} ${doc.docNumber}${car} is ready. Total ${usd(doc.totals.total)}. ${ask}: ${link}${phone}`
+}
+
 export interface SignedEmailInput {
   doc: PublicDocument
   shop: PublicShop

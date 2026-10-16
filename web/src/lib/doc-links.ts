@@ -43,5 +43,6 @@ export function deviceLabel(ua: string): string {
   const s = ua || ''
   const os = /iPhone|iPad|iPod/.test(s) ? 'iPhone or iPad' : /Android/.test(s) ? 'Android' : /Windows/.test(s) ? 'Windows' : /Mac OS X|Macintosh/.test(s) ? 'Mac' : /Linux/.test(s) ? 'Linux' : 'Unknown device'
   const browser = /Edg\//.test(s) ? 'Edge' : /OPR\/|Opera/.test(s) ? 'Opera' : /Firefox\//.test(s) ? 'Firefox' : /Chrome\//.test(s) || /CriOS\//.test(s) ? 'Chrome' : /Safari\//.test(s) ? 'Safari' : 'a browser'
+  if (browser === 'a browser' && os === 'Unknown device') return 'Unknown device'
   return `${browser} on ${os}`
 }

@@ -23,11 +23,11 @@ export async function authHeaders(): Promise<Record<string, string>> {
 
 export const OFFLINE = 'Could not reach the server. Check your connection and try again.'
 
-export async function api<T = Record<string, unknown>>(url: string, init: { method?: string; body?: unknown } = {}): Promise<ApiResult<T>> {
+export async function api<T = Record<string, unknown>>(url: string, init: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<ApiResult<T>> {
   try {
     const res = await fetch(url, {
       method: init.method || (init.body === undefined ? 'GET' : 'POST'),
-      headers: await authHeaders(),
+      headers: { ...(await authHeaders()), ...(init.headers || {}) },
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
       cache: 'no-store',
     })
@@ -129,8 +129,11 @@ export const saveDocumentFields = (id: string, data: Record<string, unknown>) =>
 export interface SendPreview { channel: string; to: string; subject: string; text: string; html: string; blocked: string; total: number }
 export const previewSend = (documentId: string, channel: 'email' | 'sms' | 'copy', contact: { email?: string; phone?: string }) =>
   api<{ preview: SendPreview }>('/api/send-document', { method: 'POST', body: { documentId, channel, preview: true, ...contact } })
-export const sendNow = (documentId: string, channel: 'email' | 'sms' | 'copy', contact: { email?: string; phone?: string }) =>
-  api<{ link: string; linkKind: string; status: string; sentAt: string; expiresAt: string }>('/api/send-document', { method: 'POST', body: { documentId, channel, ...contact } })
+/** `attemptKey` names this one attempt: a retry of it never sends twice, while a deliberate second send (a new key) does. */
+export const sendNow = (documentId: string, channel: 'email' | 'sms' | 'copy', contact: { email?: string; phone?: string }, attemptKey?: string) =>
+  api<{ link: string; linkKind: string; status: string; sentAt: string; expiresAt: string; warning?: string }>('/api/send-document', {
+    method: 'POST', body: { documentId, channel, ...contact }, ...(attemptKey ? { headers: { 'Idempotency-Key': attemptKey } } : {}),
+  })
 
 /** What the saved signature record says: who, when, how, and whether the stored record still matches its seal. */
 export interface SignatureInfo {

@@ -9,15 +9,22 @@ import DocList from './documents/DocList'
 import type { ListFilter } from './documents/DocList'
 import DocEditor from './documents/DocEditor'
 import { DocPreview, printPreview } from './documents/DocPreview'
-import { ActionsMenu, CustomerPicker, ErrorMsg, NewCustomerForm, PaymentForm, PlanForm, SendForm, SignatureForm, WarnMsg } from './documents/Dialogs'
+import { ActionsMenu, CustomerPicker, ErrorMsg, NewCustomerForm, PaymentForm, PlanForm, SignatureForm, WarnMsg } from './documents/Dialogs'
 import type { MenuItem, SigResult } from './documents/Dialogs'
 import { DeleteForm, RestoreForm, VoidForm } from './documents/ActionSheets'
 import HistorySheet from './documents/HistorySheet'
+import SendSheet from './documents/SendSheet'
+import type { SentResult } from './documents/SendSheet'
+import ApprovalPanel from './documents/ApprovalPanel'
+import OptionsSheet from './documents/OptionsSheet'
 import DeclinedSheet from './documents/DeclinedSheet'
 import CannedSheet from './documents/CannedSheet'
 import { DiscountForm, FeeForm } from './documents/PricingSheets'
 import { SaveTemplateForm, TemplatePicker } from './documents/TemplateSheet'
 import { useDocPrefs } from './documents/useDocPrefs'
+import { useLinkSummaries } from './documents/useDocExtras'
+import { linkLine } from '@/lib/doc-history'
+import type { OptionGroup } from '@/lib/doc-approval'
 import { markupSuggestion } from '@/lib/markup-editor'
 import { useDeclinedWork } from './documents/useDeclinedWork'
 import type { DeclinedWork } from './documents/api'
@@ -26,9 +33,10 @@ import { WARRANTY_PRESETS } from './documents/warranty'
 import { useShopLogo } from '@/lib/shop-logo'
 import { cleanDecisions, estimateLines, findings, normalizeSections } from '@/lib/dvi'
 import { docWord, isLocked } from './documents/types'
-import { convertEstimate, createDocument, deleteTemplate, docAction, getExtras, getTemplates, logHistory, nextDocNumber, postPayment, saveDocumentFields, saveTemplate } from './documents/api'
-import type { Template } from './documents/api'
-import { jobNames } from '@/lib/doc-lines'
+import { convertEstimate, createDocument, deleteTemplate, docAction, getExtras, getOptions, getSignature, getTemplates, logHistory, nextDocNumber, postPayment, saveDocumentFields, saveTemplate } from './documents/api'
+import type { SignatureInfo, Template } from './documents/api'
+import { jobNameOf, jobNames } from '@/lib/doc-lines'
+import type { Line as DocLine } from '@/lib/doc-lines'
 import type { BuiltJob, CannedExtras } from '@/lib/canned-match'
 import { MONEY_FIELDS } from '@/lib/doc-write'
 import type { Customer, Doc, DocType, Notice } from './documents/types'
@@ -68,7 +76,7 @@ interface CannedJob {
   parts: { name: string; part_number?: string; cost: number; qty: number }[] | null
 }
 
-type SheetKind = null | 'customer' | 'newcustomer' | 'send' | 'sign' | 'pay' | 'plan' | 'more' | 'preview' | 'convert' | 'delete' | 'canned' | 'void' | 'restore' | 'history' | 'declined' | 'discount' | 'fee' | 'templates' | 'savetemplate'
+type SheetKind = null | 'customer' | 'newcustomer' | 'send' | 'sign' | 'pay' | 'plan' | 'more' | 'preview' | 'convert' | 'delete' | 'canned' | 'void' | 'restore' | 'history' | 'declined' | 'discount' | 'fee' | 'templates' | 'savetemplate' | 'options' | 'extend' | 'linksoff'
 
 /** Today as yyyy-mm-dd in the shop's own clock, not UTC (UTC is already "tomorrow" on a Houston evening). */
 function localToday() {
@@ -102,6 +110,16 @@ export default function DocumentsPage({ type }: { type: DocType }) {
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState<Notice | null>(null)
   const [signatureImg, setSignatureImg] = useState<string | null>(null)
+  // What the customer did with their link, and the saved signed record. Both are read from the server, never guessed.
+  const linkData = useLinkSummaries()
+  const [sig, setSig] = useState<SignatureInfo | null>(null)
+  const [sigLoading, setSigLoading] = useState(false)
+  const [sigError, setSigError] = useState('')
+  const sigSeq = useRef(0)
+  const answerSeen = useRef<{ id: string; at: string } | null>(null)
+  const [optionGroups, setOptionGroups] = useState<OptionGroup[]>([])
+  const [optionsInfo, setOptionsInfo] = useState({ loading: false, available: true, error: '' })
+  const [extendDate, setExtendDate] = useState('')
   const editingRef = useRef<string | null | 'new'>(null)
   useEffect(() => { editingRef.current = editing }, [editing])
   const handledLink = useRef(false)
@@ -273,15 +291,28 @@ export default function DocumentsPage({ type }: { type: DocType }) {
     if (typeof window !== 'undefined' && window.location.search) window.history.replaceState(null, '', window.location.pathname)
   }
 
+  /* ---------- the signed record ---------- */
+  const loadSig = useCallback(async (id: string) => {
+    const mine = ++sigSeq.current
+    setSigLoading(true); setSigError('')
+    const r = await getSignature(id)
+    if (mine !== sigSeq.current) return
+    setSigLoading(false)
+    if (!r.ok) { setSigError(r.error || 'The signed record could not be loaded.'); return }
+    setSig(r.data.signed_at || r.data.signature_data ? r.data : null)
+    setSignatureImg(r.data.signature_data || null)
+  }, [])
+
+  const forgetSig = () => { sigSeq.current += 1; setSig(null); setSigLoading(false); setSigError(''); setSignatureImg(null) }
+
   /* ---------- opening and closing documents ---------- */
   function openDoc(d: Doc, people: Customer[] = customers) {
     const cust = people.find(c => c.id === d.customer_id)
     const next = { ...d, customer_phone: d.customer_phone || cust?.phone || '', customer_email: d.customer_email || cust?.email || '' } as Partial<Doc>
     setForm(next); setBaseline(JSON.stringify(next)); setEditing(d.id)
-    setSignatureImg(null); setNotice(null)
-    if (d.signature_signed_at) {
-      fetch('/api/signature?documentId=' + encodeURIComponent(d.id)).then(r => r.json()).then(sig => { if (sig?.signature_data) setSignatureImg(sig.signature_data) }).catch(() => { /* the signed date still shows */ })
-    }
+    forgetSig(); setNotice(null)
+    answerSeen.current = { id: d.id, at: linkData.links[d.id]?.answeredAt || '' }
+    if (d.type === 'Estimate' || d.signature_signed_at) void loadSig(d.id)
   }
 
   const genDocNumber = async () => {
@@ -348,7 +379,7 @@ export default function DocumentsPage({ type }: { type: DocType }) {
       if (seed) Object.assign(next, seed.fields)
       setForm(next); setBaseline(JSON.stringify(next)); setEditing('new')
       if (seed?.declinedId) declinedSource.current = seed.declinedId
-      setSignatureImg(null)
+      forgetSig()
       const taxUnset = !(Number.isFinite(rate) && rate >= 0)
       const laborUnset = !(laborRate > 0)
       const baseNotice: Notice | null = (carried
@@ -365,7 +396,7 @@ export default function DocumentsPage({ type }: { type: DocType }) {
 
   function closeEditor() {
     declinedSource.current = null
-    setEditing(null); setForm({}); setBaseline(''); setNotice(null); setSignatureImg(null); setSheet(null)
+    setEditing(null); setForm({}); setBaseline(''); setNotice(null); forgetSig(); setSheet(null)
     stripLinkParams()
   }
 
@@ -551,29 +582,78 @@ export default function DocumentsPage({ type }: { type: DocType }) {
     return { email: d.customer_email || customer?.email || '', phone: d.customer_phone || customer?.phone || '' }
   }
 
-  const openSend = (d: Doc) => { setTarget(d); setSendSuccess(''); setSheetError(''); setSheet('send') }
-
-  const sendDoc = async (channel: 'sms' | 'email') => {
-    if (!target) return
-    setSheetError(''); setSendSuccess('')
-    const { email, phone } = contactFor(target)
-    const to = channel === 'sms' ? phone : email
-    setBusy(true)
-    try {
-      const res = await fetch('/api/send-document', {
-        method: 'POST', headers: await getAuthJsonHeaders(),
-        body: JSON.stringify({ documentId: target.id, channel, ...(email ? { email } : {}), ...(phone ? { phone } : {}) })
-      })
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}))
-        throw new Error(d.error || 'Send failed')
-      }
-      setSendSuccess(`${channel === 'email' ? 'Email' : 'Text message'} sent to ${to}.`)
-      syncFromServer(target.id, await load())
-    } catch (e) {
-      setSheetError(errText(e, 'It did not send. Check your connection and try again.'))
-    } finally { setBusy(false) }
+  const openSend = (d: Doc) => {
+    setTarget(d); setSendSuccess(''); setSheetError(''); setSheet('send')
+    if (d.type === 'Estimate') void loadOptions(d.id)
   }
+
+  // The sheet sends and shows its own result. The page only refreshes what the send changed.
+  const afterSend = async (result: SentResult) => {
+    if (!target) return
+    setSendSuccess(result.channel === 'copy' ? 'link ready' : 'sent')
+    syncFromServer(target.id, await load())
+    void linkData.reload()
+  }
+
+  /* ---------- good, better, best ---------- */
+  const loadOptions = useCallback(async (id: string) => {
+    setOptionsInfo(o => ({ ...o, loading: true, error: '' }))
+    const r = await getOptions(id)
+    if (!r.ok) { setOptionsInfo({ loading: false, available: !r.needsUpdate, error: r.needsUpdate ? '' : r.error }); return }
+    setOptionGroups(Array.isArray(r.data.options) ? r.data.options : [])
+    setOptionsInfo({ loading: false, available: r.data.available !== false, error: '' })
+  }, [])
+
+  const openOptions = async () => {
+    const d = await ensureSaved()
+    if (!d) return
+    setOptionGroups([]); setSheetError(''); setSheet('options')
+    void loadOptions(d.id)
+  }
+
+  /* ---------- the customer's link: good-through date, turning it off ---------- */
+  const openExtend = () => {
+    const current = String(form.expires_date || '').slice(0, 10)
+    const base = current && current >= localToday() ? current : localToday()
+    const d = new Date(base + 'T12:00:00'); d.setDate(d.getDate() + (current && current >= localToday() ? 7 : 14))
+    setExtendDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
+    setSheetError(''); setSheet('extend')
+  }
+
+  const saveExtend = async () => {
+    if (!form.id || busy) return
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(extendDate) || extendDate < localToday()) { setSheetError('Pick a date from today on.'); return }
+    setBusy(true); setSheetError('')
+    const r = await docAction(form.id, 'extend', { expiresDate: extendDate })
+    setBusy(false)
+    if (!r.ok) { setSheetError(r.error); return }
+    setForm(f => ({ ...f, expires_date: extendDate })); setBaseline(b => { try { return JSON.stringify({ ...JSON.parse(b), expires_date: extendDate }) } catch { return b } })
+    setNotice({ kind: 'ok', text: `Good through ${new Date(extendDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}. The customer's link keeps working until then.` })
+    closeSheet(); void linkData.reload(); void load()
+  }
+
+  const turnLinksOff = async () => {
+    if (!form.id || busy) return
+    setBusy(true); setSheetError('')
+    const r = await docAction(form.id, 'revoke_links')
+    setBusy(false)
+    if (!r.ok) { setSheetError(r.error); return }
+    const n = Number(r.data.linksTurnedOff ?? r.data.count ?? 0)
+    setNotice({ kind: 'ok', text: n > 0 ? 'The customer link is off. Anyone who opens it sees that the shop turned it off. Send it again to make a new one.' : 'There was no open customer link to turn off.' })
+    closeSheet(); void linkData.reload()
+  }
+
+  // The customer answered while this screen was open: pick up the new status and the signed record.
+  const answeredAt = editing && editing !== 'new' ? linkData.links[editing]?.answeredAt || '' : ''
+  useEffect(() => {
+    const seen = answerSeen.current
+    if (!answeredAt || !editing || editing === 'new' || !seen || seen.id !== editing || seen.at === answeredAt) return
+    answerSeen.current = { id: editing, at: answeredAt }
+    void loadSig(editing)
+    void load().then(rows => syncFromServer(editing, rows))
+    // syncFromServer and load are re-made every render; the answer time is what should trigger this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [answeredAt, editing, loadSig])
 
   /* ---------- signatures ---------- */
   const openSign = (d: Doc) => { setTarget(d); setSigResult(null); setSheetError(''); setSheet('sign') }
@@ -684,7 +764,7 @@ export default function DocumentsPage({ type }: { type: DocType }) {
         ...copy, type: (form.type as string) || type, doc_number: number, doc_date: localToday(), status: 'Draft',
         parts: ((form.parts || []) as Record<string, unknown>[]).map(p => ({ ...p, status: 'Ordered' })),
       }
-      setForm(next); setBaseline(JSON.stringify(next)); setEditing('new'); setSignatureImg(null)
+      setForm(next); setBaseline(JSON.stringify(next)); setEditing('new'); forgetSig()
       setNotice({ kind: 'ok', text: `Copied into a new ${noun}. Check it, then save.` })
     } catch (e) { setNotice({ kind: 'error', text: `Could not copy. ${errText(e)}` }) }
   }
@@ -907,8 +987,9 @@ export default function DocumentsPage({ type }: { type: DocType }) {
   const menuItems: MenuItem[] = [
     { key: 'preview', label: 'Preview and print', hint: 'See the paper version', icon: 'print', onClick: () => setSheet('preview') },
     ...(!isNew && !formVoid ? [
-      { key: 'send', label: `Send ${noun}`, hint: 'Text or email it to the customer', icon: 'send', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) openSend(d) } },
-      { key: 'sign', label: 'Request signature', hint: 'Email a link the customer signs on their phone', icon: 'pen', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) openSign(d) } },
+      { key: 'send', label: `Send ${noun}`, hint: docType === 'Estimate' ? 'Text, email or copy a private link. They approve each job and sign on their phone' : 'Text, email or copy a private link', icon: 'send', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) openSend(d) } },
+      ...(docType !== 'Estimate' ? [{ key: 'sign', label: 'Request signature', hint: 'Email a link the customer signs on their phone', icon: 'pen', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) openSign(d) } }] : []),
+      ...(docType === 'Estimate' && !formLocked ? [{ key: 'options', label: 'Good, better, best choices', hint: 'Let the customer pick between versions of a job', icon: 'list', onClick: () => { closeSheet(); void openOptions() } }] : []),
     ] : []),
     ...(!isNew && !formVoid && docType !== 'Estimate' && formOwed > 0 ? [{ key: 'pay', label: 'Record payment', hint: 'Money you already received', icon: 'dollar', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) openPay(d) } }] : []),
     ...(!isNew && !formVoid && docType === 'Invoice' && !formLocked ? [{ key: 'plan', label: form.payment_plan?.enabled ? 'Change payment plan' : 'Set up payment plan', hint: 'Split the balance into payments', icon: 'calendar', onClick: async () => { closeSheet(); const d = await ensureSaved(); if (d) openPlan(d) } }] : []),
@@ -966,6 +1047,28 @@ export default function DocumentsPage({ type }: { type: DocType }) {
           showUndo={(label, restore) => setNotice({ kind: 'ok', text: label, undo: restore })}
           staff={staff}
           signatureImg={signatureImg}
+          approvalPanel={docType === 'Estimate' ? (
+            <ApprovalPanel
+              docNumber={String(form.doc_number || '')}
+              status={String(form.status || 'Draft')}
+              isNew={isNew}
+              expiresDate={String(form.expires_date || '').slice(0, 10)}
+              today={localToday()}
+              link={form.id ? linkData.links[form.id] : undefined}
+              sig={sig}
+              sigLoading={sigLoading}
+              sigError={sigError}
+              signerFallback={String(form.customer_name || 'the customer')}
+              hasOpenLink={(() => { const l = form.id ? linkData.links[form.id] : undefined; return Boolean(l && (l.sentAt || l.viewedAt) && !l.answeredAt) })()}
+              canEdit
+              onSend={async () => { const d = await ensureSaved(); if (d) openSend(d) }}
+              onExtend={openExtend}
+              onLinksOff={() => { setSheetError(''); setSheet('linksoff') }}
+              onMarkApproved={() => { void save({ status: 'Approved' }) }}
+              onRetrySig={() => { if (form.id) void loadSig(form.id) }}
+            />
+          ) : undefined}
+          linkNote={docType !== 'Estimate' && form.id ? linkLine(linkData.links[form.id], Date.now()) : ''}
           warrantyLabels={WARRANTY_PRESETS.map(p => p.label)}
           laborRate={laborRate}
           onAddCanned={openCanned}
@@ -1005,18 +1108,18 @@ export default function DocumentsPage({ type }: { type: DocType }) {
 
       <Sheet open={sheet === 'send'} onClose={closeSheet} title={`Send ${target ? docWord(target.type) : noun}`}>
         {target && (
-          <SendForm
+          <SendSheet
             key={target.id}
+            documentId={target.id}
             noun={docWord(target.type)}
             docNumber={target.doc_number}
             customerName={target.customer_name}
             total={calcTotals(target as unknown as Record<string, unknown>).total}
             email={contactFor(target).email}
             phone={contactFor(target).phone}
-            busy={busy}
-            error={sheetError}
-            success={sendSuccess}
-            onSend={sendDoc}
+            link={linkData.links[target.id]}
+            hasOptions={optionGroups.some(o => o.status === 'open')}
+            onSent={r => { void afterSend(r) }}
             onClose={closeSheet}
           />
         )}
@@ -1170,6 +1273,55 @@ export default function DocumentsPage({ type }: { type: DocType }) {
             onClose={closeSheet}
           />
         )}
+      </Sheet>
+
+      <Sheet open={sheet === 'options'} onClose={closeSheet} title="Good, better, best">
+        {form.id && (
+          <OptionsSheet
+            documentId={form.id}
+            groups={optionGroups}
+            available={optionsInfo.available}
+            loadError={optionsInfo.error}
+            loading={optionsInfo.loading}
+            laborRate={laborRate}
+            jobs={jobNames(form)}
+            docParts={(form.parts || []) as unknown as DocLine[]}
+            docLabors={(form.labors || []) as unknown as DocLine[]}
+            onChanged={what => { if (form.id) { void loadOptions(form.id); void logHistory({ documentId: form.id, kind: 'options', summary: what }) } }}
+            onRemoveJob={job => {
+              setForm(f => ({
+                ...f,
+                parts: ((f.parts || []) as unknown as DocLine[]).filter(l => jobNameOf(l) !== job) as never,
+                labors: ((f.labors || []) as unknown as DocLine[]).filter(l => jobNameOf(l) !== job) as never,
+              }))
+              setNotice({ kind: 'ok', text: `${job} moved into the choices. Press Save changes to keep the estimate without it.` })
+            }}
+            onRetry={() => { if (form.id) void loadOptions(form.id) }}
+            onClose={closeSheet}
+          />
+        )}
+      </Sheet>
+
+      <Sheet open={sheet === 'extend'} onClose={closeSheet} title="Change the good-through date">
+        <p className="text-[0.9375rem] text-text-secondary">Prices on this estimate are good through the date you pick. The customer&apos;s link keeps working until then. Nothing is sent.</p>
+        <div className="mt-4">
+          <label htmlFor="extend-date" className="form-label">Good through</label>
+          <input id="extend-date" type="date" className="form-input" value={extendDate} min={localToday()} onChange={e => setExtendDate(e.target.value)} />
+        </div>
+        {sheetError && <div className="mt-3"><ErrorMsg>{sheetError}</ErrorMsg></div>}
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button type="button" className="btn btn-secondary" onClick={closeSheet} disabled={busy}>Cancel</button>
+          <button type="button" className="btn btn-primary" onClick={saveExtend} disabled={busy}>{busy ? 'Saving…' : 'Save the date'}</button>
+        </div>
+      </Sheet>
+
+      <Sheet open={sheet === 'linksoff'} onClose={closeSheet} title="Turn off the customer link?">
+        <p className="text-[0.9375rem]">The link already sent for estimate {form.doc_number} stops working. Anyone who opens it is told the shop turned it off. The estimate itself is not changed, and you can send it again to make a new link.</p>
+        {sheetError && <div className="mt-3"><ErrorMsg>{sheetError}</ErrorMsg></div>}
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button type="button" className="btn btn-secondary" onClick={closeSheet} disabled={busy}>Keep it on</button>
+          <button type="button" className="btn btn-danger" onClick={turnLinksOff} disabled={busy}>{busy ? 'Turning off…' : 'Turn off the link'}</button>
+        </div>
       </Sheet>
 
       <Sheet open={sheet === 'void'} onClose={closeSheet} title={`Void ${docNoun}?`}>

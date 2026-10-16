@@ -13,11 +13,12 @@ import { calculateDocumentTotals } from '@/lib/document-money'
 import { planResponse, previewTotals, outcomeWords, sha256Hex, signatureRecordHash, linkState } from '@/lib/doc-approval'
 import type { Outcome, ResponsePlan } from '@/lib/doc-approval'
 import { buildPublicDocument } from '@/lib/doc-public'
+import type { PublicDocument, PublicPage, PublicSigned } from '@/lib/doc-public'
 import { buildShopNotice, buildSignedCopyEmail } from '@/lib/doc-email'
 import { clientIp, deviceLabel, isLinkToken, logoUrl as logoLink, signUrl as signLink } from '@/lib/doc-links'
 import { addDaysIso } from '@/lib/doc-approval'
 import { revisionSnapshot } from '@/lib/doc-history'
-import { resolveToken } from '@/lib/doc-links-server'
+import { recordView, resolveToken } from '@/lib/doc-links-server'
 import { addRevision, isMissingSchema, loadOptions, loadPrefs, logEvent, originFor, sendShopEmail, shopFromSettings, todayInZone } from '@/lib/doc-server'
 import type { Db } from '@/lib/doc-server'
 import { checkRateLimit } from '@/lib/rate-limit'
@@ -322,4 +323,97 @@ export async function handleLegacyComplete(req: NextRequest, body: Record<string
   }
   await logEvent(db, { shopId: sig.shop_id, documentId: sig.document_id, docNumber: String(doc.doc_number || ''), kind: body.approve === true ? 'approved' : 'signed', actor: 'customer', actorName: signerName, summary: body.approve === true ? 'Customer approved and signed' : 'Customer signed' })
   return json({ ok: true, success: true, signed_at: now })
+}
+
+/* ───────────────────────── Opening a customer link ───────────────────────── */
+
+const isRecord = (v: unknown): v is Record<string, unknown> => Boolean(v && typeof v === 'object' && !Array.isArray(v))
+
+/** The copy the customer signed, from the record kept at the time, so later edits to the document never change it. */
+function signedFromRecord(row: Record<string, unknown>, fallback: PublicDocument): { signed: PublicSigned; doc: PublicDocument } {
+  const snapshot = isRecord(row.snapshot) ? row.snapshot : {}
+  const viewed = isRecord(snapshot.viewed) && Array.isArray((snapshot.viewed as { groups?: unknown }).groups) ? (snapshot.viewed as unknown as PublicDocument) : null
+  const result = isRecord(snapshot.result) && Array.isArray((snapshot.result as { groups?: unknown }).groups) ? (snapshot.result as unknown as PublicDocument) : null
+  const decisions = isRecord(row.decisions) ? row.decisions : {}
+  const declined = viewed ? viewed.groups.filter((g) => decisions[g.key] === 'decline').map((g) => ({ job: g.name, amount: g.total })) : []
+  const signed: PublicSigned = {
+    name: String(row.signer_name || ''),
+    at: String(row.signed_at || ''),
+    method: String(row.method || ''),
+    device: String(row.signer_device || ''),
+    outcome: String(row.outcome || ''),
+    recordId: String(row.record_hash || '').slice(0, 12),
+    signatureData: typeof row.signature_data === 'string' ? row.signature_data : null,
+    note: String(row.note || ''),
+    declined,
+    totalBefore: Number(row.total_before) || 0,
+    totalAfter: Number(row.total_after) || 0,
+  }
+  return { signed, doc: result || fallback }
+}
+
+/**
+ * What a customer sees when they open their link. Read only: nothing is counted here, because mail programs and link
+ * previews open links before the customer does. The page counts its own view afterwards (handleView).
+ * Returns null for a link that is not one of the new links, so the older sign-only route can answer it.
+ */
+export async function handlePage(req: NextRequest, token: string, db: Db): Promise<Response | null> {
+  const ip = clientIp(req.headers)
+  if (!checkRateLimit(`sign:page:${ip || 'unknown'}`, 240, 600_000).ok) return json({ error: 'Too many tries. Wait a few minutes and try again.' }, 429)
+  let resolved
+  try { resolved = await resolveToken(db, token) } catch { return json({ error: 'We could not open this link. Try again.' }, 500) }
+  if (!resolved || resolved.kind !== 'link') return null
+  const link = resolved.link
+  const state = linkState(link, Date.now())
+  if (state === 'revoked') return json({ error: 'The shop turned this link off. Call the shop for a new one.', code: 'revoked' }, 410)
+
+  const { data: doc, error: docError } = await db.from('documents').select('*').eq('id', link.document_id).eq('shop_id', link.shop_id).maybeSingle()
+  if (docError) return json({ error: 'We could not open this link. Try again.' }, 500)
+  if (!doc) return json({ error: 'This document is no longer available. Call the shop.', code: 'gone' }, 404)
+  if (link.doc_type && link.doc_type !== doc.type) return json({ error: 'The shop has changed this document. Call the shop for the current one.', code: 'replaced' }, 410)
+
+  const [{ data: settings }, { prefs }, { options }] = await Promise.all([
+    db.from('settings').select('*').eq('shop_id', link.shop_id).maybeSingle(),
+    loadPrefs(db, link.shop_id),
+    loadOptions(db, link.shop_id, link.document_id),
+  ])
+  const shop = shopFromSettings(settings)
+  const publicShop = { name: shop.name, address: shop.address, phone: shop.phone, email: shop.email, hasLogo: shop.hasLogo }
+  const today = todayInZone(shop.timezone)
+  const live = await buildPublicDocument({ doc, options, prefs, shop, todayIso: today })
+
+  if (state === 'done') {
+    const { data: row, error } = await db.from('document_approvals').select('*').eq('link_id', link.id).eq('shop_id', link.shop_id).neq('status', 'failed').order('signed_at', { ascending: false }).limit(1).maybeSingle()
+    if (error) return json({ error: 'We could not open your signed copy. Try again.' }, 500)
+    if (row) {
+      const { signed, doc: copy } = signedFromRecord(row as Record<string, unknown>, live)
+      const page: PublicPage = { ok: true, mode: 'link', link: { state: 'done', expiresAt: link.expires_at, purpose: link.purpose }, shop: publicShop, doc: copy, signed, canDecideByJob: false }
+      return json(page as unknown as Record<string, unknown>)
+    }
+  }
+  if (state === 'expired') return json({ error: 'This link has expired. Call the shop for a new one.', code: 'expired' }, 410)
+
+  const hasJobs = live.groups.some((g) => !g.approved)
+  const hasOptions = live.options.some((o) => o.status === 'open')
+  const canDecideByJob = live.kind === 'estimate' && live.canRespond && (hasJobs || hasOptions)
+  const page: PublicPage = { ok: true, mode: 'link', link: { state: 'active', expiresAt: link.expires_at, purpose: link.purpose }, shop: publicShop, doc: live, signed: null, canDecideByJob }
+  return json(page as unknown as Record<string, unknown>)
+}
+
+/** The page counts its own view once it has drawn. A reload within half a minute is not counted again. */
+export async function handleView(req: NextRequest, body: Record<string, unknown>, db: Db): Promise<Response> {
+  const token = body.token
+  if (!isLinkToken(token)) return json({ error: 'This link is not valid.' }, 400)
+  const ip = clientIp(req.headers)
+  if (!checkRateLimit(`sign:view:${token}`, 30, 600_000).ok || !checkRateLimit(`sign:view-ip:${ip || 'unknown'}`, 120, 600_000).ok) return json({ ok: true })
+  let resolved
+  try { resolved = await resolveToken(db, token) } catch { return json({ ok: true }) }
+  if (!resolved || resolved.kind !== 'link') return json({ ok: true })
+  const link = resolved.link
+  if (linkState(link, Date.now()) !== 'active') return json({ ok: true })
+  const first = await recordView(db, link)
+  if (first) {
+    await logEvent(db, { shopId: link.shop_id, documentId: link.document_id, docNumber: link.doc_number || '', kind: 'viewed', actor: 'customer', summary: 'The customer opened the link' })
+  }
+  return json({ ok: true })
 }

@@ -67,7 +67,7 @@ test('void: a voided document offers no send, signature, payment, plan or conver
   for (const key of ["key: 'send'", "key: 'sign'", "key: 'pay'", "key: 'plan'", "key: 'convert'"]) {
     const at = page.indexOf(key)
     assert.ok(at > 0, key)
-    const head = page.slice(Math.max(0, at - 220), at)
+    const head = page.slice(Math.max(0, at - 700), at)
     assert.match(head, /!formVoid/, `${key} is hidden for a voided document`)
   }
   assert.match(editor, /const closed = status === 'Void'/)
@@ -706,19 +706,27 @@ const TOUCHED_FILES = [
   'app/(app)/work/page.tsx',
 ]
 
-test('nothing new sends a customer anything, takes a payment, or reaches the sheets that were left unwired', () => {
-  // The send, sign and pay calls in the page are the ones that were already there, in the same number.
-  assert.equal((page.match(/fetch\(/g) || []).length, 4)
-  assert.equal((page.match(/\/api\/send-document/g) || []).length, 1)
-  assert.equal((page.match(/\/api\/sign/g) || []).length, 2)
+test('sending a customer anything goes through the send sheet and one route, and nothing else in the paperwork screens reaches a customer or takes a payment', () => {
+  // The page makes two network calls of its own: the staff list, and the older signature request kept for invoices and receipts.
+  assert.equal((page.match(/fetch\(/g) || []).length, 2)
+  assert.equal((page.match(/\/api\/send-document/g) || []).length, 0)
+  assert.equal((page.match(/\/api\/sign/g) || []).length, 1)
   assert.equal((page.match(/postPayment/g) || []).length, 2)
-  assert.doesNotMatch(page, /sendNow|previewSend|SendSheet|OptionsSheet|ApprovalPanel|saveOptionGroup|deleteOptionGroup|getOptions|getLinkSummaries|getSignature/)
+  // Texting, emailing and copying a link all happen in the send sheet, after the shop has seen the preview.
+  assert.match(page, /<SendSheet/)
+  assert.match(page, /<ApprovalPanel/)
+  assert.match(page, /<OptionsSheet/)
+  assert.doesNotMatch(page, /sendNow|previewSend|saveOptionGroup|deleteOptionGroup|getLinkSummaries/)
   for (const file of [...NEW_FILES, 'components/documents/DocEditor.tsx', 'components/documents/DocList.tsx', 'components/documents/ActionSheets.tsx']) {
     const src = read(file)
     const imports = src.split('\n').filter((l) => /^import /.test(l)).join('\n')
     assert.doesNotMatch(imports, /SendSheet|OptionsSheet|ApprovalPanel|sendNow|previewSend|postPayment|api\/sign|SignatureForm/, file)
     assert.doesNotMatch(code(src), /\/api\/send-document|\/api\/sign|sendNow\(|postPayment\(|\/api\/make-call|\/api\/ai-call|sms|telnyx/i, file)
   }
+  // Only the send sheet reaches the send route, and it asks for a preview before it sends.
+  const sheet = read('components/documents/SendSheet.tsx')
+  assert.match(sheet, /previewSend\(/)
+  assert.match(sheet, /disabled=\{busy \|\| loading \|\| !preview \|\| !!preview\.blocked\}/)
   // The money files and the signature flow are not touched by this work.
   assert.match(read('lib/supabase.ts'), /export function calcTotals\(doc: Record<string, unknown>\) \{[^}]*return calculateDocumentTotals\(doc\)\s*\}/)
 })

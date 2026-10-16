@@ -42,8 +42,10 @@ export default function SendSheet({ documentId, noun, docNumber, customerName, t
   const [error, setError] = useState('')
   const [done, setDone] = useState<SentResult | null>(null)
   const [copied, setCopied] = useState(false)
+  const [warning, setWarning] = useState('')
   const [showText, setShowText] = useState(false)
   const seq = useRef(0)
+  const attempt = useRef('')
   const linkRef = useRef<HTMLInputElement>(null)
   const sentBefore = linkLine(link, Date.now())
 
@@ -62,10 +64,13 @@ export default function SendSheet({ documentId, noun, docNumber, customerName, t
   const send = async () => {
     if (busy || !preview || preview.blocked) return
     setBusy(true); setError('')
-    const r = await sendNow(documentId, channel, { ...(email ? { email } : {}), ...(phone ? { phone } : {}) })
+    // One key per sheet and way of sending: tapping again after a dropped connection can never send a second copy.
+    if (!attempt.current) attempt.current = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const r = await sendNow(documentId, channel, { ...(email ? { email } : {}), ...(phone ? { phone } : {}) }, `${attempt.current}:${channel}`)
     setBusy(false)
     if (!r.ok) { setError(r.error); return }
     const result: SentResult = { channel, status: r.data.status, sentAt: r.data.sentAt, link: r.data.link, expiresAt: r.data.expiresAt }
+    setWarning(r.data.warning || '')
     setDone(result)
     onSent(result)
   }
@@ -100,6 +105,7 @@ export default function SendSheet({ documentId, noun, docNumber, customerName, t
             <p className="form-hint">Paste it into a text, an email or a chat. Nobody is notified until you send it yourself.</p>
           </div>
         )}
+        {warning && <div className="mt-3"><WarnMsg>{warning}</WarnMsg></div>}
         <p className="mt-3 text-[0.9375rem] text-text-secondary">You will see when {customerName || 'the customer'} opens it and what they answer, right on the {noun}.</p>
         <div className={actions}>
           <button type="button" className="btn btn-primary" onClick={onClose}>Done</button>

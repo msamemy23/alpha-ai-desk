@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { formatCurrency } from '@/lib/supabase'
 import { docLamp, docStatusLabel } from '@/lib/doc-status'
 import { discountSummary } from '@/lib/doc-pricing'
@@ -28,6 +29,10 @@ export interface EditorProps {
   showUndo: (label: string, restore: () => void) => void
   staff: string[]
   signatureImg: string | null
+  /** The customer-approval card for an estimate (when it was sent and looked at, and the signed record). */
+  approvalPanel?: ReactNode
+  /** For invoices and receipts: what the customer did with the link, in one line. */
+  linkNote?: string
   warrantyLabels: string[]
   onBack: () => void
   onSave: () => void
@@ -125,12 +130,10 @@ export default function DocEditor(p: EditorProps) {
     if (isEstimate) {
       if (status === 'Draft') return { title: 'Not sent yet', body: `Send it to ${who} so they can approve the work.`, lamp: 'off', buttons: [
         { label: 'Send estimate', icon: 'send', onClick: p.onSend, primary: true },
-        { label: 'Request signature', icon: 'pen', onClick: p.onSign },
       ] }
-      if (status === 'Sent') return { title: 'Waiting on customer', body: form.signature_signed_at ? `Signed by ${form.signature_signer_name || who}.` : form.signature_requested_at ? `Signature requested ${fmtDate(String(form.signature_requested_at).slice(0, 10))}. Not signed yet.` : `Sent to ${who}. Mark it approved when they say yes.`, lamp: 'blue', buttons: [
-        { label: 'Mark approved', icon: 'check', onClick: p.onApprove, primary: true },
-        { label: form.signature_requested_at ? 'Send signature request again' : 'Request signature', icon: 'pen', onClick: p.onSign },
-        { label: 'Send again', icon: 'send', onClick: p.onSend },
+      if (status === 'Sent') return { title: 'Waiting on customer', body: form.signature_signed_at ? `Signed by ${form.signature_signer_name || who}.` : `Sent to ${who}. You will see here when they look at it and what they answer. If they say yes in person, mark it approved.`, lamp: 'blue', buttons: [
+        { label: 'Send again', icon: 'send', onClick: p.onSend, primary: true },
+        { label: 'They said yes in person', icon: 'check', onClick: p.onApprove },
       ] }
       if (status === 'Approved') return { title: 'Approved', body: form.signature_signed_at ? `Signed by ${form.signature_signer_name || who}. Ready to turn into an invoice.` : 'Ready to turn into an invoice.', lamp: 'green', buttons: [
         { label: 'Convert to invoice', icon: 'invoice', onClick: p.onConvert, primary: true },
@@ -411,29 +414,19 @@ export default function DocEditor(p: EditorProps) {
               </section>
 
               {isEstimate ? (
-                <section aria-labelledby="sec-approval" className="card">
-                  <h2 id="sec-approval" className={`${sectionTitle} mb-2`}>Customer approval</h2>
-                  {form.signature_signed_at ? (
-                    <div>
-                      <p className="flex items-center gap-2 font-bold"><span className="lamp lamp-green" aria-hidden="true" />Signed by {form.signature_signer_name || who}</p>
-                      <p className="text-[0.9375rem] text-text-secondary">{new Date(String(form.signature_signed_at)).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}</p>
-                      {p.signatureImg && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={p.signatureImg} alt={`Signature of ${form.signature_signer_name || who}`} className="mt-3 max-h-24 max-w-full rounded-md border border-border p-2" style={{ background: '#fff' /* a signature is dark ink on white paper in either theme */ }} />
-                      )}
-                    </div>
-                  ) : form.signature_requested_at ? (
-                    <p className="flex items-center gap-2"><span className="lamp lamp-blue" aria-hidden="true" />Requested {new Date(String(form.signature_requested_at)).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}. Not signed yet.</p>
-                  ) : (
-                    <p className="text-text-secondary">No signature requested yet.</p>
-                  )}
-                  {!isNew && !closed && !form.signature_signed_at && (
-                    <button type="button" className="btn btn-secondary mt-3 w-full sm:w-auto" onClick={p.onSign}>
-                      <Icon name="pen" className="h-5 w-5" />
-                      {form.signature_requested_at ? 'Send signature request again' : 'Request signature'}
-                    </button>
-                  )}
-                </section>
+                p.approvalPanel ?? (
+                  <section aria-labelledby="sec-approval" className="card">
+                    <h2 id="sec-approval" className={`${sectionTitle} mb-2`}>Customer approval</h2>
+                    {form.signature_signed_at ? (
+                      <div>
+                        <p className="flex items-center gap-2 font-bold"><span className="lamp lamp-green" aria-hidden="true" />Signed by {form.signature_signer_name || who}</p>
+                        <p className="text-[0.9375rem] text-text-secondary">{new Date(String(form.signature_signed_at)).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}</p>
+                      </div>
+                    ) : (
+                      <p className="text-text-secondary">Not answered yet.</p>
+                    )}
+                  </section>
+                )
               ) : (
                 <section aria-labelledby="sec-payment" className="card">
                   <h2 id="sec-payment" className={`${sectionTitle} mb-2`}>Payment</h2>
@@ -445,6 +438,7 @@ export default function DocEditor(p: EditorProps) {
                       <p className="mt-0.5 text-[0.9375rem] text-text-secondary num">
                         {closed ? 'Voided, so nothing is owed and no payment can be recorded.' : status === 'Paid' ? `${formatCurrency(totals.amountPaid || totals.total)} received${form.payment_method ? ` by ${form.payment_method}` : ''}.` : totals.amountPaid > 0 ? `${formatCurrency(totals.amountPaid)} received. ${formatCurrency(owed)} still due.` : `${formatCurrency(owed)} due.`}
                       </p>
+                      {p.linkNote && <p className="mt-1 flex items-center gap-2 text-[0.9375rem] text-text-secondary"><span className="lamp lamp-blue" aria-hidden="true" />{p.linkNote}</p>}
                       <div className="mt-3 flex flex-wrap gap-2">
                         {owed > 0 && status !== 'Paid' && !closed && (
                           <button type="button" className="btn btn-primary w-full sm:w-auto" onClick={p.onPay}>

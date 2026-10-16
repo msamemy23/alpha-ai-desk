@@ -9,6 +9,32 @@ import type { Template } from './api'
 
 const LINK_POLL_MS = 45_000
 
+/**
+ * Only what customers did with their links (sent, looked, answered), refreshed every 45 seconds while the tab is open.
+ * The documents screen uses this by itself; useDocExtras below adds the paperwork settings and templates on top.
+ */
+export function useLinkSummaries(): { links: Record<string, LinkSummary>; available: boolean; reload: () => Promise<void> } {
+  const [links, setLinks] = useState<Record<string, LinkSummary>>({})
+  const [available, setAvailable] = useState(true)
+  const alive = useRef(true)
+  const reload = useCallback(async () => {
+    const r = await getLinkSummaries()
+    if (!alive.current || !r.ok) return
+    setLinks(r.data.summaries || {})
+    setAvailable(r.data.available !== false)
+  }, [])
+  useEffect(() => {
+    alive.current = true
+    void reload()
+    const tick = () => { if (typeof document === 'undefined' || document.visibilityState === 'visible') void reload() }
+    const timer = window.setInterval(tick, LINK_POLL_MS)
+    const onVisible = () => { if (document.visibilityState === 'visible') void reload() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => { alive.current = false; window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible) }
+  }, [reload])
+  return { links, available, reload }
+}
+
 export interface DocExtras {
   prefs: DocPrefs
   prefsLoaded: boolean

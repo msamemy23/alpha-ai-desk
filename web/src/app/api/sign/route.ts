@@ -5,6 +5,8 @@ import { sendEmail } from '@/lib/email'
 import { calculateDocumentTotals, getLaborFlatAmount, nonNegativeDecimal, quantityFromUnknown } from '@/lib/document-money'
 import crypto, { createHash } from 'crypto'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import { handleMessage, handlePage, handlePreview, handleRespond, handleView } from '@/lib/doc-respond'
+import { isLinkToken } from '@/lib/doc-links'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // normalizeDocForSigning
@@ -187,6 +189,11 @@ export async function GET(req: NextRequest) {
   const token = req.nextUrl.searchParams.get('token')
   if (!token) return NextResponse.json({ error: 'Token required' }, { status: 400 })
   const db = getServiceClient()
+  // The newer private links (migration 046) answer first. A link it does not know falls through to the older sign-only path below.
+  if (isLinkToken(token)) {
+    const page = await handlePage(req, token, db)
+    if (page) return page
+  }
   const { signature: sig, document: doc, error } = await loadSignatureDocument(db, token)
   if (error || !sig || !doc) return NextResponse.json({ error: 'This signing link is invalid.' }, { status: 404 })
   if (sig.signed_at)
@@ -217,6 +224,12 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object') return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
   const db = getServiceClient()
+
+  // ── The customer's own link: answer, live total, question, and the "opened it" count ──
+  if (body.action === 'respond') return handleRespond(req, body, db)
+  if (body.action === 'preview') return handlePreview(req, body, db)
+  if (body.action === 'message') return handleMessage(req, body, db)
+  if (body.action === 'view') return handleView(req, body, db)
 
   // ── SEND signature request ────────────────────────────────────────────────
   if (body.action === 'send') {

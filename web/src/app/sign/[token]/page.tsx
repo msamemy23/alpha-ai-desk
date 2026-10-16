@@ -4,6 +4,8 @@ import type { ReactNode } from 'react'
 import { useParams } from 'next/navigation'
 import Icon from '@/components/Icon'
 import Notice from '@/components/Notice'
+import type { PublicPage } from '@/lib/doc-public'
+import LinkView from './LinkView'
 
 interface LineItem {
   description: string
@@ -41,7 +43,7 @@ interface Doc {
 }
 
 type Shop = { name: string; address: string; phone: string }
-type PageState = 'loading' | 'ready' | 'already_signed' | 'expired' | 'error' | 'signing' | 'done'
+type PageState = 'loading' | 'ready' | 'already_signed' | 'expired' | 'closed' | 'error' | 'signing' | 'done' | 'link'
 type FormErrors = { name?: string; signature?: string; agreed?: string }
 
 // The signature pad is a sheet of paper with dark ink in every theme, so the
@@ -117,6 +119,8 @@ export default function SignPage() {
 
   const [state, setState] = useState<PageState>('loading')
   const [doc, setDoc] = useState<Doc | null>(null)
+  const [linkPage, setLinkPage] = useState<PublicPage | null>(null)
+  const [closedTitle, setClosedTitle] = useState('')
   const [shop, setShop] = useState<Shop>({ name: '', address: '', phone: '' })
   const [signerName, setSignerName] = useState('')
   const [agreed, setAgreed] = useState(false)
@@ -139,8 +143,15 @@ export default function SignPage() {
     fetch('/api/sign?token=' + token)
       .then(r => r.json())
       .then(data => {
-        if (data.error) {
-          if (data.error.includes('expired')) setState('expired')
+        if (data.mode === 'link' && data.doc) {
+          // A private link made by the newer send flow: per-job answers, signature and a signed copy.
+          setLinkPage(data as PublicPage)
+          setState('link')
+        } else if (data.error) {
+          if (data.code === 'revoked' || data.code === 'replaced' || data.code === 'gone') {
+            setClosedTitle(data.code === 'revoked' ? 'The shop turned this link off' : data.code === 'replaced' ? 'The shop changed this document' : 'This document is no longer here')
+            setState('closed')
+          } else if (data.code === 'expired' || String(data.error).includes('expired')) setState('expired')
           else setState('error')
           setErrorMsg(data.error)
         } else if (data.already_signed) {
@@ -256,6 +267,18 @@ export default function SignPage() {
           <div className="skeleton h-16" />
           <div className="skeleton h-40" />
         </div>
+      </Frame>
+    )
+  }
+
+  if (state === 'link' && linkPage) return <LinkView token={token} page={linkPage} onReload={load} />
+
+  if (state === 'closed') {
+    return (
+      <Frame shop={shop} fallbackName="Your auto shop">
+        <StatusCard lamp="amber" title={closedTitle || 'This link is closed'}>
+          <p>{errorMsg}</p>
+        </StatusCard>
       </Frame>
     )
   }
