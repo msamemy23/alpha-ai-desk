@@ -147,3 +147,16 @@ test('slash and question mark open the menu, but only when you are not typing', 
   assert.deepEqual(c.chordStep(null, { key: '/', ctrlKey: true }, 1, false), { armedAt: null })
   assert.deepEqual(c.chordStep(null, { key: '/', repeat: true }, 1, false), { armedAt: null })
 })
+
+test('opening a sheet leaves focus in a field that already took it, so you can type at once', () => {
+  const sheet = readFileSync(new URL('../src/components/Sheet.tsx', import.meta.url), 'utf8')
+  assert.match(sheet, /if \(!boxRef\.current\?\.contains\(document\.activeElement\)\) boxRef\.current\?\.focus\(\)/)
+  assert.ok(!/^\s*boxRef\.current\?\.focus\(\)\s*$/m.test(sheet), 'the sheet must not grab focus unconditionally')
+})
+
+test('closing a sheet returns focus to the button that opened it, even when a field inside took focus first', () => {
+  const sheet = readFileSync(new URL('../src/components/Sheet.tsx', import.meta.url), 'utf8')
+  assert.match(sheet, /setOpener\(open && typeof document/)
+  assert.match(sheet, /const previous = opener/)
+  assert.ok(!/const previous = document\.activeElement/.test(sheet), 'read the opener while rendering, not after autoFocus')
+})
