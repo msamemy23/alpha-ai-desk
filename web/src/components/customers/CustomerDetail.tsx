@@ -9,7 +9,10 @@ import { callKind, CALL_KIND_LABEL, CALL_KIND_LAMP, formatDuration } from '@/com
 import { statusLamp, statusWord } from '@/components/jobs/types'
 import { owedOn, paidOn, roLabel } from '@/lib/list-logic'
 import SentimentMark from './SentimentMark'
-import { cleanFilterText, digits10, fmtDay, fmtDayTime, fmtMonthYear, text } from './types'
+import AiCallSheet from './AiCallSheet'
+import AlphaCalls from './AlphaCalls'
+import ContactPermissions from './ContactPermissions'
+import { cleanFilterText, digits10, fmtDay, fmtDayTime, fmtMonthYear, text, vehicleLabel } from './types'
 import type { Customer } from './types'
 
 interface DocRow { id: string; type: string; doc_number: string; status: string; total: number; paid: number; balance: number; created_at: string }
@@ -63,6 +66,10 @@ export default function CustomerDetail({ customer, onEdit, onText, onEmail }: {
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [showAllDocs, setShowAllDocs] = useState(false)
   const [showAllJobs, setShowAllJobs] = useState(false)
+  // Alpha's phone calls: the review sheet, a call to reopen it on, and a counter that tells the lists to read again.
+  const [callOpen, setCallOpen] = useState(false)
+  const [watchCallId, setWatchCallId] = useState('')
+  const [callTick, setCallTick] = useState(0)
 
   const phone10 = digits10(customer.phone)
 
@@ -132,6 +139,9 @@ export default function CustomerDetail({ customer, onEdit, onText, onEmail }: {
     return dates.length ? dates[dates.length - 1] : ''
   }, [docs, jobs])
 
+  // The car Alpha is most likely calling about: the one on file, else the most recent one from the history.
+  const callVehicle = cars.find(c => c.primary)?.label || vehicleLabel(customer) || cars[0]?.label || ''
+
   const shownDocs = showAllDocs ? docs : docs.slice(0, 5)
   const shownJobs = showAllJobs ? jobs : jobs.slice(0, 5)
   const money = useMemo(() => {
@@ -181,7 +191,7 @@ export default function CustomerDetail({ customer, onEdit, onText, onEmail }: {
 
       {/* One-tap actions */}
       <div className="space-y-2">
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <button type="button" className="btn btn-secondary" onClick={() => dialCustomer(customer)} disabled={!customer.phone}>
             <Icon name="phone" className="h-5 w-5" />Call
           </button>
@@ -190,6 +200,9 @@ export default function CustomerDetail({ customer, onEdit, onText, onEmail }: {
           </button>
           <button type="button" className="btn btn-secondary" onClick={onEmail} disabled={!customer.email}>
             <Icon name="mail" className="h-5 w-5" />Email
+          </button>
+          <button type="button" className="btn btn-secondary gap-1.5 px-2" onClick={() => { setWatchCallId(''); setCallOpen(true) }} disabled={!customer.phone}>
+            <Icon name="alpha" className="h-5 w-5" />Call with Alpha
           </button>
         </div>
         {(!customer.phone || !customer.email) && (
@@ -296,6 +309,10 @@ export default function CustomerDetail({ customer, onEdit, onText, onEmail }: {
         )}
       </Section>
 
+      <Section id="cd-permissions" title="Who can contact them">
+        <ContactPermissions customerId={customer.id} phone={customer.phone} email={customer.email} refreshKey={callTick} />
+      </Section>
+
       <Section
         id="cd-touch" title="Recent texts and calls"
         action={phone10.length >= 7 ? <Link href={`/messages?thread=${phone10}`} className="inline-flex min-h-[44px] items-center text-[0.9375rem] font-bold text-blue underline-offset-4 hover:underline">Open conversation</Link> : undefined}
@@ -338,6 +355,13 @@ export default function CustomerDetail({ customer, onEdit, onText, onEmail }: {
         )}
       </Section>
 
+      <Section id="cd-alpha-calls" title="Alpha's calls">
+        <AlphaCalls
+          customerId={customer.id} refreshKey={callTick}
+          onWatch={id => { setWatchCallId(id); setCallOpen(true) }}
+        />
+      </Section>
+
       {(state !== 'loading' && jobs.length > 0) && (
         <Section id="cd-jobs" title="Repair orders" count={jobs.length}>
           <ul className="ledger">
@@ -369,6 +393,15 @@ export default function CustomerDetail({ customer, onEdit, onText, onEmail }: {
           : <p className="rounded-lg border border-dashed border-border p-4 text-[0.9375rem] text-text-secondary">No notes. <button type="button" className="inline-flex min-h-[44px] items-center font-bold text-blue underline underline-offset-2" onClick={onEdit}>Add a note</button></p>}
       </Section>
 
+      <AiCallSheet
+        key={customer.id}
+        open={callOpen}
+        onClose={() => { setCallOpen(false); setWatchCallId('') }}
+        customer={{ id: customer.id, name: customer.name, phone: customer.phone }}
+        vehicle={callVehicle}
+        resumeCallId={watchCallId}
+        onChanged={() => setCallTick(t => t + 1)}
+      />
     </div>
   )
 }

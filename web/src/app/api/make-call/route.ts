@@ -3,7 +3,7 @@ import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
 import { createVoiceClientState } from '@/lib/voice-state'
 import { startDurableCall } from '@/lib/durable-call'
-import { inQuietHours } from '@/lib/voice/hours'
+import { checkCallContext, loadCallContext } from '@/lib/ai-call-server'
 
 export const dynamic = 'force-dynamic'
 
@@ -36,9 +36,13 @@ export async function POST(req: NextRequest) {
     }
     const e164 = digits.length === 11 ? `+${digits}` : `+1${digits}`
     const callTask = typeof body?.task === 'string' ? body.task.slice(0, 2000) : ''
-    // A call the assistant runs follows calling hours: nothing before 8 am or after 9 pm, shop time. A personal call is the owner dialing and is not held back.
-    if (callTask && inQuietHours({ enabled: true, from: '21:00', to: '08:00' }, String(settings?.timezone || 'America/Chicago'), new Date())) {
-      return NextResponse.json({ ok: false, error: 'AI calls are only placed between 8 am and 9 pm, shop time. Try again in the morning, or call the customer yourself.' }, { status: 409 })
+    // A call the assistant runs follows the shop's rules every time, whichever screen asked for it: the number may not be on the
+    // do-not-call list or have replied STOP, and nothing is placed outside the shop's calling hours (on the shop's clock and the
+    // customer's own). A personal call is the owner dialing and is not held back.
+    if (callTask) {
+      const context = await loadCallContext(db, auth.shopId, e164)
+      const check = checkCallContext(context, e164)
+      if (!check.ok) return NextResponse.json({ ok: false, error: check.reason, code: check.code, retry_at: check.retryAt ? check.retryAt.toISOString() : null }, { status: check.status })
     }
     const callerName = typeof body?.callerName === 'string'
       ? body.callerName.slice(0, 160)

@@ -10,7 +10,8 @@ import { classifyRequest, type RouteDecision } from '@/lib/ai/router'
 import { normalizeDocumentDraft } from '@/lib/ai/document-draft'
 import { WorkflowReview, ApprovalFrame, ReviewRows, ReviewTags } from '@/components/ai/WorkflowReview'
 import UndoBar from '@/components/ai/UndoBar'
-import { buildActionReview, buildMessageReview, documentDraftLines, labelFor } from '@/lib/ai/review'
+import { buildActionReview, buildCallReview, buildMessageReview, documentDraftLines, labelFor } from '@/lib/ai/review'
+import type { CallPreviewInfo } from '@/lib/ai/review'
 import { hasCustomRules, normalizeRules, rulesPromptBlock, type AiRules } from '@/lib/ai/shop-rules'
 import { getActionInfo } from '@/lib/ai/action-risk'
 import { summarizeStop } from '@/lib/ai/stop-summary'
@@ -1193,6 +1194,13 @@ export default function AIPage() {
   useEffect(() => { if (!loading) setStopping(false) }, [loading])
   const [historySaveError, setHistorySaveError] = useState<HistoryEntry | null>(null)
 const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:string;subject?:string;customerId?:string;customerName?:string;idempotencyKey:string}|null>(null)
+  // A phone call Alpha proposes or the owner typed. Nothing is dialled until the owner approves this card.
+  const [pendingCall, setPendingCall] = useState<{ kind: 'assistant' | 'personal'; to: string; task?: string; name?: string; idempotencyKey: string } | null>(null)
+  const [callPreview, setCallPreview] = useState<CallPreviewInfo | null>(null)
+  const [callChecking, setCallChecking] = useState(false)
+  const [callPlacing, setCallPlacing] = useState(false)
+  const [callError, setCallError] = useState('')
+  const callUncertainRef = useRef(false)
   const [pendingAction, setPendingAction] = useState<{ action: string; payload: Record<string, unknown>; kind?: 'connector' | 'automation' | 'browser'; endpoint?: string; idempotencyKey?: string } | null>(null)
   const [confirmingAction, setConfirmingAction] = useState(false)
   const [workflowApproval, setWorkflowApproval] = useState<Approval | null>(null)
@@ -2286,10 +2294,14 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
     if (callMatch) {
       const phone = callMatch[1].replace(/\s/g, '')
       const instructions = callMatch[2]?.trim() || ''
-      addToolEvent({ agent: routeAgent, skill: routeSkill, tool: 'call', status: 'error', detail: 'Blocked until call confirmation' })
+      addToolEvent({ agent: routeAgent, skill: routeSkill, tool: 'call', status: 'ok', detail: 'Waiting for your approval' })
+      const normalized = phone.replace(/[^\d+]/g, '')
+      requestCall(instructions ? { kind: 'assistant', to: normalized, task: instructions } : { kind: 'personal', to: normalized })
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: `I can call ${phone}${instructions ? ` and ask: ${instructions}` : ''}, but calls require confirmation before I dial, and I cannot place one from this chat yet. Nothing was dialed. Use the phone in the app to make this call yourself.`,
+        content: instructions
+          ? `Review the call below. Alpha will say it is an AI assistant, then ${instructions.replace(/[.!?]+$/, '')}. Nothing is dialled until you approve it.`
+          : `Review the call below. Nothing is dialled until you approve it.`,
       }])
       setLoading(false)
       setStatus('')
@@ -2886,11 +2898,16 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
 
       // AI Voice Call - dials with bidirectional streaming, AI handles conversation
       if (parsed.tool === 'aiVoiceCall') {
+        const to = String(parsed.to || '').replace(/[^\d+]/g, '')
+        const task = String(parsed.task || '').trim()
         const assistantMsg: ChatMessage = {
           role: 'assistant',
-          content: `I can place the AI voice call to ${parsed.to || 'that number'}, but calls require confirmation, and I cannot place one from this chat yet. Nothing was dialed. Use the phone in the app to make this call yourself.`,
+          content: to ? `Review the call below. Alpha will say it is an AI assistant and then follow the task you see. Nothing is dialled until you approve it.` : 'I need a phone number to call. Which number should I use?',
         }
-        addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'aiVoiceCall', status: 'error', detail: 'Blocked until call confirmation' })
+        if (to) {
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'aiVoiceCall', status: 'ok', detail: 'Waiting for your approval' })
+          requestCall({ kind: 'assistant', to, task, name: typeof parsed.callerName === 'string' && parsed.callerName !== 'the configured shop' ? parsed.callerName : undefined })
+        }
         setMessages(prev => [...prev, assistantMsg])
         saveToHistory([...history, assistantMsg])
         setStatus('')
@@ -2899,8 +2916,13 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
 
       // Place Phone Call - requires explicit user confirmation before dialing
       if (parsed.tool === 'call') {
-        addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'call', status: 'error', detail: 'Blocked until call confirmation' })
-        const assistantMsg: ChatMessage = { role: 'assistant', content: `I can call ${parsed.name || parsed.to}, but calls require confirmation before dialing.` }
+        const to = String(parsed.to || '').replace(/[^\d+]/g, '')
+        const label = typeof parsed.name === 'string' && parsed.name ? parsed.name : ''
+        const assistantMsg: ChatMessage = { role: 'assistant', content: to ? `Review the call below. It opens your phone in the app, and you do the talking. Nothing is dialled until you approve it.` : 'I need a phone number to call. Which number should I use?' }
+        if (to) {
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: 'call', status: 'ok', detail: 'Waiting for your approval' })
+          requestCall({ kind: 'personal', to, name: label || undefined })
+        }
         setMessages(prev => [...prev, assistantMsg])
         saveToHistory([...history, assistantMsg])
         setStatus('')
@@ -3462,6 +3484,89 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
     setSendingSms(false)
   }
 
+  // A call proposed in chat: the server checks do-not-call, STOP and calling hours, and writes what Alpha would say.
+  useEffect(() => {
+    setCallPreview(null)
+    setCallError('')
+    if (!pendingCall || pendingCall.kind !== 'assistant') { setCallChecking(false); return }
+    const ctl = new AbortController()
+    setCallChecking(true)
+    ;(async () => {
+      try {
+        const res = await fetch('/api/ai-call/preview', { method: 'POST', headers: await getAuthJsonHeaders(), body: JSON.stringify({ to: pendingCall.to, task: pendingCall.task || '' }), signal: ctl.signal })
+        const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; customer?: { name?: string }; hours?: string; plan?: { ok?: boolean; problems?: string[]; disclosure?: string; limits?: string[] }; check?: { ok?: boolean; reason?: string } } | null
+        if (ctl.signal.aborted) return
+        if (!res.ok || !data || data.ok !== true || !data.plan || !data.check) {
+          setCallPreview({ hours: '', disclosure: '', limits: [], blocked: (data && typeof data.error === 'string' && data.error) || 'This call could not be checked, so it cannot be approved. Nothing was dialled.', problems: [] })
+        } else {
+          setCallPreview({
+            hours: data.hours || '',
+            disclosure: data.plan.disclosure || '',
+            limits: Array.isArray(data.plan.limits) ? data.plan.limits : [],
+            customerName: data.customer?.name || undefined,
+            blocked: data.check.ok ? '' : (data.check.reason || 'This call cannot be placed right now.'),
+            problems: data.plan.ok ? [] : (Array.isArray(data.plan.problems) ? data.plan.problems : ['The call is not ready.']),
+          })
+        }
+      } catch {
+        if (ctl.signal.aborted) return
+        setCallPreview({ hours: '', disclosure: '', limits: [], blocked: 'This call could not be checked, so it cannot be approved. Nothing was dialled.', problems: [] })
+      } finally {
+        if (!ctl.signal.aborted) setCallChecking(false)
+      }
+    })()
+    return () => ctl.abort()
+  }, [pendingCall])
+
+  const requestCall = (call: { kind: 'assistant' | 'personal'; to: string; task?: string; name?: string }) => {
+    callUncertainRef.current = false
+    setPendingCall({ ...call, idempotencyKey: crypto.randomUUID() })
+  }
+
+  const confirmPlaceCall = async () => {
+    if (!pendingCall || callPlacing) return
+    if (pendingCall.kind === 'personal') {
+      window.dispatchEvent(new CustomEvent('phone:call', { detail: { number: pendingCall.to, name: pendingCall.name || '' } }))
+      void postActivityEvent('external', { action: 'call', summary: `Opened your phone to call ${pendingCall.name || pendingCall.to}`, eventId: `sent-${pendingCall.idempotencyKey}` })
+      setMessages(prev => [...prev, { role: 'assistant', content: `Your phone is open with ${pendingCall.name ? `${pendingCall.name}, ` : ''}${pendingCall.to}. You are the one on the call.` }])
+      setPendingCall(null)
+      return
+    }
+    if (callChecking || !callPreview || callPreview.blocked || callPreview.problems.length > 0) return
+    setCallPlacing(true)
+    setCallError('')
+    try {
+      const headers = await getAuthJsonHeaders()
+      headers['Idempotency-Key'] = pendingCall.idempotencyKey
+      const res = await fetch('/api/ai-call/start', { method: 'POST', headers, body: JSON.stringify({ to: pendingCall.to, task: pendingCall.task || '', confirm: true }) })
+      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; uncertain?: boolean; callId?: string } | null
+      if (res.ok && data?.ok === true && data.callId) {
+        const who = callPreview.customerName || pendingCall.name || pendingCall.to
+        setMessages(prev => [...prev, { role: 'assistant', content: `Alpha is calling ${who} now. It said it is an AI assistant and that the call may be recorded. When the call ends, the summary is saved in Activity${callPreview.customerName ? ' and on their customer card under Alpha\u2019s calls' : ''}.` }])
+        showToast('Call started')
+        setPendingCall(null)
+        callUncertainRef.current = false
+      } else if (data?.uncertain === true || (res.ok && !data?.callId)) {
+        callUncertainRef.current = true
+        setCallError(`The call may have started. ${data?.error || ''} Check Activity before you try again.`.replace(/\s+/g, ' ').trim())
+      } else {
+        callUncertainRef.current = false
+        setCallError(`${data?.error || 'The call did not start.'} Nothing was dialled.`.replace(/\s+/g, ' ').trim())
+      }
+    } catch {
+      callUncertainRef.current = true
+      setCallError('The connection dropped, so the call may have started. Check Activity before you try again.')
+    }
+    setCallPlacing(false)
+  }
+
+  const cancelCall = () => {
+    if (!pendingCall || callPlacing) return
+    void postActivityEvent('declined', { action: pendingCall.kind === 'personal' ? 'call' : 'aiVoiceCall', summary: `Declined: ${getActionInfo(pendingCall.kind === 'personal' ? 'call' : 'aiVoiceCall').title}`, eventId: `declined-${pendingCall.idempotencyKey}` })
+    setMessages(prev => [...prev, { role: 'assistant', content: 'Cancelled. No call was placed.' }])
+    setPendingCall(null); setCallError(''); callUncertainRef.current = false
+  }
+
   // Cancelling a review is recorded, so Activity shows what was offered and turned down.
   const cancelSms = () => {
     if (!pendingSms || sendingSms) return
@@ -3945,6 +4050,7 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
   // What each approval card says: exact recipient, words and amounts, how risky it is, and whether the shop's rules allow it.
   const smsReview = pendingSms ? buildMessageReview({ channel: pendingSms.channel, to: pendingSms.to, body: pendingSms.body, subject: pendingSms.subject, customerName: pendingSms.customerName }, { rules: rules || undefined }) : null
   const actionReview = pendingAction ? buildActionReview(pendingAction, { rules: rules || undefined }) : null
+  const callReview = pendingCall ? buildCallReview(pendingCall, callPreview, { rules: rules || undefined }) : null
 
   return (
     <div
@@ -4190,6 +4296,28 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
                   <p className="form-hint">It will go to {pendingSms.customerName ? `${pendingSms.customerName}, ` : ''}{pendingSms.to}. Only the words can be changed here.</p>
                 </div>
               ) : <ReviewRows rows={smsReview.rows} />}
+            </ApprovalFrame>
+          )}
+
+          {/* Phone call confirmation card */}
+          {pendingCall && callReview && (
+            <ApprovalFrame
+              ariaLabel="Phone call to approve"
+              testId="call-review"
+              title={callReview.title}
+              effect={callReview.effect}
+              tags={<ReviewTags tags={callReview.tags} />}
+              undoLine={callReview.undoLine}
+              irreversible={callReview.irreversible}
+              warnings={callError ? [callError] : []}
+              blockedReason={callReview.blockedReason}
+              busy={callPlacing || (pendingCall.kind === 'assistant' && callChecking)}
+              approveLabel={callPlacing ? 'Calling…' : callChecking && pendingCall.kind === 'assistant' ? 'Checking…' : callReview.approveLabel}
+              onApprove={confirmPlaceCall}
+              onCancel={cancelCall}
+              note={callUncertainRef.current ? 'This call may already have started, so check Activity before approving again.' : undefined}
+            >
+              <ReviewRows rows={callReview.rows} />
             </ApprovalFrame>
           )}
         </div>

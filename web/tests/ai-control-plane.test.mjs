@@ -41,7 +41,13 @@ test('Kapture no-tab state is handled honestly in chat and status UI', () => {
 
 test('send, call, delete, and MCP action paths require confirmation gates', () => {
   assert.match(aiPage, /confirmationActions/)
-  assert.match(aiPage, /Blocked until call confirmation/)
-  assert.match(aiPage, /calls require confirmation/)
+  // Calls are no longer refused outright: every call, typed or proposed by the assistant, waits on an approval card.
+  assert.doesNotMatch(aiPage, /Blocked until call confirmation/)
+  assert.match(aiPage, /requestCall\(\{ kind: 'assistant'/)
+  assert.match(aiPage, /Nothing is dialled until you approve it/)
+  assert.match(aiPage, /testId="call-review"/)
+  // The only way the chat starts a call is the approval handler, through the server route that re-checks the rules.
+  assert.match(aiPage, /fetch\('\/api\/ai-call\/start'[\s\S]{0,260}confirm: true/)
+  assert.doesNotMatch(aiPage, /fetch\('\/api\/(?:make-call|ai-voice-call)'/)
   assert.match(capabilities, /requiresConfirmation: true/)
 })

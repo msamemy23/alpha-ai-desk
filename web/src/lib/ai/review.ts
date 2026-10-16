@@ -58,6 +58,8 @@ const META: Record<string, Meta> = {
   updateDocument: { effect: 'Changes this document. It is not sent and no payment is recorded.', approve: 'save changes' },
   'message.sms': { effect: 'Sends this text right now, exactly as written.', approve: 'send text' },
   'message.email': { effect: 'Sends this email right now, exactly as written.', approve: 'send email' },
+  aiVoiceCall: { effect: 'Places a phone call right now. The person hears that it is an AI assistant before anything else.', approve: 'place call' },
+  call: { effect: 'Opens your phone in the app and dials this number. You do the talking.', approve: 'open the phone' },
   scheduleTask: { effect: 'Creates an automation that will run on its own at the times below.', approve: 'schedule it' },
   automationControl: { effect: 'Changes an automation that is already set up.', approve: 'make the change' },
   webAutomation: { effect: 'Runs these steps in a hosted browser. It can click and fill in fields on a real website.', approve: 'run it' },
@@ -244,6 +246,64 @@ export function buildMessageReview(message: { channel?: string; to: string; body
     rows,
     blockedReason: gate(options.rules, action, [message.body, message.subject || '']),
     editable: true,
+  }
+}
+
+/** What the call review card needs from the server's check: the plain-words preview of an assistant call. */
+export type CallPreviewInfo = {
+  hours: string
+  disclosure: string
+  limits: string[]
+  /** Set when the number is a saved customer. */
+  customerName?: string
+  /** Why the call cannot be placed right now (do not call, STOP, outside calling hours), or empty. */
+  blocked: string
+  /** Things to fix before it can be approved (for example the shop name is missing). */
+  problems: string[]
+}
+
+/**
+ * A phone call the assistant proposed, or the owner typed. Shows exactly who, why, what the person hears first and what
+ * Alpha will not do. A call Alpha places cannot be approved until the server has checked do-not-call, STOP and calling hours.
+ */
+export function buildCallReview(
+  call: { kind: 'assistant' | 'personal'; to: string; task?: string; name?: string },
+  preview: CallPreviewInfo | null,
+  options: { rules?: AiRules } = {},
+): ReviewModel {
+  const personal = call.kind === 'personal'
+  const action = personal ? 'call' : 'aiVoiceCall'
+  const b = base(action)
+  const name = preview?.customerName || call.name || ''
+  const who = name ? `${name}, ${call.to}` : call.to
+  const rows: ReviewRow[] = [{ label: 'Who', value: who }]
+  if (personal) {
+    rows.push({ label: 'How', value: 'Your own call from the phone in the app. Alpha is not on the call.' })
+  } else {
+    rows.push({ label: 'What Alpha will talk about', value: String(call.task || '').trim(), kind: 'words' })
+    if (preview) {
+      rows.push({ label: 'What they hear first', value: preview.disclosure, kind: 'words' })
+      rows.push({ label: 'Calling hours', value: preview.hours })
+      rows.push({ label: 'What Alpha will not do', value: preview.limits.map(l => `- ${l}`).join('\n'), kind: 'minor' })
+    } else {
+      rows.push({ label: 'Checking', value: 'Checking the do-not-call list and your calling hours.', kind: 'minor' })
+    }
+  }
+  const blockedByRules = gate(options.rules, action, personal ? [] : [String(call.task || '')])
+  // While the server check is still running the card shows 'Checking' and the page keeps Approve off.
+  const blocked = blockedByRules || (!personal && preview ? preview.blocked || preview.problems.join(' ') : '')
+  return {
+    action,
+    title: personal ? `Call ${name || call.to} from your phone?` : `Place this assistant call to ${name || call.to}?`,
+    effect: b.meta?.effect || '',
+    tags: b.tags,
+    undoLine: b.undoLine,
+    irreversible: b.irreversible,
+    approveLabel: personal ? 'Approve and open the phone' : 'Approve and place call',
+    danger: false,
+    rows,
+    blockedReason: blocked,
+    editable: false,
   }
 }
 
