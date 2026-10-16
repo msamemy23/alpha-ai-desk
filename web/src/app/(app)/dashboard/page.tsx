@@ -68,6 +68,7 @@ export default function DashboardPage() {
   const [shop, setShop] = useState<ShopProfile | null>(null)
   const [shopLoaded, setShopLoaded] = useState(false)
   const [aiAlerts, setAiAlerts] = useState<{ id: string; title: string; body: string }[]>([])
+  const [problems, setProblems] = useState(0)
   const [showAll, setShowAll] = useState(false)
   const [question, setQuestion] = useState('')
   const [insight, setInsight] = useState('')
@@ -80,6 +81,7 @@ export default function DashboardPage() {
   useEffect(() => {
     fetch('/api/notifications').then(r => r.json()).then(d => {
       if (Array.isArray(d.notifications)) setAiAlerts(d.notifications.slice(0, 2))
+      if (Number.isFinite(d.problems) && d.problems > 0) setProblems(Math.floor(d.problems))
     }).catch(() => {})
     getShopProfile().then(p => { setShop(p); setShopLoaded(true) }).catch(() => setShopLoaded(true))
   }, [])
@@ -141,7 +143,7 @@ export default function DashboardPage() {
     const openJobs = data.jobs.filter(j => !['Paid', 'Closed'].includes(String(j.status)))
     const staleJobs = openJobs.filter(j => !['Completed', 'Ready for Pickup'].includes(String(j.status)) && String(j.updated_at || j.created_at) < threeDaysAgo)
     const summary = summarizeToday({
-      docs: data.docs, unreadTexts: data.unreadTexts, missedCalls: data.missedCalls, staleJobs, aiAlerts,
+      docs: data.docs, unreadTexts: data.unreadTexts, missedCalls: data.missedCalls, staleJobs, aiAlerts, problems,
       setupIncomplete: shopLoaded && !(shop && shop.shop_name),
     })
 
@@ -174,7 +176,7 @@ export default function DashboardPage() {
       summary, openJobs, monthRevenue, monthPaidCount: monthDocs.length, days,
       techs: Object.entries(techMap).sort((a, b) => b[1].revenue - a[1].revenue),
     }
-  }, [data, aiAlerts, shop, shopLoaded])
+  }, [data, aiAlerts, problems, shop, shopLoaded])
 
   const callBack = (number: string, name?: string) => {
     window.dispatchEvent(new CustomEvent('phone:call', { detail: { number, name } }))

@@ -182,10 +182,13 @@ test('the report route checks the origin, the size, the rate, and answers 204 to
   assert.ok(!/status: (4|5)\d\d/.test(r), 'a caller never learns why a report was dropped')
 })
 
-test('the report route writes one log line and touches no database or outside service', () => {
+test('the report route writes one log line first, counts only for signed-in staff, and calls no outside service', () => {
   const r = read('src/app/api/client-errors/route.ts')
   assert.match(r, /console\.error\(JSON\.stringify\(\{ event: 'client_error'/)
-  assert.ok(!/supabase|getServiceClient|fetch\(|resend|telnyx/i.test(r.replace(/\/\*[\s\S]*?\*\//g, '')))
+  // The only database work is the daily count, and only after a signed-in shop is found. Nothing is sent anywhere.
+  const code = r.replace(/\/\*[\s\S]*?\*\//g, '')
+  assert.ok(!/fetch\(|resend|telnyx|\.from\(|\.insert\(/i.test(code))
+  assert.match(code, /if \(auth\) await recordProblem\(/)
 })
 
 test('the browser reporter skips noise and repeats, caps the count, and never throws', () => {

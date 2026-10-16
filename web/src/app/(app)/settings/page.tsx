@@ -20,10 +20,11 @@ import OutreachSection from '@/components/settings/OutreachSection'
 import ReviewsSection from '@/components/settings/ReviewsSection'
 import AiRulesSection from '@/components/ai/AiRulesSection'
 import InstallSection from '@/components/settings/InstallSection'
+import ProblemsSection from '@/components/settings/ProblemsSection'
 import MarkupSection from '@/components/settings/MarkupSection'
 import FeePresetsSection from '@/components/settings/FeePresetsSection'
 
-type SectionId = 'shop' | 'pricing' | 'fees' | 'ai' | 'assistant' | 'receptionist' | 'comms' | 'outreach' | 'reviews' | 'install'
+type SectionId = 'shop' | 'pricing' | 'fees' | 'ai' | 'assistant' | 'receptionist' | 'comms' | 'outreach' | 'reviews' | 'problems' | 'install'
 type LoadState = 'loading' | 'ready' | 'error'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error'
 
@@ -37,6 +38,7 @@ const SECTIONS: { id: SectionId; label: string; sub: string; icon: string; hasFi
   { id: 'comms', label: 'Communications', sub: 'Texts, calls and email', icon: 'inbox', hasFields: true },
   { id: 'outreach', label: 'AI outreach', sub: 'Win back past customers', icon: 'send', hasFields: false },
   { id: 'reviews', label: 'Reviews', sub: 'Draft replies to reviews', icon: 'star', hasFields: false },
+  { id: 'problems', label: 'Problems reported', sub: 'Screens that stopped working', icon: 'alert', hasFields: false },
   { id: 'install', label: 'Install on your phone', sub: 'Add Alpha Desk to your home screen', icon: 'phone', hasFields: false },
 ]
 
@@ -354,6 +356,7 @@ export default function SettingsPage() {
                   {s.id === 'comms' && <CommsSection />}
                   {s.id === 'outreach' && <OutreachSection />}
                   {s.id === 'reviews' && <ReviewsSection shopName={String(settings.shop_name || '')} />}
+                  {s.id === 'problems' && <ProblemsSection />}
                   {s.id === 'install' && <InstallSection />}
                 </section>
               ))}

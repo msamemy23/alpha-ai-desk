@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
+import type { Db } from '@/lib/db-types'
+import { mayViewProblems } from '@/lib/problems'
+import { problemsLastDay } from '@/lib/problems-store'
 
 export const dynamic = 'force-dynamic'
 
@@ -75,9 +78,13 @@ export async function GET() {
       })
     }
 
-    return NextResponse.json({ notifications, unreadCount: (unreadMsgs || []).length })
+    // Owner and admins also hear how many screen problems were reported in the last day (Settings, Problems reported has the list).
+    // It is its own field, not a bell item: it links to Settings, not to the AI screen. Zero when it cannot be read.
+    const problems = mayViewProblems(auth.role) ? await problemsLastDay(db as unknown as Db, auth.shopId) : 0
+
+    return NextResponse.json({ notifications, unreadCount: (unreadMsgs || []).length, problems })
   } catch (e) {
     console.error('notifications error:', e)
-    return NextResponse.json({ notifications: [], unreadCount: 0 })
+    return NextResponse.json({ notifications: [], unreadCount: 0, problems: 0 })
   }
 }

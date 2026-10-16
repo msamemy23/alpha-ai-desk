@@ -2,6 +2,7 @@
 // Pure functions only, so the rules can be tested without a database.
 
 import { calcTotals } from '@/lib/supabase'
+import { headsUp } from '@/lib/problems'
 
 export type Lamp = 'red' | 'amber' | 'blue'
 
@@ -57,6 +58,8 @@ export interface TodayInput {
   missedCalls: Row[]
   staleJobs: Row[]
   aiAlerts: { id: string; title: string; body: string }[]
+  /** Screen problems reported in the last day. Only the owner and admins are told (the server sends 0 to everyone else). */
+  problems?: number
   setupIncomplete: boolean
   now?: number
 }
@@ -177,6 +180,11 @@ export function summarizeToday(input: TodayInput): TodaySummary {
   input.aiAlerts.slice(0, 2).forEach(a => {
     feed.push({ id: `ai-${a.id}`, lamp: 'blue', weight: 10, title: a.title, detail: a.body, href: '/ai' })
   })
+
+  if ((input.problems ?? 0) > 0) {
+    const h = headsUp(input.problems ?? 0)
+    feed.push({ id: 'problems-reported', lamp: 'amber', weight: 5, title: h.title, detail: h.detail, href: '/settings#problems' })
+  }
 
   const rank: Record<Lamp, number> = { red: 0, amber: 1, blue: 2 }
   feed.sort((a, b) => rank[a.lamp] - rank[b.lamp] || b.weight - a.weight)

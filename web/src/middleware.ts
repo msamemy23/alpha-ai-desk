@@ -1,5 +1,6 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import { buildCsp, CSP_HEADER } from '@/lib/csp'
 
 // Fail closed: if the env vars are missing, auth checks below return no user and
 // every protected route 401s/redirects. Never fall back to hardcoded keys.
@@ -40,6 +41,10 @@ const PUBLIC_API_PREFIXES = [
   '/api/status',
   // A broken screen reports itself, even when nobody is signed in. The route writes one cleaned line to the log and nothing else.
   '/api/client-errors',
+  // An uptime monitor asks "is it up?" without signing in. The route says up or down and nothing else, and limits how often one address may ask.
+  '/api/health',
+  // The browser's own notes about the report-only security policy. Cleaned and logged, nothing stored.
+  '/api/csp-report',
   // The Unsubscribe link at the bottom of every marketing email. A signed link, so a customer who is not signed in can still opt out.
   // Only this one route: the other /api/outreach routes stay behind sign-in.
   '/api/outreach/unsubscribe',
@@ -59,8 +64,12 @@ function isPublicApiPath(pathname: string) {
   })
 }
 
-// Baseline security headers on every response.
-function withSecurityHeaders(res: NextResponse) {
+// The security policy that only reports (see lib/csp.ts). Built once: the database address does not change while the server runs.
+const REPORT_ONLY_POLICY = buildCsp({ databaseUrl: SUPABASE_URL, development: process.env.NODE_ENV === 'development' })
+
+// Baseline security headers on every response. Pages also carry the report-only policy; data answers (/api/...) do not need it.
+function withSecurityHeaders(res: NextResponse, page = true) {
+  if (page) res.headers.set(CSP_HEADER, REPORT_ONLY_POLICY)
   res.headers.set('X-Frame-Options', 'SAMEORIGIN')
   res.headers.set('X-Content-Type-Options', 'nosniff')
   res.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
@@ -144,6 +153,7 @@ async function verifyUserFromRequest(req: NextRequest) {
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl
+  const secure = (res: NextResponse) => withSecurityHeaders(res, !pathname.startsWith('/api/'))
 
   if (
     pathname.startsWith('/login') ||
@@ -163,7 +173,7 @@ export async function middleware(req: NextRequest) {
     pathname === '/offline' ||
     pathname.startsWith('/icons/')
   ) {
-    return withSecurityHeaders(NextResponse.next())
+    return secure(NextResponse.next())
   }
 
   // Do not pass empty or malformed configuration to @supabase/ssr. That can
@@ -173,12 +183,12 @@ export async function middleware(req: NextRequest) {
   // their own configuration error; every protected path fails closed here.
   if (!SUPABASE_CONFIGURED) {
     if (pathname.startsWith('/api/') && (isPublicApiPath(pathname) || hasInternalApiSecret(req))) {
-      return withSecurityHeaders(NextResponse.next())
+      return secure(NextResponse.next())
     }
     if (pathname.startsWith('/api/')) {
-      return withSecurityHeaders(NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 }))
+      return secure(NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 }))
     }
-    return withSecurityHeaders(NextResponse.redirect(new URL('/login', req.url)))
+    return secure(NextResponse.redirect(new URL('/login', req.url)))
   }
 
   const res = NextResponse.next({ request: req })
@@ -197,18 +207,18 @@ export async function middleware(req: NextRequest) {
   const user = supabaseUser || await verifyUserFromRequest(req)
 
   if (pathname.startsWith('/api/')) {
-    if (isPublicApiPath(pathname) || hasInternalApiSecret(req)) return withSecurityHeaders(res)
+    if (isPublicApiPath(pathname) || hasInternalApiSecret(req)) return secure(res)
     if (!user) {
-      return withSecurityHeaders(NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 }))
+      return secure(NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 }))
     }
-    return withSecurityHeaders(res)
+    return secure(res)
   }
 
   if (!user) {
-    return withSecurityHeaders(NextResponse.redirect(new URL('/login', req.url)))
+    return secure(NextResponse.redirect(new URL('/login', req.url)))
   }
 
-  return withSecurityHeaders(res)
+  return secure(res)
 }
 
 export const config = {

@@ -2,13 +2,20 @@ import { NextRequest } from 'next/server'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { clientIp, sameOrigin } from '@/lib/booking'
 import { MAX_BODY_BYTES, cleanReport } from '@/lib/client-errors'
+import { getAuthedShop } from '@/lib/api-auth'
+import { getServiceClient } from '@/lib/supabase'
+import type { Db } from '@/lib/db-types'
+import { recordProblem } from '@/lib/problems-store'
 
 export const dynamic = 'force-dynamic'
 
 /**
  * A screen broke in someone's browser and tells us, so it shows up in the server log next to the matching server error.
  *
- * - It writes one line to the log. It does not touch the database, send a message or call any other service.
+ * - It writes one line to the log. It sends no message and calls no outside service.
+ * - When the report comes from someone who is signed in to a shop, it also adds one to that shop's daily count of the same problem
+ *   (so the owner can see "Problems reported" in Settings). A visitor who is not signed in is only logged, never counted, so
+ *   a stranger cannot fill a shop's list. Counting can fail or be switched off by a missing database update; the answer is still 204.
  * - It is open to people who are not signed in, because the sign-in page can break too. So it is strict:
  *   the request must come from a page on this site, the body is at most 4 KB, each visitor gets 10 reports a minute
  *   and the whole site 120 a minute, and every field is cut down again here (no emails, phone numbers, tokens or
@@ -46,5 +53,11 @@ export async function POST(req: NextRequest) {
 
   // One line of JSON so a log search for "client_error" finds every one.
   console.error(JSON.stringify({ event: 'client_error', ...report }))
+
+  // Signed-in staff only. Anything that goes wrong here is swallowed: the report was already logged.
+  try {
+    const auth = await getAuthedShop()
+    if (auth) await recordProblem(getServiceClient() as unknown as Db, auth.shopId, report)
+  } catch { /* not signed in, or the database is not reachable: the log line is enough */ }
   return NO_CONTENT()
 }
