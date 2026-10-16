@@ -439,7 +439,7 @@ Screens: Settings, Connected apps, Agents and tools, Setup guide, login.
 | Multi-location | View jobs and techs across shops [S20][S28] | Missing | To build |
 | Setup guide | Not researched | Exists. Three steps | Exists |
 | Help, privacy, terms | Not researched | Exists | Exists |
-| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 1,961 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 1,985 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 
 ## 20. Built-in browser
 
@@ -639,8 +639,8 @@ Why this section: the owner asked about many ways to text (Google Messages for w
 | Works when the connection is bad (loading shell, clear "you are offline") | Not researched | Exists in code, checked by tests, within a deliberate limit. A small service worker shows a plain "You are offline" screen with a way back when a page cannot load. It never stores or serves shop data, so nothing works offline except that screen. Not tried on a real phone | Exists |
 | Phone push | Mobile push [S29] | Missing. The service worker has no push handling, and the only alerts are on screen while the app is open (see section 26) | To build |
 | Security headers | Not researched | Partial. The request middleware sets frame, no-sniff, referrer, strict transport and a permissions policy that allows the camera and microphone for the app and refuses location for every page (which also blocks the clock-in location check; see section 6). A few routes (the older web view, downloads, pictures) set their own strict content policy. There is no site-wide Content-Security-Policy | To build |
-| Error reporting and uptime alerts | Not researched | Missing. No error or uptime service is installed; only the platform's logs and the audit-log repair in the daily job | To build |
-| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 1,961 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Error reporting and uptime alerts | Not researched | Partial. Built 2026-10-15, checked by tests and by crashing local test pages in a browser (phone and desktop, light and dark). When a page breaks, the person now sees a plain screen (what happened, what is safe, Try again, a way back, a short reference) instead of a blank "Application error" page; signed-in pages keep the menu. There is a not-found page and a last-resort screen for when the page frame itself breaks. Each break, and each error a button or request raises without a screen, sends one cleaned line to the server log (page, kind of error, top of the stack; no names, phone numbers, emails, tokens or query strings; 4 KB, 10 a minute per visitor, 5 a page load, nothing written to the database). Not done: nobody is told when one happens (a person still has to look in the platform's logs, for lines marked client_error), there is no uptime check, and the signed-in version of the crash screen (the same screen inside the menu) was not crashed anywhere, because that needs a signed-in session and a real fault; the public version, the last-resort screen and the not-found page were. Browser extensions and offline blips are skipped on purpose | Partial |
+| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 1,985 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 | Backups and restore drill | Not researched | Not verified. Relies on the database host's backups | To build |
 | Keys rotated | Not applicable | Unverified (see Blocked on the owner) | Blocked |
 
@@ -745,7 +745,7 @@ Rough size is my estimate (S is days, M is a couple of weeks, L is longer). "Own
 | 35 | Spanish for customer pages, texts and the receptionist | Section 24 | M | Yes (wording) |
 | 36 | Apply the six blocked database files (046, 051, 057, 058, 059, 060), then finish what depends on them | Sections 1, 5, 15, 20, 23, 24 | S | Yes |
 | 37 | Self-serve sign up, trial and billing; owner console | Section 29 | L | Yes |
-| 38 | Error reporting, uptime alerts, Content-Security-Policy, backup drill | Section 30 | M | |
+| 38 | Error reporting, uptime alerts, Content-Security-Policy, backup drill. Error screens, the not-found page and quiet error logging are done in code (2026-10-15). Still to do: tell someone when an error happens, an uptime check, a report-only Content-Security-Policy, a backup restore drill | Section 30 | M | |
 | 39 | Done in code (6bc49f7). Fix the customer unsubscribe link: `/api/outreach/unsubscribe` is now on the public paths in `web/src/middleware.ts`. Still to do: try a real link | Every marketing email links to it; before the fix a customer who was not signed in got "Unauthorized" and could not unsubscribe (section 24) | S | |
 | 40 | Done in code (2026-10-15). The customer status page for "where is my car", plus a Status link section on the job sheet that makes the link and opens the text for review | A link can be made only after file 051 is applied (section 24) | M | Yes |
 | 41 | Give each built-but-not-reachable item its one missing step, most valuable first | See "Built but not reachable" at the end of this document (eleven items are left) | M | |
@@ -883,7 +883,7 @@ As of 2026-10-15, read again against the code after commits 6bc49f7, 0c2d827, 3c
 
 ## Now reachable since the audit
 
-These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (1,961 passing, the type check clean and lint with 0 errors).
+These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (1,985 passing, the type check clean and lint with 0 errors).
 
 - **Unsubscribe link in marketing emails** (section 24), 6bc49f7. `/api/outreach/unsubscribe` is on the list of addresses that skip sign-in in `web/src/middleware.ts`. Not tried with a real email link.
 - **Report by email on a schedule** (section 13), 6bc49f7. The daily job (`/api/cron`) calls `/api/reports/scheduled` for every shop. Needs `CRON_SECRET` on the host and the shop's email key; I did not check either.

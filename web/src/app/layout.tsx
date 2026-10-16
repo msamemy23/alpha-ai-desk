@@ -5,6 +5,7 @@ import '@fontsource/atkinson-hyperlegible-next/500.css'
 import '@fontsource/atkinson-hyperlegible-next/700.css'
 import './globals.css'
 import InstallBridge from '@/components/InstallBridge'
+import ClientErrorListener from '@/components/ClientErrorListener'
 
 export const metadata: Metadata = {
   title: { default: 'Alpha Desk', template: '%s · Alpha Desk' },
@@ -47,6 +48,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="bg-bg-base text-text-primary font-sans antialiased">
         {children}
         <InstallBridge />
+        <ClientErrorListener />
       </body>
     </html>
   )
