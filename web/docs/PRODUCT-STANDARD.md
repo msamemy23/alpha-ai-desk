@@ -34,7 +34,7 @@ Alpha AI Desk is an AI office manager and shop-management web app for independen
 1. **Taking money.** Tekmetric sends a pay link by text and keeps cards on file; both Tekmetric and Shopmonkey run card terminals and track payouts and fees; Shopmonkey sends payable invoices by text or email [S3][S4][S22]. Alpha only records a payment someone received. There is no processor, no link, no card on file, and no QuickBooks sync.
 2. **Shop data and time.** The leaders put labor guides, parts catalogs and per-job time inside the estimate and the tech board [S1][S2][S25][S9]. Alpha now records time on a job (Team) and shows technician efficiency, effective labor rate and gross profit in Reports, but it still has no labor guide and no parts catalog, and the board columns still do not show hours assigned and hours left.
 3. **Customer-facing AI that is safe and hands off.** The best call agents tell callers they are AI, transfer to a person and book the appointment [S41][S43][S45]. Alpha's agent now does all three in code, uses the shop's own hours and rules, and every AI call the owner starts goes through a review card and the do-not-call and calling-hours check. What is left is proof and reach: it is covered by tests with simulated Telnyx events but has not been tried on a live call, texts to customers wait on carrier registration, the owner cannot listen in without being heard, and the join-a-call route has no button.
-4. **Built but not reachable.** Twelve items are still written and tested but no screen, schedule or setting lets Aaron use them (the declined-work list that nothing fills, purchase orders, good, better, best options, the customer's answer panel, the one-feed customer view and more; the list is at the end). Since the audit nine of the earlier twenty-five were wired up. The one that mattered most is done in code: the unsubscribe link in marketing emails is now let through the sign-in wall (6bc49f7), so a customer can unsubscribe; it has not been tried with a real email link (section 24). Report emails, customer import and export, tags and groups, void, change history, templates, parts pricing rules and Ask Alpha for repair posts are also on screens now (see "Now reachable since the audit" at the end).
+4. **Built but not reachable.** Eleven items are still written and tested but no screen, schedule or setting lets Aaron use them (the declined-work list that nothing fills, purchase orders, good, better, best options, the customer's answer panel, the one-feed customer view and more; the list is at the end). Since the audit nine of the earlier twenty-five were wired up. The one that mattered most is done in code: the unsubscribe link in marketing emails is now let through the sign-in wall (6bc49f7), so a customer can unsubscribe; it has not been tried with a real email link (section 24). Report emails, customer import and export, tags and groups, void, change history, templates, parts pricing rules and Ask Alpha for repair posts are also on screens now (see "Now reachable since the audit" at the end).
 
 ## Where Alpha is already ahead or different
 
@@ -191,7 +191,7 @@ Screens: Customers, Vehicles.
 | Search | Stripe filters and finds fast [S39] | Exists. Name, phone, vehicle; search box also finds paperwork | Exists |
 | Customer mood | Not researched | Exists. Happy, neutral, unhappy mark and filter | Exists |
 | Warn about a likely duplicate when adding a customer | Not researched | Exists. Same phone, email or name is shown before saving, with a way to open the existing customer | Exists |
-| Everything that happened with a customer in one feed | Not researched | Built, not reachable. Estimates, invoices, repair orders, appointments, texts, calls, inspections and notes in time order with filters (`lib/customers/timeline.ts`), plus what a customer is worth (spend, owed, visits, last visit, average ticket). Written and tested. The customer card (0c2d827 added Tags and Vehicle history to it) still shows separate lists (estimates and invoices, repair orders, calls, notes), not this feed; the worth numbers are used only in the customer export file | Not reachable |
+| Everything that happened with a customer in one feed | Not researched | Partial. Customers, open a customer, Everything with this customer (after Vehicle history): estimates, invoices, repair orders, appointments, texts, calls, inspections and notes in time order, newest first, with a filter for paperwork, work, messages and notes, and a Show more button (`/api/customers/feed`, `lib/customers/timeline.ts`). Read only, limited to the signed-in shop and that customer, and a kind that cannot be read is left out with a plain note instead of failing the whole feed. Repair orders, documents and inspections match by the customer link only, so an old repair order saved by name alone shows in the card's own list but not here. What a customer is worth (spend, owed, visits, last visit, average ticket) is still used only in the customer export file. Built in code, checked by tests; not clicked through on the live app | Partial |
 | VIN decode | Plate-to-VIN scan on mobile [S31][S32] | Partial. VIN decode on the form; no plate or VIN scan | To build |
 | Vehicles list | Vehicle history on the profile [S21] | Exists. Owner, plate, mileage | Exists |
 | Full service history per vehicle | Past inspections and orders per vehicle [S7] | Partial. Each car's card lists its repair orders (RO number, mileage, concern). The customer card now has a Vehicle history section (0c2d827): for each of that customer's cars, the repair orders and the invoices written without one, what each billed, and the mileage readings from repair orders and the card, with a warning when a reading is lower than an earlier one or jumps. Read only, and on the customer card only, not on the Vehicles screen. Saved cars, a mileage log, notes and photos (tables from migration 054, applied) are written and tested, but no route or screen reads or writes those tables, so the history is built from repair orders, invoices and the card alone | To build |
@@ -439,7 +439,7 @@ Screens: Settings, Connected apps, Agents and tools, Setup guide, login.
 | Multi-location | View jobs and techs across shops [S20][S28] | Missing | To build |
 | Setup guide | Not researched | Exists. Three steps | Exists |
 | Help, privacy, terms | Not researched | Exists | Exists |
-| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 1,887 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 1,924 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 
 ## 20. Built-in browser
 
@@ -640,7 +640,7 @@ Why this section: the owner asked about many ways to text (Google Messages for w
 | Phone push | Mobile push [S29] | Missing. The service worker has no push handling, and the only alerts are on screen while the app is open (see section 26) | To build |
 | Security headers | Not researched | Partial. The request middleware sets frame, no-sniff, referrer, strict transport and a permissions policy that allows the camera and microphone for the app and refuses location for every page (which also blocks the clock-in location check; see section 6). A few routes (the older web view, downloads, pictures) set their own strict content policy. There is no site-wide Content-Security-Policy | To build |
 | Error reporting and uptime alerts | Not researched | Missing. No error or uptime service is installed; only the platform's logs and the audit-log repair in the daily job | To build |
-| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 1,887 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 1,924 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 | Backups and restore drill | Not researched | Not verified. Relies on the database host's backups | To build |
 | Keys rotated | Not applicable | Unverified (see Blocked on the owner) | Blocked |
 
@@ -748,7 +748,7 @@ Rough size is my estimate (S is days, M is a couple of weeks, L is longer). "Own
 | 38 | Error reporting, uptime alerts, Content-Security-Policy, backup drill | Section 30 | M | |
 | 39 | Done in code (6bc49f7). Fix the customer unsubscribe link: `/api/outreach/unsubscribe` is now on the public paths in `web/src/middleware.ts`. Still to do: try a real link | Every marketing email links to it; before the fix a customer who was not signed in got "Unauthorized" and could not unsubscribe (section 24) | S | |
 | 40 | The customer status page for "where is my car", plus a button that makes and texts the link | The data route exists, the page and the button do not; needs 051 (section 24) | M | Yes |
-| 41 | Give each built-but-not-reachable item its one missing step, most valuable first | See "Built but not reachable" at the end of this document (twelve items are left) | M | |
+| 41 | Give each built-but-not-reachable item its one missing step, most valuable first | See "Built but not reachable" at the end of this document (eleven items are left) | M | |
 
 ---
 
@@ -883,12 +883,13 @@ As of 2026-10-15, read again against the code after commits 6bc49f7, 0c2d827, 3c
 
 ## Now reachable since the audit
 
-These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (1,887 passing, the type check clean and lint with 0 errors).
+These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (1,924 passing, the type check clean and lint with 0 errors).
 
 - **Unsubscribe link in marketing emails** (section 24), 6bc49f7. `/api/outreach/unsubscribe` is on the list of addresses that skip sign-in in `web/src/middleware.ts`. Not tried with a real email link.
 - **Report by email on a schedule** (section 13), 6bc49f7. The daily job (`/api/cron`) calls `/api/reports/scheduled` for every shop. Needs `CRON_SECRET` on the host and the shop's email key; I did not check either.
 - **Customer CSV export and import, tags and groups, a car's service history on the customer card, and a read-only possible-duplicates list** (section 7), 0c2d827. Customers, Customer tools (Export, Import, Possible duplicates); the Group choice on the list; the Tags and Vehicle history sections on the customer card. Migration 053 is applied. Merge is not part of this and stays unbuilt.
 - **Void and restore, change history, percent off the whole document, add a fee, start from and save as a template, the declined-work list, canned-job versions in the Add a canned job sheet, and parts pricing rules** (section 1), 3ca8b74. Document screen and Settings, Parts pricing. Change history events need 046. The declined-work list has no way to be filled yet (item 1 below).
+- **Everything about a customer in one feed** (section 7). Customers, open a customer, Everything with this customer. Not clicked through on the live app.
 - **Carrier delivery receipts for texts** (section 12) and **the clock-in location check** (section 6). The text webhook records delivery notices (needs Telnyx event settings and `TELNYX_PUBLIC_KEY`); the security header now lets the app itself ask for location. Neither was tried on the live app.
 - **Usual charges (fee presets) in Settings, and the canned-job editor for vehicle versions, keywords and extra fees** (section 1). Settings, Usual charges; Canned jobs, open a saved job, Edit versions, keywords and fees. Not clicked through on the live app.
 - **Ask Alpha runs repair posts** (section 23), 0a62529. The `posts` tool in `web/src/app/(app)/ai/page.tsx` and `web/src/lib/ai/posts-tools.ts`. Needs 060 before anything works.
@@ -899,14 +900,13 @@ These were on the earlier list of twenty-five. Each is now reached from a screen
 2. **Purchase orders, receiving, returns and cores** (section 15). Step: a screen that calls `/api/inventory`. Needs 057.
 3. **The customer's answer, good-through date and signed record** (section 1). Step: show the approval panel (`components/documents/ApprovalPanel.tsx`, imported by no screen) on the document screen. Needs 046.
 4. **Send a document with a preview and a customer link** (section 1). Step: show the send sheet (`components/documents/SendSheet.tsx`, imported by no screen) and make `/api/send-document` honor the preview and make the link. Needs 046.
-5. **Everything about a customer in one feed** (section 7). Step: show the feed (`lib/customers/timeline.ts`, called by nothing) on the customer card.
-6. **Parts status and labels on the shop board** (section 5). Step: a control on the board card that sets them (and the customer status link, section 24). Needs 051.
-7. **Good, better, best options** (section 1). Step: show the sheet (`components/documents/OptionsSheet.tsx`, imported by no screen) on the document screen; the signing page must let the customer pick, which needs the answer code in `lib/doc-respond.ts` and 046.
-8. **Duplicate merge for customers** (section 7; status is Blocked because about 20 records need Aaron's yes). Step: not built, on purpose. A screen that shows a pair and calls the merge in `lib/customers/merge.ts`, built only after Aaron says yes to that specific action. The read-only pair finder is already on the Customers screen.
-9. **Who changed a quantity** (section 15). Step: make the Inventory screen save counts through the history code. Needs 057.
-10. **Capture a lead from the web or a call** (section 22). Step: a form or a call hook that calls `/api/growth/capture`, and make it write to the `leads` table the Leads tab reads.
-11. **Delete a call record** (section 21). Step: a Delete button in the Inbox that calls `/api/delete-call`.
-12. **Owner joins a live AI call** (section 21). Step: a trial on a live call to see whether moving the AI's call leg cuts it off, then a button that calls `/api/voice-join/[callId]`.
+5. **Parts status and labels on the shop board** (section 5). Step: a control on the board card that sets them (and the customer status link, section 24). Needs 051.
+6. **Good, better, best options** (section 1). Step: show the sheet (`components/documents/OptionsSheet.tsx`, imported by no screen) on the document screen; the signing page must let the customer pick, which needs the answer code in `lib/doc-respond.ts` and 046.
+7. **Duplicate merge for customers** (section 7; status is Blocked because about 20 records need Aaron's yes). Step: not built, on purpose. A screen that shows a pair and calls the merge in `lib/customers/merge.ts`, built only after Aaron says yes to that specific action. The read-only pair finder is already on the Customers screen.
+8. **Who changed a quantity** (section 15). Step: make the Inventory screen save counts through the history code. Needs 057.
+9. **Capture a lead from the web or a call** (section 22). Step: a form or a call hook that calls `/api/growth/capture`, and make it write to the `leads` table the Leads tab reads.
+10. **Delete a call record** (section 21). Step: a Delete button in the Inbox that calls `/api/delete-call`.
+11. **Owner joins a live AI call** (section 21). Step: a trial on a live call to see whether moving the AI's call leg cuts it off, then a button that calls `/api/voice-join/[callId]`.
 
 Also written but with no caller, and not worth a row of their own:
 

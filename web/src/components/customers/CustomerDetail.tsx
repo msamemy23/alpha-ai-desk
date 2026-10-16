@@ -12,6 +12,7 @@ import SentimentMark from './SentimentMark'
 import AiCallSheet from './AiCallSheet'
 import AlphaCalls from './AlphaCalls'
 import ContactPermissions from './ContactPermissions'
+import CustomerFeed from './CustomerFeed'
 import CustomerTags from './CustomerTags'
 import VehicleHistory from './VehicleHistory'
 import { cleanFilterText, digits10, fmtDay, fmtDayTime, fmtMonthYear, text, vehicleLabel } from './types'
@@ -275,6 +276,10 @@ export default function CustomerDetail({ customer, onEdit, onText, onEmail, onTa
 
       <Section id="cd-vehicle-history" title="Vehicle history">
         <VehicleHistory customerId={customer.id} />
+      </Section>
+
+      <Section id="cd-feed" title="Everything with this customer">
+        <CustomerFeed customerId={customer.id} />
       </Section>
 
       <Section id="cd-docs" title="Estimates and invoices" count={docs.length}>
