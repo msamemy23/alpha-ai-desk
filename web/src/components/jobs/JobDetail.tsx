@@ -2,8 +2,10 @@
 import { useState } from 'react'
 import Icon from '@/components/Icon'
 import JobPostCard from './JobPostCard'
+import StatusLinkCard from './StatusLinkCard'
 import { formatCurrency } from '@/lib/supabase'
 import { phonePretty } from '@/lib/today'
+import { statusTextBody } from '@/lib/jobflow'
 import { STATUSES, carLine, dueInfo, firstName, longDate, nextStep, openedLabel, stageOf, statusLamp, statusWord } from './types'
 import type { Job, JobDoc, JobInspection } from './types'
 
@@ -171,6 +173,12 @@ export default function JobDetail({
         )}
         <a className="btn btn-secondary mt-3 w-full no-underline" href={`/dvi?new=1&job=${encodeURIComponent(j.id)}`}><Icon name="inspect" className="h-5 w-5" />{inspections.length === 0 ? 'Start inspection' : 'Start another inspection'}</a>
       </section>
+
+      <StatusLinkCard
+        jobId={j.id}
+        canText={Boolean(phone)}
+        onText={url => { setBody(statusTextBody({ customer: j.customer_name || '', car, shop: shopName, statusUrl: url })); setComposing(true) }}
+      />
 
       <JobPostCard jobId={j.id} />
 

@@ -439,7 +439,7 @@ Screens: Settings, Connected apps, Agents and tools, Setup guide, login.
 | Multi-location | View jobs and techs across shops [S20][S28] | Missing | To build |
 | Setup guide | Not researched | Exists. Three steps | Exists |
 | Help, privacy, terms | Not researched | Exists | Exists |
-| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 1,937 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 1,945 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 
 ## 20. Built-in browser
 
@@ -556,7 +556,7 @@ Screens: status link, signing page, inspection page, booking page, unsubscribe p
 
 | Capability | What the best do | Alpha today | Status |
 | --- | --- | --- | --- |
-| "Where is my car" status link | Automatic status messages [S19] | Partial, and not usable yet. Built in code: the public data route `/api/status?token=` (shop name and phone, the car by year, make and model, a plain status, promised time, an optional note, a link to a sent inspection; never ids, plate, VIN or prices), the staff route `/api/jobflow` that makes or cancels the token, and the wording rules. Missing: the customer page that shows it (there is no `/status` page in the app), any button that makes or texts the link, and the table, which is in the unapplied file 051 | To build |
+| "Where is my car" status link | Automatic status messages [S19] | Built in code, blocked on the database update. The public data route `/api/status?token=` (shop name and phone, the car by year, make and model, a plain status, promised time, an optional note, a link to a sent inspection; never ids, plate, VIN or prices), the staff route `/api/jobflow` that makes or cancels the token, the wording rules, the customer page at `/status/<link>` (status, four steps, parts, expected time, a note from the shop, See your inspection, Call the shop; refreshes itself; a bad link says so with no retry), and a Status link section on the job sheet (make, copy, Write the text, which opens the text composer so the shop reads it before it goes, and Turn off with a confirm). The page was previewed with sample data at phone and desktop width; no real link has been made because the table is in the unapplied file 051 (until then the job sheet says links need a database update) | Blocked |
 | Approve and sign an estimate or invoice | Click or signature with a saved record [S1] | Exists in code. Request signature in Documents makes a link (valid 30 days); the signing page `/sign/[token]` shows the document and saves the signer's name, a drawn signature and the time to the live `signatures` table, and it is let through the sign-in wall. The signed-record and document-history tables in the unapplied file 046 are not needed for signing. No automated test found for the signing page; not tried on a live link | Exists |
 | Inspection page with approve or skip per finding | [S27] | Exists in code, checked by tests. `/inspection/[token]` is let through the sign-in wall; random token, only the fields the customer needs, rate limited, photos and clips by short-lived links | Exists |
 | Book online | Booking widget [S10] | Exists in code, checked by tests. Public page `/book/[slug]` and the `/api/book` routes (shop info, open slots, request, calendar feed) are let through the sign-in wall; database tables applied 2026-10-15; not yet checked on the live app | Exists |
@@ -640,7 +640,7 @@ Why this section: the owner asked about many ways to text (Google Messages for w
 | Phone push | Mobile push [S29] | Missing. The service worker has no push handling, and the only alerts are on screen while the app is open (see section 26) | To build |
 | Security headers | Not researched | Partial. The request middleware sets frame, no-sniff, referrer, strict transport and a permissions policy that allows the camera and microphone for the app and refuses location for every page (which also blocks the clock-in location check; see section 6). A few routes (the older web view, downloads, pictures) set their own strict content policy. There is no site-wide Content-Security-Policy | To build |
 | Error reporting and uptime alerts | Not researched | Missing. No error or uptime service is installed; only the platform's logs and the audit-log repair in the daily job | To build |
-| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 1,937 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 1,945 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 | Backups and restore drill | Not researched | Not verified. Relies on the database host's backups | To build |
 | Keys rotated | Not applicable | Unverified (see Blocked on the owner) | Blocked |
 
@@ -747,7 +747,7 @@ Rough size is my estimate (S is days, M is a couple of weeks, L is longer). "Own
 | 37 | Self-serve sign up, trial and billing; owner console | Section 29 | L | Yes |
 | 38 | Error reporting, uptime alerts, Content-Security-Policy, backup drill | Section 30 | M | |
 | 39 | Done in code (6bc49f7). Fix the customer unsubscribe link: `/api/outreach/unsubscribe` is now on the public paths in `web/src/middleware.ts`. Still to do: try a real link | Every marketing email links to it; before the fix a customer who was not signed in got "Unauthorized" and could not unsubscribe (section 24) | S | |
-| 40 | The customer status page for "where is my car", plus a button that makes and texts the link | The data route exists, the page and the button do not; needs 051 (section 24) | M | Yes |
+| 40 | Done in code (2026-10-15). The customer status page for "where is my car", plus a Status link section on the job sheet that makes the link and opens the text for review | A link can be made only after file 051 is applied (section 24) | M | Yes |
 | 41 | Give each built-but-not-reachable item its one missing step, most valuable first | See "Built but not reachable" at the end of this document (eleven items are left) | M | |
 
 ---
@@ -883,7 +883,7 @@ As of 2026-10-15, read again against the code after commits 6bc49f7, 0c2d827, 3c
 
 ## Now reachable since the audit
 
-These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (1,937 passing, the type check clean and lint with 0 errors).
+These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (1,945 passing, the type check clean and lint with 0 errors).
 
 - **Unsubscribe link in marketing emails** (section 24), 6bc49f7. `/api/outreach/unsubscribe` is on the list of addresses that skip sign-in in `web/src/middleware.ts`. Not tried with a real email link.
 - **Report by email on a schedule** (section 13), 6bc49f7. The daily job (`/api/cron`) calls `/api/reports/scheduled` for every shop. Needs `CRON_SECRET` on the host and the shop's email key; I did not check either.
@@ -892,6 +892,7 @@ These were on the earlier list of twenty-five. Each is now reached from a screen
 - **Everything about a customer in one feed** (section 7). Customers, open a customer, Everything with this customer. Not clicked through on the live app.
 - **Carrier delivery receipts for texts** (section 12) and **the clock-in location check** (section 6). The text webhook records delivery notices (needs Telnyx event settings and `TELNYX_PUBLIC_KEY`); the security header now lets the app itself ask for location. Neither was tried on the live app.
 - **Usual charges (fee presets) in Settings, and the canned-job editor for vehicle versions, keywords and extra fees** (section 1). Settings, Usual charges; Canned jobs, open a saved job, Edit versions, keywords and fees. Not clicked through on the live app.
+- **The customer status page and the Status link section on the job sheet** (section 24). Jobs, open a job, Status link; the customer opens `/status/<link>`, which skips sign-in in `web/src/middleware.ts`. A link can be made only after file 051 is applied; until then the section says so. Previewed with sample data, not with a real link.
 - **Shop wall (TV) and jump-to-technician chips** (section 5). Shop board, Shop wall and the settings button beside it (names on or off, how often it refreshes); the chips show above the columns on a phone. The wall only looks and cannot save anything. Checked on the live app with no cars open; the chips and the cars on the wall were not seen.
 - **Ask Alpha runs repair posts** (section 23), 0a62529. The `posts` tool in `web/src/app/(app)/ai/page.tsx` and `web/src/lib/ai/posts-tools.ts`. Needs 060 before anything works.
 
@@ -901,7 +902,7 @@ These were on the earlier list of twenty-five. Each is now reached from a screen
 2. **Purchase orders, receiving, returns and cores** (section 15). Step: a screen that calls `/api/inventory`. Needs 057.
 3. **The customer's answer, good-through date and signed record** (section 1). Step: show the approval panel (`components/documents/ApprovalPanel.tsx`, imported by no screen) on the document screen. Needs 046.
 4. **Send a document with a preview and a customer link** (section 1). Step: show the send sheet (`components/documents/SendSheet.tsx`, imported by no screen) and make `/api/send-document` honor the preview and make the link. Needs 046.
-5. **Parts status and labels on the shop board** (section 5). Step: a control on the board card that sets them (and the customer status link, section 24). Needs 051.
+5. **Parts status and labels on the shop board** (section 5). Step: a control on the board card that sets them. (The customer status link now has its own section on the job sheet, section 24.) Needs 051.
 6. **Good, better, best options** (section 1). Step: show the sheet (`components/documents/OptionsSheet.tsx`, imported by no screen) on the document screen; the signing page must let the customer pick, which needs the answer code in `lib/doc-respond.ts` and 046.
 7. **Duplicate merge for customers** (section 7; status is Blocked because about 20 records need Aaron's yes). Step: not built, on purpose. A screen that shows a pair and calls the merge in `lib/customers/merge.ts`, built only after Aaron says yes to that specific action. The read-only pair finder is already on the Customers screen.
 8. **Who changed a quantity** (section 15). Step: make the Inventory screen save counts through the history code. Needs 057.

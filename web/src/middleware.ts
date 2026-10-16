@@ -152,6 +152,7 @@ export async function middleware(req: NextRequest) {
     pathname.startsWith('/sign/') ||
     pathname.startsWith('/inspection/') ||
     pathname.startsWith('/book/') ||
+    pathname.startsWith('/status/') ||
     pathname.startsWith('/_next/') ||
     pathname === '/favicon.ico' ||
     // What a phone needs to install the app and to show "you are offline": no sign-in, nothing private.

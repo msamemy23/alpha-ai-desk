@@ -293,6 +293,32 @@ export interface PublicStatus {
   waiting: 'parts' | 'you' | null
 }
 
+export type StepState = 'done' | 'now' | 'next'
+
+/**
+ * The four steps down the customer's page, each marked as behind them, where the car is now, or still to come.
+ * A car that is ready or finished has every step behind it. The word always rides with the mark, so nothing depends on colour.
+ */
+export function stepStates(current: PublicStep): { key: PublicStep; word: string; state: StepState }[] {
+  // Ready for pickup is the last step: once the car is there, the whole list is behind the customer.
+  const at = current === 'done' || current === 'ready' ? PUBLIC_STEPS.length : Math.max(0, PUBLIC_STEPS.findIndex(s => s.key === current))
+  return PUBLIC_STEPS.map((s, i) => ({ key: s.key, word: s.word, state: i < at ? 'done' : i === at ? 'now' : 'next' }))
+}
+
+/** The lamp beside the headline: green when the car is ready or finished, amber when the shop is waiting on something, blue otherwise. */
+export function statusLampFor(step: PublicStep, waiting: 'parts' | 'you' | null): 'green' | 'amber' | 'blue' {
+  if (step === 'ready' || step === 'done') return 'green'
+  return waiting ? 'amber' : 'blue'
+}
+
+/** "2026-10-22" as "Oct 22". Anything that is not a date comes back empty. */
+export function shortYmd(ymd: unknown): string {
+  const t = typeof ymd === 'string' ? ymd.slice(0, 10) : ''
+  if (!YMD.test(t)) return ''
+  const m = Number(t.slice(5, 7)), d = Number(t.slice(8, 10))
+  return m >= 1 && m <= 12 && d >= 1 && d <= 31 ? shortDay(t) : ''
+}
+
 /** Maps the shop's own statuses to words a customer understands. Money and internal notes are never involved. */
 export function publicStatusOf(status: string, parts: PartsStatus = 'none'): PublicStatus {
   switch (status) {

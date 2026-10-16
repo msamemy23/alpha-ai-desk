@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic'
  * The extras on a repair order that the shop board shows: parts status, labels, hours, the promised time, a note for the
  * customer, and the customer's status link. Kept in their own table so a repair order itself is never touched.
  *
- *   GET                                 every extra for the shop's open and recent cars
+ *   GET [?job_id=]                      every extra for the shop's open and recent cars, or just one car's
  *   PATCH  { job_id, base_version, patch }   change fields. base_version is the version you last saw; if somebody else
  *                                       saved since, nothing is written and the newest copy comes back (409)
  *   POST   { action: 'link' | 'revoke' | 'ready-text', job_id }
@@ -34,10 +34,14 @@ async function current(shopId: string, jobId: string) {
   return getServiceClient().from('job_flow').select(COLS).eq('job_id', jobId).eq('shop_id', shopId).maybeSingle()
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const auth = await getAuthedShop()
   if (!auth) return unauthorized()
-  const { data, error } = await getServiceClient().from('job_flow').select(COLS).eq('shop_id', auth.shopId).limit(3000)
+  // One car's extras, for a job sheet that only needs its own. Without job_id, every car's (the shop board).
+  const one = req.nextUrl.searchParams.get('job_id')
+  if (one !== null && !ID.test(one)) return reply({ ok: false, error: 'Missing car' }, 400)
+  const base = getServiceClient().from('job_flow').select(COLS).eq('shop_id', auth.shopId)
+  const { data, error } = await (one ? base.eq('job_id', one) : base.limit(3000))
   if (error) {
     if (missingSchema(error)) return reply({ ok: true, available: false, flows: [] })
     return reply({ ok: false, error: 'The board details could not be loaded' }, 500)
