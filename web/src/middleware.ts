@@ -38,6 +38,9 @@ const PUBLIC_API_PREFIXES = [
   // Each route checks its own slug or long random token and limits how often one visitor can ask.
   '/api/book',
   '/api/status',
+  // The Unsubscribe link at the bottom of every marketing email. A signed link, so a customer who is not signed in can still opt out.
+  // Only this one route: the other /api/outreach routes stay behind sign-in.
+  '/api/outreach/unsubscribe',
 ]
 
 function hasInternalApiSecret(req: NextRequest) {

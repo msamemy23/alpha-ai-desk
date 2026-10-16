@@ -107,6 +107,10 @@ export async function GET(req: NextRequest) {
   // turned Auto on, sends them inside the weekly limit. A shop with posts Off costs one quick read and nothing else.
   results.repair_posts = await callForEachShop('/api/growth/post-queue', { action: 'run_due' })
 
+  // Report emails the owner scheduled under Reports (daily, weekly or monthly). Each report and period is claimed once before it is
+  // sent, so a repeat run sends nothing twice. A shop with no scheduled reports costs one quick read.
+  results.scheduled_reports = await callForEachShop('/api/reports/scheduled')
+
   const ok = Object.values(results).every((result) => (result as { ok?: boolean })?.ok !== false)
   return NextResponse.json({ success: ok, ran_at: new Date().toISOString(), results }, { status: ok ? 200 : 502 })
 }

@@ -84,3 +84,14 @@ test('Settings has an Install on your phone section', () => {
   assert.match(settings, /id: 'install', label: 'Install on your phone'/)
   assert.match(settings, /\{s\.id === 'install' && <InstallSection \/>\}/)
 })
+
+test('the Unsubscribe link in a marketing email works for a customer who is not signed in, and opens nothing else', () => {
+  assert.match(middleware, /^\s*'\/api\/outreach\/unsubscribe',$/m)
+  assert.doesNotMatch(middleware, /'\/api\/outreach'/)
+  assert.doesNotMatch(middleware, /'\/api\/outreach\/'/)
+  const route = read('../src/app/api/outreach/unsubscribe/route.ts')
+  // A mail scanner opening the link must not unsubscribe anyone: only POST does the work, and the signed link names who.
+  assert.match(route, /export async function GET[\s\S]*?return page\(\{ state: 'confirm'/)
+  assert.doesNotMatch(route.slice(route.indexOf('export async function GET'), route.indexOf('export async function POST')), /recordEmailOptOut/)
+  assert.match(route, /verifyUnsubscribeToken\(token\)/)
+})
