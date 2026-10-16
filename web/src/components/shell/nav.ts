@@ -12,7 +12,7 @@ export interface NavItem {
 export const PRIMARY: NavItem[] = [
   { href: '/dashboard', label: 'Today', icon: 'today', also: ['/briefing'] },
   { href: '/customers', label: 'Customers', icon: 'customers', also: ['/vehicles'] },
-  { href: '/work', label: 'Work', icon: 'work', also: ['/estimates', '/invoices', '/receipts', '/jobs', '/shopboard', '/dvi', '/canned-jobs', '/insurance'] },
+  { href: '/work', label: 'Work', icon: 'work', also: ['/estimates', '/invoices', '/receipts', '/jobs', '/shopboard', '/my-cars', '/dvi', '/canned-jobs', '/insurance'] },
   { href: '/messages', label: 'Inbox', icon: 'inbox', also: ['/voicemail'] },
   { href: '/ai', label: 'Ask Alpha', icon: 'alpha' },
 ]
@@ -25,6 +25,7 @@ export const MORE_GROUPS: NavGroup[] = [
     items: [
       { href: '/appointments', label: 'Schedule', icon: 'calendar' },
       { href: '/shopboard', label: 'Shop board', icon: 'board' },
+      { href: '/my-cars', label: 'My cars', icon: 'user' },
       { href: '/jobs', label: 'Jobs', icon: 'wrench' },
       { href: '/dvi', label: 'Inspections', icon: 'inspect' },
       { href: '/vehicles', label: 'Vehicles', icon: 'vehicle' },

@@ -46,6 +46,7 @@ const PAGE_WORDS: Record<string, string[]> = {
   '/ai': ['assistant', 'ai', 'chat', 'ask'],
   '/appointments': ['calendar', 'bookings', 'schedule', 'appointments'],
   '/shopboard': ['board', 'technicians', 'wall', 'tv'],
+  '/my-cars': ['my work', 'my jobs', 'my list', 'technician', 'tech', 'clock in'],
   '/jobs': ['repair orders', 'ro', 'work in progress'],
   '/dvi': ['inspection', 'inspections', 'dvi', 'multi-point'],
   '/vehicles': ['cars', 'vin'],
