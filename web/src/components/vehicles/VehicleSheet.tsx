@@ -2,6 +2,7 @@
 import Link from 'next/link'
 import Icon from '@/components/Icon'
 import Sheet from '@/components/Sheet'
+import CarInspections from '@/components/vehicles/CarInspections'
 import { statusLamp, statusWord } from '@/components/jobs/types'
 import { fmtDay } from '@/components/customers/types'
 import { carName } from '@/lib/list-logic'
@@ -74,6 +75,8 @@ export default function VehicleSheet({ vehicle, onClose }: { vehicle: Vehicle | 
               </ul>
             )}
           </section>
+
+          <CarInspections vehicle={v} />
         </div>
       )}
     </Sheet>
