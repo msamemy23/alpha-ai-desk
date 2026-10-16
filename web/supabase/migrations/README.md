@@ -86,7 +86,7 @@ below instead. The files are written so that running them again is safe.
 | 058_browser_workspace | Tables `browser_settings`, `browser_site_rules`, `browser_bookmarks` | The Browser screen's settings, allow and block lists and saved sites |
 | 059_browser_approvals_and_hosts | Tables `browser_approvals`, `browser_hosts`, `browser_host_commands` | Browser approvals, downloads, paired computers |
 | 060_repair_posts | Tables `post_settings`, `job_post_info`, `post_queue` | Repair posts and Ask Alpha's `posts` tool |
-| 061_deleted_calls | Table `deleted_calls` (shop, call id, who deleted it, when) | Delete a call: the call log copies calls in again each time Messages opens, so a deleted call's id is kept here and skipped. One new table, server-only, nothing existing changed. STATUS: written 2026-10-16, not yet applied to production |
+| 061_deleted_calls | Table `deleted_calls` (shop, call id, who deleted it, when) | Delete a call: the call log copies calls in again each time Messages opens, so a deleted call's id is kept here and skipped. One new table, server-only, nothing existing changed. STATUS: applied to production 2026-10-16 (checked afterwards: table exists and is empty, row level security on, no policies, access for the server only, customer, document, payment and message counts unchanged at 169, 185, 147, 322) |
 
 Checked after running them (2026-10-16): all 13 tables and 10 functions exist, row level security is on for every
 table, the security advisors show no errors (the notices are tables with no browser access, the same as the other

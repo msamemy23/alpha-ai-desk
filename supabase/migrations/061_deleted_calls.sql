@@ -7,7 +7,7 @@
 -- One new table, reached only through the server (/api/delete-call and the call sync): row level security is on, no policies exist, every grant is
 -- revoked from everyone except the service role, and every query the app runs is filtered by shop_id. It holds no names, numbers or transcripts,
 -- only the call's id, who deleted it and when. Nothing existing is changed: no table, column or policy is touched.
--- Until this runs, the Delete button answers "needs a database update" and deletes nothing. Safe to run more than once. Not applied to production yet.
+-- Until this runs, the Delete button answers "needs a database update" and deletes nothing. Safe to run more than once. Applied to production on 2026-10-16.
 
 create table if not exists public.deleted_calls (
   shop_id uuid not null references public.shop_profiles(id) on delete cascade,
