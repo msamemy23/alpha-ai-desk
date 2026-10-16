@@ -9,13 +9,26 @@ import { EmptyBlock, ErrorCard, RowsSkeleton, SearchField, sentenceCase } from '
 import ConfirmSheet from '@/components/forms/ConfirmSheet'
 import FlashNotice from '@/components/forms/FlashNotice'
 import type { Flash } from '@/components/forms/FlashNotice'
+import HistorySheet from '@/components/inventory/HistorySheet'
+import OrderSheets from '@/components/inventory/OrderSheets'
+import type { OrderCommand } from '@/components/inventory/OrderSheets'
+import OrdersPanel from '@/components/inventory/OrdersPanel'
 import PartFormFields from '@/components/inventory/PartFormFields'
+import ReorderPanel, { buildSuggestions } from '@/components/inventory/ReorderPanel'
+import ReturnsPanel from '@/components/inventory/ReturnsPanel'
+import SectionTabs from '@/components/inventory/SectionTabs'
+import VendorsPanel from '@/components/inventory/VendorsPanel'
+import { useStock } from '@/components/inventory/useStock'
 import { PartList, PartTable } from '@/components/inventory/PartRows'
 import { CATEGORIES, emptyForm, toForm, toRow, validate } from '@/components/inventory/types'
 import type { Part, PartErrors, PartForm } from '@/components/inventory/types'
+import { postJson } from '@/lib/client-api'
+import type { StockPart } from '@/lib/inventory-logic'
 
 type Tab = 'all' | 'low' | 'on-order'
-type Panel = null | 'form' | 'delete' | 'discard'
+type Panel = null | 'form' | 'delete' | 'discard' | 'history'
+type View = 'parts' | 'reorder' | 'orders' | 'vendors' | 'returns'
+const COUNT_FIELDS = ['qty_on_hand', 'qty_on_order', 'qty_reorder'] as const
 
 const NO_SHOP = 'We could not find your shop. Try refreshing, or sign out and back in.'
 
@@ -40,6 +53,13 @@ export default function InventoryPage() {
   const [busy, setBusy] = useState(false)
   const [deleteError, setDeleteError] = useState('')
   const afterDiscard = useRef<() => void>(() => {})
+
+  // Vendors, orders, returns and the reorder list come from /api/inventory. The parts themselves are loaded below.
+  const stock = useStock()
+  const [view, setView] = useState<View>('parts')
+  const [orderCmd, setOrderCmd] = useState<OrderCommand | null>(null)
+  const [vendorFocus, setVendorFocus] = useState<string | null>(null)
+  const [countReason, setCountReason] = useState('count')
 
   // Count changes are saved in the background. These keep rapid taps in order and know what to go back to if a save fails.
   const partsRef = useRef<Part[]>([])
@@ -85,8 +105,8 @@ export default function InventoryPage() {
     if (dirty) { afterDiscard.current = closeForm; setPanel('discard'); return }
     closeForm()
   }
-  const openNew = () => { const f = emptyForm(); setForm(f); setBaseline(f); setErrors({}); setFormError(''); setEditing('new'); setPanel('form') }
-  const openEdit = (p: Part) => { const f = toForm(p); setForm(f); setBaseline(f); setErrors({}); setFormError(''); setEditing(p.id); setPanel('form') }
+  const openNew = () => { const f = emptyForm(); setForm(f); setBaseline(f); setErrors({}); setFormError(''); setCountReason('count'); setEditing('new'); setPanel('form') }
+  const openEdit = (p: Part) => { const f = toForm(p); setForm(f); setBaseline(f); setErrors({}); setFormError(''); setCountReason('count'); setEditing(p.id); setPanel('form') }
 
   /** A box's message goes away as soon as what is typed in it is fine. */
   const shownErrors = useMemo<PartErrors>(() => {
@@ -116,8 +136,21 @@ export default function InventoryPage() {
         const r = await supabase.from('inventory').insert({ ...row, shop_id: shopId, created_at: now, updated_at: now })
         if (r.error) throw new Error(r.error.message)
       } else if (editing) {
-        const r = await supabase.from('inventory').update({ ...row, updated_at: now }).eq('id', editing).eq('shop_id', shopId)
+        // The counts go through the server so the change is written to the part's history with who made it and why. Everything else
+        // is saved as before.
+        const saved = original
+        const changed = saved ? COUNT_FIELDS.filter(k => (row[k] ?? 0) !== (saved[k] ?? 0)) : []
+        const { qty_on_hand: _h, qty_on_order: _o, qty_reorder: _r, ...details } = row
+        void _h; void _o; void _r
+        const r = await supabase.from('inventory').update({ ...(saved ? details : row), updated_at: now }).eq('id', editing).eq('shop_id', shopId)
         if (r.error) throw new Error(r.error.message)
+        for (const k of changed) {
+          const a = await postJson('/api/inventory', { action: 'adjust', adjust: { part_id: editing, field: k, set: row[k], reason: k === 'qty_on_hand' ? countReason : k === 'qty_on_order' ? 'correction' : '' } })
+          if (!a.ok) {
+            void load()
+            throw new Error(`Everything except the ${k === 'qty_on_hand' ? 'on hand' : k === 'qty_on_order' ? 'on order' : 'reorder'} number was saved. ${a.message}`)
+          }
+        }
       }
       closeForm()
       setFlash({ kind: 'success', text: `${row.name} was ${editing === 'new' ? 'added to inventory' : 'saved'}.` })
@@ -161,15 +194,20 @@ export default function InventoryPage() {
   const flush = async (id: string) => {
     inflight.current.add(id)
     try {
-      const shopId = await getShopId()
-      if (!shopId) throw new Error(NO_SHOP)
       for (;;) {
         const n = wantedCount.current.get(id)
         if (n === undefined) break
-        const r = await supabase.from('inventory').update({ qty_on_hand: n, updated_at: new Date().toISOString() }).eq('id', id).eq('shop_id', shopId)
-        if (r.error) throw new Error(r.error.message)
-        savedCount.current.set(id, n)
-        if (wantedCount.current.get(id) === n) break
+        const base = savedCount.current.get(id) ?? n
+        const delta = n - base
+        if (delta === 0) break
+        // One step on the server: it changes the count by the amount tapped and writes who did it, so two people tapping at once add up.
+        const r = await postJson<{ old: number | null; new: number }>('/api/inventory', { action: 'adjust', adjust: { part_id: id, field: 'qty_on_hand', delta } })
+        if (!r.ok) throw new Error(r.message)
+        savedCount.current.set(id, r.data.new)
+        if (wantedCount.current.get(id) === n) {
+          if (r.data.new !== n) setParts(ps => ps.map(x => (x.id === id ? { ...x, qty_on_hand: r.data.new } : x)))
+          break
+        }
       }
       wantedCount.current.delete(id); savedCount.current.delete(id)
     } catch (e) {
@@ -220,6 +258,15 @@ export default function InventoryPage() {
     return pn.length >= 3 ? parts.find(p => p.id !== editing && normPart(p.part_number) === pn) || null : null
   }, [parts, form.part_number, editing])
 
+  const ready = stock.state.status === 'ready' ? stock.state.data : null
+  const suggestions = useMemo(() => buildSuggestions(ready, parts as StockPart[]), [ready, parts])
+  const sectionCounts = useMemo(() => (ready ? {
+    orders: ready.orders.value.filter(o => o.status === 'sent' || o.status === 'partial').length,
+    vendors: ready.vendors.value.filter(v => v.active).length,
+    returns: ready.returns.value.filter(r => r.status === 'open' || r.status === 'shipped').length,
+  } : null), [ready])
+  const openVendor = (id: string) => { setOrderCmd(null); setVendorFocus(id); setView('vendors') }
+
   const firstLoad = loading && parts.length === 0 && !loadError
   const filtering = tab !== 'all' || catFilter !== 'All' || words.length > 0
   const clearFilters = () => { setTab('all'); setCatFilter('All'); setSearch('') }
@@ -238,12 +285,41 @@ export default function InventoryPage() {
           <h1 className="page-title">Inventory</h1>
           <p className="page-subtitle">What is on your shelves and what to reorder.</p>
         </div>
-        <button type="button" className="btn btn-primary w-full sm:w-auto" onClick={openNew} disabled={firstLoad}><Icon name="plus" className="h-5 w-5" />Add part</button>
+        {view === 'parts' && <button type="button" className="btn btn-primary w-full sm:w-auto" onClick={openNew} disabled={firstLoad}><Icon name="plus" className="h-5 w-5" />Add part</button>}
       </header>
 
       {loadError && <ErrorCard className="mb-5 max-w-xl" title="Inventory could not load" message={parts.length > 0 ? `${loadError} What you see may be out of date.` : loadError} onRetry={() => void load()} busy={loading} />}
       {flash && <FlashNotice flash={flash} onDismiss={() => setFlash(null)} />}
 
+      <SectionTabs
+        label="Inventory sections" value={view} onChange={setView}
+        tabs={[
+          { value: 'parts', label: 'Parts', count: parts.length || undefined },
+          { value: 'reorder', label: 'Reorder', count: ready ? suggestions.length : undefined },
+          { value: 'orders', label: 'Orders', count: sectionCounts?.orders },
+          { value: 'vendors', label: 'Vendors', count: sectionCounts?.vendors },
+          { value: 'returns', label: 'Returns', count: sectionCounts?.returns },
+        ]}
+      />
+
+      {view !== 'parts' && (
+        stock.state.status === 'loading' ? (
+          <RowsSkeleton rows={5} label="Loading" />
+        ) : stock.state.status === 'error' ? (
+          <ErrorCard className="max-w-xl" title="This section could not load" message={stock.state.message} onRetry={() => void stock.reload()} />
+        ) : ready && (
+          view === 'reorder' ? <ReorderPanel stock={ready} suggestions={suggestions} onCommand={setOrderCmd} reload={() => void stock.reload()} />
+          : view === 'orders' ? <OrdersPanel stock={ready} onCommand={setOrderCmd} reload={() => void stock.reload()} />
+          : view === 'vendors' ? <VendorsPanel stock={ready} parts={parts as StockPart[]} act={stock.act} flash={setFlash} reload={() => void stock.reload()} focusId={vendorFocus} onFocused={() => setVendorFocus(null)} />
+          : <ReturnsPanel stock={ready} parts={parts as StockPart[]} act={stock.act} flash={setFlash} reload={() => void stock.reload()} />
+        )
+      )}
+
+      {ready && orderCmd && (
+        <OrderSheets key={orderCmd.nonce} command={orderCmd} stock={ready} parts={parts as StockPart[]} act={stock.act} flash={setFlash} onClose={() => setOrderCmd(null)} onOpenVendor={openVendor} />
+      )}
+
+      {view === 'parts' && (<>
       {!(loadError && parts.length === 0) && (firstLoad ? (
         <div className="skeleton mb-5 h-[11rem] sm:h-[5.25rem]" aria-hidden="true" />
       ) : parts.length > 0 && (
@@ -314,6 +390,8 @@ export default function InventoryPage() {
         </>
       )}
 
+      </>)}
+
       <Sheet open={panel === 'form'} onClose={requestClose} title={editing === 'new' ? 'Add part' : 'Edit part'} wide dirty={dirty}>
         <PartFormFields
           form={form}
@@ -327,8 +405,13 @@ export default function InventoryPage() {
           onSave={() => void save()}
           onCancel={requestClose}
           onDelete={editing && editing !== 'new' ? () => { setDeleteError(''); setPanel('delete') } : undefined}
+          countReason={countReason}
+          onCountReason={setCountReason}
+          onHistory={editing && editing !== 'new' ? () => setPanel('history') : undefined}
         />
       </Sheet>
+
+      {panel === 'history' && original && <HistorySheet partId={original.id} partName={original.name} onClose={() => setPanel('form')} />}
 
       <ConfirmSheet
         open={panel === 'delete'}

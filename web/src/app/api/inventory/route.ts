@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
     try { sold = { state: 'ok', lines: await loadSoldLines(db, shopId, todayKeyIn(facts.timezone, since)), error: '' } }
     catch (e) { console.error('[inventory] sold:', e instanceof Error ? e.message : e); sold = { state: 'error', lines: [], error: 'What you sold did not load, so usage and slow stock are not shown.' } }
   }
-  return jsonOk({ ...data, sold, shop: { name: facts.name, address: facts.address, phone: facts.phone, email: facts.email }, today: todayKeyIn(facts.timezone, new Date()), canBuy: canBuy(c.ctx.role) })
+  return jsonOk({ ...data, sold, shop: { name: facts.name, address: facts.address, phone: facts.phone, email: facts.email }, today: todayKeyIn(facts.timezone, new Date()), canBuy: canBuy(c.ctx.role), canAdjust: canAdjust(c.ctx.role) })
 }
 
 export async function POST(req: NextRequest) {

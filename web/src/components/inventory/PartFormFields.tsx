@@ -7,6 +7,7 @@ import { marginOf, parseCount, parseMoney, roundCents } from '@/lib/list-logic'
 import { Field, Section } from '@/components/forms/Field'
 import FormActions from '@/components/forms/FormActions'
 import FormError from '@/components/forms/FormError'
+import { ADJUST_REASONS } from '@/lib/inventory-logic'
 import { money } from './types'
 import type { Part, PartErrors, PartForm } from './types'
 
@@ -17,7 +18,7 @@ const lastOrdered = (v: string) => {
 
 /** Add or change one part. Every box is text, so typing "0.50" or clearing a box behaves the way it looks. */
 export default function PartFormFields({
-  form, setForm, errors, original, categories, duplicate, saving, error, onSave, onCancel, onDelete,
+  form, setForm, errors, original, categories, duplicate, saving, error, onSave, onCancel, onDelete, countReason, onCountReason, onHistory,
 }: {
   form: PartForm
   setForm: Dispatch<SetStateAction<PartForm>>
@@ -32,6 +33,11 @@ export default function PartFormFields({
   onSave: () => void
   onCancel: () => void
   onDelete?: () => void
+  /** Why the on-hand number was changed, written to the part's history. Asked only when it was changed. */
+  countReason: string
+  onCountReason: (reason: string) => void
+  /** Opens who changed this part's numbers. Only for a part that is already saved. */
+  onHistory?: () => void
 }) {
   const set = (k: keyof PartForm) => (e: { target: { value: string } }) => setForm(f => ({ ...f, [k]: e.target.value }))
   const inv = (k: keyof PartErrors) => (errors[k] ? { 'aria-invalid': true as const, 'aria-describedby': `inv-${k}-err` } : {})
@@ -44,7 +50,9 @@ export default function PartFormFields({
   const receive = () => {
     const have = parseCount(form.qty_on_hand) ?? 0
     setForm(f => ({ ...f, qty_on_hand: String(have + onOrder), qty_on_order: '0' }))
+    onCountReason('received')
   }
+  const countChanged = !!original && (parseCount(form.qty_on_hand) ?? 0) !== (original.qty_on_hand ?? 0)
 
   return (
     <form className="space-y-5" onSubmit={e => { e.preventDefault(); onSave() }} noValidate>
@@ -109,6 +117,13 @@ export default function PartFormFields({
           </Field>
         </div>
         <p className="form-hint !text-[0.875rem] !text-text-secondary">The part shows as low stock when the amount on hand drops to the reorder number or below. Leave it at 0 to skip the warning.</p>
+        {countChanged && (
+          <Field id="inv-reason" label={`Why did the count change from ${original?.qty_on_hand ?? 0} to ${parseCount(form.qty_on_hand) ?? 0}?`} hint="This goes in the part's history with your name." className="mt-3">
+            <select id="inv-reason" className="form-select" value={countReason} onChange={e => onCountReason(e.target.value)}>
+              {ADJUST_REASONS.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+            </select>
+          </Field>
+        )}
         {onOrder > 0 && (
           <button type="button" className="btn btn-secondary mt-3" onClick={receive}>
             <Icon name="box" className="h-5 w-5" />Order arrived: add <span className="num">{onOrder}</span> to on hand
@@ -136,6 +151,7 @@ export default function PartFormFields({
       <FormActions>
         <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Save part'}</button>
         <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={saving}>Cancel</button>
+        {onHistory && <button type="button" className="btn btn-ghost" onClick={onHistory} disabled={saving}><Icon name="clock" className="h-5 w-5" />Who changed the numbers</button>}
         {onDelete && <button type="button" className="btn btn-danger ml-auto" onClick={onDelete} disabled={saving}><Icon name="trash" className="h-5 w-5" />Delete</button>}
       </FormActions>
     </form>
