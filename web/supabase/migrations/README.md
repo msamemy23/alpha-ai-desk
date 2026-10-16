@@ -1,4 +1,4 @@
-# Migration status (checked 2026-10-15, updated after applying twenty files)
+# Migration status (checked 2026-10-16, updated after applying all twenty-six files)
 
 The live Supabase project ("alpha desk") is the source of truth for what is applied.
 This file records how the repository relates to it.
@@ -71,26 +71,30 @@ Production records them under the version below (the time they were applied), no
 
 (`042` was never used.)
 
-## In the repo but NOT in production (six files, waiting for the owner)
+## Applied to production on 2026-10-16 (the owner ran them in the Supabase SQL editor)
 
-046, 051, 057, 058 and 059 were each sent for applying and the request was cancelled; 060 was written afterwards and
-has not been sent. They stay unapplied until the owner says to apply them. The app handles their absence: the screens that need them say a database update is needed instead of
-failing, and everything else works as before.
+The connector cancelled the apply of these six files each time, so the owner pasted one combined file (the six files, in
+this order, unchanged) into the Supabase SQL editor and ran it. **Because the SQL editor does not write to
+`supabase_migrations.schema_migrations`, the migration history does not list them.** Check the tables and functions
+below instead. The files are written so that running them again is safe.
 
-| File (top-level `supabase/migrations`) | What it adds | What waits on it |
+| File (top-level `supabase/migrations`) | What it adds | What uses it |
 | --- | --- | --- |
-| 046_document_links_and_history | Customer links, signed approvals, document change history | Send-with-preview, customer answers, good/better/best, the declined-work list, change-history events |
-| 051_job_flow | Parts status, labels, estimated hours, promised time and the customer status link on each car | The customer status page (`/status/<link>`) and the Status link section on a job, parts status and labels on the shop board |
-| 057_parts_functions | Purchase-order, receiving, returns and quantity-history functions | Purchase orders and returns, quantity history |
-| 058_browser_workspace | The built-in browser's saved workspace | The Browser screen's saved tabs and notes |
-| 059_browser_approvals_and_hosts | The built-in browser's approvals and allowed sites | Browser approvals |
-| 060_repair_posts | Repair-post queue, photos and settings | Automatic repair posts and Ask Alpha's `posts` tool |
+| 046_document_links_and_history | Tables `document_links`, `document_approvals`, `document_events`; triggers that keep signed records and history from being changed | Send-with-preview, customer answers, good/better/best, the declined-work list, change-history events |
+| 051_job_flow | Table `job_flow` (parts status, labels, estimated hours, promised time, customer status link) | The customer status page (`/status/<link>`) and the Status link section on a job, parts status and labels on the shop board |
+| 057_parts_functions | Functions `inventory_apply_delta`, `inventory_set_prices`, `next_po_number`, `po_save_draft`, `po_mark_sent`, `po_cancel`, `receive_po_lines` | Purchase orders and returns, quantity history |
+| 058_browser_workspace | Tables `browser_settings`, `browser_site_rules`, `browser_bookmarks` | The Browser screen's settings, allow and block lists and saved sites |
+| 059_browser_approvals_and_hosts | Tables `browser_approvals`, `browser_hosts`, `browser_host_commands` | Browser approvals, downloads, paired computers |
+| 060_repair_posts | Tables `post_settings`, `job_post_info`, `post_queue` | Repair posts and Ask Alpha's `posts` tool |
+
+Checked after running them (2026-10-16): all 13 tables and 10 functions exist, row level security is on for every
+table, the security advisors show no errors (the notices are tables with no browser access, the same as the other
+server-only tables), and the customer, document, payment and message counts did not change (169, 185, 147, 322).
 
 Note on the number 059: the top-level `059_browser_approvals_and_hosts` is a different change from
 `web/supabase/migrations/059_durable_operation_constraints` (see above, already live).
 
-Before applying any of them: take the baseline counts (customers, documents, payments, messages, signatures and the
-paid-invoice total), apply one file, check the counts again, then run the Supabase advisors. Stop at the first problem.
+
 
 ## Other things to know
 

@@ -423,14 +423,14 @@ the type check is clean, lint has 0 errors and 25 warnings (the baseline). The f
 `web/docs/PRODUCT-STANDARD.md`; the database files are tracked in `web/supabase/migrations/README.md`.
 
 ### Shipped
-- Ask Alpha can run repair posts (review card first; nothing posts without approval). Needs migration 060.
+- Ask Alpha can run repair posts (review card first; nothing posts without approval). Migration 060 is applied (2026-10-16); not yet tried live.
 - Usual charges (fee presets) in Settings and the canned-job editor for vehicle versions, keywords and extra fees.
 - Everything about one customer in one feed (texts, calls, notes, documents, payments), with the per-kind "could not load" notes.
 - Carrier delivery receipts for texts, and the clock-in location check.
 - Payroll on Reports now follows the shop's own pay-week and overtime rules, the same as Team.
 - Parts price prompt no longer tells the model every store is in Houston.
 - Shop wall: a full-screen, look-only TV view of every open car by technician; customer names off unless the shop turns them on; jump-to-technician chips on phones.
-- Customer "where is my car" page at `/status/<link>` and a Status link section on each job (make, copy, write the text for review, turn off). Needs migration 051 before a link can be made.
+- Customer "where is my car" page at `/status/<link>` and a Status link section on each job (make, copy, write the text for review, turn off). Migration 051 is applied (2026-10-16), so a link can now be made; none has been yet.
 - Command menu: Ctrl or Cmd+K (also `/` and `?`) jumps to any page, starts a job, estimate, invoice, inspection, text or appointment, switches light and dark mode, and still searches customers and paperwork. G then a letter jumps to a main page.
 - Pop-up sheets keep focus in a field that already took it (typing works at once) and return focus to the button that opened them.
 - Error screens: a broken page now shows a plain screen with Try again and a way back (signed-in pages keep the menu), there is a not-found page and a last-resort screen, and each break writes one cleaned line (no personal details) to the server log. Nobody is alerted yet and there is no uptime check.
@@ -440,10 +440,10 @@ the type check is clean, lint has 0 errors and 25 warnings (the baseline). The f
 - Inbox, Calls: a Phone time this month strip (minutes on the phone, calls in, out and missed, and last month), from the call records already loaded. It is call time and not a bill, says when assistant calls have no length, and says "At least" when older calls could be missing.
 
 ### Database
-Twenty files (034 to 056) were applied on 2026-10-15. Six are still waiting for Aaron's yes: 046, 051, 057, 058, 059, 060.
+Twenty files (034 to 056) were applied on 2026-10-15. The last six (046, 051, 057, 058, 059, 060) were applied on 2026-10-16: the connector cancelled the apply each time, so Aaron pasted one combined file into the Supabase SQL editor and ran it. Checked afterwards: 13 new tables and 10 new functions exist with row security on, the advisors show no errors, and the customer, document, payment and message counts did not change. The migration history does not list them (the SQL editor does not write to it). The screens that use them have not yet been tried live.
 
 ### Rules held all session
 No change to Aaron's AI engine, keys or settings. No customer, invoice, estimate or payment was changed (counts checked: 169 customers, 185 documents, 146 payments, 322 messages, 38 signatures). Nothing was texted, emailed or posted on his behalf. No duplicate or test customers were merged or deleted.
 
 ### Still needs Aaron
-Applying the six database files; merging or deleting the roughly twenty duplicate and test customers (his specific yes); Telnyx carrier registration and public key; social, ad, QuickBooks and card-processor accounts; labor guide and parts catalog accounts; the scheduler for the daily job; legal review of wording; key rotation.
+Merging or deleting the roughly twenty duplicate and test customers (his specific yes); Telnyx carrier registration and public key; social, ad, QuickBooks and card-processor accounts; labor guide and parts catalog accounts; the scheduler for the daily job; legal review of wording; key rotation.
