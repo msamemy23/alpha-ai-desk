@@ -12,7 +12,7 @@ import Icon from '@/components/Icon'
 import Sheet from '@/components/Sheet'
 import SearchPanel from '@/components/shell/SearchPanel'
 import { ALL_ITEMS, PRIMARY, MORE_GROUPS, activeHref, matches } from '@/components/shell/nav'
-import { buildCommands, chordStep, isEditableTarget, isOpenKey } from '@/components/shell/commands'
+import { RECENT_KEY, buildCommands, chordStep, isEditableTarget, isOpenKey, pageOf, parseRecent, pushRecent } from '@/components/shell/commands'
 
 interface Notice { id: string; kind: 'text' | 'call'; title: string; body: string; when: string; href: string }
 interface ShopProfile { id?: string; shop_name: string; phone: string; address: string; city_state_zip: string }
@@ -106,6 +106,16 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const closeMenu = useCallback(() => setMenuOpen(false), [])
   const closeSearch = useCallback(() => setSearchOpen(false), [])
   const commands = useMemo(() => buildCommands(ALL_ITEMS, dark), [dark])
+  // The last few pages opened, kept in this browser only (addresses of pages, nothing else), for the top of the command menu.
+  const [recent, setRecent] = useState<string[]>([])
+  useEffect(() => {
+    let list: string[] = []
+    try { list = parseRecent(localStorage.getItem(RECENT_KEY)) } catch { /* private window: carry on without it */ }
+    const next = pushRecent(list, pathname, ALL_ITEMS)
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(next)) } catch { /* nothing to save to */ }
+    setRecent(next)
+  }, [pathname])
+  const currentPage = useMemo(() => pageOf(pathname, ALL_ITEMS), [pathname])
   // Ctrl or Cmd+K opens the command menu (and closes it again), and so do "/" and "?" when you are not typing.
   // "G then a letter" jumps to a main page.
   // Neither fires while a dialog other than the menu itself is open, and the letters never fire while typing.
@@ -276,7 +286,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       </Sheet>
 
       <Sheet open={searchOpen} onClose={closeSearch} title="Search" hideTitle>
-        <SearchPanel autoFocus onNavigate={closeSearch} commands={commands} onTheme={toggleTheme} />
+        <SearchPanel autoFocus onNavigate={closeSearch} commands={commands} onTheme={toggleTheme} recent={recent} current={currentPage} />
       </Sheet>
 
       <Sheet open={noticeOpen} onClose={closeNotices} title="Alerts">

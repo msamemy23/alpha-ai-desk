@@ -418,7 +418,7 @@ without it the cache is per-warm-instance only (still works, just colder).
 
 ## Session: October 15, 2026 (Claude, working as the shop's CEO for Aaron)
 
-Everything below is on `main` and live on alpha-ai-desk.vercel.app. Checks at the end of the session: 1,998 tests pass,
+Everything below is on `main` and live on alpha-ai-desk.vercel.app. Checks at the end of the session: 2,005 tests pass,
 the type check is clean, lint has 0 errors and 25 warnings (the baseline). The full audit, row by row, is in
 `web/docs/PRODUCT-STANDARD.md`; the database files are tracked in `web/supabase/migrations/README.md`.
 
@@ -435,6 +435,7 @@ the type check is clean, lint has 0 errors and 25 warnings (the baseline). The f
 - Pop-up sheets keep focus in a field that already took it (typing works at once) and return focus to the button that opened them.
 - Error screens: a broken page now shows a plain screen with Try again and a way back (signed-in pages keep the menu), there is a not-found page and a last-resort screen, and each break writes one cleaned line (no personal details) to the server log. Nobody is alerted yet and there is no uptime check.
 - Vehicles: each car's sheet now lists its inspections (date, technician, urgent / soon / good counts), each opening in the inspection screen.
+- Command menu: starts with the last four pages you opened (kept in this browser only).
 
 ### Database
 Twenty files (034 to 056) were applied on 2026-10-15. Six are still waiting for Aaron's yes: 046, 051, 057, 058, 059, 060.

@@ -35,11 +35,15 @@ function CommandRow({ c, onNavigate, onTheme }: { c: Command; onNavigate: () => 
  * Ctrl or Cmd+K. Type a page or action to jump to it, or a name, phone number or invoice number to find a record.
  * Up and down move through the results, Enter opens the first one (or the one you are on).
  */
-export default function SearchPanel({ onNavigate, autoFocus = false, commands = [], onTheme = () => {} }: {
+export default function SearchPanel({ onNavigate, autoFocus = false, commands = [], onTheme = () => {}, recent = [], current = '' }: {
   onNavigate: () => void
   autoFocus?: boolean
   commands?: Command[]
   onTheme?: () => void
+  /** Page addresses opened lately, newest first. */
+  recent?: string[]
+  /** The page the person is on now, left out of Recent. */
+  current?: string
 }) {
   const [q, setQ] = useState('')
   const root = useRef<HTMLDivElement>(null)
@@ -89,7 +93,7 @@ export default function SearchPanel({ onNavigate, autoFocus = false, commands = 
   const term = clean(q)
   const typed = q.trim().length > 0
   const found = useMemo(() => matchCommands(commands, q), [commands, q])
-  const starting = useMemo(() => startingCommands(commands), [commands])
+  const starting = useMemo(() => startingCommands(commands, recent, current), [commands, recent, current])
   const shown = typed ? found : starting
   const empty = term.length >= 2 && !busy && !failed && shown.length === 0 && customers.length === 0 && docs.length === 0
 
@@ -131,7 +135,7 @@ export default function SearchPanel({ onNavigate, autoFocus = false, commands = 
         {term.length < 2 && !typed && <p className="px-1 pb-3 text-[0.9375rem] text-text-secondary">Jump to a page, start something, or type a customer name, a phone number, or an invoice number.</p>}
         {shown.length > 0 && (
           <section className="mb-3" aria-label={typed ? 'Pages and actions' : 'Quick start'}>
-            {(typed ? [''] : ['Write', 'Go to', 'Switch']).map(g => {
+            {(typed ? [''] : ['Recent', 'Write', 'Go to', 'Switch']).map(g => {
               const rows = typed ? shown : shown.filter(c => c.group === g)
               if (rows.length === 0) return null
               return (

@@ -4,7 +4,7 @@
  * (from nav.ts), so the menu can never list a page the navigation does not have.
  */
 
-export type CommandGroup = 'Write' | 'Go to' | 'Switch'
+export type CommandGroup = 'Recent' | 'Write' | 'Go to' | 'Switch'
 
 export interface Command {
   id: string
@@ -115,10 +115,54 @@ export function matchCommands(commands: Command[], query: string, limit = 8): Co
   return scored.sort((a, b) => b.score - a.score || a.i - b.i).slice(0, limit).map(s => s.c)
 }
 
-/** What the menu shows before anything is typed: the things people start most, then the main pages. */
-export function startingCommands(commands: Command[]): Command[] {
+/* ---------- recent pages ---------- */
+
+/** Where the browser keeps the last pages opened. Only page addresses, never a name, a number or a search. */
+export const RECENT_KEY = 'alpha_recent_pages'
+/** How many are kept, and how many the menu shows. One more is kept than shown, because the page you are on is left out. */
+export const RECENT_KEEP = 5
+export const RECENT_SHOWN = 4
+
+/** The page of the navigation that an address belongs to: "/jobs" and "/jobs/anything" are Jobs. The longest match wins. */
+export function pageOf(pathname: string, pages: { href: string }[]): string {
+  const path = String(pathname || '').split(/[?#]/)[0]
+  let best = ''
+  for (const p of pages) {
+    if ((path === p.href || path.startsWith(`${p.href}/`)) && p.href.length > best.length) best = p.href
+  }
+  return best
+}
+
+/** Puts the page being opened at the front. An address that is not a page of the navigation is ignored. */
+export function pushRecent(list: string[], pathname: string, pages: { href: string }[]): string[] {
+  const href = pageOf(pathname, pages)
+  if (!href) return list
+  return [href, ...list.filter(h => h !== href)].slice(0, RECENT_KEEP)
+}
+
+/** What the browser stored, made safe: a list of page addresses, or nothing. */
+export function parseRecent(raw: string | null): string[] {
+  if (!raw) return []
+  try {
+    const v: unknown = JSON.parse(raw)
+    if (!Array.isArray(v)) return []
+    return v.filter((x): x is string => typeof x === 'string' && x.startsWith('/') && x.length <= 60).slice(0, RECENT_KEEP)
+  } catch {
+    return []
+  }
+}
+
+/** What the menu shows before anything is typed: the pages just visited, the things people start most, then the main pages. */
+export function startingCommands(commands: Command[], recent: string[] = [], current = ''): Command[] {
   const main = new Set(Object.values(GO_KEYS))
+  const recents: Command[] = []
+  for (const href of recent) {
+    if (href === current || recents.length >= RECENT_SHOWN) continue
+    const page = commands.find(c => c.id === `go:${href}`)
+    if (page) recents.push({ ...page, id: `recent:${href}`, group: 'Recent', keys: undefined })
+  }
   return [
+    ...recents,
     ...commands.filter(c => c.group === 'Write').slice(0, 5),
     ...commands.filter(c => c.group === 'Go to' && c.href && main.has(c.href)),
     ...commands.filter(c => c.group === 'Switch'),

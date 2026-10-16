@@ -122,7 +122,7 @@ test('the app shell opens the menu with Ctrl or Cmd+K, passes in the pages, and 
   const layout = readFileSync(new URL('../src/app/(app)/layout.tsx', import.meta.url), 'utf8')
   assert.match(layout, /isOpenKey\(e\)/)
   assert.match(layout, /buildCommands\(ALL_ITEMS, dark\)/)
-  assert.match(layout, /<SearchPanel autoFocus onNavigate=\{closeSearch\} commands=\{commands\} onTheme=\{toggleTheme\} \/>/)
+  assert.match(layout, /<SearchPanel autoFocus onNavigate=\{closeSearch\} commands=\{commands\} onTheme=\{toggleTheme\} recent=\{recent\} current=\{currentPage\} \/>/)
   // A shortcut never fires over another dialog, and the letters never fire while typing.
   assert.match(layout, /otherDialog\(\)\) return/)
   assert.match(layout, /isEditableTarget\(e\.target as HTMLElement \| null\)/)
@@ -159,4 +159,65 @@ test('closing a sheet returns focus to the button that opened it, even when a fi
   assert.match(sheet, /setOpener\(open && typeof document/)
   assert.match(sheet, /const previous = opener/)
   assert.ok(!/const previous = document\.activeElement/.test(sheet), 'read the opener while rendering, not after autoFocus')
+})
+
+/* ---------- recent pages ---------- */
+
+test('pageOf finds the page an address belongs to, and the longest match wins', () => {
+  const nav = [{ href: '/jobs' }, { href: '/jobs/board' }, { href: '/customers' }]
+  assert.equal(c.pageOf('/jobs', nav), '/jobs')
+  assert.equal(c.pageOf('/jobs/abc123', nav), '/jobs')
+  assert.equal(c.pageOf('/jobs/board/x', nav), '/jobs/board')
+  assert.equal(c.pageOf('/jobsx', nav), '')
+  assert.equal(c.pageOf('/customers?customer=1#top', nav), '/customers')
+  assert.equal(c.pageOf('/', nav), '')
+  assert.equal(c.pageOf(undefined, nav), '')
+})
+
+test('pushRecent puts the newest page first, never repeats one, ignores non-pages and keeps five', () => {
+  const nav = pages.map(p => ({ href: p.href }))
+  let list = []
+  for (const path of ['/customers', '/jobs', '/estimates', '/invoices', '/staff', '/settings', '/customers']) list = c.pushRecent(list, path, nav)
+  assert.deepEqual(list, ['/customers', '/settings', '/staff', '/invoices', '/estimates'])
+  assert.equal(c.pushRecent(list, '/login', nav), list, 'an address that is not a page leaves the list alone')
+  assert.deepEqual(c.pushRecent(['/jobs'], '/jobs/anything', nav), ['/jobs'])
+})
+
+test('parseRecent keeps only page addresses and survives anything the browser hands back', () => {
+  assert.deepEqual(c.parseRecent('["/jobs","/customers"]'), ['/jobs', '/customers'])
+  assert.deepEqual(c.parseRecent(null), [])
+  assert.deepEqual(c.parseRecent('not json'), [])
+  assert.deepEqual(c.parseRecent('{"a":1}'), [])
+  assert.deepEqual(c.parseRecent('["/jobs", 4, null, "https://evil.test", "jobs", "' + '/x'.repeat(40) + '"]'), ['/jobs'])
+  assert.equal(c.parseRecent(JSON.stringify(Array(20).fill('/jobs'))).length, 5)
+})
+
+test('the starting menu leads with recent pages, leaves out the page you are on, and shows at most four', () => {
+  const start = c.startingCommands(all, ['/staff', '/jobs', '/customers', '/estimates', '/invoices'], '/staff')
+  const recents = start.filter(x => x.group === 'Recent')
+  assert.deepEqual(recents.map(x => x.href), ['/jobs', '/customers', '/estimates', '/invoices'])
+  assert.deepEqual(start.slice(0, 4).map(x => x.group), ['Recent', 'Recent', 'Recent', 'Recent'], 'recent comes first')
+  assert.ok(recents.every(x => x.id.startsWith('recent:') && x.keys === undefined))
+  assert.ok(start.some(x => x.group === 'Go to' && x.href === '/jobs'), 'the main pages are still all there')
+})
+
+test('with nothing recent the starting menu is what it was, and a page that is not in the menu is skipped', () => {
+  assert.deepEqual(labels(c.startingCommands(all)), labels(c.startingCommands(all, [], '')))
+  assert.equal(c.startingCommands(all, ['/nowhere']).filter(x => x.group === 'Recent').length, 0)
+})
+
+test('recent pages never take part in typed search, so a typed word never lists a page twice', () => {
+  const hits = c.matchCommands(all, 'jobs')
+  assert.equal(hits.filter(x => x.href === '/jobs').length, 1)
+  assert.ok(!hits.some(x => x.group === 'Recent'))
+})
+
+test('the layout keeps recent pages in this browser only, as page addresses, and survives a blocked store', () => {
+  const l = readFileSync(new URL('../src/app/(app)/layout.tsx', import.meta.url), 'utf8')
+  assert.match(l, /localStorage\.getItem\(RECENT_KEY\)/)
+  assert.match(l, /localStorage\.setItem\(RECENT_KEY, JSON\.stringify\(next\)\)/)
+  assert.match(l, /recent=\{recent\} current=\{currentPage\}/)
+  assert.equal((l.match(/catch \{ \/\*/g) || []).length >= 2, true, 'both reads and writes are wrapped')
+  const sp = readFileSync(new URL('../src/components/shell/SearchPanel.tsx', import.meta.url), 'utf8')
+  assert.match(sp, /\['Recent', 'Write', 'Go to', 'Switch'\]/)
 })

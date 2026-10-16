@@ -420,7 +420,7 @@ Screens: Today, search box, shell.
 | Search | `/` to search by name or id [S38] | Exists in code. The search box finds customers (name, phone, email) and estimates and invoices (customer or number); `/` opens it when you are not typing | Exists |
 | Command menu | Ctrl or Cmd+K opens any page or action [S38] | Exists in code. The same box jumps to every page in the navigation (by name or what people call it: "payroll" finds Team), starts Write up a car, New estimate, New invoice, Start an inspection, New text message and Book an appointment, and switches light and dark mode. Arrow keys move, Enter opens the first result, Esc closes. Tests. Tried on the live app on 2026-10-15: `/` opened it, typing "payroll" listed Reports and Team, Enter opened Reports. The Ctrl+K key itself could not be sent by the browser tool, so it was not tried; the same handler opens the menu for `/` | Exists |
 | Keyboard shortcuts | Short key sequences, `?` lists them [S38][S39] | Exists in code. G then a letter goes to a main page (D Today, C Customers, W Work, I Inbox, A Ask Alpha, J Jobs, B Shop board, S Schedule, E Estimates, V Vehicles, P Parts lookup, R Reports, T Team). They never fire while typing, with a modifier key, or over a dialog. `?` opens the menu, which shows each page's shortcut beside it. Tests. G then T opened Team on the live app (2026-10-15) | Exists |
-| Pinned and recent pages | Shortcuts section [S39] | Missing | To build |
+| Pinned and recent pages | Shortcuts section [S39] | Partial. Recent is built (2026-10-16): the command menu starts with the last four pages opened, newest first, leaving out the page you are on. They are kept in this browser only, as page addresses and nothing else, so another phone or computer has its own list. Checked by tests and in a browser preview with sample data (phone and desktop). Pinning a page of your own is not built | Partial |
 | Empty states that name the action | Linear (not verified from an official page) | Exists on rebuilt lists | Exists |
 
 ## 19. Settings, team access, connected apps
@@ -439,7 +439,7 @@ Screens: Settings, Connected apps, Agents and tools, Setup guide, login.
 | Multi-location | View jobs and techs across shops [S20][S28] | Missing | To build |
 | Setup guide | Not researched | Exists. Three steps | Exists |
 | Help, privacy, terms | Not researched | Exists | Exists |
-| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 1,998 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 2,005 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 
 ## 20. Built-in browser
 
@@ -640,7 +640,7 @@ Why this section: the owner asked about many ways to text (Google Messages for w
 | Phone push | Mobile push [S29] | Missing. The service worker has no push handling, and the only alerts are on screen while the app is open (see section 26) | To build |
 | Security headers | Not researched | Partial. The request middleware sets frame, no-sniff, referrer, strict transport and a permissions policy that allows the camera and microphone for the app and refuses location for every page (which also blocks the clock-in location check; see section 6). A few routes (the older web view, downloads, pictures) set their own strict content policy. There is no site-wide Content-Security-Policy | To build |
 | Error reporting and uptime alerts | Not researched | Partial. Built 2026-10-15, checked by tests and by crashing local test pages in a browser (phone and desktop, light and dark). When a page breaks, the person now sees a plain screen (what happened, what is safe, Try again, a way back, a short reference) instead of a blank "Application error" page; signed-in pages keep the menu. There is a not-found page and a last-resort screen for when the page frame itself breaks. Each break, and each error a button or request raises without a screen, sends one cleaned line to the server log (page, kind of error, top of the stack; no names, phone numbers, emails, tokens or query strings; 4 KB, 10 a minute per visitor, 5 a page load, nothing written to the database). Not done: nobody is told when one happens (a person still has to look in the platform's logs, for lines marked client_error), there is no uptime check, and the signed-in version of the crash screen (the same screen inside the menu) was not crashed anywhere, because that needs a signed-in session and a real fault; the public version, the last-resort screen and the not-found page were. Browser extensions and offline blips are skipped on purpose | Partial |
-| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 1,998 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 2,005 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 | Backups and restore drill | Not researched | Not verified. Relies on the database host's backups | To build |
 | Keys rotated | Not applicable | Unverified (see Blocked on the owner) | Blocked |
 
@@ -883,7 +883,7 @@ As of 2026-10-15, read again against the code after commits 6bc49f7, 0c2d827, 3c
 
 ## Now reachable since the audit
 
-These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (1,998 passing, the type check clean and lint with 0 errors).
+These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (2,005 passing, the type check clean and lint with 0 errors).
 
 - **Unsubscribe link in marketing emails** (section 24), 6bc49f7. `/api/outreach/unsubscribe` is on the list of addresses that skip sign-in in `web/src/middleware.ts`. Not tried with a real email link.
 - **Report by email on a schedule** (section 13), 6bc49f7. The daily job (`/api/cron`) calls `/api/reports/scheduled` for every shop. Needs `CRON_SECRET` on the host and the shop's email key; I did not check either.
