@@ -418,8 +418,8 @@ Screens: Today, search box, shell.
 | Money, shop, technicians, schedule | Customizable home widgets [S39] | Exists. Fixed layout | Exists |
 | Daily notes | Not researched | Exists | Exists |
 | Search | `/` to search by name or id [S38] | Exists in code. The search box finds customers (name, phone, email) and estimates and invoices (customer or number); `/` opens it when you are not typing | Exists |
-| Command menu | Ctrl or Cmd+K opens any page or action [S38] | Exists in code. The same box jumps to every page in the navigation (by name or what people call it: "payroll" finds Team), starts Write up a car, New estimate, New invoice, Start an inspection, New text message and Book an appointment, and switches light and dark mode. Arrow keys move, Enter opens the first result, Esc closes. Tests; not tried on the live app yet | Exists |
-| Keyboard shortcuts | Short key sequences, `?` lists them [S38][S39] | Exists in code. G then a letter goes to a main page (D Today, C Customers, W Work, I Inbox, A Ask Alpha, J Jobs, B Shop board, S Schedule, E Estimates, V Vehicles, P Parts lookup, R Reports, T Team). They never fire while typing, with a modifier key, or over a dialog. `?` opens the menu, which shows each page's shortcut beside it. Tests; not tried on the live app yet | Exists |
+| Command menu | Ctrl or Cmd+K opens any page or action [S38] | Exists in code. The same box jumps to every page in the navigation (by name or what people call it: "payroll" finds Team), starts Write up a car, New estimate, New invoice, Start an inspection, New text message and Book an appointment, and switches light and dark mode. Arrow keys move, Enter opens the first result, Esc closes. Tests. Tried on the live app on 2026-10-15: `/` opened it, typing "payroll" listed Reports and Team, Enter opened Reports. The Ctrl+K key itself could not be sent by the browser tool, so it was not tried; the same handler opens the menu for `/` | Exists |
+| Keyboard shortcuts | Short key sequences, `?` lists them [S38][S39] | Exists in code. G then a letter goes to a main page (D Today, C Customers, W Work, I Inbox, A Ask Alpha, J Jobs, B Shop board, S Schedule, E Estimates, V Vehicles, P Parts lookup, R Reports, T Team). They never fire while typing, with a modifier key, or over a dialog. `?` opens the menu, which shows each page's shortcut beside it. Tests. G then T opened Team on the live app (2026-10-15) | Exists |
 | Pinned and recent pages | Shortcuts section [S39] | Missing | To build |
 | Empty states that name the action | Linear (not verified from an official page) | Exists on rebuilt lists | Exists |
 
@@ -439,7 +439,7 @@ Screens: Settings, Connected apps, Agents and tools, Setup guide, login.
 | Multi-location | View jobs and techs across shops [S20][S28] | Missing | To build |
 | Setup guide | Not researched | Exists. Three steps | Exists |
 | Help, privacy, terms | Not researched | Exists | Exists |
-| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 1,959 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Test and build safety | Not applicable | Exists. On 2026-10-15 during this audit: 1,961 tests passed, the type check was clean and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 
 ## 20. Built-in browser
 
@@ -640,7 +640,7 @@ Why this section: the owner asked about many ways to text (Google Messages for w
 | Phone push | Mobile push [S29] | Missing. The service worker has no push handling, and the only alerts are on screen while the app is open (see section 26) | To build |
 | Security headers | Not researched | Partial. The request middleware sets frame, no-sniff, referrer, strict transport and a permissions policy that allows the camera and microphone for the app and refuses location for every page (which also blocks the clock-in location check; see section 6). A few routes (the older web view, downloads, pictures) set their own strict content policy. There is no site-wide Content-Security-Policy | To build |
 | Error reporting and uptime alerts | Not researched | Missing. No error or uptime service is installed; only the platform's logs and the audit-log repair in the daily job | To build |
-| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 1,959 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
+| Tests, type check, lint | Not applicable | Exists. Measured on 2026-10-15 during this audit: 1,961 tests passed and none failed, the type check was clean, and lint had 0 errors and 25 warnings. The tests read the code and run its logic; they do not click through the live app | Exists |
 | Backups and restore drill | Not researched | Not verified. Relies on the database host's backups | To build |
 | Keys rotated | Not applicable | Unverified (see Blocked on the owner) | Blocked |
 
@@ -883,7 +883,7 @@ As of 2026-10-15, read again against the code after commits 6bc49f7, 0c2d827, 3c
 
 ## Now reachable since the audit
 
-These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (1,959 passing, the type check clean and lint with 0 errors).
+These were on the earlier list of twenty-five. Each is now reached from a screen, the daily job or a setting, in the code I opened. None was clicked through on the live app, and the test count quoted elsewhere in this document (1,864) was measured after these commits (1,961 passing, the type check clean and lint with 0 errors).
 
 - **Unsubscribe link in marketing emails** (section 24), 6bc49f7. `/api/outreach/unsubscribe` is on the list of addresses that skip sign-in in `web/src/middleware.ts`. Not tried with a real email link.
 - **Report by email on a schedule** (section 13), 6bc49f7. The daily job (`/api/cron`) calls `/api/reports/scheduled` for every shop. Needs `CRON_SECRET` on the host and the shop's email key; I did not check either.
@@ -893,7 +893,7 @@ These were on the earlier list of twenty-five. Each is now reached from a screen
 - **Carrier delivery receipts for texts** (section 12) and **the clock-in location check** (section 6). The text webhook records delivery notices (needs Telnyx event settings and `TELNYX_PUBLIC_KEY`); the security header now lets the app itself ask for location. Neither was tried on the live app.
 - **Usual charges (fee presets) in Settings, and the canned-job editor for vehicle versions, keywords and extra fees** (section 1). Settings, Usual charges; Canned jobs, open a saved job, Edit versions, keywords and fees. Not clicked through on the live app.
 - **The customer status page and the Status link section on the job sheet** (section 24). Jobs, open a job, Status link; the customer opens `/status/<link>`, which skips sign-in in `web/src/middleware.ts`. A link can be made only after file 051 is applied; until then the section says so. Previewed with sample data, not with a real link.
-- **Command menu, search shortcut and G-then-letter page shortcuts** (section 18). Top bar search box (shows Ctrl K or Cmd K), and the search button on a phone. Phones have no keyboard shortcuts but get the same menu from the search button. Not tried on the live app.
+- **Command menu, search shortcut and G-then-letter page shortcuts** (section 18). Top bar search box (shows Ctrl K or Cmd K), and the search button on a phone. Phones have no keyboard shortcuts but get the same menu from the search button. Tried on the live app with `/`, a typed search and Enter, and G then T; Ctrl+K not tried. A first live look found the search box did not take typing right after opening (the pop-up sheet grabbed focus); fixed in 2dbc139 and checked again live.
 - **Shop wall (TV) and jump-to-technician chips** (section 5). Shop board, Shop wall and the settings button beside it (names on or off, how often it refreshes); the chips show above the columns on a phone. The wall only looks and cannot save anything. Checked on the live app with no cars open; the chips and the cars on the wall were not seen.
 - **Ask Alpha runs repair posts** (section 23), 0a62529. The `posts` tool in `web/src/app/(app)/ai/page.tsx` and `web/src/lib/ai/posts-tools.ts`. Needs 060 before anything works.
 
