@@ -13,6 +13,10 @@ import SentimentMark from '@/components/customers/SentimentMark'
 import CustomerForm from '@/components/customers/CustomerForm'
 import CustomerDetail, { dialCustomer } from '@/components/customers/CustomerDetail'
 import SendPanel from '@/components/customers/SendPanel'
+import CustomerTools from '@/components/customers/CustomerTools'
+import type { ToolsTab } from '@/components/customers/CustomerTools'
+import { fetchJson } from '@/components/customers/http'
+import { LIST_GROUPS, emptyChoiceTitle, groupCounts, groupLabel, matchesChoice, parseChoice } from '@/lib/customers/list-filter'
 import { SENTIMENTS, matchesSearch, sentimentOf, text, vehicleLabel } from '@/components/customers/types'
 import type { Customer } from '@/components/customers/types'
 import { docTotals } from '@/components/jobs/types'
@@ -30,16 +34,23 @@ interface VisitInfo { jobs: number; last: string }
 
 const OWED = ['Unpaid', 'Partial', 'Sent']
 
-function Header({ onNew, subtitle, disabled = false }: { onNew: () => void; subtitle: string; disabled?: boolean }) {
+function Header({ onNew, onTools, subtitle, disabled = false }: { onNew: () => void; onTools?: () => void; subtitle: string; disabled?: boolean }) {
   return (
     <header className="page-header">
       <div className="min-w-0">
         <h1 className="page-title">Customers</h1>
         <p className="page-subtitle num" aria-live="polite">{subtitle}</p>
       </div>
-      <button type="button" className="btn btn-primary w-full sm:w-auto" onClick={onNew} disabled={disabled}>
-        <Icon name="plus" className="h-5 w-5" />New customer
-      </button>
+      <div className={`grid w-full gap-2 sm:flex sm:w-auto ${onTools ? 'grid-cols-2' : 'grid-cols-1'}`}>
+        <button type="button" className="btn btn-primary" onClick={onNew} disabled={disabled}>
+          <Icon name="plus" className="h-5 w-5" />New customer
+        </button>
+        {onTools && (
+          <button type="button" className="btn btn-secondary" onClick={onTools}>
+            <Icon name="tools" className="h-5 w-5" />Customer tools
+          </button>
+        )}
+      </div>
     </header>
   )
 }
@@ -71,6 +82,12 @@ function CustomersScreen() {
   const [tried, setTried] = useState(false)
   const [busy, setBusy] = useState(false)
   const [flash, setFlash] = useState<Flash | null>(null)
+  // Customer tools (export, import, possible duplicates) and the Group or tag filter.
+  const [toolsOpen, setToolsOpen] = useState(false)
+  const [toolsStart, setToolsStart] = useState<ToolsTab>('export')
+  const [tagMap, setTagMap] = useState<Record<string, string[]>>({})
+  const [tagSummary, setTagSummary] = useState<{ tag: string; count: number }[]>([])
+  const [choiceValue, setChoiceValue] = useState('all')
   const sheetBody = useRef<HTMLDivElement>(null)
   const afterDiscard = useRef<() => void>(() => {})
 
@@ -126,11 +143,23 @@ function CustomersScreen() {
     } finally { setLoading(false) }
   }, [])
 
+  // Tags live on a separate record. If they cannot be read the list still works; it just has no tag choices.
+  const loadTags = useCallback(async () => {
+    try {
+      const r = await fetchJson('/api/customers/tags', { cache: 'no-store' })
+      if (!r.ok || !r.data || r.data.ok !== true) return
+      const by = r.data.by_customer && typeof r.data.by_customer === 'object' ? (r.data.by_customer as Record<string, string[]>) : {}
+      const sum = Array.isArray(r.data.summary) ? (r.data.summary as { tag: string; count: number }[]) : []
+      setTagMap(by); setTagSummary(sum)
+    } catch { /* keep what was shown */ }
+  }, [])
+
   useEffect(() => {
     load()
+    void loadTags()
     const ch = supabase.channel('customers_page').on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, () => { void load() }).subscribe()
     return () => { supabase.removeChannel(ch) }
-  }, [load])
+  }, [load, loadTags])
 
   // Links from global search (/customers?q=Name) prefill the box. ?customer=<id> opens that person.
   useEffect(() => { if (qParam !== null) setSearch(qParam) }, [qParam])
@@ -279,10 +308,13 @@ function CustomersScreen() {
     [customers, sort, visits, owed],
   )
 
+  const choice = useMemo(() => parseChoice(choiceValue), [choiceValue])
+  const filterCtx = useMemo(() => ({ visits, tags: tagMap, now: Date.now() }), [visits, tagMap])
   const filtered = useMemo(
-    () => sorted.filter(c => matchesSearch(c, search) && (filter === 'all' || (filter === 'owes' ? (owed[c.id] || 0) > 0.005 : sentimentOf(c).key === filter))),
-    [sorted, search, filter, owed],
+    () => sorted.filter(c => matchesSearch(c, search) && (filter === 'all' || (filter === 'owes' ? (owed[c.id] || 0) > 0.005 : sentimentOf(c).key === filter)) && matchesChoice(choice, c, filterCtx)),
+    [sorted, search, filter, owed, choice, filterCtx],
   )
+  const groupTotals = useMemo(() => groupCounts(customers, filterCtx), [customers, filterCtx])
 
   const counts = useMemo(() => {
     const m: Record<string, number> = {}
@@ -298,8 +330,8 @@ function CustomersScreen() {
     [sheet, customers, form.name, form.phone, form.email],
   )
 
-  const filtersOn = search.trim() !== '' || filter !== 'all'
-  const clearFilters = () => { setSearch(''); setFilter('all') }
+  const filtersOn = search.trim() !== '' || filter !== 'all' || choice.kind !== 'all'
+  const clearFilters = () => { setSearch(''); setFilter('all'); setChoiceValue('all') }
   const firstLoad = loading && customers.length === 0 && !loadError
 
   const subtitle = firstLoad ? 'Loading…'
@@ -325,7 +357,7 @@ function CustomersScreen() {
 
   return (
     <div className="page-container animate-fade-in">
-      <Header onNew={openNew} subtitle={subtitle} disabled={firstLoad} />
+      <Header onNew={openNew} onTools={() => { setToolsStart('export'); setToolsOpen(true) }} subtitle={subtitle} disabled={firstLoad} />
 
       {flash && <FlashNotice flash={flash} onDismiss={() => setFlash(null)} />}
 
@@ -334,7 +366,12 @@ function CustomersScreen() {
       ) : firstLoad ? (
         <RowsSkeleton rows={8} label="Loading customers" />
       ) : customers.length === 0 ? (
-        <EmptyBlock icon="customers" title="No customers yet" action={<button type="button" className="btn btn-primary" onClick={openNew}><Icon name="plus" className="h-5 w-5" />Add your first customer</button>}>
+        <EmptyBlock icon="customers" title="No customers yet" action={
+          <div className="flex flex-col items-stretch justify-center gap-2 sm:flex-row">
+            <button type="button" className="btn btn-primary" onClick={openNew}><Icon name="plus" className="h-5 w-5" />Add your first customer</button>
+            <button type="button" className="btn btn-secondary" onClick={() => { setToolsStart('import'); setToolsOpen(true) }}><Icon name="upload" className="h-5 w-5" />Import a list</button>
+          </div>
+        }>
           Add the people you fix cars for. Their phone, email and vehicle save here, so estimates, texts and the schedule fill themselves in.
         </EmptyBlock>
       ) : (
@@ -357,13 +394,30 @@ function CustomersScreen() {
           </div>
 
           <div className="mb-2 mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-            <div className="flex items-center gap-2">
-              <label htmlFor="cust-sort" className="text-[0.9375rem] text-text-secondary">Sort by</label>
-              <select id="cust-sort" className="form-select !w-auto" value={sort} onChange={e => setSort(e.target.value as Sort)}>
-                <option value="name">Name</option>
-                <option value="recent">Last visit</option>
-                <option value="owes">Most owed</option>
-              </select>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <div className="flex items-center gap-2">
+                <label htmlFor="cust-sort" className="text-[0.9375rem] text-text-secondary">Sort by</label>
+                <select id="cust-sort" className="form-select !w-auto" value={sort} onChange={e => setSort(e.target.value as Sort)}>
+                  <option value="name">Name</option>
+                  <option value="recent">Last visit</option>
+                  <option value="owes">Most owed</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <label htmlFor="cust-group" className="text-[0.9375rem] text-text-secondary">Group</label>
+                <select id="cust-group" className="form-select !w-auto max-w-[12rem]" value={choiceValue} onChange={e => setChoiceValue(e.target.value)}>
+                  <option value="all">Everyone</option>
+                  <optgroup label="Groups">
+                    {LIST_GROUPS.map(k => <option key={k} value={`g:${k}`}>{groupLabel(k)} ({groupTotals[k] || 0})</option>)}
+                  </optgroup>
+                  {tagSummary.length > 0 && (
+                    <optgroup label="Tags">
+                      {tagSummary.map(t => <option key={t.tag} value={`t:${t.tag}`}>{t.tag} ({t.count})</option>)}
+                    </optgroup>
+                  )}
+                  {choice.kind === 'tag' && !tagSummary.some(t => t.tag === choice.tag) && <option value={choiceValue}>{choice.tag} (0)</option>}
+                </select>
+              </div>
             </div>
             {filtersOn && (
               <p className="text-[0.9375rem] text-text-secondary" aria-live="polite">
@@ -377,10 +431,10 @@ function CustomersScreen() {
             {filtered.length === 0 ? (
               <EmptyBlock
                 icon="search"
-                title={search.trim() ? `No customers match “${search.trim()}”` : filter === 'owes' ? 'Nobody owes you right now' : `No customers marked ${sentimentOf({ sentiment: filter }).label.toLowerCase()}`}
+                title={search.trim() ? `No customers match “${search.trim()}”` : filter === 'owes' ? 'Nobody owes you right now' : filter !== 'all' ? `No customers marked ${sentimentOf({ sentiment: filter }).label.toLowerCase()}` : emptyChoiceTitle(choice)}
                 action={<button type="button" className="btn btn-secondary" onClick={clearFilters}>Show all customers</button>}
               >
-                {search.trim() ? 'Try fewer letters, or the last four digits of a phone number.' : filter === 'owes' ? 'Customers with an unpaid invoice show here.' : 'Change a customer’s mood from their Edit screen.'}
+                {search.trim() ? 'Try fewer letters, or the last four digits of a phone number.' : filter === 'owes' ? 'Customers with an unpaid invoice show here.' : filter !== 'all' ? 'Change a customer’s mood from their Edit screen.' : 'Change the group, or add a tag from a customer’s card.'}
               </EmptyBlock>
             ) : (
               <>
@@ -472,6 +526,7 @@ function CustomersScreen() {
               onEdit={() => openEdit(current)}
               onText={() => setSheet({ mode: 'send', id: current.id, channel: 'sms' })}
               onEmail={() => setSheet({ mode: 'send', id: current.id, channel: 'email' })}
+              onTagsChanged={() => void loadTags()}
             />
           )}
           {!confirm && (sheet?.mode === 'edit' || sheet?.mode === 'new') && (
@@ -493,6 +548,18 @@ function CustomersScreen() {
           )}
         </div>
       </Sheet>
+
+      <CustomerTools
+        open={toolsOpen}
+        start={toolsStart}
+        onClose={() => setToolsOpen(false)}
+        customerCount={customers.length}
+        onImported={added => {
+          void load(); void loadTags()
+          setFlash({ kind: 'success', text: added > 0 ? `${added} ${added === 1 ? 'customer was' : 'customers were'} imported.` : 'No customers were added.' })
+        }}
+        onOpenCustomer={id => { setToolsOpen(false); setSheet({ mode: 'view', id }) }}
+      />
     </div>
   )
 }

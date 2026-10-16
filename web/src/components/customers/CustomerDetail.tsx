@@ -12,6 +12,8 @@ import SentimentMark from './SentimentMark'
 import AiCallSheet from './AiCallSheet'
 import AlphaCalls from './AlphaCalls'
 import ContactPermissions from './ContactPermissions'
+import CustomerTags from './CustomerTags'
+import VehicleHistory from './VehicleHistory'
 import { cleanFilterText, digits10, fmtDay, fmtDayTime, fmtMonthYear, text, vehicleLabel } from './types'
 import type { Customer } from './types'
 
@@ -53,11 +55,13 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
 }
 
 /** Everything about one customer: how to reach them, their cars, paperwork, recent texts and calls. */
-export default function CustomerDetail({ customer, onEdit, onText, onEmail }: {
+export default function CustomerDetail({ customer, onEdit, onText, onEmail, onTagsChanged }: {
   customer: Customer
   onEdit: () => void
   onText: () => void
   onEmail: () => void
+  /** Called after this customer's tags were saved, so the list can read the tags again. */
+  onTagsChanged?: () => void
 }) {
   const [docs, setDocs] = useState<DocRow[]>([])
   const [jobs, setJobs] = useState<JobRow[]>([])
@@ -242,6 +246,10 @@ export default function CustomerDetail({ customer, onEdit, onText, onEmail }: {
         </dl>
       </Section>
 
+      <Section id="cd-tags" title="Tags">
+        <CustomerTags customerId={customer.id} onChanged={onTagsChanged} />
+      </Section>
+
       <Section id="cd-vehicles" title="Vehicles" count={cars.length > 1 ? cars.length : undefined}>
         {cars.length === 0 ? (
           <p className="rounded-lg border border-dashed border-border p-4 text-[0.9375rem] text-text-secondary">
@@ -263,6 +271,10 @@ export default function CustomerDetail({ customer, onEdit, onText, onEmail }: {
             ))}
           </ul>
         )}
+      </Section>
+
+      <Section id="cd-vehicle-history" title="Vehicle history">
+        <VehicleHistory customerId={customer.id} />
       </Section>
 
       <Section id="cd-docs" title="Estimates and invoices" count={docs.length}>
