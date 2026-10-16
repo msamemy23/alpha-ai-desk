@@ -153,7 +153,7 @@ export interface CallTime {
   missed: number
   /** Seconds on the phone, added up from the length each call record carries. */
   seconds: number
-  /** Calls the assistant took that carry no length, so they are not in `seconds`. */
+  /** Calls the assistant handled that carry no length, so they are not in `seconds`. */
   unmeasuredAi: number
 }
 

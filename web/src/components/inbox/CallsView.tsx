@@ -95,7 +95,7 @@ export default function CallsView({ calls, nameFor, playingId, onOpen, onPlay, o
             </p>
             {talk.thisMonth.unmeasuredAi > 0 && (
               <p className="mt-1 text-[0.8125rem] text-text-secondary">
-                {talk.thisMonth.unmeasuredAi} {talk.thisMonth.unmeasuredAi === 1 ? 'call' : 'calls'} the assistant took {talk.thisMonth.unmeasuredAi === 1 ? 'has' : 'have'} no length on record, so {talk.thisMonth.unmeasuredAi === 1 ? 'it is' : 'they are'} not counted in the time.
+                {talk.thisMonth.unmeasuredAi} {talk.thisMonth.unmeasuredAi === 1 ? 'call' : 'calls'} the assistant handled {talk.thisMonth.unmeasuredAi === 1 ? 'has' : 'have'} no length on record, so {talk.thisMonth.unmeasuredAi === 1 ? 'it is' : 'they are'} not counted in the time.
               </p>
             )}
             <p className="mt-1 text-[0.8125rem] text-text-secondary">
