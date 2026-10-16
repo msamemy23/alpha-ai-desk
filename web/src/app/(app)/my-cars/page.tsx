@@ -189,7 +189,7 @@ export default function MyCarsPage() {
       ) : !me ? (
         <section aria-labelledby="who-h" className="max-w-3xl">
           <h2 id="who-h" className="section-title mb-1">Who are you?</h2>
-          <p className="mb-3 text-text-secondary">Pick your name. This phone remembers it, so next time your cars are the first thing you see.</p>
+          <p className="mb-3 text-text-secondary">Pick your name. This device remembers it, so next time your cars are the first thing you see.</p>
           <ul className="grid gap-2 sm:grid-cols-2">
             {techPeople.map(p => {
               const theirs = splitMine(jobs, p.name, stageKey)
