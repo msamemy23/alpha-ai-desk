@@ -63,6 +63,11 @@ const META: Record<string, Meta> = {
   scheduleTask: { effect: 'Creates an automation that will run on its own at the times below.', approve: 'schedule it' },
   automationControl: { effect: 'Changes an automation that is already set up.', approve: 'make the change' },
   webAutomation: { effect: 'Runs these steps in a hosted browser. It can click and fill in fields on a real website.', approve: 'run it' },
+  'posts.prepare': { effect: 'Makes a draft post for you to look at. Nothing is posted.', approve: 'make the draft' },
+  'posts.skip': { effect: 'Alpha will not post this one. Nothing is posted and nothing is deleted.', approve: 'skip it' },
+  'posts.mode': { effect: 'Changes whether Alpha prepares repair posts by itself.', approve: 'make the change' },
+  'posts.customerOkOff': { effect: 'No post will be made about this job, and any post waiting for it is cancelled.', approve: 'take it away' },
+  'posts.approve': { effect: 'Sends this post to the public, to the places listed.', approve: 'post it' },
   'connector.post': { effect: 'Posts or sends this through your connected app. Anything published stays there until you remove it in that app.', approve: 'send it' },
 }
 
@@ -308,12 +313,28 @@ export function buildCallReview(
 }
 
 /** A tool call the legacy chat prepared: a connected app, an automation, a browser action, or a shop action. */
-export function buildActionReview(pending: { action: string; payload: Record<string, unknown>; kind?: 'connector' | 'automation' | 'browser' }, options: { rules?: AiRules; timeZone?: string } = {}): ReviewModel {
+export function buildActionReview(pending: { action: string; payload: Record<string, unknown>; kind?: 'connector' | 'automation' | 'browser' | 'posts'; review?: { title?: string; effect?: string; rows: ReviewRow[]; blocked?: string } }, options: { rules?: AiRules; timeZone?: string } = {}): ReviewModel {
   const b = base(pending.action)
   const known = b.meta
-  const title = b.title
+  const title = pending.review?.title || b.title
   const words: string[] = []
   for (const key of ['message', 'body', 'text', 'caption', 'comment', 'reply', 'content', 'post']) if (typeof pending.payload[key] === 'string') words.push(String(pending.payload[key]))
+  // A change the assistant already looked up (a repair post) arrives with its own plain rows and its own reason it cannot go ahead.
+  if (pending.review) {
+    return {
+      action: pending.action,
+      title,
+      effect: pending.review.effect || known?.effect || 'Runs this action with the details below. Nothing has changed yet.',
+      tags: b.tags,
+      undoLine: b.undoLine,
+      irreversible: b.irreversible,
+      approveLabel: approveText(known, { title }),
+      danger: b.danger,
+      rows: pending.review.rows,
+      blockedReason: pending.review.blocked || gate(options.rules, pending.action, words),
+      editable: false,
+    }
+  }
   return {
     action: pending.action,
     title,

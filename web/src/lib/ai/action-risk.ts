@@ -61,6 +61,7 @@ const READS: [string, string, string, string][] = [
   ['repairSearch', 'Search repair information', 'Searched repair information', 'Research'],
   ['browse', 'Read a web page', 'Read a web page', 'Research'],
   ['navigate', 'Open a screen', 'Opened a screen', 'App'],
+  ['posts', 'Look at repair posts', 'Looked at repair posts', 'Posts'],
 ]
 
 const WRITES: ActionInfo[] = [
@@ -86,6 +87,11 @@ const WRITES: ActionInfo[] = [
   entry('call', 'Place a phone call', 'Placed a phone call', 'send', 'irreversible', 'Calls', { customerFacing: true, undoNote: 'A call cannot be taken back once it starts.' }),
   entry('aiVoiceCall', 'Start an assistant phone call', 'Started an assistant phone call', 'send', 'irreversible', 'Calls', { customerFacing: true, undoNote: 'A call cannot be taken back once it starts.' }),
   entry('connector.post', 'Send through a connected app', 'Sent through a connected app', 'send', 'irreversible', 'Connected apps', { customerFacing: true, undoNote: 'Anything posted or sent through another app stays there until you remove it in that app.' }),
+  entry('posts.prepare', 'Make a post draft', 'Made a post draft', 'save', 'manual', 'Posts', { undoNote: 'To undo, skip the draft on the Posts screen. Nothing was posted.' }),
+  entry('posts.skip', 'Skip a post', 'Skipped a post', 'save', 'manual', 'Posts', { undoNote: 'The post stays in the log on the Posts screen. Nothing was posted or deleted.' }),
+  entry('posts.mode', 'Change repair posting', 'Changed repair posting', 'save', 'manual', 'Posts', { undoNote: 'To undo, change it back on the Posts screen.' }),
+  entry('posts.customerOkOff', 'Take away a customer yes', 'Took away a customer yes', 'save', 'manual', 'Posts', { undoNote: 'To undo, turn Customer OK back on, on the job.' }),
+  entry('posts.approve', 'Post a repair to the public', 'Posted a repair to the public', 'send', 'irreversible', 'Posts', { customerFacing: true, undoNote: 'Once it is public it stays there until you remove it in that app.' }),
   entry('scheduleTask', 'Schedule an automation', 'Scheduled an automation', 'save', 'manual', 'Automations', { undoNote: 'To undo, turn it off on the Automations page.' }),
   entry('automationControl', 'Change an automation', 'Changed an automation', 'save', 'manual', 'Automations', { undoNote: 'To undo, change it back on the Automations page.' }),
   entry('webAutomation', 'Use a website for you', 'Used a website for you', 'send', 'irreversible', 'Browser', { customerFacing: true, undoNote: 'What happens on another website cannot be taken back from here.' }),

@@ -11,7 +11,8 @@ import { normalizeDocumentDraft } from '@/lib/ai/document-draft'
 import { WorkflowReview, ApprovalFrame, ReviewRows, ReviewTags } from '@/components/ai/WorkflowReview'
 import UndoBar from '@/components/ai/UndoBar'
 import { buildActionReview, buildCallReview, buildMessageReview, documentDraftLines, labelFor } from '@/lib/ai/review'
-import type { CallPreviewInfo } from '@/lib/ai/review'
+import type { CallPreviewInfo, ReviewRow } from '@/lib/ai/review'
+import { runPostsTool } from '@/lib/ai/posts-tools'
 import { hasCustomRules, normalizeRules, rulesPromptBlock, type AiRules } from '@/lib/ai/shop-rules'
 import { getActionInfo } from '@/lib/ai/action-risk'
 import { summarizeStop } from '@/lib/ai/stop-summary'
@@ -700,6 +701,16 @@ For page interactions, first observe the page, then propose at most 8 explicit a
 {"tool":"webAutomation","type":"parts_price","query":"2019 Toyota Camry oil filter"}
 {"tool":"webAutomation","type":"monitor_competitor","url":"https://competitor-shop.com","task":"what services do they offer"}
 
+REPAIR POSTS - The shop can post finished repairs, with real photos from the job, to Facebook, Instagram and Google. Use when the user asks "what posts are waiting", "post that repair", "turn posts off", "skip that post", "did the Camry post go out", "make a post for that job":
+Look at the queue, the mode and the weekly count: {"tool":"posts","action":"status"}
+Recent jobs and whether the customer said yes: {"tool":"posts","action":"jobs"}
+One job: {"tool":"posts","action":"job","job_id":"uuid"}   Its photos and the words Alpha would use: {"tool":"posts","action":"photos","job_id":"uuid"}
+Make a draft from a job (nothing is posted): {"tool":"posts","action":"prepare","job_id":"uuid"}
+Post a waiting post: {"tool":"posts","action":"approve","id":"uuid"}   Skip it: {"tool":"posts","action":"skip","id":"uuid"}
+Posting mode: {"tool":"posts","action":"mode","mode":"off"} or "suggest", with an optional "weekly_cap":3
+The customer said no: {"tool":"posts","action":"customer_ok_off","job_id":"uuid"}
+Look first and use only the exact ids a look-up returned; never guess an id. Looking runs right away. Every change shows a review card and nothing happens until the owner approves it. You cannot turn Auto on, record that a customer said yes, or accept a wording flag: tell the owner to do that on the Posts screen. Never say a post went out unless the result says it posted. Never put a customer's name, phone number, plate or VIN in a post.
+
 CLARIFICATION RULE - If you do not fully understand what the user is asking, ALWAYS ask a clarifying question BEFORE taking any action. Never guess on destructive or irreversible actions (delete, remove, send, deactivate). If user says "remove him" with multiple employees ask which one. If user says "send it" without specifying a document ask which document and to whom.
 
 HONESTY AND UNCERTAINTY - THESE OVERRIDE EVERYTHING ABOVE:
@@ -1201,7 +1212,7 @@ const [pendingSms, setPendingSms] = useState<{to:string;body:string;channel?:str
   const [callPlacing, setCallPlacing] = useState(false)
   const [callError, setCallError] = useState('')
   const callUncertainRef = useRef(false)
-  const [pendingAction, setPendingAction] = useState<{ action: string; payload: Record<string, unknown>; kind?: 'connector' | 'automation' | 'browser'; endpoint?: string; idempotencyKey?: string } | null>(null)
+  const [pendingAction, setPendingAction] = useState<{ action: string; payload: Record<string, unknown>; kind?: 'connector' | 'automation' | 'browser' | 'posts'; endpoint?: string; idempotencyKey?: string; review?: { title?: string; effect?: string; rows: ReviewRow[]; blocked?: string } } | null>(null)
   const [confirmingAction, setConfirmingAction] = useState(false)
   const [workflowApproval, setWorkflowApproval] = useState<Approval | null>(null)
   const workflowRequestRef = useRef<{ sessionId: string; message: string; turnId: string; images?: string[] } | null>(null)
@@ -2628,6 +2639,13 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         continue
       }
 
+      // Feature gate: repair posts go to social media, so the same switch turns them off for the assistant
+      if (parsed.tool === 'posts' && !activeFeatures.socialMedia) {
+        agentMessages.push({ role: 'assistant', content: raw })
+        agentMessages.push({ role: 'user', content: 'Social media is currently turned off by the user, so repair posts are off for the assistant. Tell the user the Social Media switch is off.' })
+        continue
+      }
+
       // Repair manual lookup - backstop for repair questions that reached the loop.
       // Always answers from the manuals, never the web.
       if (parsed.tool === 'repairSearch') {
@@ -3073,6 +3091,37 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
         accumulated.push(`[automationControl.status]: ${acResult}`)
         agentMessages.push({ role: 'assistant', content: raw })
         agentMessages.push({ role: 'user', content: `Automation status result: ${acResult}\\n\\nContinue silently.` })
+        setStatus('')
+        continue
+      }
+
+      // -- Repair posts: looking runs now, every change stops at the review card ------------
+      if (parsed.tool === 'posts') {
+        setStatus('Checking repair posts...')
+        const postsAction = String(parsed.action || '')
+        const outcome = await runPostsTool(parsed, async (url) => {
+          const r = await fetch(url, { headers: await getAuthJsonHeaders() })
+          return { ok: r.ok, status: r.status, data: await r.json().catch(() => null) }
+        })
+        if (outcome.kind === 'review') {
+          setPendingAction({ action: outcome.actionId, kind: 'posts', endpoint: '/api/growth/post-queue', payload: outcome.body, review: { title: outcome.title, effect: outcome.effect, rows: outcome.rows, blocked: outcome.blocked }, idempotencyKey: crypto.randomUUID() })
+          addToolEvent({ agent: loopAgent, skill: loopSkill, tool: outcome.actionId, status: 'error', detail: 'Waiting for confirmation' })
+          const assistantMsg: ChatMessage = {
+            role: 'assistant',
+            content: outcome.blocked ? `I looked this up. It cannot go ahead yet: ${outcome.blocked}` : 'Review this below. Nothing has been posted or changed yet.',
+          }
+          setMessages(prev => [...prev, assistantMsg])
+          saveToHistory([...history, assistantMsg])
+          setStatus('')
+          return
+        }
+        const answered = outcome.kind === 'answer'
+        addToolEvent({ agent: loopAgent, skill: loopSkill, tool: `posts.${postsAction || 'status'}`, status: answered ? 'ok' : 'error', detail: answered ? 'Looked at repair posts' : outcome.text.slice(0, 200) })
+        accumulated.push(`[posts.${postsAction}]: ${outcome.text}`)
+        agentMessages.push({ role: 'assistant', content: raw })
+        agentMessages.push({ role: 'user', content: answered
+          ? `Repair posts result:\n${outcome.text}\n\nContinue silently, and answer from this result only.`
+          : `Repair posts could not do that: ${outcome.text}\n\nTell the owner in plain words what to do. Do not try the same thing again.` })
         setStatus('')
         continue
       }
@@ -3619,6 +3668,10 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
       } else if (mode === 'browser') {
         endpoint = '/api/web-automation'
         requestBody = { ...pendingAction.payload, approval: 'confirm' }
+      } else if (mode === 'posts') {
+        // Repair posts: the server only lets the assistant send a post or change the mode after this approval header.
+        endpoint = '/api/growth/post-queue'
+        requestBody = pendingAction.payload
       }
       if (!endpoint) throw new Error('No action endpoint was provided')
       const headers = await getAuthJsonHeaders()
