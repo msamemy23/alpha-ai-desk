@@ -3,22 +3,11 @@ import { withOptOut } from '@/lib/growth-text'
 import { getServiceClient } from '@/lib/supabase'
 import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { sendGrowthText } from '@/lib/growth-send'
 import { revalidateAutomationInvocation, validateAutomationInvocation } from '@/lib/automation-fencing'
 
 export const dynamic = 'force-dynamic'
 
-
-async function sendSMS(to: string, message: string, apiKey: string, from: string, idempotencyKey?: string) {
-  if (!apiKey || !from) return { success: false, error: 'Telnyx not configured' }
-  const r = await fetch('https://api.telnyx.com/v2/messages', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) },
-    body: JSON.stringify({ from, to, text: message }),
-  })
-  if (!r.ok) return { success: false, error: `Telnyx returned ${r.status}` }
-  const d = await r.json()
-  return d.data?.id ? { success: true } : { success: false, error: d.errors?.[0]?.detail }
-}
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
@@ -34,8 +23,6 @@ export async function POST(req: NextRequest) {
   if (settingsError) return NextResponse.json({ ok: false, error: 'Unable to load shop settings' }, { status: 500 })
   const shopName = String(settings?.shop_name || 'our shop').slice(0, 120)
   const shopPhone = String(settings?.shop_phone || '').slice(0, 40)
-  const telnyxKey = String(settings?.telnyx_api_key || '')
-  const telnyxFrom = String(settings?.telnyx_phone_number || '')
 
   if (action === 'run') {
     // Check vehicles for upcoming service needs
@@ -118,7 +105,7 @@ export async function POST(req: NextRequest) {
       if (!dryRun) {
         const beforeSms = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['service_reminders'])
         if (!beforeSms.ok) return NextResponse.json({ ok: false, error: beforeSms.error }, { status: beforeSms.status })
-        const result = await sendSMS(customer.phone, msg, telnyxKey, telnyxFrom, `service-reminder-${vehicle.id}`)
+        const result = await sendGrowthText(settings, customer.phone, msg, `service-reminder-${vehicle.id}`, 'service')
         let reminderError: { message: string } | null = null
         if (automationCheck.ok && automationCheck.runId && automationCheck.fencingToken !== undefined) {
           const fenced = await sb.rpc('insert_service_reminder_fenced', {
@@ -198,7 +185,7 @@ export async function POST(req: NextRequest) {
       if (!dryRun) {
         const beforeSms = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['appointment_reminders'])
         if (!beforeSms.ok) return NextResponse.json({ ok: false, error: beforeSms.error }, { status: beforeSms.status })
-        const result = await sendSMS(phone, msg, telnyxKey, telnyxFrom, `appointment-reminder-${appt.id}`)
+        const result = await sendGrowthText(settings, phone, msg, `appointment-reminder-${appt.id}`, 'service')
         if (result.success) {
           let appointmentError: { message: string } | null = null
           if (automationCheck.ok && automationCheck.runId && automationCheck.fencingToken !== undefined) {

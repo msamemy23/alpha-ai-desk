@@ -12,6 +12,7 @@ import { decideTurn, emptyState, readState } from './engine.ts'
 import type { ConvState, Decision, ModelFn, Outcome } from './engine.ts'
 import { isAutomatedSenderAddress, isRepeat, looksAutomated, smsKeyword } from './guardrails.ts'
 import { inQuietHours, wallClock } from './hours.ts'
+import { shopNumberOf } from '../text-channel.ts'
 import { firstTextIntro, helpReply, OPT_OUT_LINE, shopFromSettings, startReply } from './prompt.ts'
 import type { ShopProfile } from './prompt.ts'
 import { phoneKey, phoneLikePattern } from './rules.ts'
@@ -136,7 +137,8 @@ export async function processInboundSms(deps: SmsDeps, shopRow: ShopRow, msg: In
   const done = (r: Omit<SmsResult, 'rulesFired'> & { rulesFired?: string[] }): SmsResult => ({ ...r, rulesFired: r.rulesFired || fired })
 
   if (!fromRaw || !key) return done({ action: 'ignored', reason: 'no_number' })
-  const shopNumber = String(shopRow.telnyx_phone_number || shopRow.shop_phone || '')
+  // The number customers text: the Telnyx number, or the owner's own phone when the shop chose that.
+  const shopNumber = shopNumberOf(shopRow)
   if (!shopNumber) return done({ action: 'ignored', reason: 'no_shop_number' })
   if (phoneKey(shopNumber) === key) return done({ action: 'ignored', reason: 'own_number' })
 

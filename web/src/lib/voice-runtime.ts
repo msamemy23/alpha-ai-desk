@@ -5,6 +5,7 @@
  */
 import { getServiceClient } from '@/lib/supabase'
 import { sendSMS } from '@/lib/sms'
+import { fromNumberOf, smsOptionsFor } from '@/lib/text-channel'
 import { sendEmail } from '@/lib/email'
 import { isSmsOptedOut, recordSmsOptIn, recordSmsOptOut } from '@/lib/sms-consent'
 import { phoneKey } from '@/lib/voice/rules'
@@ -49,15 +50,12 @@ export function buildConsent(db: ServiceDb): SmsConsent {
   }
 }
 
-/** Sends from the shop's own Telnyx number with its own key. */
+/** Sends from the shop's own number: its Telnyx number, or its own phone when the shop chose that. Always with the shop's own keys. */
 export function buildTextSender(shop: ShopRow): (to: string, text: string, opts: { idempotencyKey: string }) => Promise<void> {
-  const from = String(shop.telnyx_phone_number || shop.shop_phone || '')
   return async (to, text, opts) => {
-    await sendSMS(to, text, from, {
-      apiKey: String(shop.telnyx_api_key || ''),
-      messagingProfileId: String(shop.telnyx_messaging_profile_id || ''),
-      idempotencyKey: opts.idempotencyKey.slice(0, 120),
-    })
+    // Throws a plain sentence when the shop cannot text, so the caller records why nothing went out.
+    const options = smsOptionsFor(shop, { idempotencyKey: opts.idempotencyKey.slice(0, 120) })
+    await sendSMS(to, text, fromNumberOf(shop) || String(shop.shop_phone || ''), options)
   }
 }
 

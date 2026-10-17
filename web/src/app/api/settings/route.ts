@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { forbidden, getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { getServiceClient } from '@/lib/supabase'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
+import { PHONE_COLUMNS } from '@/lib/text-channel'
+import { phoneUpdates, touchesPhone, wantsPhone } from '@/lib/phone-settings'
 
 export const dynamic = 'force-dynamic'
 
@@ -25,18 +27,36 @@ const SECRET_FIELDS = [
   'facebook_page_token',
 ] as const
 
+// Texting through the owner's own phone (migration 063). Kept apart from the lists above on purpose: a database that has not had the
+// migration yet does not have these columns, and asking for a missing column would break loading and saving every other setting.
+const PHONE_SECRET_FIELDS = ['phone_gateway_key'] as const
+
 const ALL_FIELDS = [...SAFE_FIELDS, ...SECRET_FIELDS] as const
+const PHONE_FIELDS = PHONE_COLUMNS
+
+/** Postgres says 42703 for a column that does not exist; PostgREST says PGRST204 or "does not exist" for the same. */
+function missingColumn(error: { code?: string; message?: string } | null | undefined): boolean {
+  if (!error) return false
+  return error.code === '42703' || error.code === 'PGRST204' || /column .* does not exist|could not find the .* column/i.test(error.message || '')
+}
+
+const PHONE_UPDATE_NEEDED = 'Texting through your own phone needs a database update first (migration 063). Nothing was saved.'
 
 function fail(error: string, status = 400) {
   return NextResponse.json({ ok: false, error }, { status })
 }
 
-function publicSettings(row: Record<string, unknown>) {
+function publicSettings(row: Record<string, unknown>, extra: { shopId: string; phoneReady: boolean }) {
   const result: Record<string, unknown> = { ...row }
-  for (const key of SECRET_FIELDS) {
+  // The phone key is masked like the others, but only when the columns exist; otherwise a screen would send it back blank on every save.
+  for (const key of [...SECRET_FIELDS, ...(extra.phoneReady ? PHONE_SECRET_FIELDS : [])]) {
     result[key] = ''
     result[key + '_configured'] = typeof row[key] === 'string' && row[key].trim().length > 0
   }
+  // The incoming-text address carries the shop id and this code. The code only lets someone post texts into this shop's inbox,
+  // and only the signed-in owner of the shop is sent it.
+  result.shop_id = extra.shopId
+  result.phone_columns_ready = extra.phoneReady
   return result
 }
 
@@ -45,16 +65,24 @@ export async function GET() {
   if (!auth) return unauthorized()
 
   const sb = getServiceClient()
-  const { data, error } = await sb
+  const load = (fields: readonly string[]) => sb
     .from('settings')
-    .select(ALL_FIELDS.join(','))
+    .select(fields.join(','))
     .eq('shop_id', auth.shopId)
     .order('updated_at', { ascending: false })
     .limit(1)
     .maybeSingle()
 
+  let phoneReady = true
+  let { data, error } = await load([...ALL_FIELDS, ...PHONE_FIELDS])
+  if (missingColumn(error)) {
+    // Migration 063 has not run: load everything else exactly as before and say the phone choice is not available yet.
+    phoneReady = false
+    ;({ data, error } = await load(ALL_FIELDS))
+  }
+
   if (error) return fail('Shop settings could not be loaded', 500)
-  return NextResponse.json({ ok: true, settings: data ? publicSettings(data as unknown as Record<string, unknown>) : null })
+  return NextResponse.json({ ok: true, settings: data ? publicSettings(data as unknown as Record<string, unknown>, { shopId: auth.shopId, phoneReady }) : null })
 }
 
 export async function POST(req: NextRequest) {
@@ -66,6 +94,7 @@ export async function POST(req: NextRequest) {
   if (!body || Array.isArray(body)) return fail('Settings must be an object')
 
   const updates: Record<string, unknown> = {}
+  let rotatedSecret = ''
   for (const key of SAFE_FIELDS) {
     if (!Object.prototype.hasOwnProperty.call(body, key)) continue
     const value = body[key]
@@ -99,6 +128,22 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // The phone choice. Every value is checked in phone-settings.ts, whatever the screen sent.
+  if (touchesPhone(body)) {
+    const current = await getServiceClient().from('settings').select(PHONE_FIELDS.join(',')).eq('shop_id', auth.shopId).order('updated_at', { ascending: false }).limit(1).maybeSingle()
+    if (missingColumn(current.error)) {
+      // Migration 063 has not run. Blank phone fields riding along with an ordinary save are ignored, so nothing else is held up;
+      // asking for the phone itself is refused with a plain sentence.
+      if (wantsPhone(body)) return fail(PHONE_UPDATE_NEEDED, 409)
+    } else {
+      if (current.error) return fail('Shop settings could not be loaded', 500)
+      const phone = phoneUpdates(body, (current.data || {}) as unknown as Record<string, unknown>)
+      if (!phone.ok) return fail(phone.error)
+      Object.assign(updates, phone.updates)
+      rotatedSecret = phone.rotatedSecret
+    }
+  }
+
   // Blank secret inputs mean “leave the existing credential alone”; the UI
   // never receives raw secrets. Use the explicit sentinel to clear one.
   for (const key of SECRET_FIELDS) {
@@ -124,13 +169,15 @@ export async function POST(req: NextRequest) {
       .update({ ...updates, updated_at: new Date().toISOString() })
       .eq('id', existing.id)
       .eq('shop_id', auth.shopId)
+    if (missingColumn(error)) return fail(PHONE_UPDATE_NEEDED, 409)
     if (error) return fail('Shop settings could not be saved', 500)
   } else {
     const { error } = await sb
       .from('settings')
       .insert({ ...updates, shop_id: auth.shopId, updated_at: new Date().toISOString() })
+    if (missingColumn(error)) return fail(PHONE_UPDATE_NEEDED, 409)
     if (error) return fail('Shop settings could not be created', 500)
   }
 
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true, ...(rotatedSecret ? { phone_gateway_secret: rotatedSecret } : {}) })
 }

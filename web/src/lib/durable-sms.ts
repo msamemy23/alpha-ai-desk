@@ -1,15 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatPhone, sendSMS } from '@/lib/telnyx'
+import { fromNumberOf, smsOptionsFor } from '@/lib/text-channel'
 import { getIdempotencyKey } from '@/lib/api-response'
 import { writeAuditLog } from '@/lib/audit-log'
 import { attachOutgoing } from '@/lib/voice/media-store'
 
-type SmsSettings = {
-  telnyx_api_key?: string | null
-  telnyx_phone_number?: string | null
-  telnyx_messaging_profile_id?: string | null
-}
+/** The shop's settings row (or the text-related columns of it): the Telnyx fields, and the phone-gateway fields when the shop chose its own phone. */
+type SmsSettings = Record<string, unknown>
 
 type DurableSmsInput = {
   request: Request
@@ -74,7 +72,7 @@ async function saveSmsRecords(
       shop_id: input.shopId,
       direction: 'outbound',
       channel: 'sms',
-      from_address: input.settings.telnyx_phone_number || '',
+      from_address: fromNumberOf(input.settings),
       to_address: input.to,
       body: input.text,
       status: 'sent',
@@ -128,7 +126,7 @@ async function saveSmsRecords(
  */
 export async function sendDurableSms(input: DurableSmsInput): Promise<DurableSmsResult> {
   const formatted = formatPhone(input.to)
-  const fromNumber = input.settings.telnyx_phone_number || ''
+  const fromNumber = fromNumberOf(input.settings)
   const suppliedKey = getIdempotencyKey(input.request, [])
   const payloadHash = createHash('sha256').update(JSON.stringify({
     channel: 'sms',
@@ -143,6 +141,14 @@ export async function sendDurableSms(input: DurableSmsInput): Promise<DurableSms
   const operationKey = suppliedKey
     ? `sms:${createHash('sha256').update(suppliedKey).digest('hex')}`
     : `sms:${randomUUID()}`
+
+  // Checked before anything is claimed, so a shop with no usable way to text is told so and nothing is left half done.
+  let sendOptions: ReturnType<typeof smsOptionsFor>
+  try {
+    sendOptions = smsOptionsFor(input.settings, { idempotencyKey: operationKey, mediaUrls: input.media?.urls })
+  } catch (error) {
+    return failure(error instanceof Error ? error.message : 'Texting is not set up for this shop', 409)
+  }
 
   const { data: claimed, error: claimError } = await input.db.rpc('claim_sms_send_operation', {
     p_shop_id: input.shopId,
@@ -179,12 +185,7 @@ export async function sendDurableSms(input: DurableSmsInput): Promise<DurableSms
 
   let providerAccepted = false
   try {
-    const result = await sendSMS(formatted, input.text, fromNumber, {
-      apiKey: input.settings.telnyx_api_key || '',
-      messagingProfileId: input.settings.telnyx_messaging_profile_id || '',
-      idempotencyKey: operationKey,
-      mediaUrls: input.media?.urls,
-    }) as Record<string, unknown>
+    const result = await sendSMS(formatted, input.text, fromNumber, sendOptions) as Record<string, unknown>
     providerAccepted = true
     const providerMessageId = typeof result?.id === 'string' ? result.id : null
     if (!providerMessageId) {

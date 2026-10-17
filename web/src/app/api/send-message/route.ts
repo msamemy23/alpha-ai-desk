@@ -13,6 +13,7 @@ import { outgoingLinks } from '@/lib/voice/media-store'
 import { closeStaleDrafts, resolveNeedsPerson } from '@/lib/voice/actions'
 import { appUrl } from '@/lib/voice-runtime'
 import { phoneKey } from '@/lib/voice/rules'
+import { channelOf, PHONE_NO_PICTURES_MESSAGE } from '@/lib/text-channel'
 
 export async function POST(req: NextRequest) {
   try {
@@ -125,8 +126,12 @@ export async function POST(req: NextRequest) {
       if (smsOptedOut || await isSmsOptedOut(db, auth.shopId, formattedPhone)) {
         return NextResponse.json({ error: 'This destination has opted out of SMS' }, { status: 409 })
       }
-      if (!settings?.telnyx_api_key || !settings?.telnyx_phone_number) {
-        return NextResponse.json({ ok: false, error: 'Telnyx SMS is not configured for this shop' }, { status: 503 })
+      const textChannel = channelOf(settings)
+      if (textChannel.kind === 'none') {
+        return NextResponse.json({ ok: false, error: textChannel.message }, { status: 503 })
+      }
+      if (textChannel.kind === 'phone' && mediaIds.length) {
+        return NextResponse.json({ ok: false, error: PHONE_NO_PICTURES_MESSAGE }, { status: 409 })
       }
       const links = await outgoingLinks(db, auth.shopId, mediaIds, appUrl())
       if (!links.ok) return NextResponse.json({ ok: false, error: links.error }, { status: 409 })

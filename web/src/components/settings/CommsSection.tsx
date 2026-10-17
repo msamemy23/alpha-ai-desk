@@ -5,6 +5,7 @@ import { normalizePhoneE164 } from '@/lib/shop-form'
 import { Group, TextField, useSettings } from './fields'
 import { StatusLine } from './shared'
 import RegistrationCard from './RegistrationCard'
+import PhoneTextCard from './PhoneTextCard'
 
 export default function CommsSection() {
   const { settings } = useSettings()
@@ -77,6 +78,8 @@ export default function CommsSection() {
         <TextField k="telnyx_outbound_voice_profile_id" label="Outbound voice profile ID (optional)" mono placeholder="Profile ID" hint="Leave blank when your Telnyx account has one default outbound profile. It is found automatically." />
         <TextField k="telnyx_messaging_profile_id" label="Messaging profile ID (optional)" mono placeholder="Profile ID" hint="Only needed when your Telnyx account has more than one messaging profile." />
       </Group>
+
+      <PhoneTextCard />
 
       <Group title="Email (Resend)" description={<>Resend sends your emails. Get a free key at <strong>resend.com</strong>, which includes 100 emails a day, and add your domain there too.</>}>
         {loaded && (emailReady

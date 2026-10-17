@@ -5,6 +5,8 @@ import { getServiceClient } from '@/lib/supabase-service'
 import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { createVoiceClientState } from '@/lib/voice-state'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { sendGrowthText } from '@/lib/growth-send'
+import { channelOf } from '@/lib/text-channel'
 import { leadOutreachCheck, subjectProblem, type LeadChannel } from '@/lib/lead-compliance'
 import { EmailSendError, emailHtml, emailPlainText, isEmailOptedOut, sendResendEmail } from '@/lib/marketing-email'
 import { createUnsubscribeToken, unsubscribeUrl } from '@/lib/unsubscribe-token'
@@ -30,18 +32,6 @@ const idempotencyKey = (parts: string[]) => `growth-outreach-${createHash('sha25
 const baseUrl = (req: NextRequest): string => (
   process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_SITE_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : new URL(req.url).origin)
 )
-
-async function sendSMS(to: string, message: string, telnyxKey: string, telnyxPhone: string, key: string) {
-  if (!telnyxKey || !telnyxPhone) throw new Error('SMS is not configured for this shop')
-  const res = await fetchT('https://api.telnyx.com/v2/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${telnyxKey}`, 'Idempotency-Key': key },
-    body: JSON.stringify({ from: telnyxPhone, to, text: message, type: 'SMS' }),
-  }, 10000)
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(`SMS failed: ${res.status}`)
-  return data
-}
 
 async function makeAICall(to: string, leadName: string, service: string, shop: { shopId: string; telnyxApiKey: string; telnyxPhone: string; telnyxConnectionId: string }) {
   if (!shop.telnyxApiKey || !shop.telnyxPhone || !shop.telnyxConnectionId) throw new Error('Calling is not configured for this shop')
@@ -105,7 +95,10 @@ export async function POST(req: NextRequest) {
     if (leadError) throw leadError
     if (!lead) return NextResponse.json({ error: 'Lead not found' }, { status: 404 })
 
-    if (method === 'sms' && (!shop.telnyxApiKey || !shop.telnyxPhone)) return NextResponse.json({ error: 'SMS is not configured for this shop' }, { status: 503 })
+    if (method === 'sms') {
+      const textChannel = channelOf(settings)
+      if (textChannel.kind === 'none') return NextResponse.json({ error: textChannel.message }, { status: 503 })
+    }
     if (method === 'email' && (!shop.resendApiKey || !shop.fromEmail)) return NextResponse.json({ error: 'Email is not configured for this shop' }, { status: 503 })
     if (method === 'ai_call' && (!shop.telnyxApiKey || !shop.telnyxPhone || !shop.telnyxConnectionId)) return NextResponse.json({ error: 'Calling is not configured for this shop' }, { status: 503 })
 
@@ -121,7 +114,9 @@ export async function POST(req: NextRequest) {
     if (method === 'sms') {
       toContact = String(lead.phone)
       sentMessage = withOptOut(rawMessage)
-      result.sms = await sendSMS(toContact, sentMessage, shop.telnyxApiKey, shop.telnyxPhone, idempotencyKey([auth.shopId, 'lead-sms', String(lead.id), sentMessage]))
+      const smsSent = await sendGrowthText(settings, toContact, sentMessage, idempotencyKey([auth.shopId, 'lead-sms', String(lead.id), sentMessage]), 'service')
+      if (!smsSent.success) throw new Error(smsSent.error || 'The text could not be sent')
+      result.sms = { id: smsSent.messageId }
     } else if (method === 'email') {
       toContact = String(lead.email).trim()
       const footer = {

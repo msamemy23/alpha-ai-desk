@@ -139,6 +139,7 @@ export async function updateSettings(updates: Record<string, unknown>) {
     'telnyx_api_key', 'telnyx_phone_number', 'telnyx_messaging_profile_id',
     'telnyx_connection_id', 'telnyx_outbound_voice_profile_id',
     'resend_api_key', 'from_email',
+    'sms_channel', 'phone_gateway', 'phone_gateway_key', 'phone_gateway_device', 'phone_gateway_number',
     'browserless_token',
     'google_review_url', 'timezone', 'automation_config',
     'facebook_page_id', 'facebook_page_token', 'fb_ad_account_id', 'searxng_url',

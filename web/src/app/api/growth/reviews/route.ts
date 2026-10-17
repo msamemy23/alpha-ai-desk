@@ -4,6 +4,7 @@ import { getServiceClient } from '@/lib/supabase'
 import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { sendGrowthText, type GrowthTextKind } from '@/lib/growth-send'
 import { validateAutomationInvocation } from '@/lib/automation-fencing'
 
 
@@ -40,32 +41,9 @@ async function generateReviewResponse(reviewerName: string, rating: number, revi
   }
 }
 
-async function sendReviewRequestSMS(phone: string, customerName: string, shopName: string, reviewLink: string, apiKey: string, fromNumber: string, idempotencyKey?: string): Promise<{ success: boolean; error?: string }> {
-  if (!apiKey || !fromNumber) {
-    return { success: false, error: 'Telnyx not configured' }
-  }
-
+async function sendReviewRequestSMS(settings: Record<string, unknown> | null, phone: string, customerName: string, shopName: string, reviewLink: string, idempotencyKey: string | undefined, kind: GrowthTextKind): Promise<{ success: boolean; error?: string }> {
   const message = withOptOut(`Hi ${customerName}! Thank you for choosing ${shopName}. If you had a great experience, we'd love a Google review!${reviewLink ? ` ${reviewLink}` : ''} It means the world to us!`)
-
-  try {
-    const res = await fetch('https://api.telnyx.com/v2/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {})
-      },
-      body: JSON.stringify({
-        from: fromNumber,
-        to: phone,
-        text: message
-      })
-    })
-    const data = await res.json()
-    return data.data?.id ? { success: true } : { success: false, error: data.errors?.[0]?.detail || 'Failed' }
-  } catch (e: unknown) {
-    return { success: false, error: (e as Error).message }
-  }
+  return sendGrowthText(settings, phone, message, idempotencyKey, kind)
 }
 
 // POST - Ask for reviews or generate AI responses to reviews
@@ -83,8 +61,6 @@ export async function POST(req: NextRequest) {
     const shopName = String(settings?.shop_name || settings?.company_name || settings?.business_name || 'your shop').slice(0, 120)
     const shopPhone = String(settings?.shop_phone || settings?.phone || settings?.business_phone || '').slice(0, 40)
     const reviewLink = String(settings?.google_review_url || settings?.google_review_link || '').slice(0, 500)
-    const telnyxKey = String(settings?.telnyx_api_key || '')
-    const telnyxFrom = String(settings?.telnyx_phone_number || '')
     const aiKey = String(settings?.ai_api_key || '')
     const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
     const aiModel = normalizeAiModel(settings?.ai_model, aiBase)
@@ -106,7 +82,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: false, success: false, error: 'This destination has opted out of SMS' }, { status: 409 })
       }
 
-      const result = await sendReviewRequestSMS(customer_phone, customer_name || 'Valued Customer', shopName, reviewLink, telnyxKey, telnyxFrom, customer_id ? `review-request-${customer_id}` : undefined)
+      const result = await sendReviewRequestSMS(settings, customer_phone, customer_name || 'Valued Customer', shopName, reviewLink, customer_id ? `review-request-${customer_id}` : undefined, 'service')
 
       // Log the request
       const { error: requestError } = await supabase.from('growth_review_requests').insert({
@@ -179,7 +155,7 @@ export async function POST(req: NextRequest) {
           continue
         }
 
-        const result = await sendReviewRequestSMS(cust.phone, cust.name, shopName, reviewLink, telnyxKey, telnyxFrom, `review-request-${cust.id}`)
+        const result = await sendReviewRequestSMS(settings, cust.phone, cust.name, shopName, reviewLink, `review-request-${cust.id}`, 'marketing')
         
         const { error: bulkRequestError } = await supabase.from('growth_review_requests').insert({
           shop_id: auth.shopId,

@@ -4,6 +4,7 @@ import { getServiceClient } from '@/lib/supabase'
 import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { sendGrowthText } from '@/lib/growth-send'
 import { validateAutomationInvocation } from '@/lib/automation-fencing'
 
 
@@ -49,35 +50,6 @@ function normalizePhone(value: string): string {
   return value.trim()
 }
 
-async function sendSMS(to: string, message: string, apiKey: string, fromNumber: string, idempotencyKey?: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  if (!apiKey || !fromNumber) {
-    return { success: false, error: 'Telnyx API key not configured' }
-  }
-
-  try {
-    const res = await fetch('https://api.telnyx.com/v2/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
-      },
-      body: JSON.stringify({
-        from: fromNumber,
-        to: to,
-        text: message
-      })
-    })
-    const data = await res.json()
-    if (data.data?.id) {
-      return { success: true, messageId: data.data.id }
-    }
-    return { success: false, error: data.errors?.[0]?.detail || 'Failed to send' }
-  } catch (e: unknown) {
-    const err = e as Error
-    return { success: false, error: err.message }
-  }
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -99,8 +71,6 @@ export async function POST(req: NextRequest) {
     const shopName = String(settings?.shop_name || 'our shop').slice(0, 120)
     const shopPhone = String(settings?.shop_phone || '').slice(0, 40)
     const aiKey = String(settings?.ai_api_key || '')
-    const telnyxKey = String(settings?.telnyx_api_key || '')
-    const telnyxFrom = String(settings?.telnyx_phone_number || '')
     const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
     const aiModel = normalizeAiModel(settings?.ai_model, aiBase)
 
@@ -203,7 +173,7 @@ export async function POST(req: NextRequest) {
           error: dryRun ? 'Dry run mode' : 'No phone number'
         })
       } else {
-        const smsResult = await sendSMS(normalizePhone(customer.phone), message, telnyxKey, telnyxFrom, `follow-up-${auth.shopId}-${customer.id}`)
+        const smsResult = await sendGrowthText(settings, normalizePhone(customer.phone), message, `follow-up-${auth.shopId}-${customer.id}`, 'marketing')
         
         // Log the follow-up
         const { error: followupError } = await supabase.from('growth_followups').insert({

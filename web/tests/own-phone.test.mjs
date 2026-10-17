@@ -98,3 +98,21 @@ test('screens: the own-phone option is on the send sheet, the new-message sheet 
   // Nothing is guessed on the server about which device this is.
   assert.match(actions, /useEffect\(\(\) => \{\s*try \{ setPlatform\(platformOf\(navigator\.userAgent/)
 })
+
+test('the From my phone button asks the server whether the number said STOP, and refuses when it did', () => {
+  const button = read('components/PhoneTextActions.tsx')
+  assert.match(button, /\/api\/sms-consent/)
+  assert.match(button, /stopped === true/)
+  assert.match(button, /replied STOP/)
+  // The number goes in the request body, never in the address.
+  assert.doesNotMatch(button, /sms-consent\?/)
+  const route = read('app/api/sms-consent/route.ts')
+  assert.match(route, /export async function POST/)
+  assert.match(route, /getAuthedShop/)
+  assert.match(route, /isSmsOptedOut\(db, auth\.shopId/)
+  assert.match(route, /eq\('shop_id', auth\.shopId\)/)
+})
+
+test('a customer\'s Text screen offers From my phone too', () => {
+  assert.match(read('components/customers/SendPanel.tsx'), /<PhoneTextActions phone=\{to\} body=\{body\} \/>/)
+})

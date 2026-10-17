@@ -4,7 +4,7 @@
 // rules, the assistant, booking, "needs a person") lives in src/lib/voice/sms-pipeline.ts, which is tested without a network.
 
 import { getServiceClient } from '@/lib/supabase'
-import { buildConsent, buildEmailSender, buildTextSender, appUrl, findShopByNumber } from '@/lib/voice-runtime'
+import { buildConsent, buildEmailSender, buildTextSender, appUrl, findShopByNumber, loadShopRow } from '@/lib/voice-runtime'
 import { makeModel } from '@/lib/voice/model'
 import { processInboundSms } from '@/lib/voice/sms-pipeline'
 import type { SmsResult } from '@/lib/voice/sms-pipeline'
@@ -16,6 +16,8 @@ export async function handleInboundSms(opts: {
   body: string
   messageId?: string
   toNumber?: string
+  /** The shop the text belongs to, when the sender already knows it (a phone gateway's address carries it). Otherwise the number decides. */
+  shopId?: string
   /** Telnyx already answered a STOP, START or HELP keyword for this message. */
   autoResponded?: boolean
   media?: InboundMedia[]
@@ -25,7 +27,7 @@ export async function handleInboundSms(opts: {
   const db = getServiceClient()
 
   // Resolve the destination to one shop before reading or writing any tenant data.
-  const shopRow = await findShopByNumber(db, opts.toNumber || '')
+  const shopRow = opts.shopId ? await loadShopRow(db, opts.shopId) : await findShopByNumber(db, opts.toNumber || '')
   if (!shopRow?.shop_id) return null
 
   return processInboundSms({

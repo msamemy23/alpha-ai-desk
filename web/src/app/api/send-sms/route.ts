@@ -9,6 +9,7 @@ import { isSmsOptedOut } from '@/lib/sms-consent'
 import { sendDurableSms } from '@/lib/durable-sms'
 import { closeStaleDrafts, resolveNeedsPerson } from '@/lib/voice/actions'
 import { phoneKey } from '@/lib/voice/rules'
+import { channelOf } from '@/lib/text-channel'
 
 export const dynamic = 'force-dynamic'
 
@@ -40,10 +41,10 @@ export async function POST(req: NextRequest) {
     }
 
     const db = getServiceClient()
-    const { data: settings, error: settingsError } = await db.from('settings').select('telnyx_api_key,telnyx_phone_number,telnyx_messaging_profile_id').eq('shop_id', auth.shopId).limit(1).maybeSingle()
+    const { data: settings, error: settingsError } = await db.from('settings').select('*').eq('shop_id', auth.shopId).limit(1).maybeSingle()
     if (settingsError) return apiFail('Shop messaging settings could not be loaded', 500, 'CONFIG_ERROR')
-    const fromNum = settings?.telnyx_phone_number || ''
-    if (!settings?.telnyx_api_key || !fromNum) return apiFail('Telnyx SMS is not configured for this shop', 503, 'NOT_CONFIGURED')
+    const textChannel = channelOf(settings)
+    if (textChannel.kind === 'none') return apiFail(textChannel.message, 503, 'NOT_CONFIGURED')
 
     const formatted = formatPhone(to)
     if (await isSmsOptedOut(db, auth.shopId, formatted)) {
@@ -70,7 +71,7 @@ export async function POST(req: NextRequest) {
       to: formatted,
       text,
       customerId,
-      settings,
+      settings: (settings || {}) as Record<string, unknown>,
     })
     if (!result.ok) return apiFail(result.error, result.status, result.uncertain ? 'PROVIDER_ERROR' : 'CONFLICT')
     try { await resolveNeedsPerson(db, auth.shopId, phoneKey(formatted), auth.userId); await closeStaleDrafts(db, auth.shopId, phoneKey(formatted)) } catch { /* the text already went out */ }

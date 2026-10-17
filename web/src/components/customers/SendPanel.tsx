@@ -1,6 +1,7 @@
 'use client'
 import { useState } from 'react'
 import Icon from '@/components/Icon'
+import PhoneTextActions from '@/components/PhoneTextActions'
 import { phonePretty } from '@/lib/today'
 import type { Customer } from './types'
 
@@ -48,6 +49,7 @@ export default function SendPanel({ customer, channel, onBack, onSent }: {
         <textarea id="sp-body" className="form-textarea" rows={5} autoFocus value={body} onChange={e => setBody(e.target.value)} placeholder="Write your message" />
         {channel === 'sms' && <p className="form-hint !text-[0.875rem] !text-text-secondary num">{body.length} {body.length === 1 ? 'character' : 'characters'}{body.length > 160 ? `. Goes out as ${Math.ceil(body.length / 153)} texts.` : ''}</p>}
       </div>
+      {channel === 'sms' && <PhoneTextActions phone={to} body={body} />}
       {error && <p role="alert" className="form-error !text-[0.875rem]">{error}</p>}
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
         <button type="button" className="btn btn-secondary" onClick={onBack} disabled={sending}>Cancel</button>

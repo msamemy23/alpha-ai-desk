@@ -5,22 +5,11 @@ import { sendEmail } from '@/lib/email'
 import { forbidden, getRouteShop, unauthorized } from '@/lib/api-auth'
 import { calcTotals } from '@/lib/supabase'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { sendGrowthText } from '@/lib/growth-send'
 import { revalidateAutomationInvocation, validateAutomationInvocation } from '@/lib/automation-fencing'
 
 export const dynamic = 'force-dynamic'
 
-
-async function sendSMS(to: string, message: string, apiKey: string, fromNumber: string, idempotencyKey?: string) {
-  if (!apiKey || !fromNumber) return { success: false, error: 'Telnyx not configured' }
-  const r = await fetch('https://api.telnyx.com/v2/messages', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) },
-    body: JSON.stringify({ from: fromNumber, to, text: message }),
-  })
-  const d = await r.json().catch(() => ({}))
-  if (!r.ok) return { success: false, error: d.errors?.[0]?.detail || `Telnyx returned ${r.status}` }
-  return d.data?.id ? { success: true } : { success: false, error: d.errors?.[0]?.detail || 'Telnyx did not return a message id' }
-}
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
@@ -38,8 +27,6 @@ export async function POST(req: NextRequest) {
   if (settingsError) return NextResponse.json({ ok: false, error: 'Unable to load shop settings' }, { status: 500 })
   const shopName = String(settings?.shop_name || settings?.company_name || settings?.business_name || 'our shop').slice(0, 120)
   const shopPhone = String(settings?.shop_phone || settings?.phone || settings?.business_phone || '').slice(0, 40)
-  const telnyxKey = String(settings?.telnyx_api_key || '')
-  const telnyxFrom = String(settings?.telnyx_phone_number || '')
   const contactLine = shopPhone ? `Call us at ${shopPhone} or reply here.` : 'Reply here to schedule.'
   const cutoff = new Date(Date.now() - followupHours * 3600 * 1000).toISOString()
   const twoWeeksAgo = new Date(Date.now() - 14 * 24 * 3600 * 1000).toISOString()
@@ -96,7 +83,7 @@ export async function POST(req: NextRequest) {
       if (customer.phone && !customer.sms_opted_out && !(await isSmsOptedOut(sb, auth.shopId, customer.phone))) {
         const beforeSms = await revalidateAutomationInvocation(req, body as Record<string, unknown>, auth.shopId, ['estimate_followups'])
         if (!beforeSms.ok) return NextResponse.json({ ok: false, error: beforeSms.error }, { status: beforeSms.status })
-        const smsResult = await sendSMS(customer.phone, msg, telnyxKey, telnyxFrom, `estimate-followup-${est.id}`)
+        const smsResult = await sendGrowthText(settings, customer.phone, msg, `estimate-followup-${est.id}`, 'service')
         sent = smsResult.success
         sentBySms = smsResult.success
       }

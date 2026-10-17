@@ -3,6 +3,7 @@ import { getServiceClient } from '@/lib/supabase'
 import { hasInternalApiSecret, unauthorized } from '@/lib/api-auth'
 import { sendEmail } from '@/lib/email'
 import { sendSMS, formatPhone } from '@/lib/telnyx'
+import { fromNumberOf, smsOptionsFor } from '@/lib/text-channel'
 import { isSmsOptedOut } from '@/lib/sms-consent'
 import { earliestSend, normalizeRules, validTimezone, windowFromRules } from '@/lib/automation-rules'
 
@@ -142,11 +143,8 @@ export async function POST(req: NextRequest) {
           results.push({ id: row.id, status: 'cancelled', reason: 'sms_opted_out' })
           continue
         }
-        const result = await sendSMS(formattedPhone, body, String(settings.telnyx_phone_number || ''), {
-          apiKey: String(settings.telnyx_api_key || ''),
-          messagingProfileId: String(settings.telnyx_messaging_profile_id || ''),
-          idempotencyKey,
-        })
+        // The shop's own phone or its Telnyx number, whichever the shop chose. A shop that cannot text throws here, before any send.
+        const result = await sendSMS(formattedPhone, body, fromNumberOf(settings), smsOptionsFor(settings, { idempotencyKey }))
         providerAccepted = true
         providerId = result?.id || null
       } else {
@@ -171,7 +169,7 @@ export async function POST(req: NextRequest) {
         shop_id: row.shop_id,
         direction: 'outbound',
         channel: row.channel,
-        from_address: row.channel === 'sms' ? String(settings.telnyx_phone_number || '') : String(settings.from_email || ''),
+        from_address: row.channel === 'sms' ? fromNumberOf(settings) : String(settings.from_email || ''),
         to_address: row.channel === 'sms' ? formatPhone(String(customer?.phone || '')) : String(customer?.email || ''),
         subject: row.subject || null,
         body,

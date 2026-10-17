@@ -455,3 +455,30 @@ No change to Aaron's AI engine, keys or settings. No customer, invoice, estimate
 
 ### Still needs Aaron
 Merging or deleting the roughly twenty duplicate and test customers (his specific yes); Telnyx carrier registration and public key; social, ad, QuickBooks and card-processor accounts; labor guide and parts catalog accounts; the scheduler for the daily job; legal review of wording; key rotation.
+
+## Session: October 16, 2026 (texting audit and the Android phone channel)
+
+Aaron asked that Alpha Desk have every texting feature we talked about. Audited the code against PRODUCT-STANDARD sections 8 and 28, then built the gaps that need no account and no spending.
+
+### What the audit found
+- The Android-phone gateway (TextBee, httpSMS) was in the code but unreachable: it only ran from a deployment-wide setting, and every shop-bound send path forced Telnyx. Incoming gateway texts were also dropped, because the gateways do not say which shop a text belongs to.
+- Five Growth routes (follow-ups, estimate follow-ups, reminders, review requests, lead texts) each had their own copy of a Telnyx call, so none of them could follow a shop's choice.
+- The From my phone button did not check whether a customer had said STOP.
+- The product standard said document events never reach the thread; the code does write them (sent, viewed, approved, signed, declined, notes). The row is corrected.
+
+### Built
+- `lib/text-channel.ts`: one place that decides how a shop texts (Telnyx or its own phone). A half-finished phone setup never falls back to Telnyx and never sends.
+- `lib/sms.ts`: sends through a shop's own TextBee or httpSMS account with that shop's keys; an empty Telnyx messaging profile is now left out instead of sent blank. Only this file talks to the Telnyx text API (a test fails otherwise).
+- Every send path now follows the choice: replies, estimates and invoices, scheduled texts, automations, the assistant, and the five Growth routes (through `lib/growth-send.ts`). Pictures are refused on the phone, and promotions and win-back texts are kept off a personal phone.
+- Settings, Communications, "Text with my own phone": steps, the service, key, number, a private address for received texts, a test text, and the switch. The switch refuses to save until every detail is filled in (`lib/phone-settings.ts`).
+- `/api/sms-inbound?shop=...&secret=...`: per-shop address with its own code, exact comparison, fails closed (`lib/phone-inbound.ts`); ignores sent, delivered and failed notices; reads both services' payloads.
+- The From my phone button asks the server (`/api/sms-consent`) and refuses a number that replied STOP. It is also on a customer's Text screen.
+- Migration 063 (six nullable columns on settings, add-only). NOT applied: it needs Aaron's OK. Until then the app works exactly as before; the Settings card says it needs a database update, and loading and saving every other setting is unchanged.
+
+### Tested
+42 new tests (channel choice, sending to each service with a fake network, settings rules, the address check, both services' payload shapes, an incoming text for a phone-only shop, and STOP through the phone) plus guards that fail if a send path stops following the choice. Not tried on a real phone.
+
+### Still open (texting)
+- Recorded written consent before a marketing text (changes who gets promotions today; Aaron's decision).
+- One function that every send path calls for opt-out and quiet hours (each route still checks for itself).
+- Per-thread access, phone push alerts, delivery reports for phone-gateway texts, iMessage business, RCS.

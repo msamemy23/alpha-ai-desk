@@ -6,6 +6,7 @@ import { formatPhone } from '@/lib/telnyx'
 import { getIdempotencyKey } from '@/lib/api-response'
 import { normalizePhoneDigits } from '@/lib/sms-normalize'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { textReady } from '@/lib/text-channel'
 import { sendDurableSms } from '@/lib/durable-sms'
 import { sendDurableEmail } from '@/lib/durable-email'
 import { buildPublicDocument } from '@/lib/doc-public'
@@ -77,7 +78,7 @@ export async function POST(req: NextRequest) {
     }
 
     const emailReady = Boolean(settings?.resend_api_key && settings?.from_email)
-    const smsReady = Boolean(settings?.telnyx_api_key && settings?.telnyx_phone_number)
+    const smsReady = textReady(settings)
     const formatted = custPhone ? formatPhone(custPhone) : ''
     // If the "asked not to get texts" list cannot be read, nothing is texted: it is never assumed to be fine.
     let consentUnknown = false
@@ -178,11 +179,7 @@ export async function POST(req: NextRequest) {
         text,
         customerId: doc.customer_id,
         documentId,
-        settings: {
-          telnyx_api_key: String(settings?.telnyx_api_key),
-          telnyx_phone_number: String(settings?.telnyx_phone_number),
-          telnyx_messaging_profile_id: settings?.telnyx_messaging_profile_id || '',
-        },
+        settings: (settings || {}) as Record<string, unknown>,
       })
       if (!result.ok) return NextResponse.json({ ok: false, error: result.error, uncertain: result.uncertain === true }, { status: result.status })
       if (!result.messageRecordSaved) {

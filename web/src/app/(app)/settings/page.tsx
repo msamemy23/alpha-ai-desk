@@ -43,7 +43,7 @@ const SECTIONS: { id: SectionId; label: string; sub: string; icon: string; hasFi
 ]
 
 // The server never sends credentials back. Once one is saved the field is cleared and marked "Saved".
-const SECRET_KEYS = ['ai_api_key', 'telnyx_api_key', 'resend_api_key']
+const SECRET_KEYS = ['ai_api_key', 'telnyx_api_key', 'resend_api_key', 'phone_gateway_key']
 
 const norm = (v: unknown) => (v === undefined || v === null ? '' : v)
 const sameSettings = (a: Settings, b: Settings) => {

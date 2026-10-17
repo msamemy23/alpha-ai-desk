@@ -15,6 +15,8 @@
 // httpSMS:  SMS_PROVIDER=httpsms  HTTPSMS_API_KEY=...   HTTPSMS_FROM=+1XXXXXXXXXX
 // custom:   SMS_PROVIDER=custom   SMS_CUSTOM_URL=...    (+ optional auth/field env, see below)
 
+import type { PhoneGateway } from './text-channel'
+
 export function formatPhone(phone: string): string {
   const digits = phone.replace(/\D/g, '')
   if (digits.length === 10) return `+1${digits}`
@@ -22,7 +24,14 @@ export function formatPhone(phone: string): string {
   return phone
 }
 
-export type SmsOptions = { apiKey?: string; messagingProfileId?: string; idempotencyKey?: string; mediaUrls?: string[] }
+export type SmsOptions = {
+  apiKey?: string
+  messagingProfileId?: string
+  idempotencyKey?: string
+  mediaUrls?: string[]
+  /** This shop's own Android phone, through a text gateway app. Used instead of Telnyx when present. */
+  phone?: PhoneGateway
+}
 
 export async function sendSMS(to: string, body: string, from?: string, options?: SmsOptions) {
   // Tenant-bound calls always use the shop's Telnyx credentials. The legacy
@@ -30,6 +39,8 @@ export async function sendSMS(to: string, body: string, from?: string, options?:
   // not supply shop credentials (for backwards-compatible internal jobs).
   const provider = options ? 'telnyx' : (process.env.SMS_PROVIDER || 'telnyx').toLowerCase()
   const dest = formatPhone(to)
+  // A shop that chose its own phone sends with that shop's gateway keys, never the deployment-wide ones.
+  if (options?.phone) return sendViaShopPhone(dest, body, options.phone, options.idempotencyKey)
   switch (provider) {
     case 'textbee': return sendViaTextbee(dest, body)
     case 'httpsms': return sendViaHttpSms(dest, body, from)
@@ -60,7 +71,8 @@ async function sendViaTelnyx(to: string, body: string, from?: string, options?: 
       ...(body ? { text: body } : {}),
       // Pictures and video go out as a multimedia message (MMS). The links are one-time-token links on this app.
       ...(options?.mediaUrls?.length ? { media_urls: options.mediaUrls.slice(0, 5), type: 'MMS' } : {}),
-      messaging_profile_id: options ? options.messagingProfileId : process.env.TELNYX_MESSAGING_PROFILE_ID,
+      // Left out when the shop has none, so Telnyx uses the profile the number already belongs to.
+      ...((options ? options.messagingProfileId : process.env.TELNYX_MESSAGING_PROFILE_ID) ? { messaging_profile_id: options ? options.messagingProfileId : process.env.TELNYX_MESSAGING_PROFILE_ID } : {}),
     }),
   })
   const data = await res.json()
@@ -125,4 +137,46 @@ async function sendViaCustom(to: string, body: string) {
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data?.message || data?.error || `Phone SMS send failed (${res.status})`)
   return data
+}
+
+// ── One shop's own phone, with that shop's own gateway keys ──────────────────
+// Both gateways answer 2xx once they have queued the text for the phone. Neither reports back whether the phone sent it, so the
+// result is "accepted", and the id is the gateway's when it gives one (a stable made-up one when it does not).
+export async function sendViaShopPhone(to: string, body: string, gateway: PhoneGateway, idempotencyKey?: string): Promise<{ id: string; provider: string }> {
+  if (!body) throw new Error('A text sent through your own phone needs words in it')
+  let data: Record<string, unknown> = {}
+  if (gateway.provider === 'textbee') {
+    const base = (process.env.TEXTBEE_BASE_URL || 'https://api.textbee.dev/api/v1').replace(/\/$/, '')
+    const res = await fetch(`${base}/gateway/devices/${encodeURIComponent(gateway.deviceId)}/send-sms`, {
+      method: 'POST',
+      headers: { 'x-api-key': gateway.apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recipients: [to], message: body }),
+    })
+    data = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok) throw new Error(gatewayError(data) || `The phone service did not accept the text (${res.status})`)
+  } else {
+    const res = await fetch('https://api.httpsms.com/v1/messages/send', {
+      method: 'POST',
+      headers: { 'x-api-key': gateway.apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: body, from: gateway.number, to }),
+    })
+    data = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok) throw new Error(gatewayError(data) || `The phone service did not accept the text (${res.status})`)
+  }
+  return { id: gatewayMessageId(data) || `phone-${gateway.provider}-${idempotencyKey || Date.now().toString(36)}`, provider: gateway.provider }
+}
+
+function gatewayError(data: Record<string, unknown>): string {
+  const d = data as { message?: unknown; error?: unknown }
+  const m = typeof d.message === 'string' ? d.message : typeof d.error === 'string' ? d.error : ''
+  return m.slice(0, 200)
+}
+
+/** The gateway's own id for the text, from either service's reply shape. */
+export function gatewayMessageId(data: Record<string, unknown>): string {
+  const inner = (data.data && typeof data.data === 'object' ? data.data : {}) as Record<string, unknown>
+  for (const v of [inner.id, inner.smsBatchId, inner.smsId, data.id, data.smsBatchId]) {
+    if (typeof v === 'string' && v.trim()) return v.trim()
+  }
+  return ''
 }

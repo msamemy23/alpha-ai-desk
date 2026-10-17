@@ -11,6 +11,7 @@ import { sendEmail } from '@/lib/email'
 import { emailHtml, emailPlainText, sendResendEmail } from '@/lib/marketing-email'
 import { sendDurableSms } from '@/lib/durable-sms'
 import { isSmsOptedOut } from '@/lib/sms-consent'
+import { allowsBulk, PHONE_NO_BULK_MESSAGE, textReady } from '@/lib/text-channel'
 import { findings, normalizeSections } from '@/lib/dvi'
 import { createUnsubscribeToken, unsubscribeUrl } from '@/lib/unsubscribe-token'
 import { normalizeRules, phoneKey, validTimezone, type Channel, type RecentSend } from '@/lib/automation-rules'
@@ -83,7 +84,7 @@ export async function loadShopInfo(db: Db, shopId: string): Promise<ShopInfo & {
     phone: String(s.shop_phone || '').trim(),
     timezone: validTimezone(s.timezone),
     reviewUrl: String(s.google_review_url || s.google_review_link || '').trim(),
-    smsReady: Boolean(s.telnyx_api_key && s.telnyx_phone_number),
+    smsReady: textReady(s),
     emailReady: Boolean(s.resend_api_key && s.from_email && String(s.shop_address || '').trim()),
     rules: parsed.rules,
     states: parsed.states,
@@ -358,11 +359,11 @@ export function createSenders(db: Db, baseUrl: string): Senders {
   return {
     async sms(m: OutgoingMessage, shop: ShopInfo): Promise<SendResult> {
       const { settings, userId } = await credentialsFor(db, shop.shopId)
+      // Promotions never go through a personal phone: carriers block a phone that sends in bulk.
+      if (m.row.message_class === 'marketing' && !allowsBulk(settings)) return { ok: false, error: PHONE_NO_BULK_MESSAGE, uncertain: false }
       const request = new Request('https://internal.invalid/automation', { method: 'POST', headers: { 'Idempotency-Key': m.idempotencyKey } })
       const result = await sendDurableSms({
-        request, db, shopId: shop.shopId, userId, to: m.to, text: m.text, customerId: m.row.customer_id, settings: {
-          telnyx_api_key: settings.telnyx_api_key, telnyx_phone_number: settings.telnyx_phone_number, telnyx_messaging_profile_id: settings.telnyx_messaging_profile_id,
-        },
+        request, db, shopId: shop.shopId, userId, to: m.to, text: m.text, customerId: m.row.customer_id, settings,
       })
       if (result.ok) return { ok: true, id: result.messageId }
       const uncertain = result.uncertain === true || /uncertain|do not retry|reconcile/i.test(result.error)
