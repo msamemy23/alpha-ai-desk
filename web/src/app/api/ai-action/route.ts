@@ -1,5 +1,9 @@
 ﻿export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from 'next/server'
+import { buildShopSnapshot } from '@/lib/ai/shop-snapshot'
+import { loadShopFacts, todayKeyIn } from '@/lib/report-delivery'
+import { loadDocs } from '@/lib/report-load'
+import type { Db } from '@/lib/db-types'
 import { getServiceClient } from '@/lib/supabase'
 import { forbidden, getAuthedShop, hasInternalApiSecret, unauthorized } from '@/lib/api-auth'
 import { sendEmail, estimateEmailHtml } from '@/lib/email'
@@ -8,7 +12,7 @@ import { writeAuditLog } from '@/lib/audit-log'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
 import { createHash, randomUUID } from 'node:crypto'
 import { isSmsOptedOut } from '@/lib/sms-consent'
-import { nonNegativeMoney } from '@/lib/document-money'
+import { calculateDocumentTotals, nonNegativeMoney } from '@/lib/document-money'
 import { loadShopRules } from '@/lib/ai/shop-rules-server'
 import { decideAction, findNeverSay } from '@/lib/ai/shop-rules'
 import { getActionInfo } from '@/lib/ai/action-risk'
@@ -607,10 +611,38 @@ export async function POST(req: NextRequest) {
           total_results: enriched.length + Object.keys(jobOnlyCustomers).length
         })
       }
+      // ── Shop snapshot: who owes, the schedule, open jobs ─────
+      case 'getShopSnapshot': {
+        const facts = await loadShopFacts(sb as unknown as Db, shopId)
+        const now = new Date()
+        const todayKey = todayKeyIn(facts.timezone, now)
+        const [docLoad, draftsRes, estimatesRes, apptRes, jobsRes] = await Promise.all([
+          loadDocs(sb as unknown as Db, shopId, now.toISOString()),
+          sb.from('documents').select('id', { count: 'exact', head: true }).eq('shop_id', shopId).eq('type', 'Invoice').eq('status', 'Draft'),
+          sb.from('documents').select('*').eq('shop_id', shopId).eq('type', 'Estimate').limit(500),
+          sb.from('appointments').select('*').eq('shop_id', shopId).limit(1000),
+          sb.from('jobs').select('*').eq('shop_id', shopId).order('created_at', { ascending: false }).limit(500),
+        ])
+        if (draftsRes.error || estimatesRes.error || apptRes.error || jobsRes.error) return fail('The shop snapshot could not be loaded', 500)
+        const estimates = (estimatesRes.data || []) as Record<string, unknown>[]
+        return await auditedOk(buildShopSnapshot({
+          todayKey,
+          timezone: facts.timezone,
+          saleDocs: docLoad.docs.filter(d => d.type === 'Invoice' || d.type === 'Receipt'),
+          draftInvoiceCount: draftsRes.count || 0,
+          estimates,
+          estimateTotal: row => calculateDocumentTotals(row).total,
+          appointments: (apptRes.data || []) as Record<string, unknown>[],
+          jobs: (jobsRes.data || []) as Record<string, unknown>[],
+          customerFilter: typeof payload.customer_name === 'string' ? payload.customer_name : undefined,
+        }))
+      }
+
       // ── Get Shop Stats ───────────────────────────────────────
       case 'getShopStats': {
-        const today = new Date().toISOString().split('T')[0]
-        const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0]
+        const statsFacts = await loadShopFacts(sb as unknown as Db, shopId)
+        const today = todayKeyIn(statsFacts.timezone, new Date())
+        const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0] // a 7-day window; the day key above is the shop's own
 
         const [jobsRes, docsRes, msgsRes, custRes] = await Promise.all([
           sb.from('jobs').select('*').eq('shop_id', shopId).gte('created_at', weekAgo),
