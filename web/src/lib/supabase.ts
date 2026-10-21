@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { calculateDocumentTotals } from '@/lib/document-money'
 import { createBrowserClient } from '@supabase/ssr'
+import { shareInFlight } from '@/lib/share-in-flight'
 
 // Publishable URL + anon key (safe to ship to the browser; access is governed
 // by RLS, not by hiding this key). Env only — values are inlined at build time
@@ -51,7 +52,18 @@ export async function ensureShopProfile(shopName: string) {
   return { id: data.id, created: Boolean(data.created) }
 }
 
-export async function getShopProfile() {
+type ShopProfileRow = {
+  id: string
+  user_id: string
+  shop_name: string
+  phone: string
+  address: string
+  city_state_zip: string
+  services: string[]
+  created_at: string
+}
+
+async function loadShopProfile(): Promise<ShopProfileRow | null> {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
   const { data: membership, error: membershipError } = await supabase
@@ -64,17 +76,12 @@ export async function getShopProfile() {
     .maybeSingle()
   if (membershipError || !membership?.shop_id) return null
   const { data } = await supabase.from('shop_profiles').select('*').eq('id', membership.shop_id).maybeSingle()
-  return data as {
-    id: string
-    user_id: string
-    shop_name: string
-    phone: string
-    address: string
-    city_state_zip: string
-    services: string[]
-    created_at: string
-  } | null
+  return data as ShopProfileRow | null
 }
+
+// The shell and the page both ask for the profile when a screen opens, and each ask is three round trips in a row
+// (who is signed in, which shop, the profile). Callers who ask at the same moment share one set of them.
+export const getShopProfile = shareInFlight(loadShopProfile)
 
 // Returns the current user's shop_profiles.id for filtering data tables.
 //
