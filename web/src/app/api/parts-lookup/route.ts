@@ -7,7 +7,8 @@ import { writeAuditLog } from '@/lib/audit-log'
 import { checkRateLimit, rateLimitKey } from '@/lib/rate-limit'
 import { normalizePartsQuery as normalizePartsLookupQuery } from '@/lib/ai/desktop-actions'
 import { getUserChatGptTransport } from '@/lib/chatgpt-connection'
-import { chatGptModel, fetchOpenAIChatCompletion } from '@/lib/openai-oauth-server'
+import { fetchOpenAIChatCompletion } from '@/lib/openai-oauth-server'
+import { chainFailureMessage, chatGptModelCandidates, completeWithFallback } from '@/lib/ai/provider-chain'
 import { parseAutoZoneCategoryEvidence } from '@/lib/ai/autozone-category-parser'
 import { hasExactlyOneVisiblePrice, hasVisiblePrice, priceAppearsInEvidence, visiblePriceMatches } from '@/lib/ai/price-evidence'
 import { runHostedBrowser } from '@/lib/hosted-browser'
@@ -439,37 +440,37 @@ type PartsAiMessage = { role: 'system' | 'user'; content: string }
 type PartsAiConfig = {
   key: string
   base: string
+  /** Model for the shop key. */
   model: string
+  /** ChatGPT models to try, best first (current ones only). */
+  chatGptModels?: string[]
   oauthTransport: OpenAIOAuthTransport | null
 }
 
 async function callPartsAi(config: PartsAiConfig, messages: PartsAiMessage[], maxTokens: number) {
   if (!config.oauthTransport && !config.key) throw new Error('Parts AI enrichment is unavailable')
   const signal = AbortSignal.timeout(PARTS_AI_TIMEOUT_MS)
-  if (config.oauthTransport) {
-    const completion = await fetchOpenAIChatCompletion(config.oauthTransport, {
-      model: chatGptModel(config.model),
-      messages,
-      max_tokens: maxTokens,
-    }, signal)
-    if (!completion.ok) {
-      const message = completion.data && typeof completion.data === 'object' && 'error' in completion.data
-        ? String((completion.data as { error?: { message?: unknown } }).error?.message || 'ChatGPT request failed')
-        : 'ChatGPT request failed'
-      throw new Error(message)
-    }
-    return completion.data
-  }
-
-  const res = await fetch(`${config.base}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${config.key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: config.model, messages, max_tokens: maxTokens, temperature: 0.1 }),
-    signal,
+  // Same order as every other AI call: ChatGPT (current models), then the shop key. See lib/ai/provider-chain.ts.
+  const out = await completeWithFallback({
+    ...(config.oauthTransport ? {
+      chatgpt: (model: string) => fetchOpenAIChatCompletion(config.oauthTransport!, { model, messages, max_tokens: maxTokens }, signal),
+      chatgptModels: config.chatGptModels?.length ? config.chatGptModels : chatGptModelCandidates(undefined, process.env.CHATGPT_MODEL),
+    } : {}),
+    ...(config.key ? {
+      shopKeyModel: config.model,
+      shopKey: async () => {
+        const res = await fetch(`${config.base}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${config.key}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: config.model, messages, max_tokens: maxTokens, temperature: 0.1 }),
+          signal,
+        })
+        return { ok: res.ok, status: res.status, data: await res.json().catch(() => ({})) }
+      },
+    } : {}),
   })
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(typeof data?.error?.message === 'string' ? data.error.message : `AI provider returned ${res.status}`)
-  return data
+  if (!out.ok) throw new Error(chainFailureMessage(out))
+  return out.data as { choices?: { message?: { content?: string } }[] }
 }
 
 function fallbackDecomposition(query: string) {
@@ -1165,8 +1166,8 @@ export async function POST(req: NextRequest) {
       oauthTransport = null
     }
     const aiBase = normalizeAiBaseUrl(settings?.ai_base_url || AI_BASE_URLS.OPENROUTER)
-    const aiModel = oauthTransport ? chatGptModel(settings?.ai_model) : normalizeAiModel(settings?.ai_model, aiBase)
-    const aiConfig: PartsAiConfig = { key: aiKey, base: aiBase, model: aiModel, oauthTransport }
+    const aiModel = normalizeAiModel(settings?.ai_model, aiBase)
+    const aiConfig: PartsAiConfig = { key: aiKey, base: aiBase, model: aiModel, chatGptModels: chatGptModelCandidates(undefined, process.env.CHATGPT_MODEL), oauthTransport }
 
     // Step 1: Decompose the request
     const decomposed = await decomposeRequest(query, aiConfig)

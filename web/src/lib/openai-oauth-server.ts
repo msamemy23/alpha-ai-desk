@@ -1,3 +1,4 @@
+import { chatGptModelCandidates } from '@/lib/ai/provider-chain'
 import { createOpenAIOAuthTransport, type OpenAIOAuthTransport } from '@openai-oauth/core'
 import { openaiCredentials } from '@openai-oauth/web/server'
 
@@ -129,10 +130,7 @@ export function getOpenAIOAuthTransport(req: Request): OpenAIOAuthTransport | nu
   return createOpenAIOAuthTransport({ auth: credentials.getSession })
 }
 
-export function chatGptModel(value: unknown, fallback = 'gpt-5.5') {
-  const requested = typeof value === 'string' ? value.trim() : ''
-  // Provider-specific model names from the old OpenRouter settings must not
-  // be sent to the ChatGPT Codex backend. Keep the allowlist deliberately
-  // small; the backend still enforces what the user's plan can use.
-  return /^gpt-(?:5|5\.)[a-z0-9._-]+$/i.test(requested) ? requested : fallback
+export function chatGptModel(value: unknown, fallback?: string) {
+  // gpt-5.5 was retired from ChatGPT sign-in on 14 Oct 2026; see lib/ai/provider-chain.ts for the current list.
+  return chatGptModelCandidates(value, fallback || process.env.CHATGPT_MODEL)[0]
 }

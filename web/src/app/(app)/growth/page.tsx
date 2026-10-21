@@ -101,7 +101,7 @@ export default function GrowthPage() {
   const syncCalls = async () => {
     setSyncing(true)
     try {
-      const response = await fetch('/api/telnyx/sync-calls?action=sync', { headers: await getAuthJsonHeaders() })
+      const response = await fetch('/api/telnyx/sync-calls?action=sync', { method: 'POST', headers: await getAuthJsonHeaders() })
       if (!response.ok) { const detail = await response.json().catch(() => ({})); throw new Error(detail.error || 'Call sync failed') }
       await loadCalls()
       notify('Calls are up to date.', 'success')

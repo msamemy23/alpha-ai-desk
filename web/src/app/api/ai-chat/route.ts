@@ -10,7 +10,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 import { AI_BASE_URLS, isOpenRouterBaseUrl, normalizeAiBaseUrl, normalizeAiModel } from '@/lib/ai-config'
-import { chatGptModel, fetchOpenAIChatCompletion } from '@/lib/openai-oauth-server'
+import { fetchOpenAIChatCompletion } from '@/lib/openai-oauth-server'
+import { chainFailureMessage, chatGptModelCandidates, completeWithFallback } from '@/lib/ai/provider-chain'
 import { getUserChatGptTransport } from '@/lib/chatgpt-connection'
 import { verifyReadClaims, unverifiedReadMessage } from '@/lib/ai/read-verification'
 
@@ -20,6 +21,7 @@ export const maxDuration = 300
 const READ_ONLY_ACTIONS = new Set([
   'searchCustomers',
   'getShopStats',
+  'getShopSnapshot',
   'getCustomerHistory',
   'listStaff',
   'getInventory',
@@ -42,7 +44,7 @@ type ChatMessage = { role: 'user' | 'assistant'; content: string }
 
 const LEGACY_SYSTEM = `You are Alpha AI's read-only compatibility assistant for an auto repair shop.
 You can only retrieve information. To retrieve information, return exactly JSON:
-{"tool":"dbAction","action":"searchCustomers|getShopStats|getCustomerHistory|listStaff|getInventory|getTimeclockReport|searchWeb","payload":{}}
+{"tool":"dbAction","action":"searchCustomers|getShopStats|getShopSnapshot|getCustomerHistory|listStaff|getInventory|getTimeclockReport|searchWeb","payload":{}}
 Never claim a lookup ran unless a tool result was provided. Never create, update, send, delete, schedule, or save anything. If the customer asks to change shop data, tell them that this client must send sessionId and turnId so the durable workflow can prepare a review.`
 
 function validId(value: unknown): value is string {
@@ -64,6 +66,7 @@ function requiredReads(message: string) {
   if (/\b(?:staff|technicians?|employees?|team)\b/i.test(message) && /\b(?:who|list|show|find|check|how many|available)\b/i.test(message)) required.add('listStaff')
   if (/\b(?:shop stats?|revenue|sales|dashboard)\b/i.test(message) && /\b(?:show|check|what|how|stats?|revenue|sales)\b/i.test(message)) required.add('getShopStats')
   if (/\b(?:time ?clock|clocked|hours worked)\b/i.test(message)) required.add('getTimeclockReport')
+  if (/\b(?:owes?|owed|unpaid|open invoices?|outstanding|receivables?|schedule|appointments?|on today|what'?s on|open jobs?)\b/i.test(message)) required.add('getShopSnapshot')
   if (/\b(?:customer history|service history|repair history)\b/i.test(message)) required.add('getCustomerHistory')
   if (/\b(?:find|search|look up)\b/i.test(message) && /\b(?:customer|client)\b/i.test(message)) required.add('searchCustomers')
   if (/\b(?:search|look up|find)\b/i.test(message) && /\b(?:web|online|internet)\b/i.test(message)) required.add('searchWeb')
@@ -170,10 +173,11 @@ export async function POST(req: NextRequest) {
 
   try {
     const settings = await getSettings(auth.shopId)
-    const transport = await getUserChatGptTransport(auth)
+    let transport: Awaited<ReturnType<typeof getUserChatGptTransport>> = null
+    try { transport = await getUserChatGptTransport(auth) } catch { transport = null }
     const apiKey = typeof settings.ai_api_key === 'string' ? settings.ai_api_key.trim() : ''
     const baseUrl = normalizeAiBaseUrl(settings.ai_base_url || AI_BASE_URLS.OPENROUTER)
-    const model = transport ? chatGptModel(settings.ai_model) : normalizeAiModel(settings.ai_model, baseUrl)
+    const keyModel = normalizeAiModel(settings.ai_model, baseUrl)
     if (!transport && !apiKey) return NextResponse.json({ reply: 'AI is not configured yet. Add this shop AI API key in Settings.' }, { status: 503 })
 
     const messages: ChatMessage[] = [...legacyHistory(request.history), { role: 'user', content: message }]
@@ -182,19 +186,28 @@ export async function POST(req: NextRequest) {
     let retried = false
 
     for (let step = 0; step < 5; step++) {
-      const completion = transport
-        ? await fetchOpenAIChatCompletion(transport, { model, messages: [{ role: 'system', content: legacyPrompt(settings) }, ...messages], max_tokens: 600 }, AbortSignal.timeout(120000))
-        : await (async () => {
+      const prompt = [{ role: 'system', content: legacyPrompt(settings) }, ...messages]
+      // ChatGPT (current models) first, then the shop key: lib/ai/provider-chain.ts.
+      const completion = await completeWithFallback({
+        ...(transport ? {
+          chatgpt: (model: string) => fetchOpenAIChatCompletion(transport!, { model, messages: prompt, max_tokens: 600 }, AbortSignal.timeout(120000)),
+          chatgptModels: chatGptModelCandidates(undefined, process.env.CHATGPT_MODEL),
+        } : {}),
+        ...(apiKey ? {
+          shopKeyModel: keyModel,
+          shopKey: async () => {
             const response = await fetch(`${baseUrl}/chat/completions`, {
               method: 'POST',
               headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', ...(isOpenRouterBaseUrl(baseUrl) ? { 'HTTP-Referer': 'https://alpha-ai-desk.vercel.app', 'X-Title': 'Alpha AI Desk' } : {}) },
-              body: JSON.stringify({ model, messages: [{ role: 'system', content: legacyPrompt(settings) }, ...messages], max_tokens: 600, temperature: 0.2 }),
+              body: JSON.stringify({ model: keyModel, messages: prompt, max_tokens: 600, temperature: 0.2 }),
               signal: AbortSignal.timeout(120000),
             })
             return { ok: response.ok, status: response.status, data: await response.json().catch(() => ({})) }
-          })()
-      if (!completion.ok || completion.data?.error) return NextResponse.json({ reply: `AI error: ${completion.data?.error?.message || `provider returned HTTP ${completion.status}`}` }, { status: 502 })
-      const raw = completion.data?.choices?.[0]?.message?.content?.trim()
+          },
+        } : {}),
+      })
+      if (!completion.ok) return NextResponse.json({ reply: `AI error: ${chainFailureMessage(completion)}` }, { status: 502 })
+      const raw = (completion.data as { choices?: { message?: { content?: string } }[] } | null)?.choices?.[0]?.message?.content?.trim()
       if (!raw) return NextResponse.json({ reply: 'The AI provider returned an empty response.' }, { status: 502 })
       messages.push({ role: 'assistant', content: raw })
 

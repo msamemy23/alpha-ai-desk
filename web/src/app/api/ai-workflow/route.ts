@@ -11,6 +11,7 @@ import { POST as lookupParts } from '@/app/api/parts-lookup/route'
 import { makeStopCheck } from '@/lib/ai/run-control'
 import { loadShopRules } from '@/lib/ai/shop-rules-server'
 import { decideAction, hasCustomRules, rulesPromptBlock } from '@/lib/ai/shop-rules'
+import { providerErrorText } from '@/lib/ai/provider-chain'
 import { cleanImages, IMAGE_UNSUPPORTED_MESSAGE, looksLikeImageRejection, withImages } from '@/lib/ai/images'
 
 export const dynamic = 'force-dynamic'
@@ -140,7 +141,7 @@ export async function POST(req: NextRequest) {
       }
       await checkpoint(state)
     }
-    const { data: settings, error: settingsError } = await db.from('settings').select('shop_name,labor_rate,tax_rate').eq('shop_id', auth.shopId).limit(1).maybeSingle()
+    const { data: settings, error: settingsError } = await db.from('settings').select('shop_name,labor_rate,tax_rate,timezone').eq('shop_id', auth.shopId).limit(1).maybeSingle()
     if (settingsError) throw new Error('Shop settings could not be loaded')
     // The shop's own rules: injected into what the model sees, and enforced again before any review is shown.
     const rulesState = await loadShopRules(db, auth.shopId)
@@ -158,7 +159,7 @@ export async function POST(req: NextRequest) {
       model: async messages => {
         const { response, data } = await dispatch(complete, '/api/ai-completions', { messages: withImages(messages, photos.images), temperature: 0.1, max_tokens: 5000 })
         if (!response.ok) {
-          const reason = typeof data.error === 'string' ? data.error : data.error?.message || 'AI provider unavailable'
+          const reason = providerErrorText(data, response.status)
           throw new Error(photos.images.length && looksLikeImageRejection(reason) ? IMAGE_UNSUPPORTED_MESSAGE : reason)
         }
         const text = data.choices?.[0]?.message?.content
