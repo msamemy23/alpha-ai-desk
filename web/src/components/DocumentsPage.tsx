@@ -59,18 +59,6 @@ async function recordPayment(
   return res.data.result ?? null
 }
 
-async function getAuthJsonHeaders(): Promise<Record<string, string>> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  try {
-    const { data } = await supabase.auth.getSession()
-    const token = data.session?.access_token
-    if (token) headers.Authorization = `Bearer ${token}`
-  } catch {
-    // Cookie auth can still succeed; the API will return the real error if not.
-  }
-  return headers
-}
-
 interface CannedJob {
   id: string; name: string; category: string | null; description: string | null
   labor_hours: number; labor_rate: number; total_price: number

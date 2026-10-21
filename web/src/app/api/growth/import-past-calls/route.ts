@@ -6,38 +6,6 @@ export const dynamic = 'force-dynamic'
 export const maxDuration = 300 // 5 min for large imports
 
 
-// Fetch all call legs from Telnyx
-async function fetchAllCalls(apiKey: string, targetNumber: string): Promise<any[]> {
-  let allCalls: any[] = []
-  let pageNumber = 1
-  const pageSize = 250
-  let hasMore = true
-
-  while (hasMore) {
-    const params = new URLSearchParams({
-      'page[size]': String(pageSize),
-      'page[number]': String(pageNumber),
-      'filter[to]': targetNumber,
-      'filter[direction]': 'incoming',
-    })
-    const res = await fetch(`https://api.telnyx.com/v2/call_events?${params}`, {
-      headers: { 'Authorization': `Bearer ${apiKey}` },
-      cache: 'no-store',
-    })
-    if (!res.ok) {
-      // Try alternative: use CDRs (Call Detail Records)
-      break
-    }
-    const data = await res.json()
-    const records = data.data || []
-    allCalls.push(...records)
-    hasMore = records.length === pageSize
-    pageNumber++
-    if (pageNumber > 50) break // safety
-  }
-  return allCalls
-}
-
 // Fetch all recordings from Telnyx
 async function fetchAllRecordings(apiKey: string): Promise<any[]> {
   let allRecordings: any[] = []
@@ -61,32 +29,6 @@ async function fetchAllRecordings(apiKey: string): Promise<any[]> {
   } while (cursor && pages < 20)
 
   return allRecordings
-}
-
-// Get transcript from recording using AI
-async function getTranscriptSummary(recordingUrl: string, aiKey: string, aiBase: string, aiModel: string): Promise<string> {
-  if (!aiKey) return 'No AI key configured for transcript'
-  try {
-    const res = await fetch(`${aiBase}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${aiKey}`
-      },
-      body: JSON.stringify({
-        model: aiModel,
-        messages: [
-          { role: 'system', content: 'You are extracting key info from auto shop call transcripts. Extract: customer name, vehicle info, service needed, and any notes. Return as JSON: {"name":"...","vehicle":"...","service":"...","notes":"..."}' },
-          { role: 'user', content: `Analyze this auto shop call recording and extract customer details. Recording URL: ${recordingUrl}` }
-        ],
-        max_tokens: 500,
-      })
-    })
-    const data = await res.json()
-    return data.choices?.[0]?.message?.content || ''
-  } catch {
-    return ''
-  }
 }
 
 // Extract phone from Telnyx format

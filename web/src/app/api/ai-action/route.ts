@@ -577,7 +577,6 @@ export async function POST(req: NextRequest) {
           // Backfill email from documents if missing on customer record
           let resolvedEmail = (c.email as string) || null
           if (!resolvedEmail) {
-            const cName = (c.name as string || '').toLowerCase()
             const docWithEmail = allDocs.find((d: Record<string, unknown>) => d.customer_id === c.id && d.customer_email)
             if (docWithEmail) {
               resolvedEmail = docWithEmail.customer_email as string
@@ -782,6 +781,8 @@ export async function POST(req: NextRequest) {
           if (estErr || !est) return fail('Estimate not found')
           const { data: invDocNumber, error: numberingError } = await sb.rpc('next_document_number', { p_shop_id: shopId, p_type: 'Invoice' })
           if (numberingError || typeof invDocNumber !== 'string') return fail('Invoice numbering failed', 500)
+          // The new invoice gets its own id, number, type and created date, so those four are left out of the copy.
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
           const { id: _rmId, doc_number: _rmDn, type: _rmType, created_at: _rmCa, ...estFields } = est
           const { data: invData, error: invErr } = await sb.from('documents').insert({
             ...estFields,

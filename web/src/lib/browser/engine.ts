@@ -103,7 +103,6 @@ const VIEWPORTS: Record<'phone' | 'desktop', Viewport> = {
   desktop: { width: 1280, height: 800 },
 }
 const PHONE_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36 AlphaDesk/1.0'
-const SENSITIVE_STOP = 'Alpha does not type passwords, card numbers, security codes, bank details or one-time codes. Do this step on the website yourself.'
 
 /* ---------- reading and driving the page through the isolated world ---------- */
 

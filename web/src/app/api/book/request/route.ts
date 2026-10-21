@@ -5,7 +5,7 @@ import { cleanDecisions, findings, normalizeSections } from '@/lib/dvi'
 import { HONEYPOT, SLUG, bookingNotes, cleanBooking, normalizePhone, sameOrigin, startStatus } from '@/lib/booking'
 import { verifyFormToken } from '@/lib/booking-token'
 import { loadBySlug, loadShopInfo } from '@/lib/schedule-store'
-import { addDaysYmd, freeSlots, nowIn } from '@/lib/schedule-capacity'
+import { freeSlots, nowIn } from '@/lib/schedule-capacity'
 import { bookingSecret, fingerprint, ipOf, json, loadSlots, overLimit, yearAgo } from '@/lib/book-server'
 
 export const dynamic = 'force-dynamic'
