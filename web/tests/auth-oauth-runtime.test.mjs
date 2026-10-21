@@ -105,6 +105,7 @@ for (const scenario of ['recovered', 'repeated-claim', 'failed-lookup']) {
       '@/lib/ai-config': { AI_BASE_URLS: {}, isOpenRouterBaseUrl: () => false, normalizeAiBaseUrl: value => value, normalizeAiModel: value => value },
       '@/lib/openai-oauth-server': { getOpenAIOAuthTransport: () => null },
       '@/lib/ai/read-verification': readVerification,
+      '@/lib/ai/provider-chain': load('../src/lib/ai/provider-chain.ts'),
     }, { fetch: async (url) => {
       if (String(url).endsWith('/api/ai-action')) {
         actions++
@@ -180,6 +181,9 @@ for (const scenario of ['success', 'query-error', 'audit-error']) {
       '@/lib/rate-limit': { checkRateLimit: () => ({ ok: true }), rateLimitKey: () => 'test-limit' },
       '@/lib/sms-consent': {},
       '@/lib/document-money': {},
+      '@/lib/ai/shop-snapshot': {},
+      '@/lib/report-delivery': {},
+      '@/lib/report-load': {},
       '@/lib/ai/shop-rules-server': { loadShopRules: async () => ({ rules: shopRules.defaultRules(), status: 'ok', settingsId: null }) },
       '@/lib/ai/shop-rules': shopRules,
       '@/lib/ai/action-risk': actionRisk,
@@ -219,6 +223,7 @@ for (const [name, membership, expected] of [
 
 const oauth = load('../src/lib/openai-oauth-server.ts', {
   '@openai-oauth/core': oauthCore, '@openai-oauth/web/server': oauthWeb,
+  '@/lib/ai/provider-chain': load('../src/lib/ai/provider-chain.ts'),
 })
 test('ChatGPT connector preserves Alpha authorization and requires both OAuth headers', () => {
   const request = new Request('https://alpha.invalid', { headers: { Authorization: 'Bearer alpha-only' } })

@@ -25,7 +25,8 @@ const money = load('../src/lib/document-money.ts')
 const catalog = load('../src/lib/ai/workflow/catalog.ts')
 const reads = load('../src/lib/ai/read-verification.ts')
 const researchIntent = load('../src/lib/ai/workflow/research-intent.ts')
-const engine = load('../src/lib/ai/workflow/engine.ts', { './catalog': catalog, '@/lib/document-money': money, '@/lib/ai/read-verification': reads, './research-intent': researchIntent })
+const shopTime = load('../src/lib/ai/shop-time.ts')
+const engine = load('../src/lib/ai/workflow/engine.ts', { './catalog': catalog, '../shop-time': shopTime, '@/lib/document-money': money, '@/lib/ai/read-verification': reads, './research-intent': researchIntent })
 
 /** A fake shop: reads return canned data, writes are only recorded (never sent anywhere). */
 function shopHarness(script, { readData = {}, stopWhen = null, rules = null } = {}) {
