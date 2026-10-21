@@ -1,5 +1,5 @@
 export const READ_ONLY_SHOP_ACTIONS = [
-  'searchCustomers', 'getShopStats', 'getCustomerHistory', 'listStaff',
+  'searchCustomers', 'getShopStats', 'getShopSnapshot', 'getCustomerHistory', 'listStaff',
   'getInventory', 'getTimeclockReport', 'searchWeb',
 ] as const
 

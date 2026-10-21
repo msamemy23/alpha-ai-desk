@@ -52,6 +52,7 @@ const READS: [string, string, string, string][] = [
   ['searchCustomers', 'Search customers', 'Searched customers', 'Customers'],
   ['getCustomerHistory', 'Look up a customer history', 'Looked up a customer history', 'Customers'],
   ['getShopStats', 'Look up shop totals', 'Looked up shop totals', 'Reports'],
+  ['getShopSnapshot', 'Look up who owes, the schedule and open jobs', 'Looked up who owes, the schedule and open jobs', 'Reports'],
   ['listStaff', 'List staff', 'Listed staff', 'Team'],
   ['getInventory', 'Look up inventory', 'Looked up inventory', 'Inventory'],
   ['getTimeclockReport', 'Look up the time clock', 'Looked up the time clock', 'Team'],
