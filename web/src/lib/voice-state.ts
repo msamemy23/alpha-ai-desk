@@ -2,16 +2,21 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 
 const VOICE_STATE_TTL_MS = 24 * 60 * 60 * 1000
 
+function getSecrets(): string[] {
+  const all = [process.env.VOICE_STATE_SECRET, process.env.INTERNAL_API_SECRET, process.env.CRON_SECRET, process.env.SUPABASE_SERVICE_ROLE_KEY]
+  return all.filter((v): v is string => typeof v === 'string' && v.length > 0).filter((v, i, a) => a.indexOf(v) === i)
+}
+
 function getSecret(): string {
-  return process.env.VOICE_STATE_SECRET ||
-    process.env.INTERNAL_API_SECRET ||
-    process.env.CRON_SECRET ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    ''
+  return getSecrets()[0] || ''
+}
+
+function signWith(key: string, payload: string): string {
+  return createHmac('sha256', key).update(payload).digest('base64url')
 }
 
 function sign(payload: string): string {
-  return createHmac('sha256', getSecret()).update(payload).digest('base64url')
+  return signWith(getSecret(), payload)
 }
 
 export function createVoiceClientState(input: Record<string, unknown>): string {
@@ -27,9 +32,13 @@ export function verifyVoiceClientState(value: unknown): Record<string, unknown> 
   if (typeof value !== 'string' || !value || !getSecret()) return null
   const [payload, signature] = value.split('.')
   if (!payload || !signature) return null
-  const expected = sign(payload)
+  // Calls already in progress keep working when a new secret is added: any configured secret is accepted.
+  const matches = getSecrets().some(key => {
+    const expected = signWith(key, payload)
+    return signature.length === expected.length && timingSafeEqual(Buffer.from(signature), Buffer.from(expected))
+  })
   try {
-    if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null
+    if (!matches) return null
     const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Record<string, unknown>
     if (typeof parsed.expiresAt !== 'number' || parsed.expiresAt <= Date.now()) return null
     if (typeof parsed.shopId !== 'string' || !parsed.shopId) return null

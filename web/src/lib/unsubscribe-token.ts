@@ -4,15 +4,16 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 // email address; the signature stops anyone from unsubscribing a different address by editing it.
 // It never expires, because an unsubscribe link must keep working for as long as the email exists.
 
-function secret(): string {
-  return process.env.UNSUBSCRIBE_SECRET
-    || process.env.INTERNAL_API_SECRET
-    || process.env.CRON_SECRET
-    || process.env.SUPABASE_SERVICE_ROLE_KEY
-    || ''
+/** Every secret a link may have been signed with, newest choice first. New links use the first. */
+function secrets(): string[] {
+  const all = [process.env.UNSUBSCRIBE_SECRET, process.env.INTERNAL_API_SECRET, process.env.CRON_SECRET, process.env.SUPABASE_SERVICE_ROLE_KEY]
+  return all.filter((v): v is string => typeof v === 'string' && v.length > 0).filter((v, i, a) => a.indexOf(v) === i)
 }
 
-const sign = (payload: string): string => createHmac('sha256', secret()).update(`unsubscribe:${payload}`).digest('base64url')
+const secret = (): string => secrets()[0] || ''
+
+const signWith = (key: string, payload: string): string => createHmac('sha256', key).update(`unsubscribe:${payload}`).digest('base64url')
+const sign = (payload: string): string => signWith(secret(), payload)
 
 export function createUnsubscribeToken(shopId: string, email: string): string {
   if (!secret()) throw new Error('No signing secret is configured')
@@ -24,9 +25,14 @@ export function verifyUnsubscribeToken(token: unknown): { shopId: string; email:
   if (typeof token !== 'string' || !token || token.length > 600 || !secret()) return null
   const [payload, signature] = token.split('.')
   if (!payload || !signature) return null
-  const expected = sign(payload)
+  // A link must keep working after a new secret is set (audit B3: setting CRON_SECRET would otherwise have broken
+  // every unsubscribe link already emailed, which were signed with the service key). So any configured secret is accepted.
+  const matches = secrets().some(key => {
+    const expected = signWith(key, payload)
+    return signature.length === expected.length && timingSafeEqual(Buffer.from(signature), Buffer.from(expected))
+  })
   try {
-    if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null
+    if (!matches) return null
     const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { s?: unknown; e?: unknown }
     if (typeof parsed.s !== 'string' || typeof parsed.e !== 'string' || !parsed.s || !/^[^\s@]+@[^\s@]+$/.test(parsed.e)) return null
     return { shopId: parsed.s, email: parsed.e }
