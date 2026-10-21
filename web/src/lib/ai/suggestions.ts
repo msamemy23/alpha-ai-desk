@@ -10,6 +10,7 @@
  * Pure module: no imports from '@/' so node:test can load it directly.
  */
 import { decideAction, type AiRules } from './shop-rules.ts'
+import { describeFailure } from './chat-failure.ts'
 
 export type Suggestion = { id: string; icon: string; title: string; prompt: string; hint?: string }
 
@@ -97,6 +98,32 @@ export function suggestPrompts(context: SuggestionContext = {}): Suggestion[] {
   // Put recent questions near the top (after the strongest suggestion), then fill with the rest.
   const [first, ...rest] = picked
   return [first, ...again, ...rest].filter(Boolean).slice(0, limit)
+}
+
+export type HistoryChat = { id: string; messages: Array<{ role: string; content?: unknown; html?: string; repairResult?: unknown }> }
+
+/**
+ * The questions on the start screen's "Ask again" buttons, newest chat first: the first question of each earlier chat.
+ * The chat that is open is left out, and so is any question whose answer was an error (it stays in History, but
+ * offering it again only invites the same failure). A question the owner stopped, or never got a reply to, is still offered.
+ */
+export function recentAsksFrom(history: HistoryChat[], openChatId?: string | null, max = 8): string[] {
+  const asks: string[] = []
+  for (const chat of history) {
+    if (chat.id === openChatId) continue
+    const messages = chat.messages || []
+    const at = messages.findIndex(m => m.role === 'user' && typeof m.content === 'string' && m.content !== '')
+    if (at < 0) continue
+    // The reply to that question is everything up to the next question; the last assistant text in it is the outcome.
+    const next = messages.findIndex((m, i) => i > at && m.role === 'user')
+    const replies = messages.slice(at + 1, next < 0 ? messages.length : next)
+      .filter(m => m.role === 'assistant' && typeof m.content === 'string' && m.content !== '' && !m.html && !m.repairResult)
+    const outcome = replies[replies.length - 1]
+    if (outcome && describeFailure(String(outcome.content))?.kind === 'failed') continue
+    asks.push(String(messages[at].content))
+    if (asks.length >= max) break
+  }
+  return asks
 }
 
 /** A plain mid-month Wednesday. Used for the first paint so the server and the browser agree; the real day takes over after load. */
