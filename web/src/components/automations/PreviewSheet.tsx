@@ -5,7 +5,7 @@ import Notice from '@/components/Notice'
 import Sheet from '@/components/Sheet'
 import { call } from './api'
 import { Fact } from './parts'
-import { looksLikePhone, plural, quietWords, scheduleWords, whenWords } from './model'
+import { cannotKeepCadence, checkedWords, looksLikePhone, plural, quietWords, scheduleWords, whenWords } from './model'
 import type { Card, Preview, Rules } from './model'
 
 export type PreviewMode = 'view' | 'enable' | 'run'
@@ -15,6 +15,8 @@ interface Props {
   mode: PreviewMode
   rules: Rules
   timezone: string
+  /** Minutes between the checks Alpha really makes. */
+  checkEvery: number
   canTest: boolean
   onClose: () => void
   /** Switches the automation on. Returns the reason it did not work, or an empty string. */
@@ -31,7 +33,7 @@ const readPhone = (): string => { try { return window.localStorage.getItem(PHONE
 const savePhone = (v: string) => { try { window.localStorage.setItem(PHONE_KEY, v) } catch { /* the number just is not remembered */ } }
 
 /** What an automation would do right now: the exact words, who gets them, who is left out and why. Nothing is sent from here except a test to yourself. */
-export default function PreviewSheet({ card, mode, rules, timezone, canTest, onClose, onEnable, onRun, onNote, onEdit }: Props) {
+export default function PreviewSheet({ card, mode, rules, timezone, checkEvery, canTest, onClose, onEnable, onRun, onNote, onEdit }: Props) {
   const [data, setData] = useState<Preview | null>(null)
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [error, setError] = useState('')
@@ -120,7 +122,7 @@ export default function PreviewSheet({ card, mode, rules, timezone, canTest, onC
             {c.later > 0 && <p className="text-text-secondary">{plural(c.later, 'more person', 'more people')} not due yet. They are checked again on every run.</p>}
 
             <div className="space-y-1">
-              <Fact icon="clock">{scheduleWords(card.schedule)} · {quietWords(rules)}</Fact>
+              <Fact icon="clock">{scheduleWords(card.schedule, checkEvery)} · {quietWords(rules)}</Fact>
               <Fact icon="shield">Anyone who replied STOP is left out, checked again right before each message goes. {card.klass === 'marketing' ? 'Marketing texts end with an opt-out line.' : ''}</Fact>
             </div>
 
@@ -210,7 +212,7 @@ export default function PreviewSheet({ card, mode, rules, timezone, canTest, onC
         </div>
         {mode === 'enable' && engine && state === 'ready' && !blocked && (
           <p className="text-[0.8125rem] text-text-secondary">
-            After you switch it on, it runs at the times above and checks this list again each time. Pausing it cancels anything still waiting to go out. Next check: {card.next_run ? whenWords(card.next_run, timezone) : 'at its next scheduled time'}.
+            After you switch it on, it runs at the times above and checks this list again each time. Pausing it cancels anything still waiting to go out. {cannotKeepCadence(card.schedule, checkEvery) ? `It is checked ${checkedWords(checkEvery)}.` : `Next check: ${card.next_run ? whenWords(card.next_run, timezone) : 'at its next scheduled time'}.`}
           </p>
         )}
       </div>

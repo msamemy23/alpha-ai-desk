@@ -1,7 +1,7 @@
 'use client'
 import { ErrorCard, EmptyBlock } from '@/components/ListKit'
 import Notice from '@/components/Notice'
-import { dayLabel, plural, whenWords } from './model'
+import { cannotKeepCadence, checkedWords, dayLabel, plural, whenWords } from './model'
 import type { Card, Upcoming } from './model'
 
 interface Props {
@@ -10,12 +10,16 @@ interface Props {
   upcoming: Upcoming | null
   cards: Card[]
   timezone: string
+  /** Minutes between the checks Alpha really makes. */
+  checkEvery: number
   onRetry: () => void
 }
 
 /** The next 30 days: what is waiting to go out, when each automation next checks, and who is coming due. */
-export default function UpcomingPanel({ state, error, upcoming, cards, timezone, onRetry }: Props) {
+export default function UpcomingPanel({ state, error, upcoming, cards, timezone, checkEvery, onRetry }: Props) {
   const name = (id: string) => cards.find(c => c.id === id)?.name || id
+  // A schedule closer together than Alpha checks cannot be kept, so no time is promised for it.
+  const checkedAt = (id: string, at: string) => { const c = cards.find(x => x.id === id); return c && cannotKeepCadence(c.schedule, checkEvery) ? `Checked ${checkedWords(checkEvery)}` : whenWords(at, timezone) }
   if (state === 'loading' && !upcoming) return <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading what is coming up"><div className="skeleton h-24" /><div className="skeleton h-40" /></div>
   if (state === 'error' && !upcoming) return <ErrorCard title="What is coming up did not load" message={error || 'Check your connection and try again.'} onRetry={onRetry} />
   if (!upcoming) return null
@@ -31,7 +35,7 @@ export default function UpcomingPanel({ state, error, upcoming, cards, timezone,
           <h2 id="up-runs" className="section-title mb-2">Next checks</h2>
           <ul className="ledger">
             {upcoming.next_runs.map(r => (
-              <li key={r.automation_id}><div className="ledger-row"><span className="ledger-main"><span className="ledger-title block">{r.name}</span></span><span className="shrink-0 text-[0.9375rem] text-text-secondary">{whenWords(r.at, timezone)}</span></div></li>
+              <li key={r.automation_id}><div className="ledger-row"><span className="ledger-main"><span className="ledger-title block">{r.name}</span></span><span className="shrink-0 text-[0.9375rem] text-text-secondary">{checkedAt(r.automation_id, r.at)}</span></div></li>
             ))}
           </ul>
         </section>

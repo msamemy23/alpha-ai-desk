@@ -618,7 +618,7 @@ const ENGINE_DEFS: AutomationDef[] = [
   {
     id: 'car_ready',
     name: 'Car is ready',
-    blurb: 'Texts the customer the moment their job moves to Ready for pickup.',
+    blurb: 'Texts the customer when their job moves to Ready for pickup.',
     trigger: 'When a job is marked Ready for pickup',
     category: 'reminders',
     icon: 'check-circle',
@@ -937,7 +937,7 @@ export function configProblems(def: AutomationDef, input: Record<string, unknown
     } else if (f.type === 'select') {
       if (!f.options?.includes(String(v))) out.push(`${f.label} has to be one of the choices.`)
     } else if (typeof v !== 'string') out.push(`${f.label} must be text.`)
-    else if (key === 'schedule' && !isValidSchedule(v)) out.push('The schedule is not one I understand. Try "Daily at 9am", "Weekly on Monday at 10am" or "every 2 hours".')
+    else if (key === 'schedule' && !isValidSchedule(v)) out.push('The schedule is not one I understand. Try "Daily at 9am" or "Weekly on Monday at 10am".')
   }
   return out
 }

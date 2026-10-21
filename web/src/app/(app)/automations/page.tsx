@@ -18,7 +18,7 @@ import ResultsPanel from '@/components/automations/ResultsPanel'
 import RulesSheet from '@/components/automations/RulesSheet'
 import UpcomingPanel from '@/components/automations/UpcomingPanel'
 import { call } from '@/components/automations/api'
-import { CATEGORY_ICON, groupCards, plural, schedulerWords } from '@/components/automations/model'
+import { CATEGORY_ICON, checkEveryOf, groupCards, plural, schedulerWords } from '@/components/automations/model'
 import type { Card, Rules } from '@/components/automations/model'
 import { useAutomationData, useHistory } from '@/components/automations/useAutomationData'
 import type { CustomAutomation } from '@/components/automations/types'
@@ -204,6 +204,7 @@ export default function AutomationsPage() {
   const previewCard = preview ? cards.find(c => c.id === preview.id) : undefined
   const editCard = editing ? cards.find(c => c.id === editing) : undefined
   const sched = overview ? schedulerWords(overview.scheduler) : null
+  const checkEvery = checkEveryOf(overview?.scheduler)
   const attention = (overview?.attention || []).filter(a => a.kind !== 'stopped')
 
   return (
@@ -280,7 +281,7 @@ export default function AutomationsPage() {
                       {g.cards.map(card => (
                         <li key={card.id}>
                           <AutomationCard
-                            card={card} rules={rules} timezone={timezone} busy={busyIds.has(card.id)} running={runningId === card.id}
+                            card={card} rules={rules} timezone={timezone} checkEvery={checkEvery} busy={busyIds.has(card.id)} running={runningId === card.id}
                             onToggle={next => void toggle(card, next)}
                             onPreview={() => setPreview({ id: card.id, mode: 'view' })}
                             onEdit={() => setEditing(card.id)}
@@ -323,7 +324,7 @@ export default function AutomationsPage() {
             )}
 
             {tab === 'upcoming' && (
-              <UpcomingPanel state={d.results.state} error={d.results.error} upcoming={d.results.value.upcoming} cards={cards} timezone={timezone} onRetry={() => void loadResults()} />
+              <UpcomingPanel state={d.results.state} error={d.results.error} upcoming={d.results.value.upcoming} cards={cards} timezone={timezone} checkEvery={checkEvery} onRetry={() => void loadResults()} />
             )}
             {tab === 'history' && <HistoryPanel cards={cards} timezone={timezone} filter={filter} onFilter={setFilter} history={history} />}
             {tab === 'results' && (
@@ -336,7 +337,7 @@ export default function AutomationsPage() {
       {preview && previewCard && rules && (
         <PreviewSheet
           key={`${previewCard.id}-${preview.mode}`}
-          card={previewCard} mode={preview.mode} rules={rules} timezone={timezone}
+          card={previewCard} mode={preview.mode} rules={rules} timezone={timezone} checkEvery={checkEvery}
           canTest={overview?.shop.sms_ready === true}
           onClose={() => setPreview(null)}
           onEnable={async () => {
@@ -350,7 +351,7 @@ export default function AutomationsPage() {
           onEdit={() => { setPreview(null); setEditing(previewCard.id) }}
         />
       )}
-      {editCard && <EditSheet key={editCard.id} card={editCard} onClose={() => setEditing(null)} onSave={saveSettings(editCard)} />}
+      {editCard && <EditSheet key={editCard.id} card={editCard} checkEvery={checkEvery} onClose={() => setEditing(null)} onSave={saveSettings(editCard)} />}
       {showRules && rules && <RulesSheet rules={rules} onClose={() => setShowRules(false)} onSave={saveRules} />}
       {masterAsk && (
         <ConfirmSheet title="Switch off all automations?" confirmLabel="Switch all off" busyLabel="Switching off…" danger onClose={() => setMasterAsk(false)} onConfirm={() => switchMaster(false)}>

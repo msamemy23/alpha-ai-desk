@@ -2,13 +2,15 @@
 import Icon from '@/components/Icon'
 import Notice from '@/components/Notice'
 import { Fact, OnOff, Status } from './parts'
-import { agoWords, cardStatus, iconFor, plural, scheduleWords, whenWords } from './model'
+import { agoWords, cannotKeepCadence, cardStatus, iconFor, plural, scheduleWords, whenWords } from './model'
 import type { Card, Rules } from './model'
 
 interface Props {
   card: Card
   rules: Pick<Rules, 'master_enabled'>
   timezone: string
+  /** Minutes between the checks Alpha really makes. */
+  checkEvery: number
   busy: boolean
   running: boolean
   onToggle: (next: boolean) => void
@@ -22,11 +24,13 @@ const channelWords = (card: Card): string => {
   return card.channel === 'email' ? 'Email' : 'Text message'
 }
 
-export default function AutomationCard({ card, rules, timezone, busy, running, onToggle, onPreview, onEdit, onRun }: Props) {
+export default function AutomationCard({ card, rules, timezone, checkEvery, busy, running, onToggle, onPreview, onEdit, onRun }: Props) {
   const s = card.state
   const status = cardStatus(card, rules)
   const engine = card.kind === 'engine'
-  const next = s.enabled && rules.master_enabled && card.next_run ? whenWords(card.next_run, timezone) : null
+  // A schedule closer together than Alpha checks cannot be kept, so no time is promised for it.
+  const keeps = !cannotKeepCadence(card.schedule, checkEvery)
+  const next = keeps && s.enabled && rules.master_enabled && card.next_run ? whenWords(card.next_run, timezone) : null
   return (
     <article className="card h-full" aria-labelledby={`auto-${card.id}`}>
       <div className="flex items-center gap-3">
@@ -40,7 +44,7 @@ export default function AutomationCard({ card, rules, timezone, busy, running, o
 
       <div className="mt-3 space-y-1 text-[0.9375rem]">
         <Fact icon="bolt">{card.trigger}</Fact>
-        <Fact icon="clock">{scheduleWords(card.schedule)}{next ? `. Next check ${next}` : ''}</Fact>
+        <Fact icon="clock">{scheduleWords(card.schedule, checkEvery)}{next ? `. Next check ${next}` : ''}</Fact>
         <Fact icon={card.channel === 'email' ? 'mail' : 'phone'}>{channelWords(card)}</Fact>
         {engine && (card.waiting > 0 || card.sent_30d > 0) && (
           <Fact icon="send">
