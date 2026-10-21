@@ -7,7 +7,8 @@ const write = (required: string[], fields: string, description: string): Tool =>
 export const CATALOG: Record<string, Tool> = {
   searchCustomers: read(['query'], 'query', 'Search customers, jobs and documents. Use returned IDs; disambiguate multiple matches.'),
   getCustomerHistory: read([], 'customer_id customer_name', 'Read the selected customer history.'),
-  getShopStats: read([], '', 'Read shop totals and activity.'),
+  getShopStats: read([], '', 'Read shop totals and activity for the last 7 days.'),
+  getShopSnapshot: read([], 'customer_name', 'Who owes money (unpaid invoices by customer, aging, total owed), open estimates, today\'s and the next 7 days\' appointments, and open jobs, in the shop\'s own timezone. Use for: who owes me, unpaid or open invoices, what is on today or the schedule, what jobs are open. Optional customer_name narrows who owes.'),
   listStaff: read([], '', 'Read active staff.'),
   getInventory: read([], 'query', 'Read inventory, up to 50 matches.'),
   getTimeclockReport: read([], 'staff_name startDate endDate', 'Read timeclock report.'),
@@ -42,6 +43,7 @@ const FIELD_KINDS: Record<string, Record<string, FieldKind>> = {
   searchCustomers: { query: 'string' },
   getCustomerHistory: { customer_id: 'string', customer_name: 'string' },
   getInventory: { query: 'string' },
+  getShopSnapshot: { customer_name: 'string' },
   getTimeclockReport: { staff_name: 'string', startDate: 'string', endDate: 'string' },
   searchWeb: { query: 'string' },
   lookupParts: { query: 'string', stores: 'stringArray' },
