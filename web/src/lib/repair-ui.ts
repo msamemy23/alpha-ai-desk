@@ -63,7 +63,10 @@ export function draftForTotal<D extends DraftLike>(draft: D, lines: OperationLik
 /** The vehicle as one line for a heading. */
 export function vehicleLabel(vehicle: { year?: string; make?: string; model?: string; trim?: string; engine?: string } | null | undefined): string {
   if (!vehicle) return 'Vehicle not fully identified'
-  return [vehicle.year, vehicle.make, vehicle.model, vehicle.trim, vehicle.engine].filter(Boolean).join(' ').trim() || 'Vehicle not fully identified'
+  // A model typed in lowercase ("civic") reads as "Civic"; anything with capitals (CR-V, iA) stays as typed.
+  const model = (vehicle.model || '').trim()
+  const shown = model && !/[A-Z]/.test(model) ? model.replace(/(^|[\s-])([a-z])/g, (_: string, sep: string, c: string) => sep + c.toUpperCase()) : model
+  return [vehicle.year, vehicle.make, shown, vehicle.trim, vehicle.engine].filter(Boolean).join(' ').trim() || 'Vehicle not fully identified'
 }
 
 const LABEL_OVERRIDES: Record<string, string> = {
