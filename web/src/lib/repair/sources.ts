@@ -404,8 +404,14 @@ export function parseRepairQuery(input: string, fallback: Partial<RepairVehicle>
   }
 }
 
+/** "civic" typed in lowercase shows as "Civic"; anything typed with capitals (CR-V, F-150, iA) is left as typed. */
+export function displayModel(model?: string) {
+  const m = (model || '').trim()
+  return m && !/[A-Z]/.test(m) ? m.replace(/(^|[\s-])([a-z])/g, (_, sep: string, c: string) => sep + c.toUpperCase()) : m
+}
+
 export function vehicleLabel(vehicle: RepairVehicle) {
-  return [vehicle.year, canonicalMakeForNhtsa(vehicle.make), vehicle.model, vehicle.trim, vehicle.engine].filter(Boolean).join(' ').trim()
+  return [vehicle.year, canonicalMakeForNhtsa(vehicle.make), displayModel(vehicle.model), vehicle.trim, vehicle.engine].filter(Boolean).join(' ').trim()
 }
 
 function sourceId(provider: string, url: string) {
