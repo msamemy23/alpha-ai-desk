@@ -23,3 +23,18 @@ test('B15: syncing calls never runs on a GET, and the Growth screen asks with PO
   assert.match(route, /status: 405/)
   assert.match(read('../src/app/(app)/growth/page.tsx'), /sync-calls\?action=sync', \{ method: 'POST'/)
 })
+
+test('B14: a model typed in lowercase is shown capitalised; CR-V and F-150 stay as they are', async () => {
+  const { displayModel, vehicleLabel } = await import('../src/lib/repair/sources.ts')
+  assert.equal(displayModel('civic'), 'Civic')
+  assert.equal(displayModel('grand cherokee'), 'Grand Cherokee')
+  assert.equal(displayModel('CR-V'), 'CR-V')
+  assert.equal(displayModel('iA'), 'iA')
+  assert.equal(vehicleLabel({ year: '2004', make: 'honda', model: 'civic' }), '2004 Honda Civic')
+})
+
+test('B14: the Repair info screen label capitalises a lowercase model too', async () => {
+  const { vehicleLabel } = await import('../src/lib/repair-ui.ts')
+  assert.equal(vehicleLabel({ year: '2004', make: 'Honda', model: 'civic' }), '2004 Honda Civic')
+  assert.equal(vehicleLabel({ year: '2019', make: 'Honda', model: 'CR-V' }), '2019 Honda CR-V')
+})
