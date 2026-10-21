@@ -55,7 +55,7 @@ test('a refused or unreachable email says why, in the error', async () => {
 // A tiny stand-in for the database: one table of opt-outs, or an error.
 function fakeDb({ rows = [], error = null } = {}) {
   const store = [...rows]
-  const q = (table) => {
+  const q = () => {
     const state = { filters: {} }
     const api = {
       select: () => api,

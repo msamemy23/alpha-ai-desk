@@ -275,12 +275,36 @@ export function buildSchedule(p: ScheduleParts): string {
   return p.kind === 'daily' ? `Daily at ${at}` : `Weekly on ${WEEKDAYS[((p.weekday % 7) + 7) % 7]} at ${at}`
 }
 
-/** "Every 15 minutes", "Every day at 9:00 AM", "Every Monday at 10:00 AM". */
-export function scheduleWords(text: string): string {
+/** Minutes between the checks Alpha really makes: measured from its last two checks. Until it has two, the only job vercel.json schedules is one a day. */
+export const DAILY_CHECK_MINUTES = 1440
+export const checkEveryOf = (s: Pick<Scheduler, 'every_minutes'> | null | undefined): number => (s?.every_minutes && s.every_minutes > 0 ? s.every_minutes : DAILY_CHECK_MINUTES)
+
+/** "once a day", "about every 3 hours", "about every 20 minutes". */
+export function checkedWords(everyMinutes: number): string {
+  if (everyMinutes >= DAILY_CHECK_MINUTES) return 'once a day'
+  if (everyMinutes >= 120) return `about every ${Math.round(everyMinutes / 60)} hours`
+  return `about every ${everyMinutes} minutes`
+}
+
+/** True for an "every 15 minutes" style schedule that asks for runs closer together than Alpha checks, so it cannot keep to it. */
+export function cannotKeepCadence(text: string, checkEveryMinutes: number): boolean {
+  const p = parseSchedule(text)
+  if (p?.kind !== 'every') return false
+  return (p.unit === 'minutes' ? p.amount : p.amount * 60) < checkEveryMinutes
+}
+
+/**
+ * "Every 15 minutes", "Every day at 9:00 AM", "Every Monday at 10:00 AM".
+ * Pass how often Alpha really checks (minutes) and an "every few minutes" schedule it cannot keep reads "Checked once a day" instead.
+ */
+export function scheduleWords(text: string, checkEveryMinutes?: number): string {
   const p = parseSchedule(text)
   if (!p) return text || 'No schedule'
   const at = `${p.hour % 12 === 0 ? 12 : p.hour % 12}:${String(p.minute).padStart(2, '0')} ${p.hour < 12 ? 'AM' : 'PM'}`
-  if (p.kind === 'every') return p.amount === 1 ? `Every ${p.unit === 'minutes' ? 'minute' : 'hour'}` : `Every ${p.amount} ${p.unit}`
+  if (p.kind === 'every') {
+    if (checkEveryMinutes !== undefined && cannotKeepCadence(text, checkEveryMinutes)) return `Checked ${checkedWords(checkEveryMinutes)}`
+    return p.amount === 1 ? `Every ${p.unit === 'minutes' ? 'minute' : 'hour'}` : `Every ${p.amount} ${p.unit}`
+  }
   if (p.kind === 'daily') return `Every day at ${at}`
   return `Every ${WEEKDAYS[p.weekday]} at ${at}`
 }
@@ -385,10 +409,9 @@ export function schedulerWords(s: Scheduler, now = Date.now()): { lamp: Lamp; te
   const ago = agoWords(s.last_tick_at, now)
   if (s.status === 'late') return { lamp: 'red', text: `The last check was ${ago}. It is running late, so automations may go out later than their set time.`, warn: true }
   if (s.every_minutes && s.every_minutes >= 120) {
-    const every = s.every_minutes >= 1440 ? 'once a day' : `about every ${Math.round(s.every_minutes / 60)} hours`
-    return { lamp: 'amber', text: `Alpha checks ${every}, so a text can go out well after its set time. Ask your developer to check every 5 minutes. Last check ${ago}.`, warn: true }
+    return { lamp: 'amber', text: `Alpha checks ${checkedWords(s.every_minutes)}, so a text can go out well after its set time. Ask your developer to check every 5 minutes. Last check ${ago}.`, warn: true }
   }
-  return { lamp: 'green', text: `Alpha checks ${s.every_minutes ? `about every ${s.every_minutes} minutes` : 'regularly'}. Last check ${ago}.`, warn: false }
+  return { lamp: 'green', text: `Alpha checks ${s.every_minutes ? checkedWords(s.every_minutes) : 'regularly'}. Last check ${ago}.`, warn: false }
 }
 
 /** Phone numbers typed in many ways. True when there are enough digits for a US number. */

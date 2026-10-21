@@ -16,7 +16,6 @@ import type { ApprovalDetails, ApprovalKind } from './actions.ts'
 import type { AuthorizeInput, AuthorizeResult } from './engine.ts'
 
 // A loose view of the Supabase client: only what is used here.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type Db = { from: (table: string) => any }
 
 interface DbError { code?: string; message?: string }

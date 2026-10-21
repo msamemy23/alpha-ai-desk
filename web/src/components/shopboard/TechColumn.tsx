@@ -35,7 +35,7 @@ export default function TechColumn({
     <section
       id={id}
       aria-label={`${name}, ${count} ${count === 1 ? 'car' : 'cars'}`}
-      className={`scroll-mt-20 rounded-lg border p-2.5 transition-colors lg:w-[16.5rem] lg:shrink-0 ${over ? 'border-blue bg-blue/[0.06]' : 'border-border bg-bg-chrome/50'}`}
+      className={`scroll-mt-3 rounded-lg border p-2.5 transition-colors lg:w-[16.5rem] lg:shrink-0 ${over ? 'border-blue bg-blue/[0.06]' : 'border-border bg-bg-chrome/50'}`}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}

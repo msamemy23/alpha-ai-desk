@@ -10,6 +10,8 @@ import type { Card, FieldInfo, Preview, ScheduleParts } from './model'
 
 interface Props {
   card: Card
+  /** Minutes between the checks Alpha really makes. */
+  checkEvery: number
   onClose: () => void
   /** Saves only what changed. Returns an empty string when it worked, or the reason it did not. */
   onSave: (changes: Record<string, unknown>) => Promise<string>
@@ -23,7 +25,7 @@ const PLACEHOLDER_WORDS: Record<string, string> = {
 const asText = (v: unknown): string => (v === null || v === undefined ? '' : String(v))
 
 /** Change the words, the timing and the limits of one automation, with the real messages shown as you type. */
-export default function EditSheet({ card, onClose, onSave }: Props) {
+export default function EditSheet({ card, checkEvery, onClose, onSave }: Props) {
   const engine = card.kind === 'engine'
   const base = useId()
   const initial = useMemo(() => {
@@ -212,10 +214,10 @@ export default function EditSheet({ card, onClose, onSave }: Props) {
             <div className="mt-2">
               <label htmlFor={`${base}-sched`} className="form-label">Schedule</label>
               <input id={`${base}-sched`} className="form-input" value={asText(values.schedule)} onChange={e => set('schedule', e.target.value)} />
-              <p className="form-hint">Try &quot;Daily at 9am&quot;, &quot;Weekly on Monday at 10am&quot; or &quot;every 2 hours&quot;.</p>
+              <p className="form-hint">Try &quot;Daily at 9am&quot; or &quot;Weekly on Monday at 10am&quot;.</p>
             </div>
           )}
-          <p className="form-hint !text-text-secondary">{scheduleWords(asText(values.schedule))}, in your shop’s time zone.</p>
+          <p className="form-hint !text-text-secondary">{scheduleWords(asText(values.schedule), checkEvery)}, in your shop’s time zone.</p>
         </section>
 
         {numberFields.length > 0 && (

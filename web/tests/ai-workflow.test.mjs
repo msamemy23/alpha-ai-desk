@@ -581,7 +581,7 @@ test('complete research is converted into a review when the model loops instead 
 test('all-four brake drafts cannot silently omit an axle or brake component', async () => {
   const frontOnly = { kind: 'propose', task: task({ type: 'Invoice', customer_name: 'Jake Paul', vehicle_year: '2005', vehicle_make: 'Honda', vehicle_model: 'Accord', parts: [{ name: 'Front Brake Rotor', position: 'Front', qty: 2, unitPrice: 80 }], labors: [{ operation: 'Front brake replacement', hours: 1.5, rate: 120 }] }), proofs: { 'parts.0.unitPrice': proof('u', 'front rotor $80'), 'labors.0.hours': proof('u', 'front brake 1.5 hours'), 'labors.0.rate': { ref: 'shop', path: 'labor_rate' } } }
   const h = harness(Array.from({ length: 5 }, () => frontOnly))
-  h.deps.execute = async (action, payload, key) => action === 'lookupParts' ? { ok: true, data: { options: [{ parts: [{ name: 'Front Brake Rotor', position: 'Front', price: 80, quantity: 2 }] }], laborGuidance: { operation: 'Brake service', hours: 3, basis: 'standard_estimate' } } } : { ok: true, data: { id: 'saved-record', doc_number: 'INV-TEST', type: 'Invoice', ...payload } }
+  h.deps.execute = async (action, payload) => action === 'lookupParts' ? { ok: true, data: { options: [{ parts: [{ name: 'Front Brake Rotor', position: 'Front', price: 80, quantity: 2 }] }], laborGuidance: { operation: 'Brake service', hours: 3, basis: 'standard_estimate' } } } : { ok: true, data: { id: 'saved-record', doc_number: 'INV-TEST', type: 'Invoice', ...payload } }
   const reply = await h.run('Make an invoice for Jake Paul: 2005 Honda Accord all four brakes and rotors. Look it up.', 'u')
   assert.equal(reply.status, 'blocked')
   assert.match(reply.reply, /all-four brake request is incomplete/i)

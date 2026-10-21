@@ -6,10 +6,9 @@ import {
 } from '../src/lib/growth-promotions.ts'
 import { drainShop } from '../src/lib/automation-engine.ts'
 import { normalizeRules } from '../src/lib/automation-rules.ts'
-import { createFake, customer, emptyRaw, enabledState, fakeShop, SHOP_ID } from './helpers/automation-fake.mjs'
+import { createFake, customer, emptyRaw, fakeShop, SHOP_ID } from './helpers/automation-fake.mjs'
 import { createPromotionFake } from './helpers/promotion-fake.mjs'
 
-const H = 3_600_000
 const D = 86_400_000
 const AFTERNOON = Date.parse('2026-10-14T20:00:00Z') // 3pm in Houston, a Wednesday
 const NIGHT = Date.parse('2026-10-15T03:00:00Z') // 10pm in Houston

@@ -1,5 +1,6 @@
 'use client'
 import type { JumpChip } from '@/lib/shopboard'
+import { scrollToTopOfArea } from '@/lib/scroll-area'
 
 /**
  * On a phone the technician columns stack into one long scroll. These chips sit above them, one per column,
@@ -11,7 +12,8 @@ export default function JumpChips({ chips }: { chips: JumpChip[] }) {
     const el = document.getElementById(id)
     if (!el) return
     const calm = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    el.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'start' })
+    // Only the page's own scroll area moves, so the top bar stays where it is.
+    scrollToTopOfArea(el, { behavior: calm ? 'auto' : 'smooth' })
     el.focus({ preventScroll: true })
   }
   return (

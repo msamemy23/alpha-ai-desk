@@ -25,7 +25,6 @@ type KnowledgePanel = { type: string; title: string; facts: Record<string, strin
 
 // ── Query Classification ───────────────────────────────────
 function classifyQuery(q: string): { isPrice: boolean; isDiagnostic: boolean; isLabor: boolean; isHow: boolean; isTSB: boolean; isFluid: boolean; isRecall: boolean } {
-  const lq = q.toLowerCase()
   return {
     isPrice: /price|cost|how much|buy|order|part|oem|aftermarket|autozone|napa|oreilly|amazon|ebay/i.test(q),
     isDiagnostic: /diagnostic|code|dtc|check engine|cel|p0|p1|p2|c0|b0|u0|obd|freeze frame/i.test(q),

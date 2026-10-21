@@ -19,7 +19,9 @@ import { summarizeStop } from '@/lib/ai/stop-summary'
 import { apiJson, newEventId, postActivityEvent, postServerStop, streamWorkflow } from '@/lib/ai/client-api'
 import { preparePhoto, type PreparedPhoto } from '@/lib/ai/image-client'
 import { IMAGE_UNSUPPORTED_MESSAGE, MAX_IMAGES, looksLikeImageRejection, withImages } from '@/lib/ai/images'
-import { NEUTRAL_NOW, suggestPrompts } from '@/lib/ai/suggestions'
+import { NEUTRAL_NOW, recentAsksFrom, suggestPrompts } from '@/lib/ai/suggestions'
+import { ABORT_PATTERN, describeFailure } from '@/lib/ai/chat-failure'
+import type { FailureKind } from '@/lib/ai/chat-failure'
 import Icon from '@/components/Icon'
 import Sheet from '@/components/Sheet'
 import { renderChatMarkdown as renderMarkdown, chatPlainText, escapeHtml, safeUrl } from '@/components/ai-desk/markdown'
@@ -113,41 +115,14 @@ function isGreeting(m: ChatMessage, index: number) {
   )
 }
 
-// Failed turns are saved as ordinary assistant messages. These prefixes mark them
-// so they can show as an error with a Retry button instead of looking like an answer.
-const FAILURE_PREFIXES: [RegExp, string][] = [
-  [/^AI error:\s*/i, 'Alpha could not answer'],
-  [/^Ran into an issue:\s*/i, 'Alpha ran into a problem'],
-  [/^Repair lookup failed:\s*/i, 'The repair lookup failed'],
-  [/^Image analysis failed:\s*/i, 'Alpha could not read that photo'],
-  [/^Desktop action failed:\s*/i, 'The desktop action failed'],
-]
-// A request the owner stopped is saved as an ordinary assistant message too, so it
-// survives in history and shows as "Stopped" with a way to ask again.
+// The words saved in place of an answer when the owner pressed Stop (see lib/ai/chat-failure.ts for how they are recognised).
 const STOP_NOTICE = 'Stopped by you. Nothing was sent or changed.'
-const STOP_PATTERN = /^Stopped by you\.\s*/i
-const ABORT_PATTERN = /AbortError|signal is aborted|user aborted a request|operation was aborted/i
-
-type FailureKind = 'failed' | 'stopped'
 
 // The name an action is recorded under in Activity: letters, digits, dot, dash, underscore, starting with a letter.
 function externalActionId(action: string): string {
   const id = action.replace(/[^A-Za-z0-9._-]/g, '').slice(0, 60)
   return /^[A-Za-z]/.test(id) ? id : 'external'
 }
-function describeFailure(content: string): { title: string; detail: string; kind: FailureKind } | null {
-  if (STOP_PATTERN.test(content)) return { title: 'You stopped this request', detail: content.replace(STOP_PATTERN, '').trim(), kind: 'stopped' }
-  for (const [pattern, title] of FAILURE_PREFIXES) {
-    if (pattern.test(content)) {
-      const detail = content.replace(pattern, '').replace(/\s*Try again\.\s*$/i, '').replace(/\.{2,}$/, '.').trim()
-      // A request cut off by Stop can surface as a raw "aborted" error from deep inside a lookup.
-      if (ABORT_PATTERN.test(detail)) return { title: 'You stopped this request', detail: 'Nothing was sent or changed.', kind: 'stopped' }
-      return { title, detail, kind: 'failed' }
-    }
-  }
-  return null
-}
-
 // Browsers report a dropped connection as "Failed to fetch" or "Load failed". Say what
 // it means and what to do instead.
 function friendlyError(error: unknown, fallback = 'Something went wrong'): string {
@@ -4016,11 +3991,8 @@ FEATURE TOGGLES (current state):\n- Web Search: ${activeFeatures.search ? 'ON' :
   }
 
   // Suggestions follow the shop (open jobs, the day, the shop's own rules) and the owner's recent questions.
-  const recentAsks = history
-    .filter(entry => entry.id !== chatSessionIdRef.current)
-    .slice(0, 8)
-    .map(entry => entry.messages.find(message => message.role === 'user')?.content || '')
-    .filter(Boolean)
+  // A question whose answer was an error is not offered again: it stays in History, but it would only fail the same way.
+  const recentAsks = recentAsksFrom(history, chatSessionIdRef.current)
   const suggested = suggestPrompts({ repairOnly: repairOnlyMode, rules, openJobs, recentAsks, now: clock || NEUTRAL_NOW })
   const suggestionsReady = repairOnlyMode || (contextDone && rulesDone && historyStatus !== 'loading')
 

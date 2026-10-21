@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase, getShopProfile, updateSettings } from '@/lib/supabase'
 import { joinShopAddress, splitShopAddress } from '@/lib/shop-form'
 import Notice from '@/components/Notice'
+import { scrollToTopOfArea } from '@/lib/scroll-area'
 import Progress from '@/components/onboarding/Progress'
 import ShopStep, { type ShopErrors, type ShopFields } from '@/components/onboarding/ShopStep'
 import ServicesStep from '@/components/onboarding/ServicesStep'
@@ -78,8 +79,8 @@ export default function OnboardingPage() {
     setStep(next)
     setError('')
     requestAnimationFrame(() => {
-      stepHeading.current?.focus()
-      stepHeading.current?.scrollIntoView({ block: 'start' })
+      stepHeading.current?.focus({ preventScroll: true })
+      scrollToTopOfArea(stepHeading.current)
     })
   }
 

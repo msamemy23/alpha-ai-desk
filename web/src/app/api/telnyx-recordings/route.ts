@@ -1,9 +1,9 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase'
 import { getAuthedShop, unauthorized } from '@/lib/api-auth'
 
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
     const auth = await getAuthedShop()
     if (!auth) return unauthorized()

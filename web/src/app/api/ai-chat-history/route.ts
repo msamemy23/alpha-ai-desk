@@ -110,6 +110,8 @@ export async function GET(req: NextRequest) {
         ...entry,
         messages: entry.messages
           .sort((a, b) => a.sequence - b.sequence)
+          // The sequence only orders the messages; it is not sent to the screen.
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
           .map(({ sequence: _sequence, ...message }) => message),
         preview: entry.messages.find(message => message.role === 'user')?.content.slice(0, 60) || 'Conversation',
       }))
