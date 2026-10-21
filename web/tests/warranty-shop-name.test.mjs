@@ -16,7 +16,8 @@ test('warranty presets name no shop, and every {shop} is filled with the shop\'s
   assert.match(renderWarrantyText('Call {shop} first.', ''), /Call our shop first\./)
 })
 
-test('the document editor fills {shop} before a warranty is saved or printed', () => {
+test('the document editor fills {shop} through the shared helper before a warranty is saved or printed', () => {
   const fn = page.slice(page.indexOf('const formatWarrantyText'), page.indexOf('const dirty ='))
-  assert.match(fn, /\.replace\(\/\\\{shop\\\}\/g, shopName \|\| 'our shop'\)/)
+  assert.match(fn, /fillWarrantyText\(value, \{ name: shopName, address: shopAddress, phone: shopPhone \}\)/)
+  assert.match(page, /import \{ fillWarrantyText \} from '@\/lib\/warranty-text'/)
 })

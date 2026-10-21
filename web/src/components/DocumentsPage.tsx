@@ -30,6 +30,7 @@ import { useDeclinedWork } from './documents/useDeclinedWork'
 import type { DeclinedWork } from './documents/api'
 import { appendNote, applyTemplate, declinedDraft, isVoid, mayHaveLinks, noteDate, removeOffer, snapshotToFormPatch, templateName, voidNoteLine } from '@/lib/doc-screen'
 import { WARRANTY_PRESETS } from './documents/warranty'
+import { fillWarrantyText } from '@/lib/warranty-text'
 import { useShopLogo } from '@/lib/shop-logo'
 import { cleanDecisions, estimateLines, findings, normalizeSections } from '@/lib/dvi'
 import { docWord, isLocked } from './documents/types'
@@ -190,14 +191,8 @@ export default function DocumentsPage({ type }: { type: DocType }) {
   // No made-up rate: until the shop sets one, a new labor line starts at $0 an hour and the person types the rate.
   const laborRate = Number(settings.labor_rate) > 0 ? Number(settings.labor_rate) : 0
   const shopMethods = useMemo(() => String(settings.payment_methods || '').split(',').map(s => s.trim()).filter(Boolean), [settings.payment_methods])
-  const formatWarrantyText = (value: unknown) => String(value || '')
-    // The presets name no shop: {shop} is where this shop's own name goes.
-    .replace(/\{shop\}/g, shopName || 'our shop')
-    .replace(/Alpha International Auto Center/g, shopName || 'our shop')
-    .replace(/Alpha's/g, `${shopName || 'our shop'}'s`)
-    .replace(/\bAlpha\b/g, shopName || 'our shop')
-    .replace(/10710 S\. Main St, Houston, TX 77025/g, shopAddress || 'our shop')
-    .replace(/\(713\) 663-6979/g, shopPhone || 'our shop phone')
+  // The presets name no shop: {shop} is where this shop's own name goes (see lib/warranty-text.ts).
+  const formatWarrantyText = (value: unknown) => fillWarrantyText(value, { name: shopName, address: shopAddress, phone: shopPhone })
 
   const dirty = editing !== null && JSON.stringify(form) !== baseline
   const totals = useMemo(() => calcTotals(form as unknown as Record<string, unknown>), [form])
