@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Icon from '@/components/Icon'
 import Notice from '@/components/Notice'
+import { scrollToTopOfArea } from '@/lib/scroll-area'
 import AnswerTab from './AnswerTab'
 import EstimateTab from './EstimateTab'
 import SourcesTab from './SourcesTab'
@@ -63,7 +64,7 @@ export default function Results({ r }: { r: Repair }) {
   const go = (next: MainTab) => {
     setTab(next)
     // Landing on a tab from a button further down the page: show its top.
-    document.getElementById('repair-tabs')?.scrollIntoView({ block: 'start' })
+    scrollToTopOfArea(document.getElementById('repair-tabs'))
   }
 
   return (

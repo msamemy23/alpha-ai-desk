@@ -8,6 +8,7 @@ import Icon from '@/components/Icon'
 import Notice from '@/components/Notice'
 import { EmptyBlock, ErrorCard, hostOf, Pill, safeHref } from '@/components/ListKit'
 import { estimatePrompt, lookupErrorText, roundCents, searchStock, usd } from '@/lib/list-logic'
+import { scrollToTopOfArea } from '@/lib/scroll-area'
 import { KitPanel, OptionPanel } from '@/components/parts/ResultViews'
 import { QUICK_PARTS, STORE_CHOICES, confidenceLabel, confidenceLamp } from '@/components/parts/types'
 import type { KitOption, PartOption, PartsLookupResult, StockItem } from '@/components/parts/types'
@@ -116,7 +117,8 @@ export default function PartsLookupPage() {
 
   useEffect(() => () => abortRef.current?.abort(), [])
 
-  const bringIntoView = () => requestAnimationFrame(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+  // Scrolls only the page's own scroll area (the app shell's main), so the top bar never moves.
+  const bringIntoView = () => requestAnimationFrame(() => scrollToTopOfArea(resultsRef.current, { behavior: 'smooth' }))
 
   const search = async () => {
     const request = [vehicle.year, vehicle.make, vehicle.model, query].map(v => v.trim()).filter(Boolean).join(' ')
@@ -279,7 +281,7 @@ export default function PartsLookupPage() {
         </div>
       </form>
 
-      <div ref={resultsRef} className="mt-6 scroll-mt-20" aria-live="polite">
+      <div ref={resultsRef} className="mt-6 scroll-mt-3" aria-live="polite">
         {loading && (
           <div role="status" aria-busy="true">
             <p className="mb-3 text-text-secondary">Checking store pages. This can take up to a minute.</p>
