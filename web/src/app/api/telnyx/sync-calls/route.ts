@@ -215,4 +215,5 @@ export async function POST(req: NextRequest) {
     }
 }
 
-export async function GET(req: NextRequest) { return POST(req) }
+// Syncing writes call records, so it only runs on POST (a link, prefetch or crawler must never trigger it).
+export async function GET() { return NextResponse.json({ error: 'Use POST to sync calls.' }, { status: 405, headers: { Allow: 'POST' } }) }
